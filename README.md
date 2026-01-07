@@ -318,16 +318,84 @@ HiWave is built on **RustKit**, our ground-up browser engine. This isn't a WebKi
 
 ### What We Built (Original Rust Code)
 
-| Component | What It Does |
-|-----------|--------------|
-| `rustkit-html` | HTML5 tokenizer & tree builder (40+ states, 23 insertion modes) |
-| `rustkit-css` | CSS parser, cascade, selector matching |
-| `rustkit-layout` | Block, inline, flexbox, and grid layout |
-| `rustkit-dom` | DOM tree, events, manipulation |
-| `rustkit-compositor` | GPU rendering pipeline |
-| `rustkit-http` | HTTP/1.1 client with TLS |
-| `rustkit-codecs` | PNG/JPEG/GIF/WebP image decoding |
-| `rustkit-text` | Text shaping and rendering |
+
+### Crate Components
+
+  #### HiWave Application Layer
+
+  | Crate | Description |
+  |-------|-------------|
+  | \`hiwave-app\` | Main browser application with RustKit engine integration |
+  | \`hiwave-core\` | Shared types, errors, and configuration |
+  | \`hiwave-shell\` | Browser UI shell - tabs, workspaces, command palette |
+  | \`hiwave-shield\` | Ad blocking and privacy protection (Brave'\''s adblock-rust) |
+  | \`hiwave-vault\` | Password manager with AES-256 encryption |
+  | \`hiwave-analytics\` | Local-only usage analytics (no telemetry) |
+  | \`hiwave-smoke\` | Smoke tests for the browser |
+
+  #### RustKit Engine - Core
+
+  | Crate | Description |
+  |-------|-------------|
+  | \`rustkit-engine\` | Browser engine orchestration layer |
+  | \`rustkit-core\` | Core engine runtime (navigation, history, lifecycle) |
+  | \`rustkit-common\` | Shared utilities, error types, and logging |
+  | \`rustkit-viewhost\` | Cross-platform view hosting layer |
+
+  #### RustKit Engine - Parsing and DOM
+
+  | Crate | Description |
+  |-------|-------------|
+  | \`rustkit-html\` | HTML5 tokenizer and tree builder (40+ states, 23 insertion modes) |
+  | \`rustkit-dom\` | DOM tree, events, forms, and manipulation |
+  | \`rustkit-css\` | CSS parsing, cascade, and selector matching |
+  | \`rustkit-cssparser\` | Custom CSS tokenizer (replaced cssparser crate) |
+
+  #### RustKit Engine - Layout and Rendering
+
+  | Crate | Description |
+  |-------|-------------|
+  | \`rustkit-layout\` | Block, inline, flexbox, and grid layout |
+  | \`rustkit-text\` | Cross-platform text shaping and font access |
+  | \`rustkit-renderer\` | GPU display list renderer |
+  | \`rustkit-compositor\` | GPU compositor with per-view swapchain |
+  | \`rustkit-animation\` | CSS Animations and Transitions |
+
+  #### RustKit Engine - Graphics APIs
+
+  | Crate | Description |
+  |-------|-------------|
+  | \`rustkit-canvas\` | HTML5 Canvas 2D API |
+  | \`rustkit-webgl\` | WebGL 1.0 API implementation |
+  | \`rustkit-svg\` | SVG parsing and rendering |
+  | \`rustkit-image\` | Image loading, decoding, and caching |
+  | \`rustkit-codecs\` | PNG/JPEG/GIF/WebP decoding (replaced image crate) |
+
+  #### RustKit Engine - Networking
+
+  | Crate | Description |
+  |-------|-------------|
+  | \`rustkit-http\` | HTTP/1.1 client with TLS (replaced reqwest) |
+  | \`rustkit-net\` | Request interception, downloads, and resource loading |
+
+  #### RustKit Engine - JavaScript and Web APIs
+
+  | Crate | Description |
+  |-------|-------------|
+  | \`rustkit-js\` | JavaScript engine integration (Boa) |
+  | \`rustkit-bindings\` | JavaScript-to-DOM bindings |
+  | \`rustkit-media\` | HTML5 Audio/Video element support |
+  | \`rustkit-idb\` | IndexedDB implementation |
+  | \`rustkit-sw\` | Service Workers |
+  | \`rustkit-worker\` | Web Workers |
+  | \`rustkit-a11y\` | Accessibility (ARIA, screen reader support) |
+
+  #### RustKit Engine - Testing
+
+  | Crate | Description |
+  |-------|-------------|
+  | \`rustkit-test\` | WPT-style test harness |
+  | \`rustkit-bench\` | Performance benchmarking |
 
 ### External Dependencies (Minimal)
 
