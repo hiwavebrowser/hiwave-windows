@@ -238,7 +238,7 @@ pub enum FlexBasis {
 // ==================== Grid Types ====================
 
 /// A grid track size.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum TrackSize {
     /// Fixed length in pixels.
     Px(f32),
@@ -251,17 +251,12 @@ pub enum TrackSize {
     /// Size based on content maximum.
     MaxContent,
     /// Auto sizing.
+    #[default]
     Auto,
     /// Minimum/maximum constraint.
     MinMax(Box<TrackSize>, Box<TrackSize>),
     /// Fit content with maximum.
     FitContent(f32),
-}
-
-impl Default for TrackSize {
-    fn default() -> Self {
-        TrackSize::Auto
-    }
 }
 
 impl TrackSize {
@@ -368,6 +363,67 @@ impl GridTemplate {
     pub fn track_count(&self) -> usize {
         self.tracks.len()
     }
+
+    /// Expand repeat() patterns in the track template.
+    ///
+    /// This resolves Count repeats immediately, but leaves auto-fill/auto-fit for layout time.
+    ///
+    /// # Returns
+    /// A tuple of (expanded_tracks, has_auto_repeat) where:
+    /// - expanded_tracks: All tracks with Count repeats expanded
+    /// - has_auto_repeat: Whether an auto-fill/auto-fit needs layout-time expansion
+    pub fn expand_tracks(&self) -> (Vec<TrackDefinition>, Option<&TrackRepeat>) {
+        if self.repeats.is_empty() {
+            return (self.tracks.clone(), None);
+        }
+
+        let mut result = Vec::new();
+        let mut auto_repeat = None;
+        let mut track_idx = 0;
+
+        // Sort repeats by insert position
+        let mut sorted_repeats: Vec<_> = self.repeats.iter().collect();
+        sorted_repeats.sort_by_key(|(pos, _)| *pos);
+
+        for (insert_pos, repeat) in &sorted_repeats {
+            // Add any tracks before this repeat position
+            while track_idx < *insert_pos && track_idx < self.tracks.len() {
+                result.push(self.tracks[track_idx].clone());
+                track_idx += 1;
+            }
+
+            match repeat {
+                TrackRepeat::Count(count, tracks) => {
+                    // Expand: repeat(N, track1 track2...) → N copies of the track list
+                    for _ in 0..*count {
+                        for track in tracks {
+                            result.push(track.clone());
+                        }
+                    }
+                }
+                TrackRepeat::AutoFill(_) | TrackRepeat::AutoFit(_) => {
+                    // Auto-fill/auto-fit need container size to expand
+                    // Store for layout-time handling
+                    auto_repeat = Some(repeat);
+                }
+            }
+        }
+
+        // Add remaining tracks after last repeat
+        while track_idx < self.tracks.len() {
+            result.push(self.tracks[track_idx].clone());
+            track_idx += 1;
+        }
+
+        (result, auto_repeat)
+    }
+
+    /// Get the number of tracks after repeat expansion.
+    /// For auto-fill/auto-fit, returns the count with repeat not expanded.
+    pub fn expanded_track_count(&self) -> usize {
+        let (expanded, _) = self.expand_tracks();
+        expanded.len()
+    }
 }
 
 /// Named grid area.
@@ -460,6 +516,7 @@ impl GridTemplateAreas {
         }
 
         // Find row extent
+        #[allow(clippy::needless_range_loop)]
         for row in start_row..rows.len() {
             if rows[row].get(start_col) == Some(&Some(name.to_string())) {
                 row_end = row + 1;
@@ -500,9 +557,10 @@ impl GridAutoFlow {
 }
 
 /// Grid line reference (for grid-column-start, etc.).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum GridLine {
     /// Auto placement.
+    #[default]
     Auto,
     /// Specific line number (1-based, can be negative).
     Number(i32),
@@ -512,12 +570,6 @@ pub enum GridLine {
     Span(u32),
     /// Span to a named line.
     SpanName(String),
-}
-
-impl Default for GridLine {
-    fn default() -> Self {
-        GridLine::Auto
-    }
 }
 
 /// Grid placement for an item.
@@ -820,12 +872,21 @@ pub enum Direction {
     Rtl,
 }
 
+/// Box sizing model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoxSizing {
+    #[default]
+    ContentBox,
+    BorderBox,
+}
+
 /// Computed style for an element.
 #[derive(Debug, Clone, Default)]
 pub struct ComputedStyle {
     // Box model
     pub display: Display,
     pub position: Position,
+    pub box_sizing: BoxSizing,
     pub width: Length,
     pub height: Length,
     pub min_width: Length,
