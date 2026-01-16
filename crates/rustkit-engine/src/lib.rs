@@ -1039,6 +1039,40 @@ impl Engine {
                             style.font_weight = rustkit_css::FontWeight::BOLD;
                         }
                     }
+                    "line-height" => {
+                        // CSS line-height can be:
+                        // - "normal" (use font metrics)
+                        // - a unitless number (multiplier of font-size)
+                        // - a length with units (absolute value)
+                        // - a percentage (of font-size, treated as multiplier)
+                        if value == "normal" {
+                            style.line_height = rustkit_css::LineHeight::Normal;
+                        } else if let Ok(lh) = value.parse::<f32>() {
+                            // Unitless number - multiplier
+                            style.line_height = rustkit_css::LineHeight::Number(lh);
+                        } else if let Some(length) = parse_length(value) {
+                            match length {
+                                // Absolute pixel value
+                                rustkit_css::Length::Px(px) => {
+                                    style.line_height = rustkit_css::LineHeight::Px(px);
+                                }
+                                // Em is relative to font-size, so treat as multiplier
+                                rustkit_css::Length::Em(em) => {
+                                    style.line_height = rustkit_css::LineHeight::Number(em);
+                                }
+                                // Percentage is relative to font-size, treat as multiplier
+                                rustkit_css::Length::Percent(pct) => {
+                                    style.line_height = rustkit_css::LineHeight::Number(pct / 100.0);
+                                }
+                                // Rem - convert to multiplier (assuming 16px root font)
+                                rustkit_css::Length::Rem(rem) => {
+                                    // This is approximate - ideally we'd track actual root font size
+                                    style.line_height = rustkit_css::LineHeight::Px(rem * 16.0);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     "margin" => {
                         if let Some(length) = parse_length(value) {
                             style.margin_top = length;

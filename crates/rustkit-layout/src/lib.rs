@@ -526,8 +526,8 @@ impl LayoutBox {
             Length::Px(px) => px,
             _ => 16.0,
         };
-        // Default line height is 1.2 * font_size
-        font_size * 1.2
+        // Use the line_height from style (handles Normal, Number, Px)
+        self.style.line_height.to_px(font_size)
     }
 
     /// Perform layout with margin collapse context.

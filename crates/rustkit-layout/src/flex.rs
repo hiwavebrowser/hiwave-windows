@@ -88,6 +88,10 @@ pub struct FlexItem<'a> {
     /// Align self value.
     pub align_self: AlignSelf,
 
+    /// Whether the item has an explicit cross size (not auto).
+    /// Used to determine if stretch should apply.
+    pub has_explicit_cross_size: bool,
+
     /// Outer margin on main axis start.
     pub main_margin_start: f32,
 
@@ -187,6 +191,14 @@ pub fn layout_flex_container(
         Axis::Vertical => containing_block.content.height,
     };
 
+    // Check if the flex container has a definite cross size
+    // For row direction, cross axis is vertical (height)
+    // For column direction, cross axis is horizontal (width)
+    let has_definite_cross_size = match cross_axis {
+        Axis::Vertical => !matches!(container.style.height, Length::Auto),
+        Axis::Horizontal => !matches!(container.style.width, Length::Auto),
+    };
+
     // Get gap values
     let main_gap = match main_axis {
         Axis::Horizontal => resolve_length(&style.column_gap, container_main_size),
@@ -227,8 +239,9 @@ pub fn layout_flex_container(
     }
 
     // 5. Calculate cross sizes for each line
+    // Pass has_definite_cross_size so stretch behavior is correct for auto-height containers
     for line in &mut lines {
-        calculate_cross_sizes(line, container_cross_size, style.align_items);
+        calculate_cross_sizes(line, container_cross_size, style.align_items, has_definite_cross_size);
     }
 
     // 6. Calculate line cross sizes and positions
@@ -318,6 +331,13 @@ fn create_flex_item<'a>(
     // Hypothetical main size (clamped)
     let hypothetical_main_size = flex_basis.max(min_main).min(max_main);
 
+    // Check if the cross size is explicitly set (not auto)
+    // Per CSS spec, items with explicit cross size should NOT be stretched
+    let has_explicit_cross_size = match main_axis {
+        Axis::Horizontal => !matches!(layout_box.style.height, rustkit_css::Length::Auto),
+        Axis::Vertical => !matches!(layout_box.style.width, rustkit_css::Length::Auto),
+    };
+
     FlexItem {
         layout_box,
         order,
@@ -335,6 +355,7 @@ fn create_flex_item<'a>(
         min_cross_size: min_cross,
         max_cross_size: max_cross,
         align_self,
+        has_explicit_cross_size,
         main_margin_start,
         main_margin_end,
         cross_margin_start,
@@ -478,9 +499,35 @@ fn shrink_items(line: &mut FlexLine, overflow: f32) {
 }
 
 /// Calculate cross sizes for items in a line.
-fn calculate_cross_sizes(line: &mut FlexLine, container_cross: f32, align_items: AlignItems) {
-    // Calculate each item's cross size
+///
+/// The `has_definite_cross_size` parameter indicates whether the flex container
+/// has a definite (non-auto) cross size. This affects stretch behavior:
+/// - With definite cross size: stretch items to fill the container
+/// - With auto cross size: stretch items to match the tallest item in the line
+fn calculate_cross_sizes(line: &mut FlexLine, container_cross: f32, align_items: AlignItems, has_definite_cross_size: bool) {
+    // PASS 1: Calculate content-based cross sizes for ALL items (ignore stretch for now)
+    // This determines the "natural" height of each item
+    let mut content_cross_sizes: Vec<f32> = Vec::with_capacity(line.items.len());
+
     for item in &mut line.items {
+        // Compute the content-based cross size (hypothetical cross size)
+        let content_cross_size = get_content_cross_size(item.layout_box);
+
+        // Apply min/max constraints to content size
+        let constrained_size = content_cross_size.max(item.min_cross_size).min(item.max_cross_size);
+        content_cross_sizes.push(constrained_size);
+
+        // Initially set cross_size to content size
+        item.cross_size = constrained_size;
+    }
+
+    // Compute the line cross size based on content sizes (largest item outer cross size)
+    let line_cross_size = line.items.iter().enumerate()
+        .map(|(i, item)| content_cross_sizes[i] + item.cross_margin_start + item.cross_margin_end)
+        .fold(0.0, f32::max);
+
+    // PASS 2: Apply stretch behavior based on container sizing
+    for (i, item) in line.items.iter_mut().enumerate() {
         let align = if item.align_self == AlignSelf::Auto {
             align_items
         } else {
@@ -494,24 +541,49 @@ fn calculate_cross_sizes(line: &mut FlexLine, container_cross: f32, align_items:
             }
         };
 
-        if align == AlignItems::Stretch {
-            // Stretch to fill line (will be adjusted later)
-            item.cross_size = container_cross - item.cross_margin_start - item.cross_margin_end;
-        } else {
-            // Use hypothetical cross size (content-based)
-            // For simplicity, use min_cross_size as a placeholder
-            item.cross_size = item.min_cross_size;
+        // Per CSS spec: stretch only applies if cross size is "auto"
+        // Items with explicit height/width should NOT be stretched
+        if align == AlignItems::Stretch && !item.has_explicit_cross_size {
+            // Determine the stretch target based on container cross size
+            let stretch_target = if has_definite_cross_size {
+                // Container has definite height - stretch to fill container
+                container_cross - item.cross_margin_start - item.cross_margin_end
+            } else {
+                // Container has auto height - stretch to match tallest item in line
+                line_cross_size - item.cross_margin_start - item.cross_margin_end
+            };
+
+            // Stretch, but never below content size
+            item.cross_size = stretch_target.max(content_cross_sizes[i]);
         }
 
         // Clamp to min/max
         item.cross_size = item.cross_size.max(item.min_cross_size).min(item.max_cross_size);
     }
 
-    // Determine line cross size (largest item)
+    // Set line cross size (largest item outer cross size after stretch)
     line.cross_size = line.items
         .iter()
         .map(|i| i.cross_size + i.cross_margin_start + i.cross_margin_end)
         .fold(0.0, f32::max);
+}
+
+/// Get the content-based cross size for a layout box.
+/// This computes the hypothetical cross size based on content, intrinsic sizing, or children.
+fn get_content_cross_size(layout_box: &LayoutBox) -> f32 {
+    // If the box already has a computed height from layout, use it
+    if layout_box.dimensions.content.height > 0.0 {
+        return layout_box.dimensions.content.height;
+    }
+
+    // Otherwise, use a simple estimate based on children or min size
+    // In a full implementation, this would perform preliminary layout
+    let mut total_height = 0.0;
+    for child in &layout_box.children {
+        total_height += child.dimensions.margin_box().height;
+    }
+
+    total_height.max(20.0) // Minimum reasonable content height
 }
 
 /// Distribute lines according to align-content.
@@ -915,6 +987,54 @@ mod tests {
             "Expected child2_y ({}) >= child1_y ({})",
             child2_y,
             child1_y
+        );
+    }
+
+    #[test]
+    fn test_auto_height_stretch() {
+        // Test that flex items in an auto-height container stretch to the tallest item,
+        // not the parent container's height
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Row;
+        style.height = Length::Auto;  // Auto height container
+
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        // First child: explicit height of 50px
+        let mut child1_style = ComputedStyle::new();
+        child1_style.width = Length::Px(100.0);
+        child1_style.height = Length::Px(50.0);
+        container.children.push(LayoutBox::new(BoxType::Block, child1_style));
+
+        // Second child: auto height (should stretch to match first child)
+        let mut child2_style = ComputedStyle::new();
+        child2_style.width = Length::Px(100.0);
+        child2_style.height = Length::Auto;
+        container.children.push(LayoutBox::new(BoxType::Block, child2_style));
+
+        // Large parent container - items should NOT stretch to this
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 400.0, 500.0),
+            ..Default::default()
+        };
+
+        layout_flex_container(&mut container, &containing);
+
+        // Both children should be ~50px (the height of the tallest item)
+        // NOT 500px (the parent container height)
+        let child1_height = container.children[0].dimensions.content.height;
+        let child2_height = container.children[1].dimensions.content.height;
+
+        assert!(
+            child1_height < 100.0,
+            "Child1 height {} should be less than 100px",
+            child1_height
+        );
+        assert!(
+            child2_height < 100.0,
+            "Child2 height {} should be less than 100px (stretched to match tallest, not parent)",
+            child2_height
         );
     }
 }

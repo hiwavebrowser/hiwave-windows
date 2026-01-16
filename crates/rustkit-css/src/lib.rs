@@ -611,6 +611,54 @@ pub enum FontStyle {
     Oblique,
 }
 
+/// Line height values.
+///
+/// CSS line-height can be:
+/// - `normal` - use font metrics (typically ~1.2)
+/// - a number (unitless multiplier of font-size)
+/// - a length (absolute value like `24px`)
+/// - a percentage (of font-size)
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LineHeight {
+    /// Normal line height (use font metrics, typically ~1.2).
+    #[default]
+    Normal,
+    /// Unitless number (multiplier of font-size).
+    Number(f32),
+    /// Absolute length in pixels.
+    Px(f32),
+}
+
+impl LineHeight {
+    /// Compute the line height in pixels.
+    ///
+    /// - `Normal` uses the default multiplier (1.2)
+    /// - `Number(n)` multiplies font_size by n
+    /// - `Px(px)` returns the absolute pixel value
+    pub fn to_px(&self, font_size: f32) -> f32 {
+        match self {
+            LineHeight::Normal => font_size * 1.2,
+            LineHeight::Number(n) => font_size * n,
+            LineHeight::Px(px) => *px,
+        }
+    }
+
+    /// Check if this represents a multiplier (Normal or Number).
+    pub fn is_multiplier(&self) -> bool {
+        matches!(self, LineHeight::Normal | LineHeight::Number(_))
+    }
+
+    /// Get the multiplier value, if this is a multiplier type.
+    /// Returns None for absolute Px values.
+    pub fn as_multiplier(&self) -> Option<f32> {
+        match self {
+            LineHeight::Normal => Some(1.2),
+            LineHeight::Number(n) => Some(*n),
+            LineHeight::Px(_) => None,
+        }
+    }
+}
+
 /// Text alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextAlign {
@@ -864,7 +912,7 @@ pub struct ComputedStyle {
     pub font_weight: FontWeight,
     pub font_style: FontStyle,
     pub font_family: String,
-    pub line_height: f32,
+    pub line_height: LineHeight,
     pub text_align: TextAlign,
 
     // Typography - Advanced
@@ -936,7 +984,7 @@ impl ComputedStyle {
     pub fn new() -> Self {
         Self {
             font_size: Length::Px(16.0),
-            line_height: 1.2,
+            line_height: LineHeight::Normal,
             opacity: 1.0,
             color: Color::BLACK,
             background_color: Color::TRANSPARENT,

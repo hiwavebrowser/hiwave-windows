@@ -430,10 +430,12 @@ pub fn layout_grid_container(
 
     for item in items.iter_mut().filter(|i| !i.auto_placed) {
         // Convert to 0-based indices
+        // Line numbers are 1-based, indices are 0-based
+        // For exclusive end indices: line N means "after column/row N-1" = index N-1 (exclusive)
         let col_start = (item.column_start - 1).max(0) as usize;
-        let col_end = item.column_end.max(item.column_start + 1) as usize;
+        let col_end = ((item.column_end - 1).max(0) as usize).max(col_start + 1);
         let row_start = (item.row_start - 1).max(0) as usize;
-        let row_end = item.row_end.max(item.row_start + 1) as usize;
+        let row_end = ((item.row_end - 1).max(0) as usize).max(row_start + 1);
 
         // Ensure grid has enough tracks
         grid.ensure_tracks(col_end, row_end, &style.grid_auto_columns, &style.grid_auto_rows);
