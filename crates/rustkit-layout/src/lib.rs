@@ -369,6 +369,8 @@ pub struct LayoutBox {
     /// Reference to containing block (for positioned elements).
     #[allow(dead_code)]
     pub containing_block_index: Option<usize>,
+    /// Sticky positioning state (for position: sticky elements).
+    pub sticky_state: Option<StickyState>,
 }
 
 impl LayoutBox {
@@ -386,6 +388,7 @@ impl LayoutBox {
             z_index: 0,
             stacking_context: None,
             containing_block_index: None,
+            sticky_state: None,
         }
     }
 
@@ -752,14 +755,25 @@ impl LayoutBox {
                 self.apply_position_offsets_absolute(containing_block);
             }
             Position::Sticky => {
-                // Hybrid of relative and fixed
-                // For now, treat like relative
-                if let Some(top) = self.offsets.top {
-                    self.dimensions.content.y += top;
-                }
-                if let Some(left) = self.offsets.left {
-                    self.dimensions.content.x += left;
-                }
+                // Sticky positioning: element stays in normal flow until scroll threshold
+                // Store original position and offsets for later scroll-based adjustment
+                let border_box = self.dimensions.border_box();
+                let original_rect = Rect {
+                    x: border_box.x,
+                    y: border_box.y,
+                    width: border_box.width,
+                    height: border_box.height,
+                };
+
+                let sticky_offsets = StickyOffsets {
+                    top: self.offsets.top,
+                    right: self.offsets.right,
+                    bottom: self.offsets.bottom,
+                    left: self.offsets.left,
+                };
+
+                self.sticky_state = Some(StickyState::new(original_rect, sticky_offsets));
+                // Position stays at normal flow - no offset applied during layout
             }
         }
     }
@@ -794,6 +808,79 @@ impl LayoutBox {
                 - self.dimensions.border.bottom
                 - self.dimensions.padding.bottom
                 - self.dimensions.content.height;
+        }
+    }
+
+    /// Update sticky positioned elements based on scroll position.
+    ///
+    /// This should be called after layout when the scroll position changes to adjust
+    /// scroll position relative to their containing blocks.
+    pub fn update_sticky_positions(&mut self, scroll_x: f32, scroll_y: f32, container_rect: Rect) {
+        // Update this element's sticky state if it's sticky
+        if let Some(ref mut sticky_state) = self.sticky_state {
+            sticky_state.update(scroll_y, container_rect);
+
+            // Apply the sticky adjustment to dimensions if stuck
+            if sticky_state.is_stuck {
+                if let Some(stuck_rect) = sticky_state.stuck_rect {
+                    // Adjust content position to the stuck position
+                    // We need to account for margin/border/padding
+                    let border_box = self.dimensions.border_box();
+                    let dy = stuck_rect.y - border_box.y;
+                    self.dimensions.content.y += dy;
+
+                    // Handle horizontal sticky if applicable
+                    if sticky_state.offsets.left.is_some() || sticky_state.offsets.right.is_some() {
+                        let dx = stuck_rect.x - border_box.x;
+                        self.dimensions.content.x += dx;
+                    }
+                }
+            }
+        }
+
+        // Determine the container rect for children
+        // For scroll containers, use the content rect; otherwise pass through
+        let child_container = if is_scroll_container(
+            self.style.overflow_x,
+            self.style.overflow_y,
+        ) {
+            self.dimensions.content
+        } else {
+            container_rect
+        };
+
+        // Recursively update children
+        for child in &mut self.children {
+            child.update_sticky_positions(scroll_x, scroll_y, child_container);
+        }
+    }
+
+    /// Reset sticky positions to their original normal flow positions.
+    ///
+    /// Call this before relayout or when scroll position is reset.
+    pub fn reset_sticky_positions(&mut self) {
+        if let Some(ref sticky_state) = self.sticky_state {
+            // Restore original position
+            let original = sticky_state.original_rect;
+            let border_box = self.dimensions.border_box();
+
+            // Calculate offset from current to original
+            let dx = original.x - border_box.x;
+            let dy = original.y - border_box.y;
+
+            self.dimensions.content.x += dx;
+            self.dimensions.content.y += dy;
+        }
+
+        // Reset sticky state
+        if let Some(ref mut sticky_state) = self.sticky_state {
+            sticky_state.is_stuck = false;
+            sticky_state.stuck_rect = None;
+        }
+
+        // Recursively reset children
+        for child in &mut self.children {
+            child.reset_sticky_positions();
         }
     }
 
@@ -2025,5 +2112,113 @@ mod tests {
         assert_eq!(paint_order[0].z_index, -1);
         assert_eq!(paint_order[1].position, Position::Static);
         assert_eq!(paint_order[2].z_index, 1);
+    }
+
+    #[test]
+    fn test_sticky_positioning_state_initialization() {
+        let style = ComputedStyle::new();
+        let mut layout_box = LayoutBox::with_position(BoxType::Block, style, Position::Sticky);
+
+        // Set position offsets (sticky threshold)
+        layout_box.set_offsets(Some(10.0), None, None, None);
+
+        // Set dimensions as if layout happened
+        layout_box.dimensions.content.x = 0.0;
+        layout_box.dimensions.content.y = 100.0;
+        layout_box.dimensions.content.width = 200.0;
+        layout_box.dimensions.content.height = 50.0;
+
+        // Create containing block
+        let containing_block = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        };
+
+        // Apply position offsets - this should initialize sticky_state
+        layout_box.apply_position_offsets(&containing_block);
+
+        // Verify sticky_state was created
+        assert!(layout_box.sticky_state.is_some());
+
+        let sticky = layout_box.sticky_state.as_ref().unwrap();
+        assert!(!sticky.is_stuck);
+        assert!(sticky.offsets.top.is_some());
+        assert_eq!(sticky.offsets.top.unwrap(), 10.0);
+    }
+
+    #[test]
+    fn test_sticky_update_not_stuck() {
+        let style = ComputedStyle::new();
+        let mut layout_box = LayoutBox::with_position(BoxType::Block, style, Position::Sticky);
+
+        layout_box.set_offsets(Some(10.0), None, None, None);
+
+        // Element at y=100
+        layout_box.dimensions.content.y = 100.0;
+        layout_box.dimensions.content.height = 50.0;
+        layout_box.dimensions.content.width = 200.0;
+
+        let containing_block = Dimensions::default();
+        layout_box.apply_position_offsets(&containing_block);
+
+        let container = Rect::new(0.0, 0.0, 800.0, 600.0);
+
+        // Scroll position is 0 - element should not be stuck
+        // Threshold is original_y - top_offset = 100 - 10 = 90
+        layout_box.update_sticky_positions(0.0, 0.0, container);
+
+        let sticky = layout_box.sticky_state.as_ref().unwrap();
+        assert!(!sticky.is_stuck);
+    }
+
+    #[test]
+    fn test_sticky_update_stuck() {
+        let style = ComputedStyle::new();
+        let mut layout_box = LayoutBox::with_position(BoxType::Block, style, Position::Sticky);
+
+        layout_box.set_offsets(Some(10.0), None, None, None);
+
+        // Element at y=100
+        layout_box.dimensions.content.y = 100.0;
+        layout_box.dimensions.content.height = 50.0;
+        layout_box.dimensions.content.width = 200.0;
+
+        let containing_block = Dimensions::default();
+        layout_box.apply_position_offsets(&containing_block);
+
+        let container = Rect::new(0.0, 0.0, 800.0, 600.0);
+
+        // Scroll position is 150 - element should be stuck
+        // Threshold is original_y - top_offset = 100 - 10 = 90
+        // scroll_y (150) > threshold (90), so should stick
+        layout_box.update_sticky_positions(0.0, 150.0, container);
+
+        let sticky = layout_box.sticky_state.as_ref().unwrap();
+        assert!(sticky.is_stuck);
+    }
+
+    #[test]
+    fn test_sticky_reset() {
+        let style = ComputedStyle::new();
+        let mut layout_box = LayoutBox::with_position(BoxType::Block, style, Position::Sticky);
+
+        layout_box.set_offsets(Some(10.0), None, None, None);
+
+        layout_box.dimensions.content.y = 100.0;
+        layout_box.dimensions.content.height = 50.0;
+        layout_box.dimensions.content.width = 200.0;
+
+        let containing_block = Dimensions::default();
+        layout_box.apply_position_offsets(&containing_block);
+
+        let container = Rect::new(0.0, 0.0, 800.0, 600.0);
+
+        // First, make it stuck
+        layout_box.update_sticky_positions(0.0, 150.0, container);
+        assert!(layout_box.sticky_state.as_ref().unwrap().is_stuck);
+
+        // Reset
+        layout_box.reset_sticky_positions();
+        assert!(!layout_box.sticky_state.as_ref().unwrap().is_stuck);
     }
 }
