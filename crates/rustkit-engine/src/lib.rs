@@ -21,7 +21,7 @@ pub use rustkit_bindings::IpcMessage;
 pub use rustkit_renderer::{RenderStats, ScreenshotMetadata};
 use rustkit_compositor::Compositor;
 use rustkit_core::{LoadEvent, NavigationRequest, NavigationStateMachine};
-use rustkit_css::ComputedStyle;
+use rustkit_css::{ComputedStyle, Stylesheet, Rule};
 use rustkit_dom::{Document, Node, NodeType};
 use rustkit_image::ImageManager;
 use rustkit_js::JsRuntime;
@@ -1055,10 +1055,203 @@ impl Engine {
                             style.padding_left = length;
                         }
                     }
+                    "box-sizing" => {
+                        style.box_sizing = match value {
+                            "border-box" => rustkit_css::BoxSizing::BorderBox,
+                            "content-box" => rustkit_css::BoxSizing::ContentBox,
+                            _ => rustkit_css::BoxSizing::ContentBox,
+                        };
+                    }
                     _ => {}
                 }
             }
         }
+    }
+
+    /// Extract stylesheets from <style> elements in the document.
+    fn extract_stylesheets(&self, document: &Document) -> Vec<Stylesheet> {
+        let mut stylesheets = Vec::new();
+
+        // Find all <style> elements
+        let style_elements = document.get_elements_by_tag_name("style");
+
+        for style_el in style_elements {
+            // Get text content
+            let mut css_text = String::new();
+            for child in style_el.children() {
+                if let NodeType::Text(text) = &child.node_type {
+                    css_text.push_str(text);
+                }
+            }
+
+            if !css_text.is_empty() {
+                match Stylesheet::parse(&css_text) {
+                    Ok(stylesheet) => {
+                        debug!(rules = stylesheet.rules.len(), "Parsed stylesheet");
+                        stylesheets.push(stylesheet);
+                    }
+                    Err(e) => {
+                        warn!(?e, "Failed to parse stylesheet");
+                    }
+                }
+            }
+        }
+
+        stylesheets
+    }
+
+    /// Calculate selector specificity (a, b, c) = (ids, classes/attrs/pseudo-classes, tags/pseudo-elements).
+    fn selector_specificity(&self, selector: &str) -> (usize, usize, usize) {
+        let mut ids = 0;      // (a)
+        let mut classes = 0;  // (b)
+        let mut tags = 0;     // (c)
+
+        // Handle comma-separated selectors - take max specificity
+        if selector.contains(',') {
+            let mut max_spec = (0, 0, 0);
+            for part in selector.split(',') {
+                let spec = self.selector_specificity(part.trim());
+                if spec > max_spec {
+                    max_spec = spec;
+                }
+            }
+            return max_spec;
+        }
+
+        // Process each part of the selector (space-separated for descendants)
+        for part in selector.split_whitespace() {
+            // Skip combinators
+            if part == ">" || part == "+" || part == "~" {
+                continue;
+            }
+
+            let chars: Vec<char> = part.chars().collect();
+            let mut i = 0;
+
+            while i < chars.len() {
+                match chars[i] {
+                    '#' => {
+                        // ID selector
+                        ids += 1;
+                        i += 1;
+                        // Skip the ID name
+                        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+                            i += 1;
+                        }
+                    }
+                    '.' => {
+                        // Class selector
+                        classes += 1;
+                        i += 1;
+                        // Skip the class name
+                        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+                            i += 1;
+                        }
+                    }
+                    '[' => {
+                        // Attribute selector
+                        classes += 1;
+                        i += 1;
+                        // Skip until ]
+                        while i < chars.len() && chars[i] != ']' {
+                            i += 1;
+                        }
+                        if i < chars.len() {
+                            i += 1; // Skip ]
+                        }
+                    }
+                    ':' => {
+                        i += 1;
+                        if i < chars.len() && chars[i] == ':' {
+                            // Pseudo-element (::before, ::after, etc.)
+                            tags += 1;
+                            i += 1;
+                            // Skip the pseudo-element name
+                            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+                                i += 1;
+                            }
+                        } else {
+                            // Pseudo-class
+                            // Check for functional pseudo-classes
+                            let start = i;
+                            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+                                i += 1;
+                            }
+                            let name: String = chars[start..i].iter().collect();
+
+                            if i < chars.len() && chars[i] == '(' {
+                                // Functional pseudo-class
+                                if name == "not" || name == "is" {
+                                    // :not() and :is() - add specificity of argument
+                                    i += 1; // Skip (
+                                    let mut paren_depth = 1;
+                                    let arg_start = i;
+                                    while i < chars.len() && paren_depth > 0 {
+                                        if chars[i] == '(' {
+                                            paren_depth += 1;
+                                        } else if chars[i] == ')' {
+                                            paren_depth -= 1;
+                                        }
+                                        i += 1;
+                                    }
+                                    let arg: String = chars[arg_start..i.saturating_sub(1)].iter().collect();
+                                    let (a, b, c) = self.selector_specificity(&arg);
+                                    ids += a;
+                                    classes += b;
+                                    tags += c;
+                                } else if name == "where" {
+                                    // :where() has zero specificity
+                                    i += 1; // Skip (
+                                    let mut paren_depth = 1;
+                                    while i < chars.len() && paren_depth > 0 {
+                                        if chars[i] == '(' {
+                                            paren_depth += 1;
+                                        } else if chars[i] == ')' {
+                                            paren_depth -= 1;
+                                        }
+                                        i += 1;
+                                    }
+                                } else {
+                                    // Other functional pseudo-class (e.g., :nth-child(n))
+                                    classes += 1;
+                                    i += 1; // Skip (
+                                    let mut paren_depth = 1;
+                                    while i < chars.len() && paren_depth > 0 {
+                                        if chars[i] == '(' {
+                                            paren_depth += 1;
+                                        } else if chars[i] == ')' {
+                                            paren_depth -= 1;
+                                        }
+                                        i += 1;
+                                    }
+                                }
+                            } else {
+                                // Simple pseudo-class (:hover, :first-child, etc.)
+                                classes += 1;
+                            }
+                        }
+                    }
+                    '*' => {
+                        // Universal selector - no specificity
+                        i += 1;
+                    }
+                    _ if chars[i].is_alphabetic() || chars[i] == '_' => {
+                        // Type selector (element name)
+                        tags += 1;
+                        i += 1;
+                        // Skip the element name
+                        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
+                            i += 1;
+                        }
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+        }
+
+        (ids, classes, tags)
     }
 
     /// Render a view (public API for continuous rendering).

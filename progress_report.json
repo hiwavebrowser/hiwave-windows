@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-01-16T13:50:28.406680",
+  "total_runs": 1,
+  "current": {
+    "run_id": "20260110_203536",
+    "tag": null,
+    "estimated_parity": 0.0,
+    "tier_a_pass_rate": 0.0,
+    "tier_b_weighted_mean": 100.0,
+    "issue_clusters": {
+      "sizing_layout": 13,
+      "paint": 0,
+      "text": 0,
+      "images": 0
+    }
+  },
+  "trends": {
+    "parity_trend": "=",
+    "parity_delta": 0,
+    "tier_a_delta": 0,
+    "parity_sparkline": "\u2581"
+  },
+  "history": [
+    {
+      "run_id": "20260110_203536",
+      "date": "Jan 10 20:35",
+      "tag": null,
+      "estimated_parity": 0.0,
+      "tier_a_pass_rate": 0.0,
+      "tier_b_weighted_mean": 100.0,
+      "git_commit": "d349e986821f"
+    }
+  ],
+  "extremes": {
+    "best_run": {
+      "run_id": "20260110_203536",
+      "parity": 0.0,
+      "tag": null
+    },
+    "worst_run": {
+      "run_id": "20260110_203536",
+      "parity": 0.0,
+      "tag": null
+    }
+  },
+  "case_trends": {
+    "most_improved": [],
+    "most_regressed": []
+  }
+}

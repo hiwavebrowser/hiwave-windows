@@ -587,6 +587,14 @@ pub enum Position {
     Sticky,
 }
 
+/// Box sizing model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoxSizing {
+    #[default]
+    ContentBox,
+    BorderBox,
+}
+
 /// Font weight values.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FontWeight(pub u16);
@@ -826,6 +834,7 @@ pub struct ComputedStyle {
     // Box model
     pub display: Display,
     pub position: Position,
+    pub box_sizing: BoxSizing,
     pub width: Length,
     pub height: Length,
     pub min_width: Length,
