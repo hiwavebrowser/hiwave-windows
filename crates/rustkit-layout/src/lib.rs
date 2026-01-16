@@ -1687,9 +1687,12 @@ impl DisplayList {
             let y = layout_box.dimensions.content.y;
             let text_width = layout_box.dimensions.content.width;
 
+            // Apply text-transform before rendering
+            let transformed_text = apply_text_transform(text, style.text_transform);
+
             // Draw text
             self.commands.push(DisplayCommand::Text {
-                text: text.clone(),
+                text: transformed_text,
                 x,
                 y,
                 color: style.color,
