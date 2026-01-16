@@ -1118,7 +1118,73 @@ pub fn parse_color(value: &str) -> Option<Color> {
         }
     }
 
+    // hsl() / hsla()
+    if value.starts_with("hsl") {
+        let inner = value
+            .trim_start_matches("hsla(")
+            .trim_start_matches("hsl(")
+            .trim_end_matches(')');
+        let parts: Vec<&str> = inner.split(',').collect();
+        if parts.len() >= 3 {
+            let h = parts[0].trim().trim_end_matches("deg").parse::<f32>().ok()?;
+            let s = parts[1].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+            let l = parts[2].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+            let a = if parts.len() >= 4 {
+                parts[3].trim().parse::<f32>().ok()?
+            } else {
+                1.0
+            };
+
+            // HSL to RGB conversion
+            let (r, g, b) = hsl_to_rgb(h, s, l);
+            return Some(Color::new(r, g, b, a));
+        }
+    }
+
     None
+}
+
+/// Convert HSL to RGB.
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    if s == 0.0 {
+        // Achromatic (gray)
+        let v = (l * 255.0).round() as u8;
+        return (v, v, v);
+    }
+
+    let h = h / 360.0;
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+
+    let r = hue_to_rgb(p, q, h + 1.0 / 3.0);
+    let g = hue_to_rgb(p, q, h);
+    let b = hue_to_rgb(p, q, h - 1.0 / 3.0);
+
+    (
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+    )
+}
+
+fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
+    if t < 0.0 { t += 1.0; }
+    if t > 1.0 { t -= 1.0; }
+
+    if t < 1.0 / 6.0 {
+        return p + (q - p) * 6.0 * t;
+    }
+    if t < 1.0 / 2.0 {
+        return q;
+    }
+    if t < 2.0 / 3.0 {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
+    p
 }
 
 /// Parse a length value.
@@ -1185,6 +1251,33 @@ mod tests {
         assert_eq!(parse_color("red"), Some(Color::from_rgb(255, 0, 0)));
         assert_eq!(parse_color("black"), Some(Color::BLACK));
         assert_eq!(parse_color("transparent"), Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn test_parse_color_hsl() {
+        // Pure red: hsl(0, 100%, 50%)
+        let red = parse_color("hsl(0, 100%, 50%)");
+        assert!(red.is_some(), "HSL red should parse");
+        let red = red.unwrap();
+        assert_eq!(red.r, 255, "HSL red R component");
+        assert_eq!(red.g, 0, "HSL red G component");
+        assert_eq!(red.b, 0, "HSL red B component");
+
+        // Pure green: hsl(120, 100%, 50%)
+        let green = parse_color("hsl(120, 100%, 50%)");
+        assert!(green.is_some(), "HSL green should parse");
+        let green = green.unwrap();
+        assert_eq!(green.r, 0, "HSL green R component");
+        assert_eq!(green.g, 255, "HSL green G component");
+        assert_eq!(green.b, 0, "HSL green B component");
+
+        // Pure blue: hsl(240, 100%, 50%)
+        let blue = parse_color("hsl(240, 100%, 50%)");
+        assert!(blue.is_some(), "HSL blue should parse");
+        let blue = blue.unwrap();
+        assert_eq!(blue.r, 0, "HSL blue R component");
+        assert_eq!(blue.g, 0, "HSL blue G component");
+        assert_eq!(blue.b, 255, "HSL blue B component");
     }
 
     #[test]
