@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            background-color: #f0f0f0;
+            margin: 20px;
+        }
+
+        h1 {
+            color: #ff0000;
+            font-size: 36px;
+        }
+
+        .blue-text {
+            color: blue;
+            font-size: 20px;
+        }
+
+        #green-box {
+            color: green;
+            background-color: #e0ffe0;
+            padding: 15px;
+            margin: 10px;
+        }
+
+        div {
+            margin-bottom: 10px;
+        }
+
+        .flexbox-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: #ffe0e0;
+            padding: 10px;
+        }
+
+        .flex-item {
+            padding: 10px;
+            background-color: #e0e0ff;
+        }
+
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .grid-item {
+            background-color: #ffffcc;
+            padding: 15px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS Engine Test</h1>
+
+    <div>Default div text (should be black on light gray background)</div>
+
+    <div class="blue-text">This text should be BLUE and 20px</div>
+
+    <div id="green-box">This should have green text on light green background with padding</div>
+
+    <div class="flexbox-container">
+        <div class="flex-item">Flex Item 1</div>
+        <div class="flex-item">Flex Item 2</div>
+        <div class="flex-item">Flex Item 3</div>
+    </div>
+
+    <div class="grid-container">
+        <div class="grid-item">Grid 1</div>
+        <div class="grid-item">Grid 2</div>
+        <div class="grid-item">Grid 3</div>
+        <div class="grid-item">Grid 4</div>
+        <div class="grid-item">Grid 5</div>
+        <div class="grid-item">Grid 6</div>
+    </div>
+</body>
+</html>

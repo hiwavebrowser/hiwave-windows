@@ -786,6 +786,10 @@ impl Engine {
 
     /// Build a layout tree from a DOM document.
     fn build_layout_from_document(&self, document: &Document) -> LayoutBox {
+        // Extract stylesheets from <style> tags
+        let stylesheets = self.extract_stylesheets(document);
+        debug!(stylesheet_count = stylesheets.len(), "Extracted stylesheets");
+
         // Create root layout box for the document
         let mut root_style = ComputedStyle::new();
         root_style.background_color = rustkit_css::Color::WHITE;
@@ -830,7 +834,8 @@ impl Engine {
                 }
             }
             
-            let body_box = self.build_layout_from_node(&body);
+            let empty_ancestors: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
+            let body_box = self.build_layout_from_node(&body, &stylesheets, &empty_ancestors);
             info!(
                 layout_children = body_box.children.len(),
                 "Layout: body box built"
@@ -847,7 +852,8 @@ impl Engine {
                     info!(index = i, tag = %tag_name, "DOM: html child");
                 }
             }
-            let html_box = self.build_layout_from_node(&html);
+            let empty_ancestors: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
+            let html_box = self.build_layout_from_node(&html, &stylesheets, &empty_ancestors);
             root_box.children.push(html_box);
         } else {
             warn!("DOM: no body or html element found");
@@ -857,7 +863,12 @@ impl Engine {
     }
 
     /// Build a layout box from a DOM node.
-    fn build_layout_from_node(&self, node: &Rc<Node>) -> LayoutBox {
+    fn build_layout_from_node(
+        &self,
+        node: &Rc<Node>,
+        stylesheets: &[Stylesheet],
+        ancestors: &[(String, Vec<String>, Option<String>)],
+    ) -> LayoutBox {
         match &node.node_type {
             NodeType::Element { tag_name, attributes, .. } => {
                 // Determine box type based on tag
@@ -884,9 +895,19 @@ impl Engine {
                 };
 
                 // Create computed style based on element and attributes
-                let style = self.compute_style_for_element(tag_name, attributes);
+                let style = self.compute_style_for_element(tag_name, attributes, stylesheets, ancestors);
 
                 let mut layout_box = LayoutBox::new(box_type, style);
+
+                // Build ancestors list for child elements with class and ID info
+                let tag_lower = tag_name.to_lowercase();
+                let classes: Vec<String> = attributes
+                    .get("class")
+                    .map(|c| c.split_whitespace().map(|s| s.to_string()).collect())
+                    .unwrap_or_default();
+                let id = attributes.get("id").cloned();
+                let mut child_ancestors = vec![(tag_lower.clone(), classes, id)];
+                child_ancestors.extend(ancestors.iter().cloned());
 
                 // Get DOM children for processing
                 let dom_children = node.children();
@@ -894,7 +915,7 @@ impl Engine {
 
                 // Process children
                 for child in dom_children {
-                    let child_box = self.build_layout_from_node(&child);
+                    let child_box = self.build_layout_from_node(&child, stylesheets, &child_ancestors);
                     // Add all boxes - don't filter based on children
                     // The display list builder will handle empty boxes
                     layout_box.children.push(child_box);
@@ -926,11 +947,13 @@ impl Engine {
         &self,
         tag_name: &str,
         attributes: &std::collections::HashMap<String, String>,
+        stylesheets: &[Stylesheet],
+        ancestors: &[(String, Vec<String>, Option<String>)],
     ) -> ComputedStyle {
         let mut style = ComputedStyle::new();
         style.color = rustkit_css::Color::BLACK;
 
-        // Apply tag-specific default styles
+        // Apply tag-specific default styles (user-agent stylesheet)
         match tag_name.to_lowercase().as_str() {
             "body" => {
                 style.background_color = rustkit_css::Color::WHITE;
@@ -999,7 +1022,54 @@ impl Engine {
             _ => {}
         }
 
-        // Parse inline style attribute if present
+        // Apply stylesheet rules that match this element
+        let mut matching_rules: Vec<(&Rule, (usize, usize, usize), usize)> = Vec::new();
+        let mut rule_index = 0;
+
+        // For now, we don't track siblings during style computation
+        // TODO: Pass sibling info from build_layout_from_node
+        let empty_siblings: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
+        let element_index = 0;
+        let sibling_count = 1;
+
+        for stylesheet in stylesheets {
+            for rule in &stylesheet.rules {
+                if self.selector_matches(
+                    &rule.selector,
+                    tag_name,
+                    attributes,
+                    ancestors,
+                    &empty_siblings,
+                    element_index,
+                    sibling_count,
+                ) {
+                    let specificity = self.selector_specificity(&rule.selector);
+                    matching_rules.push((rule, specificity, rule_index));
+                }
+                rule_index += 1;
+            }
+        }
+
+        // Sort by specificity (lower first, so they get overwritten by higher)
+        matching_rules.sort_by(|a, b| {
+            // Compare specificity: (ids, classes, tags)
+            a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2))
+        });
+
+        // Apply matching rules in order
+        for (rule, _, _) in matching_rules {
+            for decl in &rule.declarations {
+                // Extract string value from PropertyValue
+                let value_str = match &decl.value {
+                    rustkit_css::PropertyValue::Specified(s) => s.clone(),
+                    rustkit_css::PropertyValue::Inherit => continue, // Skip inherit for now
+                    rustkit_css::PropertyValue::Initial => continue, // Skip initial for now
+                };
+                self.apply_style_property(&mut style, &decl.property, &value_str);
+            }
+        }
+
+        // Parse inline style attribute if present (highest specificity)
         if let Some(style_attr) = attributes.get("style") {
             self.apply_inline_style(&mut style, style_attr);
         }
@@ -1254,6 +1324,937 @@ impl Engine {
         (ids, classes, tags)
     }
 
+    /// Check if a CSS selector matches an element.
+    fn selector_matches(
+        &self,
+        selector: &str,
+        tag_name: &str,
+        attributes: &std::collections::HashMap<String, String>,
+        ancestors: &[(String, Vec<String>, Option<String>)],
+        siblings_before: &[(String, Vec<String>, Option<String>)],
+        element_index: usize,
+        sibling_count: usize,
+    ) -> bool {
+        let selector = selector.trim();
+
+        // Handle multiple selectors (comma-separated)
+        if selector.contains(',') {
+            return selector.split(',')
+                .any(|s| self.selector_matches(
+                    s.trim(), tag_name, attributes, ancestors,
+                    siblings_before, element_index, sibling_count
+                ));
+        }
+
+        // Tokenize selector into parts and combinators
+        let tokens = self.tokenize_selector(selector);
+
+        if tokens.is_empty() {
+            return false;
+        }
+
+        // The last token must match the current element
+        let last_token = &tokens[tokens.len() - 1];
+        if !last_token.1.is_empty() {
+            // There's a combinator before this - we need to handle it
+            return false;
+        }
+
+        if !self.simple_selector_matches_with_pseudo(
+            &last_token.0, tag_name, attributes, element_index, sibling_count
+        ) {
+            return false;
+        }
+
+        // If there's only one token, we're done
+        if tokens.len() == 1 {
+            return true;
+        }
+
+        // Handle combinators by walking backwards through tokens
+        let mut ancestor_idx = 0;
+
+        for i in (0..tokens.len() - 1).rev() {
+            let (sel_part, combinator) = &tokens[i];
+
+            match combinator.as_str() {
+                " " => {
+                    // Descendant combinator: some ancestor must match
+                    let mut found = false;
+                    let mut found_idx = ancestor_idx;
+                    for (idx, (anc_tag, anc_classes, anc_id)) in ancestors.iter().enumerate().skip(ancestor_idx) {
+                        if self.simple_selector_matches_ancestor(sel_part, anc_tag, anc_classes, anc_id.as_ref()) {
+                            found = true;
+                            found_idx = idx + 1;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return false;
+                    }
+                    ancestor_idx = found_idx;
+                }
+                ">" => {
+                    // Child combinator: immediate parent must match
+                    if let Some((parent_tag, parent_classes, parent_id)) = ancestors.get(ancestor_idx) {
+                        if !self.simple_selector_matches_ancestor(sel_part, parent_tag, parent_classes, parent_id.as_ref()) {
+                            return false;
+                        }
+                        ancestor_idx += 1;
+                    } else {
+                        return false;
+                    }
+                }
+                "+" => {
+                    // Adjacent sibling combinator: immediate previous sibling must match
+                    if let Some((prev_tag, prev_classes, prev_id)) = siblings_before.last() {
+                        if !self.simple_selector_matches_ancestor(sel_part, prev_tag, prev_classes, prev_id.as_ref()) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                "~" => {
+                    // General sibling combinator: any previous sibling must match
+                    let mut found = false;
+                    for (sib_tag, sib_classes, sib_id) in siblings_before {
+                        if self.simple_selector_matches_ancestor(sel_part, sib_tag, sib_classes, sib_id.as_ref()) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        true
+    }
+
+    /// Tokenize a selector into parts with combinators.
+    fn tokenize_selector(&self, selector: &str) -> Vec<(String, String)> {
+        let mut tokens = Vec::new();
+        let mut current = String::new();
+        let mut chars = selector.chars().peekable();
+        let mut in_brackets = false;
+        let mut in_quotes = false;
+        let mut quote_char = ' ';
+
+        while let Some(c) = chars.next() {
+            if in_quotes {
+                current.push(c);
+                if c == quote_char {
+                    in_quotes = false;
+                }
+                continue;
+            }
+
+            if c == '"' || c == '\'' {
+                in_quotes = true;
+                quote_char = c;
+                current.push(c);
+                continue;
+            }
+
+            if c == '[' {
+                in_brackets = true;
+                current.push(c);
+                continue;
+            }
+
+            if c == ']' {
+                in_brackets = false;
+                current.push(c);
+                continue;
+            }
+
+            if in_brackets {
+                current.push(c);
+                continue;
+            }
+
+            // Check for combinators
+            if c == '>' || c == '+' || c == '~' {
+                if !current.trim().is_empty() {
+                    tokens.push((current.trim().to_string(), c.to_string()));
+                    current = String::new();
+                }
+                continue;
+            }
+
+            if c.is_whitespace() {
+                if !current.trim().is_empty() {
+                    // Peek ahead to see if there's a combinator
+                    while chars.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
+                        chars.next();
+                    }
+
+                    if let Some(&next) = chars.peek() {
+                        if next == '>' || next == '+' || next == '~' {
+                            // Don't push yet
+                        } else if next.is_alphanumeric() || next == '.' || next == '#' || next == '[' || next == ':' || next == '*' {
+                            // Descendant combinator
+                            tokens.push((current.trim().to_string(), " ".to_string()));
+                            current = String::new();
+                        }
+                    }
+                }
+                continue;
+            }
+
+            current.push(c);
+        }
+
+        // Add the last token
+        if !current.trim().is_empty() {
+            tokens.push((current.trim().to_string(), String::new()));
+        }
+
+        tokens
+    }
+
+    /// Check if a simple selector matches an element (wrapper).
+    #[allow(dead_code)]
+    fn simple_selector_matches(&self, selector: &str, tag_name: &str, attributes: &std::collections::HashMap<String, String>) -> bool {
+        self.simple_selector_matches_with_pseudo(selector, tag_name, attributes, 0, 1)
+    }
+
+    /// Check if a simple selector matches an element with pseudo-class context.
+    fn simple_selector_matches_with_pseudo(
+        &self,
+        selector: &str,
+        tag_name: &str,
+        attributes: &std::collections::HashMap<String, String>,
+        element_index: usize,
+        sibling_count: usize,
+    ) -> bool {
+        use std::collections::HashMap;
+
+        // Universal selector
+        if selector == "*" {
+            return true;
+        }
+
+        // :root pseudo-class matches html element
+        if selector == ":root" {
+            return tag_name.eq_ignore_ascii_case("html");
+        }
+
+        // ID selector: #id
+        if let Some(id) = selector.strip_prefix('#') {
+            if let Some(el_id) = attributes.get("id") {
+                return el_id == id;
+            }
+            return false;
+        }
+
+        // Class selector: .class
+        if selector.starts_with('.') && !selector.contains(|c| c == '#' || c == '[' || c == ':') {
+            let classes: Vec<&str> = selector[1..].split('.').filter(|s| !s.is_empty()).collect();
+            if let Some(el_class) = attributes.get("class") {
+                let el_classes: Vec<&str> = el_class.split_whitespace().collect();
+                return classes.iter().all(|c| el_classes.contains(c));
+            }
+            return false;
+        }
+
+        // Type selector with modifiers
+        let mut remaining = selector;
+
+        // Extract tag part
+        let tag_end = remaining.find(|c| c == '.' || c == '#' || c == ':' || c == '[')
+            .unwrap_or(remaining.len());
+        let tag_part = &remaining[..tag_end];
+        remaining = &remaining[tag_end..];
+
+        // Check tag name
+        if !tag_part.is_empty() && !tag_part.eq_ignore_ascii_case(tag_name) {
+            return false;
+        }
+
+        // Check remaining parts
+        while !remaining.is_empty() {
+            if let Some(rest) = remaining.strip_prefix('.') {
+                // Class
+                let class_end = rest.find(|c| c == '.' || c == '#' || c == ':' || c == '[')
+                    .unwrap_or(rest.len());
+                let class_name = &rest[..class_end];
+                remaining = &rest[class_end..];
+
+                if let Some(el_class) = attributes.get("class") {
+                    if !el_class.split_whitespace().any(|c| c == class_name) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            } else if let Some(rest) = remaining.strip_prefix('#') {
+                // ID
+                let id_end = rest.find(|c| c == '.' || c == '#' || c == ':' || c == '[')
+                    .unwrap_or(rest.len());
+                let id_name = &rest[..id_end];
+                remaining = &rest[id_end..];
+
+                if attributes.get("id").map(|s| s.as_str()) != Some(id_name) {
+                    return false;
+                }
+            } else if let Some(rest) = remaining.strip_prefix('[') {
+                // Attribute selector
+                let bracket_end = rest.find(']').unwrap_or(rest.len());
+                let attr_selector = &rest[..bracket_end];
+                remaining = if bracket_end < rest.len() { &rest[bracket_end + 1..] } else { "" };
+
+                if !self.match_attribute_selector(attr_selector, attributes) {
+                    return false;
+                }
+            } else if let Some(rest) = remaining.strip_prefix(':') {
+                // Pseudo-class
+                let (pseudo_name, pseudo_arg, consumed) = self.parse_pseudo_class(rest);
+                remaining = &rest[consumed..];
+
+                if !self.match_pseudo_class(&pseudo_name, pseudo_arg.as_deref(), tag_name, element_index, sibling_count, attributes) {
+                    return false;
+                }
+            } else {
+                break;
+            }
+        }
+
+        true
+    }
+
+    /// Match an attribute selector.
+    fn match_attribute_selector(&self, attr_selector: &str, attributes: &std::collections::HashMap<String, String>) -> bool {
+        let operators = ["~=", "|=", "^=", "$=", "*=", "="];
+
+        for op in &operators {
+            if let Some(pos) = attr_selector.find(op) {
+                let attr_name = attr_selector[..pos].trim();
+                let mut attr_value = attr_selector[pos + op.len()..].trim();
+
+                // Remove quotes
+                if (attr_value.starts_with('"') && attr_value.ends_with('"')) ||
+                   (attr_value.starts_with('\'') && attr_value.ends_with('\'')) {
+                    attr_value = &attr_value[1..attr_value.len() - 1];
+                }
+
+                if let Some(el_attr) = attributes.get(attr_name) {
+                    return match *op {
+                        "=" => el_attr == attr_value,
+                        "~=" => el_attr.split_whitespace().any(|w| w == attr_value),
+                        "|=" => el_attr == attr_value || el_attr.starts_with(&format!("{}-", attr_value)),
+                        "^=" => el_attr.starts_with(attr_value),
+                        "$=" => el_attr.ends_with(attr_value),
+                        "*=" => el_attr.contains(attr_value),
+                        _ => false,
+                    };
+                } else {
+                    return false;
+                }
+            }
+        }
+
+        // Just [attr] - check presence
+        attributes.contains_key(attr_selector.trim())
+    }
+
+    /// Parse a pseudo-class.
+    fn parse_pseudo_class(&self, rest: &str) -> (String, Option<String>, usize) {
+        let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '-')
+            .unwrap_or(rest.len());
+        let name = rest[..name_end].to_string();
+
+        if rest[name_end..].starts_with('(') {
+            let paren_start = name_end + 1;
+            let mut depth = 1;
+            let mut paren_end = paren_start;
+            for (i, c) in rest[paren_start..].chars().enumerate() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            paren_end = paren_start + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let arg = rest[paren_start..paren_end].to_string();
+            (name, Some(arg), paren_end + 1)
+        } else {
+            (name, None, name_end)
+        }
+    }
+
+    /// Match a pseudo-class.
+    fn match_pseudo_class(
+        &self,
+        name: &str,
+        arg: Option<&str>,
+        tag_name: &str,
+        element_index: usize,
+        sibling_count: usize,
+        attributes: &std::collections::HashMap<String, String>,
+    ) -> bool {
+        match name {
+            "first-child" => element_index == 0,
+            "last-child" => element_index == sibling_count.saturating_sub(1),
+            "only-child" => sibling_count == 1,
+            "nth-child" => {
+                if let Some(arg) = arg {
+                    self.match_nth(arg, element_index + 1)
+                } else {
+                    false
+                }
+            }
+            "nth-last-child" => {
+                if let Some(arg) = arg {
+                    let from_end = sibling_count - element_index;
+                    self.match_nth(arg, from_end)
+                } else {
+                    false
+                }
+            }
+            "not" => {
+                if let Some(arg) = arg {
+                    !self.simple_selector_matches_with_pseudo(
+                        arg, tag_name, attributes, element_index, sibling_count
+                    )
+                } else {
+                    true
+                }
+            }
+            "hover" | "focus" | "active" | "visited" => false,
+            "disabled" => attributes.contains_key("disabled"),
+            "enabled" => !attributes.contains_key("disabled"),
+            "checked" => attributes.contains_key("checked"),
+            "empty" => false,
+            "root" => false,
+            _ => true,
+        }
+    }
+
+    /// Match an nth-child expression.
+    fn match_nth(&self, expr: &str, n: usize) -> bool {
+        let expr = expr.trim().to_lowercase();
+
+        if expr == "odd" {
+            return n % 2 == 1;
+        }
+        if expr == "even" {
+            return n % 2 == 0;
+        }
+
+        // Try parsing as a number
+        if let Ok(num) = expr.parse::<usize>() {
+            return n == num;
+        }
+
+        // Parse An+B formula
+        let mut a = 0i32;
+        let mut b = 0i32;
+
+        if let Some(n_pos) = expr.find('n') {
+            let a_part = &expr[..n_pos].trim();
+            a = if a_part.is_empty() || *a_part == "+" {
+                1
+            } else if *a_part == "-" {
+                -1
+            } else {
+                a_part.parse().unwrap_or(0)
+            };
+
+            let b_part = expr[n_pos + 1..].trim();
+            if !b_part.is_empty() {
+                b = b_part.replace('+', "").trim().parse().unwrap_or(0);
+            }
+        } else {
+            b = expr.parse().unwrap_or(0);
+        }
+
+        // Check if n matches An+B
+        let n = n as i32;
+        if a == 0 {
+            return n == b;
+        }
+
+        let diff = n - b;
+        if a > 0 {
+            diff >= 0 && diff % a == 0
+        } else {
+            diff <= 0 && diff % a == 0
+        }
+    }
+
+    /// Match a simple selector against an ancestor.
+    fn simple_selector_matches_ancestor(
+        &self,
+        selector: &str,
+        tag_name: &str,
+        classes: &[String],
+        id: Option<&String>,
+    ) -> bool {
+        // Universal selector
+        if selector == "*" {
+            return true;
+        }
+
+        let mut required_tag: Option<&str> = None;
+        let mut required_classes: Vec<&str> = Vec::new();
+        let mut required_id: Option<&str> = None;
+
+        let mut i = 0;
+        let chars: Vec<char> = selector.chars().collect();
+        let mut current_start = 0;
+
+        while i <= chars.len() {
+            let at_end = i == chars.len();
+            let is_delimiter = !at_end && (chars[i] == '.' || chars[i] == '#' || chars[i] == ':' || chars[i] == '[');
+
+            if at_end || is_delimiter {
+                if i > current_start {
+                    let part = &selector[current_start..i];
+                    if current_start == 0 && !part.starts_with('.') && !part.starts_with('#') {
+                        required_tag = Some(part);
+                    }
+                }
+
+                if !at_end {
+                    if chars[i] == '.' {
+                        let start = i + 1;
+                        i += 1;
+                        while i < chars.len() && chars[i] != '.' && chars[i] != '#' && chars[i] != ':' && chars[i] != '[' {
+                            i += 1;
+                        }
+                        if i > start {
+                            required_classes.push(&selector[start..i]);
+                        }
+                        current_start = i;
+                        continue;
+                    } else if chars[i] == '#' {
+                        let start = i + 1;
+                        i += 1;
+                        while i < chars.len() && chars[i] != '.' && chars[i] != '#' && chars[i] != ':' && chars[i] != '[' {
+                            i += 1;
+                        }
+                        if i > start {
+                            required_id = Some(&selector[start..i]);
+                        }
+                        current_start = i;
+                        continue;
+                    } else if chars[i] == ':' || chars[i] == '[' {
+                        break;
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        // Check tag
+        if let Some(req_tag) = required_tag {
+            if !req_tag.eq_ignore_ascii_case(tag_name) {
+                return false;
+            }
+        }
+
+        // Check classes
+        for req_class in required_classes {
+            if !classes.iter().any(|c| c == req_class) {
+                return false;
+            }
+        }
+
+        // Check ID
+        if let Some(req_id) = required_id {
+            match id {
+                Some(el_id) if el_id == req_id => {}
+                _ => return false,
+            }
+        }
+
+        true
+    }
+
+    /// Apply a single CSS property to a computed style.
+    fn apply_style_property(&self, style: &mut ComputedStyle, property: &str, value: &str) {
+        let value = value.trim();
+
+        // Handle CSS-wide keywords
+        match value {
+            "inherit" | "initial" | "unset" => return, // Skip for now
+            _ => {}
+        }
+
+        match property {
+            // Colors
+            "color" => {
+                if let Some(color) = parse_color(value) {
+                    style.color = color;
+                }
+            }
+            "background-color" => {
+                if let Some(color) = parse_color(value) {
+                    style.background_color = color;
+                }
+            }
+
+            // Display and positioning
+            "display" => {
+                style.display = match value {
+                    "block" => rustkit_css::Display::Block,
+                    "inline" => rustkit_css::Display::Inline,
+                    "inline-block" => rustkit_css::Display::InlineBlock,
+                    "flex" => rustkit_css::Display::Flex,
+                    "inline-flex" => rustkit_css::Display::InlineFlex,
+                    "grid" => rustkit_css::Display::Grid,
+                    "inline-grid" => rustkit_css::Display::InlineGrid,
+                    "none" => rustkit_css::Display::None,
+                    _ => style.display,
+                };
+            }
+            "position" => {
+                style.position = match value {
+                    "static" => rustkit_css::Position::Static,
+                    "relative" => rustkit_css::Position::Relative,
+                    "absolute" => rustkit_css::Position::Absolute,
+                    "fixed" => rustkit_css::Position::Fixed,
+                    "sticky" => rustkit_css::Position::Sticky,
+                    _ => style.position,
+                };
+            }
+            "box-sizing" => {
+                style.box_sizing = match value {
+                    "border-box" => rustkit_css::BoxSizing::BorderBox,
+                    "content-box" => rustkit_css::BoxSizing::ContentBox,
+                    _ => style.box_sizing,
+                };
+            }
+
+            // Box model - dimensions
+            "width" => {
+                if let Some(length) = parse_length(value) {
+                    style.width = length;
+                }
+            }
+            "height" => {
+                if let Some(length) = parse_length(value) {
+                    style.height = length;
+                }
+            }
+            "min-width" => {
+                if let Some(length) = parse_length(value) {
+                    style.min_width = length;
+                }
+            }
+            "min-height" => {
+                if let Some(length) = parse_length(value) {
+                    style.min_height = length;
+                }
+            }
+            "max-width" => {
+                if let Some(length) = parse_length(value) {
+                    style.max_width = length;
+                }
+            }
+            "max-height" => {
+                if let Some(length) = parse_length(value) {
+                    style.max_height = length;
+                }
+            }
+
+            // Margin
+            "margin" => {
+                if let Some(length) = parse_length(value) {
+                    style.margin_top = length;
+                    style.margin_right = length;
+                    style.margin_bottom = length;
+                    style.margin_left = length;
+                }
+            }
+            "margin-top" => {
+                if let Some(length) = parse_length(value) {
+                    style.margin_top = length;
+                }
+            }
+            "margin-right" => {
+                if let Some(length) = parse_length(value) {
+                    style.margin_right = length;
+                }
+            }
+            "margin-bottom" => {
+                if let Some(length) = parse_length(value) {
+                    style.margin_bottom = length;
+                }
+            }
+            "margin-left" => {
+                if let Some(length) = parse_length(value) {
+                    style.margin_left = length;
+                }
+            }
+
+            // Padding
+            "padding" => {
+                if let Some(length) = parse_length(value) {
+                    style.padding_top = length;
+                    style.padding_right = length;
+                    style.padding_bottom = length;
+                    style.padding_left = length;
+                }
+            }
+            "padding-top" => {
+                if let Some(length) = parse_length(value) {
+                    style.padding_top = length;
+                }
+            }
+            "padding-right" => {
+                if let Some(length) = parse_length(value) {
+                    style.padding_right = length;
+                }
+            }
+            "padding-bottom" => {
+                if let Some(length) = parse_length(value) {
+                    style.padding_bottom = length;
+                }
+            }
+            "padding-left" => {
+                if let Some(length) = parse_length(value) {
+                    style.padding_left = length;
+                }
+            }
+
+            // Border width
+            "border-width" => {
+                if let Some(length) = parse_length(value) {
+                    style.border_top_width = length;
+                    style.border_right_width = length;
+                    style.border_bottom_width = length;
+                    style.border_left_width = length;
+                }
+            }
+            "border-top-width" => {
+                if let Some(length) = parse_length(value) {
+                    style.border_top_width = length;
+                }
+            }
+            "border-right-width" => {
+                if let Some(length) = parse_length(value) {
+                    style.border_right_width = length;
+                }
+            }
+            "border-bottom-width" => {
+                if let Some(length) = parse_length(value) {
+                    style.border_bottom_width = length;
+                }
+            }
+            "border-left-width" => {
+                if let Some(length) = parse_length(value) {
+                    style.border_left_width = length;
+                }
+            }
+
+            // Border color
+            "border-color" => {
+                if let Some(color) = parse_color(value) {
+                    style.border_top_color = color;
+                    style.border_right_color = color;
+                    style.border_bottom_color = color;
+                    style.border_left_color = color;
+                }
+            }
+            "border-top-color" => {
+                if let Some(color) = parse_color(value) {
+                    style.border_top_color = color;
+                }
+            }
+            "border-right-color" => {
+                if let Some(color) = parse_color(value) {
+                    style.border_right_color = color;
+                }
+            }
+            "border-bottom-color" => {
+                if let Some(color) = parse_color(value) {
+                    style.border_bottom_color = color;
+                }
+            }
+            "border-left-color" => {
+                if let Some(color) = parse_color(value) {
+                    style.border_left_color = color;
+                }
+            }
+
+            // Typography
+            "font-size" => {
+                if let Some(length) = parse_length(value) {
+                    style.font_size = length;
+                }
+            }
+            "font-family" => {
+                style.font_family = value.trim_matches(|c| c == '"' || c == '\'').to_string();
+            }
+            "font-weight" => {
+                style.font_weight = match value {
+                    "bold" | "700" | "800" | "900" => rustkit_css::FontWeight::BOLD,
+                    "normal" | "400" => rustkit_css::FontWeight::NORMAL,
+                    _ => {
+                        if let Ok(weight) = value.parse::<u16>() {
+                            rustkit_css::FontWeight(weight)
+                        } else {
+                            style.font_weight
+                        }
+                    }
+                };
+            }
+            "font-style" => {
+                style.font_style = match value {
+                    "italic" => rustkit_css::FontStyle::Italic,
+                    "normal" => rustkit_css::FontStyle::Normal,
+                    _ => style.font_style,
+                };
+            }
+            "line-height" => {
+                // Parse line-height: normal, unitless number, or pixel value
+                if value == "normal" {
+                    style.line_height = 1.2; // Normal multiplier
+                } else if let Ok(multiplier) = value.parse::<f32>() {
+                    style.line_height = multiplier;
+                } else if let Some(rustkit_css::Length::Px(px)) = parse_length(value) {
+                    // For now, store px values as multiplier (will need font-size context later)
+                    // This is a simplification - proper implementation needs LineHeight enum
+                    style.line_height = px / 16.0; // Assume 16px base
+                }
+            }
+            "text-align" => {
+                style.text_align = match value {
+                    "left" => rustkit_css::TextAlign::Left,
+                    "right" => rustkit_css::TextAlign::Right,
+                    "center" => rustkit_css::TextAlign::Center,
+                    "justify" => rustkit_css::TextAlign::Justify,
+                    _ => style.text_align,
+                };
+            }
+            "text-transform" => {
+                style.text_transform = match value {
+                    "none" => rustkit_css::TextTransform::None,
+                    "capitalize" => rustkit_css::TextTransform::Capitalize,
+                    "uppercase" => rustkit_css::TextTransform::Uppercase,
+                    "lowercase" => rustkit_css::TextTransform::Lowercase,
+                    _ => style.text_transform,
+                };
+            }
+
+            // Flexbox
+            "flex-direction" => {
+                style.flex_direction = match value {
+                    "row" => rustkit_css::FlexDirection::Row,
+                    "row-reverse" => rustkit_css::FlexDirection::RowReverse,
+                    "column" => rustkit_css::FlexDirection::Column,
+                    "column-reverse" => rustkit_css::FlexDirection::ColumnReverse,
+                    _ => style.flex_direction,
+                };
+            }
+            "flex-wrap" => {
+                style.flex_wrap = match value {
+                    "nowrap" => rustkit_css::FlexWrap::NoWrap,
+                    "wrap" => rustkit_css::FlexWrap::Wrap,
+                    "wrap-reverse" => rustkit_css::FlexWrap::WrapReverse,
+                    _ => style.flex_wrap,
+                };
+            }
+            "justify-content" => {
+                style.justify_content = match value {
+                    "flex-start" => rustkit_css::JustifyContent::FlexStart,
+                    "flex-end" => rustkit_css::JustifyContent::FlexEnd,
+                    "center" => rustkit_css::JustifyContent::Center,
+                    "space-between" => rustkit_css::JustifyContent::SpaceBetween,
+                    "space-around" => rustkit_css::JustifyContent::SpaceAround,
+                    "space-evenly" => rustkit_css::JustifyContent::SpaceEvenly,
+                    _ => style.justify_content,
+                };
+            }
+            "align-items" => {
+                style.align_items = match value {
+                    "flex-start" => rustkit_css::AlignItems::FlexStart,
+                    "flex-end" => rustkit_css::AlignItems::FlexEnd,
+                    "center" => rustkit_css::AlignItems::Center,
+                    "baseline" => rustkit_css::AlignItems::Baseline,
+                    "stretch" => rustkit_css::AlignItems::Stretch,
+                    _ => style.align_items,
+                };
+            }
+            "align-content" => {
+                style.align_content = match value {
+                    "flex-start" => rustkit_css::AlignContent::FlexStart,
+                    "flex-end" => rustkit_css::AlignContent::FlexEnd,
+                    "center" => rustkit_css::AlignContent::Center,
+                    "space-between" => rustkit_css::AlignContent::SpaceBetween,
+                    "space-around" => rustkit_css::AlignContent::SpaceAround,
+                    "stretch" => rustkit_css::AlignContent::Stretch,
+                    _ => style.align_content,
+                };
+            }
+
+            // Grid - basic support for most common properties
+            "grid-template-columns" => {
+                // Parse grid track list - simplified for now
+                // Full implementation needs proper track parsing
+                if let Some(template) = parse_grid_template(value) {
+                    style.grid_template_columns = template;
+                }
+            }
+            "grid-template-rows" => {
+                if let Some(template) = parse_grid_template(value) {
+                    style.grid_template_rows = template;
+                }
+            }
+            "grid-column-start" => {
+                if let Some(line) = parse_grid_line(value) {
+                    style.grid_column_start = line;
+                }
+            }
+            "grid-column-end" => {
+                if let Some(line) = parse_grid_line(value) {
+                    style.grid_column_end = line;
+                }
+            }
+            "grid-row-start" => {
+                if let Some(line) = parse_grid_line(value) {
+                    style.grid_row_start = line;
+                }
+            }
+            "grid-row-end" => {
+                if let Some(line) = parse_grid_line(value) {
+                    style.grid_row_end = line;
+                }
+            }
+            "grid-gap" | "gap" => {
+                if let Some(length) = parse_length(value) {
+                    style.row_gap = length;
+                    style.column_gap = length;
+                }
+            }
+            "row-gap" | "grid-row-gap" => {
+                if let Some(length) = parse_length(value) {
+                    style.row_gap = length;
+                }
+            }
+            "column-gap" | "grid-column-gap" => {
+                if let Some(length) = parse_length(value) {
+                    style.column_gap = length;
+                }
+            }
+
+            _ => {
+                // Unknown property - ignore silently
+            }
+        }
+    }
+
     /// Render a view (public API for continuous rendering).
     pub fn render_view(&mut self, id: EngineViewId) -> Result<(), EngineError> {
         self.render(id)
@@ -1268,7 +2269,173 @@ impl Engine {
             }
         }
     }
+}
 
+/// Parse a grid-template-columns or grid-template-rows value.
+/// Supports: repeat(N, 1fr), explicit track sizes, and combinations.
+fn parse_grid_template(value: &str) -> Option<rustkit_css::GridTemplate> {
+    let value = value.trim();
+
+    if value == "none" || value.is_empty() {
+        return Some(rustkit_css::GridTemplate::none());
+    }
+
+    let mut tracks = Vec::new();
+
+    // Check for repeat() function
+    if let Some(repeat_start) = value.find("repeat(") {
+        let after_repeat = &value[repeat_start + 7..];
+        if let Some(close_paren) = find_matching_paren(after_repeat) {
+            let repeat_content = &after_repeat[..close_paren];
+
+            // Parse repeat(count, track-size)
+            if let Some(comma_pos) = repeat_content.find(',') {
+                let count_str = repeat_content[..comma_pos].trim();
+                let track_str = repeat_content[comma_pos + 1..].trim();
+
+                // Parse count (could be number, auto-fill, auto-fit)
+                let count: Option<u32> = if count_str == "auto-fill" || count_str == "auto-fit" {
+                    // For now, default to a reasonable number
+                    Some(4)
+                } else {
+                    count_str.parse().ok()
+                };
+
+                if let (Some(count), Some(track_size)) = (count, parse_track_size(track_str)) {
+                    for _ in 0..count {
+                        tracks.push(rustkit_css::TrackDefinition::simple(track_size.clone()));
+                    }
+                }
+            }
+        }
+    } else {
+        // Parse space-separated track sizes
+        for part in value.split_whitespace() {
+            if let Some(track_size) = parse_track_size(part) {
+                tracks.push(rustkit_css::TrackDefinition::simple(track_size));
+            }
+        }
+    }
+
+    if tracks.is_empty() {
+        return None;
+    }
+
+    Some(rustkit_css::GridTemplate {
+        tracks,
+        repeats: Vec::new(),
+        final_line_names: Vec::new(),
+    })
+}
+
+/// Find the position of the matching closing parenthesis.
+fn find_matching_paren(s: &str) -> Option<usize> {
+    let mut depth = 1;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse a single track size (e.g., "1fr", "100px", "auto", "minmax(...)").
+fn parse_track_size(value: &str) -> Option<rustkit_css::TrackSize> {
+    let value = value.trim();
+
+    if value == "auto" {
+        return Some(rustkit_css::TrackSize::Auto);
+    }
+
+    if value == "min-content" {
+        return Some(rustkit_css::TrackSize::MinContent);
+    }
+
+    if value == "max-content" {
+        return Some(rustkit_css::TrackSize::MaxContent);
+    }
+
+    // Check for fr unit
+    if let Some(fr_str) = value.strip_suffix("fr") {
+        if let Ok(fr) = fr_str.trim().parse::<f32>() {
+            return Some(rustkit_css::TrackSize::Fr(fr));
+        }
+    }
+
+    // Check for px unit
+    if let Some(px_str) = value.strip_suffix("px") {
+        if let Ok(px) = px_str.trim().parse::<f32>() {
+            return Some(rustkit_css::TrackSize::Px(px));
+        }
+    }
+
+    // Check for percent
+    if let Some(pct_str) = value.strip_suffix('%') {
+        if let Ok(pct) = pct_str.trim().parse::<f32>() {
+            return Some(rustkit_css::TrackSize::Percent(pct));
+        }
+    }
+
+    // Check for minmax()
+    if value.starts_with("minmax(") {
+        if let Some(close) = find_matching_paren(&value[7..]) {
+            let content = &value[7..7 + close];
+            if let Some(comma) = content.find(',') {
+                let min_str = content[..comma].trim();
+                let max_str = content[comma + 1..].trim();
+                if let (Some(min), Some(max)) = (parse_track_size(min_str), parse_track_size(max_str)) {
+                    return Some(rustkit_css::TrackSize::MinMax(Box::new(min), Box::new(max)));
+                }
+            }
+        }
+    }
+
+    // Check for fit-content()
+    if value.starts_with("fit-content(") {
+        if let Some(close) = find_matching_paren(&value[12..]) {
+            let content = &value[12..12 + close];
+            if let Some(length) = parse_length(content) {
+                return Some(rustkit_css::TrackSize::FitContent(length.to_px(16.0, 16.0, 0.0)));
+            }
+        }
+    }
+
+    None
+}
+
+/// Parse a grid line value (e.g., "1", "span 2", "auto").
+fn parse_grid_line(value: &str) -> Option<rustkit_css::GridLine> {
+    let value = value.trim();
+
+    if value == "auto" {
+        return Some(rustkit_css::GridLine::Auto);
+    }
+
+    // Check for "span N"
+    if let Some(span_str) = value.strip_prefix("span") {
+        let span_str = span_str.trim();
+        if let Ok(span) = span_str.parse::<u32>() {
+            return Some(rustkit_css::GridLine::Span(span));
+        }
+    }
+
+    // Try as a number
+    if let Ok(num) = value.parse::<i32>() {
+        return Some(rustkit_css::GridLine::Number(num));
+    }
+
+    // Could be a named line (just use auto for now)
+    Some(rustkit_css::GridLine::Auto)
+}
+
+impl Engine {
     /// Get render statistics from the renderer.
     pub fn get_render_stats(&self) -> RenderStats {
         self.renderer
