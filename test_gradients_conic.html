@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+
+        h1 {
+            font-size: 28px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        h2 {
+            font-size: 20px;
+            color: #666;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #999;
+            padding-bottom: 5px;
+        }
+
+        .gradient-box {
+            width: 300px;
+            height: 300px;
+            margin: 10px;
+            display: inline-block;
+            border: 2px solid #333;
+            position: relative;
+        }
+
+        .gradient-box::after {
+            content: attr(data-gradient);
+            position: absolute;
+            bottom: 5px;
+            left: 5px;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 5px;
+            font-size: 11px;
+            font-family: monospace;
+        }
+
+        /* Basic Conic Gradients */
+        .grad-basic-2-color {
+            background: conic-gradient(red, blue);
+        }
+
+        .grad-basic-3-color {
+            background: conic-gradient(red, yellow, blue);
+        }
+
+        .grad-basic-4-color {
+            background: conic-gradient(red, yellow, green, blue);
+        }
+
+        .grad-rainbow {
+            background: conic-gradient(
+                hsl(0, 100%, 50%),
+                hsl(60, 100%, 50%),
+                hsl(120, 100%, 50%),
+                hsl(180, 100%, 50%),
+                hsl(240, 100%, 50%),
+                hsl(300, 100%, 50%),
+                hsl(360, 100%, 50%)
+            );
+        }
+
+        /* From Angle Tests */
+        .grad-from-0deg {
+            background: conic-gradient(from 0deg, red, yellow, green, blue, red);
+        }
+
+        .grad-from-45deg {
+            background: conic-gradient(from 45deg, red, yellow, green, blue, red);
+        }
+
+        .grad-from-90deg {
+            background: conic-gradient(from 90deg, red, yellow, green, blue, red);
+        }
+
+        .grad-from-180deg {
+            background: conic-gradient(from 180deg, red, yellow, green, blue, red);
+        }
+
+        /* Position Tests */
+        .grad-at-center {
+            background: conic-gradient(at center, red, blue);
+        }
+
+        .grad-at-top-left {
+            background: conic-gradient(at top left, red, yellow, blue);
+        }
+
+        .grad-at-bottom-right {
+            background: conic-gradient(at bottom right, red, yellow, blue);
+        }
+
+        .grad-at-30-70 {
+            background: conic-gradient(at 30% 70%, orange, purple, pink, orange);
+        }
+
+        /* Combined: From Angle + At Position */
+        .grad-from-45-at-30-30 {
+            background: conic-gradient(from 45deg at 30% 30%, red, yellow, green, blue, red);
+        }
+
+        .grad-from-90-at-70-70 {
+            background: conic-gradient(from 90deg at 70% 70%, cyan, magenta, yellow, cyan);
+        }
+
+        /* Positioned Color Stops */
+        .grad-positioned {
+            background: conic-gradient(
+                red 0deg,
+                yellow 90deg,
+                green 180deg,
+                blue 270deg,
+                red 360deg
+            );
+        }
+
+        .grad-sharp-segments {
+            background: conic-gradient(
+                red 0deg,
+                red 90deg,
+                yellow 90deg,
+                yellow 180deg,
+                green 180deg,
+                green 270deg,
+                blue 270deg,
+                blue 360deg
+            );
+        }
+
+        .grad-uneven-segments {
+            background: conic-gradient(
+                red 0deg,
+                red 30deg,
+                blue 30deg,
+                blue 60deg,
+                yellow 60deg,
+                yellow 90deg,
+                green 90deg,
+                green 360deg
+            );
+        }
+
+        /* Transparency Tests */
+        .grad-alpha-fade {
+            background: conic-gradient(
+                rgba(255, 0, 0, 1),
+                rgba(255, 0, 0, 0),
+                rgba(255, 0, 0, 1)
+            );
+        }
+
+        .grad-hsla-wheel {
+            background: conic-gradient(
+                hsla(0, 100%, 50%, 1),
+                hsla(60, 100%, 50%, 0.5),
+                hsla(120, 100%, 50%, 1),
+                hsla(180, 100%, 50%, 0.5),
+                hsla(240, 100%, 50%, 1),
+                hsla(300, 100%, 50%, 0.5),
+                hsla(360, 100%, 50%, 1)
+            );
+        }
+
+        /* Repeating Conic Gradients */
+        .grad-repeating-2-color {
+            background: repeating-conic-gradient(
+                red 0deg,
+                blue 45deg
+            );
+        }
+
+        .grad-repeating-stripes {
+            background: repeating-conic-gradient(
+                red 0deg,
+                red 10deg,
+                white 10deg,
+                white 20deg
+            );
+        }
+
+        .grad-repeating-rainbow {
+            background: repeating-conic-gradient(
+                from 0deg,
+                red 0deg,
+                yellow 15deg,
+                green 30deg,
+                cyan 45deg,
+                blue 60deg
+            );
+        }
+
+        /* Complex Effects */
+        .grad-color-wheel {
+            background: conic-gradient(
+                from 0deg,
+                hsl(0, 100%, 50%) 0deg,
+                hsl(30, 100%, 50%) 30deg,
+                hsl(60, 100%, 50%) 60deg,
+                hsl(90, 100%, 50%) 90deg,
+                hsl(120, 100%, 50%) 120deg,
+                hsl(150, 100%, 50%) 150deg,
+                hsl(180, 100%, 50%) 180deg,
+                hsl(210, 100%, 50%) 210deg,
+                hsl(240, 100%, 50%) 240deg,
+                hsl(270, 100%, 50%) 270deg,
+                hsl(300, 100%, 50%) 300deg,
+                hsl(330, 100%, 50%) 330deg,
+                hsl(360, 100%, 50%) 360deg
+            );
+        }
+
+        .grad-pie-chart {
+            background: conic-gradient(
+                red 0deg,
+                red 60deg,
+                yellow 60deg,
+                yellow 150deg,
+                green 150deg,
+                green 270deg,
+                blue 270deg,
+                blue 360deg
+            );
+        }
+
+        .grad-starburst {
+            background: repeating-conic-gradient(
+                from 0deg,
+                #ffffff 0deg,
+                #ffeb3b 5deg,
+                #ffffff 10deg
+            );
+        }
+    </style>
+</head>
+<body>
+    <h1>Conic Gradient Tests - Windows RustKit</h1>
+
+    <h2>Basic Conic Gradients</h2>
+    <div class="gradient-box grad-basic-2-color" data-gradient="2 colors"></div>
+    <div class="gradient-box grad-basic-3-color" data-gradient="3 colors"></div>
+    <div class="gradient-box grad-basic-4-color" data-gradient="4 colors"></div>
+    <div class="gradient-box grad-rainbow" data-gradient="rainbow (HSL)"></div>
+
+    <h2>From Angle</h2>
+    <div class="gradient-box grad-from-0deg" data-gradient="from 0deg"></div>
+    <div class="gradient-box grad-from-45deg" data-gradient="from 45deg"></div>
+    <div class="gradient-box grad-from-90deg" data-gradient="from 90deg"></div>
+    <div class="gradient-box grad-from-180deg" data-gradient="from 180deg"></div>
+
+    <h2>Center Position</h2>
+    <div class="gradient-box grad-at-center" data-gradient="at center"></div>
+    <div class="gradient-box grad-at-top-left" data-gradient="at top left"></div>
+    <div class="gradient-box grad-at-bottom-right" data-gradient="at bottom right"></div>
+    <div class="gradient-box grad-at-30-70" data-gradient="at 30% 70%"></div>
+
+    <h2>Combined (From + At)</h2>
+    <div class="gradient-box grad-from-45-at-30-30" data-gradient="from 45deg at 30% 30%"></div>
+    <div class="gradient-box grad-from-90-at-70-70" data-gradient="from 90deg at 70% 70%"></div>
+
+    <h2>Positioned Stops</h2>
+    <div class="gradient-box grad-positioned" data-gradient="positioned every 90deg"></div>
+    <div class="gradient-box grad-sharp-segments" data-gradient="sharp 4 segments"></div>
+    <div class="gradient-box grad-uneven-segments" data-gradient="uneven segments"></div>
+
+    <h2>Transparency</h2>
+    <div class="gradient-box grad-alpha-fade" data-gradient="alpha fade (rgba)"></div>
+    <div class="gradient-box grad-hsla-wheel" data-gradient="alpha wheel (hsla)"></div>
+
+    <h2>Repeating Conic Gradients</h2>
+    <div class="gradient-box grad-repeating-2-color" data-gradient="repeating 45deg"></div>
+    <div class="gradient-box grad-repeating-stripes" data-gradient="repeating stripes"></div>
+    <div class="gradient-box grad-repeating-rainbow" data-gradient="repeating rainbow"></div>
+
+    <h2>Complex Effects</h2>
+    <div class="gradient-box grad-color-wheel" data-gradient="color wheel (12 stops)"></div>
+    <div class="gradient-box grad-pie-chart" data-gradient="pie chart"></div>
+    <div class="gradient-box grad-starburst" data-gradient="starburst"></div>
+
+</body>
+</html>

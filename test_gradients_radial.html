@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+
+        h1 {
+            font-size: 28px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        h2 {
+            font-size: 20px;
+            color: #666;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #999;
+            padding-bottom: 5px;
+        }
+
+        .gradient-box {
+            width: 300px;
+            height: 300px;
+            margin: 10px;
+            display: inline-block;
+            border: 2px solid #333;
+            position: relative;
+        }
+
+        .gradient-box::after {
+            content: attr(data-gradient);
+            position: absolute;
+            bottom: 5px;
+            left: 5px;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 5px;
+            font-size: 11px;
+            font-family: monospace;
+        }
+
+        /* Basic Radial Gradients */
+        .grad-circle-center {
+            background: radial-gradient(circle, red, blue);
+        }
+
+        .grad-ellipse-center {
+            background: radial-gradient(ellipse, red, blue);
+        }
+
+        .grad-circle-3-colors {
+            background: radial-gradient(circle, red, yellow, blue);
+        }
+
+        .grad-ellipse-3-colors {
+            background: radial-gradient(ellipse, red, yellow, blue);
+        }
+
+        /* Position Tests */
+        .grad-circle-top-left {
+            background: radial-gradient(circle at top left, red, blue);
+        }
+
+        .grad-circle-top-right {
+            background: radial-gradient(circle at top right, red, blue);
+        }
+
+        .grad-circle-bottom-left {
+            background: radial-gradient(circle at bottom left, red, blue);
+        }
+
+        .grad-circle-bottom-right {
+            background: radial-gradient(circle at bottom right, red, blue);
+        }
+
+        .grad-ellipse-30-70 {
+            background: radial-gradient(ellipse at 30% 70%, yellow, green);
+        }
+
+        .grad-ellipse-70-30 {
+            background: radial-gradient(ellipse at 70% 30%, orange, purple);
+        }
+
+        /* Multi-Stop Gradients */
+        .grad-rainbow {
+            background: radial-gradient(circle,
+                hsl(0, 100%, 50%),
+                hsl(60, 100%, 50%),
+                hsl(120, 100%, 50%),
+                hsl(180, 100%, 50%),
+                hsl(240, 100%, 50%),
+                hsl(300, 100%, 50%)
+            );
+        }
+
+        .grad-positioned-stops {
+            background: radial-gradient(circle,
+                red 0%,
+                yellow 30%,
+                green 60%,
+                blue 100%
+            );
+        }
+
+        .grad-hard-stop {
+            background: radial-gradient(circle,
+                red 0%,
+                red 40%,
+                blue 40%,
+                blue 100%
+            );
+        }
+
+        /* Transparency Tests */
+        .grad-fade-out {
+            background: radial-gradient(circle,
+                rgba(255, 0, 0, 1),
+                rgba(255, 0, 0, 0)
+            );
+        }
+
+        .grad-fade-in {
+            background: radial-gradient(circle,
+                rgba(0, 0, 255, 0),
+                rgba(0, 0, 255, 1)
+            );
+        }
+
+        .grad-hsla-fade {
+            background: radial-gradient(circle,
+                hsla(120, 100%, 50%, 1),
+                hsla(120, 100%, 50%, 0)
+            );
+        }
+
+        /* Repeating Radial Gradients */
+        .grad-repeating-circle {
+            background: repeating-radial-gradient(circle,
+                red 0px,
+                red 30px,
+                blue 30px,
+                blue 60px
+            );
+        }
+
+        .grad-repeating-ellipse {
+            background: repeating-radial-gradient(ellipse,
+                yellow 0%,
+                green 10%
+            );
+        }
+
+        .grad-repeating-rings {
+            background: repeating-radial-gradient(circle,
+                white 0%,
+                white 5%,
+                black 5%,
+                black 10%
+            );
+        }
+
+        /* Complex Patterns */
+        .grad-sunburst {
+            background: radial-gradient(circle at center,
+                #ffffff 0%,
+                #ffeb3b 20%,
+                #ff9800 40%,
+                #ff5722 60%,
+                #c62828 80%,
+                #000000 100%
+            );
+        }
+
+        .grad-vignette {
+            background: radial-gradient(circle at center,
+                rgba(0, 0, 0, 0) 0%,
+                rgba(0, 0, 0, 0.8) 100%
+            );
+        }
+
+        .grad-spotlight {
+            background: radial-gradient(circle at 30% 30%,
+                #ffffff 0%,
+                #cccccc 30%,
+                #666666 60%,
+                #000000 100%
+            );
+        }
+    </style>
+</head>
+<body>
+    <h1>Radial Gradient Tests - Windows RustKit</h1>
+
+    <h2>Basic Shapes</h2>
+    <div class="gradient-box grad-circle-center" data-gradient="circle, red to blue"></div>
+    <div class="gradient-box grad-ellipse-center" data-gradient="ellipse, red to blue"></div>
+    <div class="gradient-box grad-circle-3-colors" data-gradient="circle, 3 colors"></div>
+    <div class="gradient-box grad-ellipse-3-colors" data-gradient="ellipse, 3 colors"></div>
+
+    <h2>Positioned Centers</h2>
+    <div class="gradient-box grad-circle-top-left" data-gradient="circle at top left"></div>
+    <div class="gradient-box grad-circle-top-right" data-gradient="circle at top right"></div>
+    <div class="gradient-box grad-circle-bottom-left" data-gradient="circle at bottom left"></div>
+    <div class="gradient-box grad-circle-bottom-right" data-gradient="circle at bottom right"></div>
+
+    <h2>Custom Positions</h2>
+    <div class="gradient-box grad-ellipse-30-70" data-gradient="ellipse at 30% 70%"></div>
+    <div class="gradient-box grad-ellipse-70-30" data-gradient="ellipse at 70% 30%"></div>
+
+    <h2>Multi-Stop Gradients</h2>
+    <div class="gradient-box grad-rainbow" data-gradient="rainbow (HSL 6 stops)"></div>
+    <div class="gradient-box grad-positioned-stops" data-gradient="positioned stops"></div>
+    <div class="gradient-box grad-hard-stop" data-gradient="hard stop at 40%"></div>
+
+    <h2>Transparency</h2>
+    <div class="gradient-box grad-fade-out" data-gradient="fade out (rgba)"></div>
+    <div class="gradient-box grad-fade-in" data-gradient="fade in (rgba)"></div>
+    <div class="gradient-box grad-hsla-fade" data-gradient="fade out (hsla)"></div>
+
+    <h2>Repeating Radial Gradients</h2>
+    <div class="gradient-box grad-repeating-circle" data-gradient="repeating circle"></div>
+    <div class="gradient-box grad-repeating-ellipse" data-gradient="repeating ellipse"></div>
+    <div class="gradient-box grad-repeating-rings" data-gradient="repeating rings"></div>
+
+    <h2>Complex Effects</h2>
+    <div class="gradient-box grad-sunburst" data-gradient="sunburst effect"></div>
+    <div class="gradient-box grad-vignette" data-gradient="vignette effect"></div>
+    <div class="gradient-box grad-spotlight" data-gradient="spotlight effect"></div>
+
+</body>
+</html>

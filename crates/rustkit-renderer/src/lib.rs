@@ -591,26 +591,18 @@ impl Renderer {
                 repeating,
                 border_radius,
             } => {
-                // TODO: Implement draw_radial_gradient
-                // For now, draw a solid rect with first color as placeholder
-                if let Some(first_stop) = stops.first() {
-                    self.draw_solid_rect(*rect, first_stop.color);
-                }
+                self.draw_radial_gradient(*rect, *shape, *size, *center, stops, *repeating, *border_radius);
             }
 
             DisplayCommand::ConicGradient {
                 rect,
-                from_angle: _,
-                center: _,
+                from_angle,
+                center,
                 stops,
-                repeating: _,
-                border_radius: _,
+                repeating,
+                border_radius,
             } => {
-                // TODO: Implement draw_conic_gradient
-                // For now, draw a solid rect with first color as placeholder
-                if let Some(first_stop) = stops.first() {
-                    self.draw_solid_rect(*rect, first_stop.color);
-                }
+                self.draw_conic_gradient(*rect, *from_angle, *center, stops, *repeating, *border_radius);
             }
 
             DisplayCommand::PushClip(rect) => {
@@ -1285,6 +1277,265 @@ impl Renderer {
                 }
                 y += cell_size;
             }
+        }
+    }
+
+    /// Draw a radial gradient with optional border-radius clipping.
+    fn draw_radial_gradient(
+        &mut self,
+        rect: Rect,
+        shape: rustkit_css::RadialShape,
+        size: rustkit_css::RadialSize,
+        center: (f32, f32),
+        stops: &[rustkit_css::ColorStop],
+        repeating: bool,
+        border_radius: rustkit_layout::BorderRadius,
+    ) {
+        if stops.is_empty() || rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+
+        // Calculate center position in pixels
+        let cx = rect.x + rect.width * center.0;
+        let cy = rect.y + rect.height * center.1;
+
+        // Calculate radius based on size keyword
+        let (rx, ry) = match size {
+            rustkit_css::RadialSize::ClosestSide => {
+                let dx = center.0.min(1.0 - center.0) * rect.width;
+                let dy = center.1.min(1.0 - center.1) * rect.height;
+                match shape {
+                    rustkit_css::RadialShape::Circle => (dx.min(dy), dx.min(dy)),
+                    rustkit_css::RadialShape::Ellipse => (dx, dy),
+                }
+            }
+            rustkit_css::RadialSize::FarthestSide => {
+                let dx = center.0.max(1.0 - center.0) * rect.width;
+                let dy = center.1.max(1.0 - center.1) * rect.height;
+                match shape {
+                    rustkit_css::RadialShape::Circle => (dx.max(dy), dx.max(dy)),
+                    rustkit_css::RadialShape::Ellipse => (dx, dy),
+                }
+            }
+            rustkit_css::RadialSize::ClosestCorner => {
+                // Distance to closest corner
+                let corners = [
+                    (0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)
+                ];
+                let mut min_dist = f32::INFINITY;
+                for (cx_frac, cy_frac) in corners {
+                    let dx = (cx_frac - center.0).abs() * rect.width;
+                    let dy = (cy_frac - center.1).abs() * rect.height;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    min_dist = min_dist.min(dist);
+                }
+                match shape {
+                    rustkit_css::RadialShape::Circle => (min_dist, min_dist),
+                    rustkit_css::RadialShape::Ellipse => {
+                        let aspect = rect.width / rect.height.max(1.0);
+                        (min_dist, min_dist / aspect)
+                    }
+                }
+            }
+            rustkit_css::RadialSize::FarthestCorner => {
+                // Distance to farthest corner
+                let corners = [
+                    (0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)
+                ];
+                let mut max_dist = 0.0f32;
+                for (cx_frac, cy_frac) in corners {
+                    let dx = (cx_frac - center.0).abs() * rect.width;
+                    let dy = (cy_frac - center.1).abs() * rect.height;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    max_dist = max_dist.max(dist);
+                }
+                match shape {
+                    rustkit_css::RadialShape::Circle => (max_dist, max_dist),
+                    rustkit_css::RadialShape::Ellipse => {
+                        let aspect = rect.width / rect.height.max(1.0);
+                        (max_dist, max_dist / aspect)
+                    }
+                }
+            }
+            rustkit_css::RadialSize::Explicit(r1, r2) => (r1, r2),
+        };
+
+        // Normalize color stops
+        let mut normalized_stops: Vec<(f32, Color)> = Vec::with_capacity(stops.len());
+        for (i, stop) in stops.iter().enumerate() {
+            let pos = stop.position.unwrap_or_else(|| {
+                if stops.len() == 1 { 0.5 } else { i as f32 / (stops.len() - 1) as f32 }
+            });
+            normalized_stops.push((pos, stop.color));
+        }
+
+        // For repeating gradients, get the repeat length (last stop position)
+        let repeat_length = if repeating && !normalized_stops.is_empty() {
+            normalized_stops.last().map(|(pos, _)| *pos).unwrap_or(1.0).max(0.001)
+        } else {
+            1.0
+        };
+
+        // Adaptive step sizing to prevent GPU buffer overflow for large gradients
+        // while maintaining 1px quality for small UI elements
+        let area = rect.width * rect.height;
+        let max_cells: f32 = 100_000.0; // Limit cells to prevent buffer overflow
+        let step_size: f32 = if area > max_cells {
+            (area / max_cells).sqrt().ceil()
+        } else {
+            1.0
+        };
+        let mut y = rect.y;
+        while y < rect.y + rect.height {
+            let row_height = step_size.min(rect.y + rect.height - y);
+            let mut x = rect.x;
+            while x < rect.x + rect.width {
+                let col_width = step_size.min(rect.x + rect.width - x);
+                let cell_center_x = x + col_width / 2.0;
+                let cell_center_y = y + row_height / 2.0;
+
+                // Check border-radius clipping
+                let alpha_coverage = Self::point_in_rounded_rect(
+                    cell_center_x,
+                    cell_center_y,
+                    rect,
+                    border_radius,
+                );
+
+                if alpha_coverage > 0.0 {
+                    // Calculate distance from center (normalized to ellipse)
+                    let dx = (cell_center_x - cx) / rx.max(0.001);
+                    let dy = (cell_center_y - cy) / ry.max(0.001);
+                    let t = (dx * dx + dy * dy).sqrt();
+
+                    // Apply repeating logic
+                    let t_final = if repeating {
+                        t.rem_euclid(repeat_length)
+                    } else {
+                        t.clamp(0.0, 1.0)
+                    };
+
+                    // Get color at this distance
+                    let mut color = Self::interpolate_color(&normalized_stops, t_final);
+
+                    // Apply border-radius alpha
+                    if alpha_coverage < 1.0 {
+                        color = Color::new(color.r, color.g, color.b, color.a * alpha_coverage);
+                    }
+
+                    // Only draw if not fully transparent
+                    if color.a > 0.0 {
+                        self.draw_solid_rect(Rect::new(x, y, col_width, row_height), color);
+                    }
+                }
+
+                x += step_size;
+            }
+            y += step_size;
+        }
+    }
+
+    /// Draw a conic gradient with optional border-radius clipping.
+    fn draw_conic_gradient(
+        &mut self,
+        rect: Rect,
+        from_angle: f32,
+        center: (f32, f32),
+        stops: &[rustkit_css::ColorStop],
+        repeating: bool,
+        border_radius: rustkit_layout::BorderRadius,
+    ) {
+        if stops.is_empty() || rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+
+        // Calculate center position in pixels
+        let cx = rect.x + rect.width * center.0;
+        let cy = rect.y + rect.height * center.1;
+
+        // Convert from_angle to radians (CSS conic gradients: 0deg = up, clockwise)
+        let from_rad = (from_angle - 90.0).to_radians();
+
+        // Normalize color stops
+        let mut normalized_stops: Vec<(f32, Color)> = Vec::with_capacity(stops.len());
+        for (i, stop) in stops.iter().enumerate() {
+            let pos = stop.position.unwrap_or_else(|| {
+                if stops.len() == 1 { 0.5 } else { i as f32 / (stops.len() - 1) as f32 }
+            });
+            normalized_stops.push((pos, stop.color));
+        }
+
+        // For repeating gradients, get the repeat length from the last stop
+        let repeat_length = if repeating && !normalized_stops.is_empty() {
+            normalized_stops.last().map(|(pos, _)| *pos).unwrap_or(1.0).max(0.001)
+        } else {
+            1.0
+        };
+
+        // Function to apply repeating logic to t value
+        let apply_t = |t: f32| -> f32 {
+            if repeating {
+                t.rem_euclid(repeat_length)
+            } else {
+                t
+            }
+        };
+
+        // Adaptive step sizing to prevent GPU buffer overflow
+        let area = rect.width * rect.height;
+        let max_cells: f32 = 100_000.0;
+        let step_size: f32 = if area > max_cells {
+            (area / max_cells).sqrt().ceil()
+        } else {
+            1.0
+        };
+
+        let mut y = rect.y;
+        while y < rect.y + rect.height {
+            let row_height = step_size.min(rect.y + rect.height - y);
+            let mut x = rect.x;
+            while x < rect.x + rect.width {
+                let col_width = step_size.min(rect.x + rect.width - x);
+                let cell_center_x = x + col_width / 2.0;
+                let cell_center_y = y + row_height / 2.0;
+
+                // Check border-radius clipping
+                let alpha_coverage = Self::point_in_rounded_rect(
+                    cell_center_x,
+                    cell_center_y,
+                    rect,
+                    border_radius,
+                );
+
+                if alpha_coverage > 0.0 {
+                    // Calculate angle from center
+                    let dx = cell_center_x - cx;
+                    let dy = cell_center_y - cy;
+                    let angle = dy.atan2(dx) - from_rad;
+
+                    // Normalize angle to 0-1 range
+                    let normalized_angle = ((angle + std::f32::consts::PI) / (2.0 * std::f32::consts::PI)) % 1.0;
+                    let raw_t = if normalized_angle < 0.0 { normalized_angle + 1.0 } else { normalized_angle };
+
+                    // Apply repeating logic
+                    let t = apply_t(raw_t);
+
+                    // Get color at this angle
+                    let mut color = Self::interpolate_color(&normalized_stops, t);
+
+                    // Apply border-radius alpha
+                    if alpha_coverage < 1.0 {
+                        color = Color::new(color.r, color.g, color.b, color.a * alpha_coverage);
+                    }
+
+                    if color.a > 0.0 {
+                        self.draw_solid_rect(Rect::new(x, y, col_width, row_height), color);
+                    }
+                }
+
+                x += step_size;
+            }
+            y += step_size;
         }
     }
 
