@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #ffffff;
+            font-family: Arial, sans-serif;
+        }
+
+        /* Color Tests */
+        .color-test-hex { color: #ff0000; }
+        .color-test-rgb { color: rgb(0, 128, 255); }
+        .color-test-named { color: green; }
+
+        .bg-test-hex { background-color: #ffffcc; padding: 10px; margin: 5px 0; }
+        .bg-test-rgb { background-color: rgb(255, 200, 200); padding: 10px; margin: 5px 0; }
+        .bg-test-named { background-color: lightblue; padding: 10px; margin: 5px 0; }
+
+        /* Flexbox Tests */
+        .flex-container {
+            display: flex;
+            background-color: #f0f0f0;
+            padding: 10px;
+            margin: 20px 0;
+            border: 2px solid #333;
+        }
+
+        .flex-row {
+            flex-direction: row;
+        }
+
+        .flex-column {
+            flex-direction: column;
+        }
+
+        .flex-center {
+            justify-content: center;
+            align-items: center;
+            min-height: 100px;
+        }
+
+        .flex-space-between {
+            justify-content: space-between;
+        }
+
+        .flex-item {
+            background-color: #4CAF50;
+            color: white;
+            padding: 15px;
+            margin: 5px;
+            font-size: 14px;
+        }
+
+        .flex-item-blue {
+            background-color: #2196F3;
+        }
+
+        .flex-item-red {
+            background-color: #f44336;
+        }
+
+        /* Grid Tests */
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            background-color: #e0e0e0;
+            padding: 10px;
+            margin: 20px 0;
+        }
+
+        .grid-2col {
+            grid-template-columns: 2fr 1fr;
+        }
+
+        .grid-item {
+            background-color: #9C27B0;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .grid-item-orange {
+            background-color: #FF9800;
+        }
+
+        .grid-item-teal {
+            background-color: #009688;
+        }
+
+        /* Typography Tests */
+        .text-large { font-size: 24px; }
+        .text-medium { font-size: 18px; }
+        .text-small { font-size: 12px; }
+        .text-bold { font-weight: bold; }
+        .text-italic { font-style: italic; }
+
+        /* Section Headers */
+        h2 {
+            color: #333;
+            font-size: 20px;
+            margin-top: 20px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 5px;
+        }
+
+        h3 {
+            color: #666;
+            font-size: 16px;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+<body>
+    <h1 style="color: #2196F3; font-size: 28px;">CSS Comprehensive Test</h1>
+
+    <h2>Color Tests</h2>
+    <div class="color-test-hex">Hex Color: #ff0000 (RED)</div>
+    <div class="color-test-rgb">RGB Color: rgb(0, 128, 255) (BLUE)</div>
+    <div class="color-test-named">Named Color: green (GREEN)</div>
+
+    <h2>Background Color Tests</h2>
+    <div class="bg-test-hex">Hex Background: #ffffcc (light yellow)</div>
+    <div class="bg-test-rgb">RGB Background: rgb(255, 200, 200) (light red)</div>
+    <div class="bg-test-named">Named Background: lightblue</div>
+
+    <h2>Flexbox Layout Tests</h2>
+
+    <h3>Flex Row (default)</h3>
+    <div class="flex-container flex-row">
+        <div class="flex-item">Item 1</div>
+        <div class="flex-item flex-item-blue">Item 2</div>
+        <div class="flex-item flex-item-red">Item 3</div>
+    </div>
+
+    <h3>Flex Row - Space Between</h3>
+    <div class="flex-container flex-row flex-space-between">
+        <div class="flex-item">Left</div>
+        <div class="flex-item flex-item-blue">Center</div>
+        <div class="flex-item flex-item-red">Right</div>
+    </div>
+
+    <h3>Flex Row - Centered</h3>
+    <div class="flex-container flex-row flex-center">
+        <div class="flex-item">Centered Item</div>
+    </div>
+
+    <h3>Flex Column</h3>
+    <div class="flex-container flex-column">
+        <div class="flex-item">Top</div>
+        <div class="flex-item flex-item-blue">Middle</div>
+        <div class="flex-item flex-item-red">Bottom</div>
+    </div>
+
+    <h2>Grid Layout Tests</h2>
+
+    <h3>3 Column Grid (1fr 1fr 1fr)</h3>
+    <div class="grid-container">
+        <div class="grid-item">Grid 1</div>
+        <div class="grid-item grid-item-orange">Grid 2</div>
+        <div class="grid-item grid-item-teal">Grid 3</div>
+        <div class="grid-item grid-item-teal">Grid 4</div>
+        <div class="grid-item">Grid 5</div>
+        <div class="grid-item grid-item-orange">Grid 6</div>
+    </div>
+
+    <h3>2 Column Grid (2fr 1fr)</h3>
+    <div class="grid-container grid-2col">
+        <div class="grid-item">Wide (2fr)</div>
+        <div class="grid-item grid-item-orange">Narrow (1fr)</div>
+        <div class="grid-item grid-item-teal">Wide (2fr)</div>
+        <div class="grid-item">Narrow (1fr)</div>
+    </div>
+
+    <h2>Typography Tests</h2>
+    <div class="text-large">Large text (24px)</div>
+    <div class="text-medium">Medium text (18px)</div>
+    <div class="text-small">Small text (12px)</div>
+    <div class="text-bold">Bold text</div>
+    <div class="text-italic">Italic text</div>
+    <div class="text-large text-bold" style="color: #e91e63;">Large Bold Pink (24px)</div>
+
+</body>
+</html>

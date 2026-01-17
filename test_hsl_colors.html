@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #ffffff;
+            font-family: Arial, sans-serif;
+        }
+
+        h1 {
+            font-size: 28px;
+            color: hsl(0, 0%, 20%);
+            margin-bottom: 20px;
+        }
+
+        h2 {
+            font-size: 20px;
+            color: hsl(0, 0%, 30%);
+            margin-top: 30px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid hsl(0, 0%, 80%);
+            padding-bottom: 5px;
+        }
+
+        .color-box {
+            padding: 20px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        /* Primary HSL Colors (H: 0-360, S: 100%, L: 50%) */
+        .hsl-red {
+            background-color: hsl(0, 100%, 50%);
+            color: white;
+        }
+
+        .hsl-orange {
+            background-color: hsl(30, 100%, 50%);
+            color: white;
+        }
+
+        .hsl-yellow {
+            background-color: hsl(60, 100%, 50%);
+            color: hsl(0, 0%, 20%);
+        }
+
+        .hsl-green {
+            background-color: hsl(120, 100%, 50%);
+            color: white;
+        }
+
+        .hsl-cyan {
+            background-color: hsl(180, 100%, 50%);
+            color: hsl(0, 0%, 20%);
+        }
+
+        .hsl-blue {
+            background-color: hsl(240, 100%, 50%);
+            color: white;
+        }
+
+        .hsl-purple {
+            background-color: hsl(270, 100%, 50%);
+            color: white;
+        }
+
+        .hsl-magenta {
+            background-color: hsl(300, 100%, 50%);
+            color: white;
+        }
+
+        /* Saturation Variations (H: 240, S: varied, L: 50%) */
+        .hsl-sat-0 {
+            background-color: hsl(240, 0%, 50%);
+            color: white;
+        }
+
+        .hsl-sat-25 {
+            background-color: hsl(240, 25%, 50%);
+            color: white;
+        }
+
+        .hsl-sat-50 {
+            background-color: hsl(240, 50%, 50%);
+            color: white;
+        }
+
+        .hsl-sat-75 {
+            background-color: hsl(240, 75%, 50%);
+            color: white;
+        }
+
+        .hsl-sat-100 {
+            background-color: hsl(240, 100%, 50%);
+            color: white;
+        }
+
+        /* Lightness Variations (H: 120, S: 100%, L: varied) */
+        .hsl-light-10 {
+            background-color: hsl(120, 100%, 10%);
+            color: white;
+        }
+
+        .hsl-light-30 {
+            background-color: hsl(120, 100%, 30%);
+            color: white;
+        }
+
+        .hsl-light-50 {
+            background-color: hsl(120, 100%, 50%);
+            color: white;
+        }
+
+        .hsl-light-70 {
+            background-color: hsl(120, 100%, 70%);
+            color: hsl(0, 0%, 20%);
+        }
+
+        .hsl-light-90 {
+            background-color: hsl(120, 100%, 90%);
+            color: hsl(0, 0%, 20%);
+        }
+
+        /* HSLA with Alpha */
+        .hsla-red {
+            background-color: hsla(0, 100%, 50%, 0.5);
+            color: hsl(0, 0%, 20%);
+        }
+
+        .hsla-green {
+            background-color: hsla(120, 100%, 50%, 0.3);
+            color: hsl(0, 0%, 20%);
+        }
+
+        .hsla-blue {
+            background-color: hsla(240, 100%, 50%, 0.7);
+            color: white;
+        }
+
+        /* Text Colors */
+        .text-hsl {
+            font-size: 18px;
+            margin: 5px 0;
+        }
+
+        .text-red { color: hsl(0, 80%, 50%); }
+        .text-orange { color: hsl(30, 80%, 50%); }
+        .text-green { color: hsl(120, 60%, 40%); }
+        .text-blue { color: hsl(240, 80%, 50%); }
+        .text-purple { color: hsl(270, 60%, 50%); }
+
+        /* Gradient-like Effect (multiple boxes) */
+        .gradient-container {
+            display: flex;
+            margin: 20px 0;
+        }
+
+        .gradient-box {
+            flex: 1;
+            height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        .grad-0 { background-color: hsl(0, 100%, 50%); }
+        .grad-1 { background-color: hsl(40, 100%, 50%); }
+        .grad-2 { background-color: hsl(80, 100%, 50%); color: hsl(0, 0%, 20%); }
+        .grad-3 { background-color: hsl(120, 100%, 50%); }
+        .grad-4 { background-color: hsl(160, 100%, 50%); color: hsl(0, 0%, 20%); }
+        .grad-5 { background-color: hsl(200, 100%, 50%); }
+        .grad-6 { background-color: hsl(240, 100%, 50%); }
+        .grad-7 { background-color: hsl(280, 100%, 50%); }
+        .grad-8 { background-color: hsl(320, 100%, 50%); }
+        .grad-9 { background-color: hsl(360, 100%, 50%); }
+    </style>
+</head>
+<body>
+    <h1>HSL/HSLA Color Test</h1>
+
+    <h2>Primary Hue Colors (S: 100%, L: 50%)</h2>
+    <div class="color-box hsl-red">hsl(0, 100%, 50%) - RED</div>
+    <div class="color-box hsl-orange">hsl(30, 100%, 50%) - ORANGE</div>
+    <div class="color-box hsl-yellow">hsl(60, 100%, 50%) - YELLOW</div>
+    <div class="color-box hsl-green">hsl(120, 100%, 50%) - GREEN</div>
+    <div class="color-box hsl-cyan">hsl(180, 100%, 50%) - CYAN</div>
+    <div class="color-box hsl-blue">hsl(240, 100%, 50%) - BLUE</div>
+    <div class="color-box hsl-purple">hsl(270, 100%, 50%) - PURPLE</div>
+    <div class="color-box hsl-magenta">hsl(300, 100%, 50%) - MAGENTA</div>
+
+    <h2>Saturation Variations (H: 240°, L: 50%)</h2>
+    <div class="color-box hsl-sat-0">hsl(240, 0%, 50%) - Grayscale</div>
+    <div class="color-box hsl-sat-25">hsl(240, 25%, 50%) - Low Saturation</div>
+    <div class="color-box hsl-sat-50">hsl(240, 50%, 50%) - Medium Saturation</div>
+    <div class="color-box hsl-sat-75">hsl(240, 75%, 50%) - High Saturation</div>
+    <div class="color-box hsl-sat-100">hsl(240, 100%, 50%) - Full Saturation</div>
+
+    <h2>Lightness Variations (H: 120°, S: 100%)</h2>
+    <div class="color-box hsl-light-10">hsl(120, 100%, 10%) - Very Dark</div>
+    <div class="color-box hsl-light-30">hsl(120, 100%, 30%) - Dark</div>
+    <div class="color-box hsl-light-50">hsl(120, 100%, 50%) - Medium</div>
+    <div class="color-box hsl-light-70">hsl(120, 100%, 70%) - Light</div>
+    <div class="color-box hsl-light-90">hsl(120, 100%, 90%) - Very Light</div>
+
+    <h2>HSLA with Alpha Transparency</h2>
+    <div class="color-box hsla-red">hsla(0, 100%, 50%, 0.5) - 50% Transparent Red</div>
+    <div class="color-box hsla-green">hsla(120, 100%, 50%, 0.3) - 30% Transparent Green</div>
+    <div class="color-box hsla-blue">hsla(240, 100%, 50%, 0.7) - 70% Transparent Blue</div>
+
+    <h2>HSL Text Colors</h2>
+    <div class="text-hsl text-red">hsl(0, 80%, 50%) - Red Text</div>
+    <div class="text-hsl text-orange">hsl(30, 80%, 50%) - Orange Text</div>
+    <div class="text-hsl text-green">hsl(120, 60%, 40%) - Green Text</div>
+    <div class="text-hsl text-blue">hsl(240, 80%, 50%) - Blue Text</div>
+    <div class="text-hsl text-purple">hsl(270, 60%, 50%) - Purple Text</div>
+
+    <h2>Hue Spectrum (0° to 360°)</h2>
+    <div class="gradient-container">
+        <div class="gradient-box grad-0">0°</div>
+        <div class="gradient-box grad-1">40°</div>
+        <div class="gradient-box grad-2">80°</div>
+        <div class="gradient-box grad-3">120°</div>
+        <div class="gradient-box grad-4">160°</div>
+        <div class="gradient-box grad-5">200°</div>
+        <div class="gradient-box grad-6">240°</div>
+        <div class="gradient-box grad-7">280°</div>
+        <div class="gradient-box grad-8">320°</div>
+        <div class="gradient-box grad-9">360°</div>
+    </div>
+
+</body>
+</html>
