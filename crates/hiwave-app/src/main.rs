@@ -1921,7 +1921,7 @@ fn main() {
                         } else if !url.starts_with("about:") && !url.starts_with("hiwave://") {
                             // Skip about: URLs (about:blank, about:srcdoc, etc.)
                             // Skip hiwave:// protocol URLs (handled above if recognized, otherwise ignore)
-                            let full_url = if url.starts_with("http://") || url.starts_with("https://") {
+                            let full_url = if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
                                 url
                             } else if url.contains('.') {
                                 format!("https://{}", url)

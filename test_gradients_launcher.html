@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Gradient Test Launcher</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .test-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+
+        .test-section h2 {
+            margin-top: 0;
+            color: #667eea;
+            font-size: 20px;
+        }
+
+        .test-section p {
+            color: #666;
+            margin-bottom: 15px;
+            line-height: 1.6;
+        }
+
+        .test-link {
+            display: inline-block;
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: bold;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .test-link:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .badge {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 2px solid #e0e0e0;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 36px;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎨 CSS Gradient Test Suite</h1>
+        <p class="subtitle">hiwave-windows RustKit Engine - Complete Gradient Implementation</p>
+
+        <div class="test-section">
+            <h2>Linear Gradients <span class="badge">21 tests</span></h2>
+            <p>
+                Tests all linear gradient directions (to top, to right, angles),
+                multi-stop gradients, transparency, and repeating patterns.
+            </p>
+            <a href="test_gradients_linear.html" class="test-link">Run Linear Gradient Tests</a>
+        </div>
+
+        <div class="test-section">
+            <h2>Radial Gradients <span class="badge">24 tests</span></h2>
+            <p>
+                Tests circle and ellipse shapes, size keywords (ClosestSide, FarthestSide, etc.),
+                center positioning, transparency, and repeating radial gradients.
+            </p>
+            <a href="test_gradients_radial.html" class="test-link">Run Radial Gradient Tests</a>
+        </div>
+
+        <div class="test-section">
+            <h2>Conic Gradients <span class="badge">27 tests</span></h2>
+            <p>
+                Tests angle-based color distribution, from angle rotation, center positioning,
+                transparency, and repeating conic gradients with complex effects.
+            </p>
+            <a href="test_gradients_conic.html" class="test-link">Run Conic Gradient Tests</a>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-number">72</div>
+                <div class="stat-label">Total Tests</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number">3</div>
+                <div class="stat-label">Gradient Types</div>
+            </div>
+            <div class="stat">
+                <div class="stat-number">~2000</div>
+                <div class="stat-label">Lines of Code</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
