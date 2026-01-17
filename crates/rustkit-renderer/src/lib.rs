@@ -572,6 +572,47 @@ impl Renderer {
                 self.draw_image(url, *rect);
             }
 
+            DisplayCommand::LinearGradient {
+                rect,
+                direction,
+                stops,
+                repeating,
+                border_radius,
+            } => {
+                self.draw_linear_gradient(*rect, *direction, stops, *repeating, *border_radius);
+            }
+
+            DisplayCommand::RadialGradient {
+                rect,
+                shape,
+                size,
+                center,
+                stops,
+                repeating,
+                border_radius,
+            } => {
+                // TODO: Implement draw_radial_gradient
+                // For now, draw a solid rect with first color as placeholder
+                if let Some(first_stop) = stops.first() {
+                    self.draw_solid_rect(*rect, first_stop.color);
+                }
+            }
+
+            DisplayCommand::ConicGradient {
+                rect,
+                from_angle: _,
+                center: _,
+                stops,
+                repeating: _,
+                border_radius: _,
+            } => {
+                // TODO: Implement draw_conic_gradient
+                // For now, draw a solid rect with first color as placeholder
+                if let Some(first_stop) = stops.first() {
+                    self.draw_solid_rect(*rect, first_stop.color);
+                }
+            }
+
             DisplayCommand::PushClip(rect) => {
                 self.push_clip(*rect);
             }
@@ -1083,6 +1124,291 @@ impl Renderer {
     /// Dump the glyph atlas (CPU mirror) to a PNG for debugging.
     pub fn dump_glyph_atlas_png(&self, path: impl AsRef<std::path::Path>) -> Result<(), RendererError> {
         self.glyph_cache.dump_cpu_atlas_png(path)
+    }
+
+    // ==================== Gradient Rendering ====================
+
+    /// Draw a linear gradient with optional border-radius clipping.
+    fn draw_linear_gradient(
+        &mut self,
+        rect: Rect,
+        direction: rustkit_css::GradientDirection,
+        stops: &[rustkit_css::ColorStop],
+        repeating: bool,
+        border_radius: rustkit_layout::BorderRadius,
+    ) {
+        if stops.is_empty() || rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+
+        // Convert direction to angle in radians
+        let angle_deg = direction.to_degrees();
+        let angle_rad = angle_deg.to_radians();
+
+        // Calculate gradient direction vector
+        let (sin_a, cos_a) = (angle_rad.sin(), angle_rad.cos());
+
+        // Normalize color stop positions
+        let mut normalized_stops: Vec<(f32, Color)> = Vec::with_capacity(stops.len());
+        for (i, stop) in stops.iter().enumerate() {
+            let pos = stop.position.unwrap_or_else(|| {
+                if stops.len() == 1 {
+                    0.5
+                } else {
+                    i as f32 / (stops.len() - 1) as f32
+                }
+            });
+            normalized_stops.push((pos, stop.color));
+        }
+
+        // For repeating gradients, get the repeat length (last stop position)
+        let repeat_length = if repeating && !normalized_stops.is_empty() {
+            normalized_stops.last().map(|(pos, _)| *pos).unwrap_or(1.0).max(0.001)
+        } else {
+            1.0
+        };
+
+        // Helper to apply repeating logic to t value
+        let apply_t = |t: f32| -> f32 {
+            if repeating {
+                // Scale t to repeat length and use modulo for repeating
+                (t.rem_euclid(repeat_length)).min(repeat_length)
+            } else {
+                t.clamp(0.0, 1.0)
+            }
+        };
+
+        // Check for axis-aligned gradients (more efficient rendering)
+        let is_horizontal = (angle_deg - 90.0).abs() < 0.1 || (angle_deg - 270.0).abs() < 0.1;
+        let is_vertical = angle_deg.abs() < 0.1 || (angle_deg - 180.0).abs() < 0.1;
+        let has_radius = !border_radius.is_zero();
+
+        // If we have border-radius, we need cell-by-cell rendering for proper clipping
+        if !has_radius && is_horizontal {
+            // Horizontal gradient (left to right or right to left) - fast path
+            let reverse = angle_deg > 180.0;
+            let step_count = rect.width.max(2.0) as usize;
+            let strip_width = rect.width / step_count as f32;
+
+            for i in 0..step_count {
+                let t = if reverse {
+                    1.0 - (i as f32 + 0.5) / step_count as f32
+                } else {
+                    (i as f32 + 0.5) / step_count as f32
+                };
+                let t_final = apply_t(t);
+                let color = Self::interpolate_color(&normalized_stops, t_final);
+                let x_pos = rect.x + i as f32 * strip_width;
+                self.draw_solid_rect(Rect::new(x_pos, rect.y, strip_width + 0.5, rect.height), color);
+            }
+        } else if !has_radius && is_vertical {
+            // Vertical gradient (top to bottom or bottom to top) - fast path
+            let reverse = angle_deg < 90.0 || angle_deg > 270.0;
+            let step_count = rect.height.max(2.0) as usize;
+            let strip_height = rect.height / step_count as f32;
+
+            for i in 0..step_count {
+                let t = if reverse {
+                    1.0 - (i as f32 + 0.5) / step_count as f32
+                } else {
+                    (i as f32 + 0.5) / step_count as f32
+                };
+                let t_final = apply_t(t);
+                let color = Self::interpolate_color(&normalized_stops, t_final);
+                let y_pos = rect.y + i as f32 * strip_height;
+                self.draw_solid_rect(Rect::new(rect.x, y_pos, rect.width, strip_height + 0.5), color);
+            }
+        } else {
+            // Diagonal gradient or gradient with border-radius - render using cells
+            // Use adaptive cell sizing to prevent GPU buffer overflow for large gradients
+            // while maintaining 1px quality for small UI elements
+            let area = rect.width * rect.height;
+            let max_cells: f32 = 100_000.0; // Limit cells to prevent buffer overflow
+            let cell_size: f32 = if area > max_cells {
+                (area / max_cells).sqrt().ceil()
+            } else {
+                1.0
+            };
+
+            // Calculate the gradient line length (diagonal of rectangle projected onto gradient line)
+            // For CSS gradients, the gradient line goes through the center and extends to the corners
+            let half_width = rect.width / 2.0;
+            let half_height = rect.height / 2.0;
+
+            // The gradient length is the distance along the gradient line from corner to corner
+            let gradient_half_length = (half_width * sin_a.abs() + half_height * cos_a.abs()).max(0.001);
+
+            let mut y = rect.y;
+            while y < rect.y + rect.height {
+                let cell_h = cell_size.min(rect.y + rect.height - y);
+                let mut x = rect.x;
+
+                while x < rect.x + rect.width {
+                    let cell_w = cell_size.min(rect.x + rect.width - x);
+                    let cell_center_x = x + cell_w / 2.0;
+                    let cell_center_y = y + cell_h / 2.0;
+
+                    // Check border-radius clipping
+                    let alpha_coverage = Self::point_in_rounded_rect(
+                        cell_center_x,
+                        cell_center_y,
+                        rect,
+                        border_radius,
+                    );
+
+                    if alpha_coverage > 0.0 {
+                        // Calculate position relative to center of rect
+                        let px = cell_center_x - rect.x - half_width;
+                        let py = cell_center_y - rect.y - half_height;
+
+                        // Project point onto gradient line
+                        // Gradient direction: (sin_a, -cos_a) where angle 0 is "to top"
+                        let projection = px * sin_a + py * (-cos_a);
+
+                        // Normalize to 0-1 range
+                        let t = (projection / gradient_half_length + 1.0) / 2.0;
+                        let t_final = apply_t(t);
+
+                        let mut color = Self::interpolate_color(&normalized_stops, t_final);
+
+                        // Apply border-radius alpha
+                        if alpha_coverage < 1.0 {
+                            color = Color::new(color.r, color.g, color.b, color.a * alpha_coverage);
+                        }
+
+                        if color.a > 0.0 {
+                            self.draw_solid_rect(Rect::new(x, y, cell_w, cell_h), color);
+                        }
+                    }
+
+                    x += cell_size;
+                }
+                y += cell_size;
+            }
+        }
+    }
+
+    // ==================== Gradient Helper Methods ====================
+
+    /// Check if a point is inside a rounded rectangle (with anti-aliasing).
+    /// Returns alpha coverage (0.0-1.0).
+    #[inline]
+    fn point_in_rounded_rect(
+        px: f32,
+        py: f32,
+        rect: Rect,
+        radius: rustkit_layout::BorderRadius,
+    ) -> f32 {
+        // Quick check: outside bounding rect
+        if px < rect.x || px > rect.x + rect.width || py < rect.y || py > rect.y + rect.height {
+            return 0.0;
+        }
+
+        // If no border radius, point is inside
+        if radius.is_zero() {
+            return 1.0;
+        }
+
+        // Clamp radii to half the rect dimensions
+        let max_r = (rect.width / 2.0).min(rect.height / 2.0);
+        let r_tl = radius.top_left.min(max_r);
+        let r_tr = radius.top_right.min(max_r);
+        let r_br = radius.bottom_right.min(max_r);
+        let r_bl = radius.bottom_left.min(max_r);
+
+        // Check each corner
+        let local_x = px - rect.x;
+        let local_y = py - rect.y;
+        let right_x = rect.width - local_x;
+        let bottom_y = rect.height - local_y;
+
+        // Top-left corner
+        if local_x < r_tl && local_y < r_tl {
+            let dx = r_tl - local_x;
+            let dy = r_tl - local_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > r_tl + 0.5 {
+                return 0.0;
+            } else if dist > r_tl - 0.5 {
+                return 1.0 - (dist - (r_tl - 0.5));
+            }
+        }
+
+        // Top-right corner
+        if right_x < r_tr && local_y < r_tr {
+            let dx = r_tr - right_x;
+            let dy = r_tr - local_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > r_tr + 0.5 {
+                return 0.0;
+            } else if dist > r_tr - 0.5 {
+                return 1.0 - (dist - (r_tr - 0.5));
+            }
+        }
+
+        // Bottom-right corner
+        if right_x < r_br && bottom_y < r_br {
+            let dx = r_br - right_x;
+            let dy = r_br - bottom_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > r_br + 0.5 {
+                return 0.0;
+            } else if dist > r_br - 0.5 {
+                return 1.0 - (dist - (r_br - 0.5));
+            }
+        }
+
+        // Bottom-left corner
+        if local_x < r_bl && bottom_y < r_bl {
+            let dx = r_bl - local_x;
+            let dy = r_bl - bottom_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > r_bl + 0.5 {
+                return 0.0;
+            } else if dist > r_bl - 0.5 {
+                return 1.0 - (dist - (r_bl - 0.5));
+            }
+        }
+
+        1.0
+    }
+
+    /// Interpolate color at position t between gradient stops.
+    /// Uses sRGB interpolation to match browser behavior.
+    fn interpolate_color(stops: &[(f32, Color)], t: f32) -> Color {
+        if stops.is_empty() {
+            return Color::TRANSPARENT;
+        }
+        if stops.len() == 1 || t <= stops[0].0 {
+            return stops[0].1;
+        }
+        if t >= stops[stops.len() - 1].0 {
+            return stops[stops.len() - 1].1;
+        }
+
+        // Find the two stops surrounding t
+        for i in 0..stops.len() - 1 {
+            let (pos0, color0) = stops[i];
+            let (pos1, color1) = stops[i + 1];
+            if t >= pos0 && t <= pos1 {
+                let local_t = if (pos1 - pos0).abs() < 0.0001 {
+                    0.0
+                } else {
+                    (t - pos0) / (pos1 - pos0)
+                };
+
+                // Interpolate directly in sRGB space (browser default behavior)
+                let r = ((1.0 - local_t) * color0.r as f32 + local_t * color1.r as f32).round() as u8;
+                let g = ((1.0 - local_t) * color0.g as f32 + local_t * color1.g as f32).round() as u8;
+                let b = ((1.0 - local_t) * color0.b as f32 + local_t * color1.b as f32).round() as u8;
+
+                // Alpha is interpolated linearly
+                let a = (1.0 - local_t) * color0.a + local_t * color1.a;
+
+                return Color::new(r, g, b, a);
+            }
+        }
+        stops[stops.len() - 1].1
     }
 }
 

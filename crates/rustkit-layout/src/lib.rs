@@ -253,6 +253,33 @@ impl Rect {
     }
 }
 
+/// Border radius for rounded corners.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BorderRadius {
+    pub top_left: f32,
+    pub top_right: f32,
+    pub bottom_right: f32,
+    pub bottom_left: f32,
+}
+
+impl BorderRadius {
+    /// Create uniform border radius.
+    pub fn uniform(radius: f32) -> Self {
+        Self {
+            top_left: radius,
+            top_right: radius,
+            bottom_right: radius,
+            bottom_left: radius,
+        }
+    }
+
+    /// Check if all radii are zero (no rounding).
+    pub fn is_zero(&self) -> bool {
+        self.top_left == 0.0 && self.top_right == 0.0
+            && self.bottom_right == 0.0 && self.bottom_left == 0.0
+    }
+}
+
 /// Edge sizes (margin, padding, border).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EdgeSizes {
@@ -1186,6 +1213,33 @@ pub enum DisplayCommand {
         /// Background repeat
         repeat: BackgroundRepeat,
     },
+    /// Draw a linear gradient.
+    LinearGradient {
+        rect: Rect,
+        direction: rustkit_css::GradientDirection,
+        stops: Vec<rustkit_css::ColorStop>,
+        repeating: bool,
+        border_radius: BorderRadius,
+    },
+    /// Draw a radial gradient.
+    RadialGradient {
+        rect: Rect,
+        shape: rustkit_css::RadialShape,
+        size: rustkit_css::RadialSize,
+        center: (f32, f32),
+        stops: Vec<rustkit_css::ColorStop>,
+        repeating: bool,
+        border_radius: BorderRadius,
+    },
+    /// Draw a conic gradient.
+    ConicGradient {
+        rect: Rect,
+        from_angle: f32,
+        center: (f32, f32),
+        stops: Vec<rustkit_css::ColorStop>,
+        repeating: bool,
+        border_radius: BorderRadius,
+    },
     /// Push a clip rect (for overflow handling).
     PushClip(Rect),
     /// Pop clip rect.
@@ -1610,12 +1664,54 @@ impl DisplayList {
 
     /// Render background.
     fn render_background(&mut self, layout_box: &LayoutBox) {
-        let color = layout_box.style.background_color;
-        if color.a > 0.0 {
-            self.commands.push(DisplayCommand::SolidColor(
-                color,
-                layout_box.dimensions.border_box(),
-            ));
+        let rect = layout_box.dimensions.border_box();
+
+        // Check for gradient first
+        if let Some(ref gradient) = layout_box.style.background_gradient {
+            // TODO: Get border_radius from style (not yet implemented in ComputedStyle)
+            let border_radius = BorderRadius::default();
+
+            match gradient {
+                rustkit_css::Gradient::Linear(linear) => {
+                    self.commands.push(DisplayCommand::LinearGradient {
+                        rect,
+                        direction: linear.direction,
+                        stops: linear.stops.clone(),
+                        repeating: linear.repeating,
+                        border_radius,
+                    });
+                }
+                rustkit_css::Gradient::Radial(radial) => {
+                    self.commands.push(DisplayCommand::RadialGradient {
+                        rect,
+                        shape: radial.shape,
+                        size: radial.size,
+                        center: radial.center,
+                        stops: radial.stops.clone(),
+                        repeating: radial.repeating,
+                        border_radius,
+                    });
+                }
+                rustkit_css::Gradient::Conic(conic) => {
+                    self.commands.push(DisplayCommand::ConicGradient {
+                        rect,
+                        from_angle: conic.from_angle,
+                        center: conic.center,
+                        stops: conic.stops.clone(),
+                        repeating: conic.repeating,
+                        border_radius,
+                    });
+                }
+            }
+        } else {
+            // Fallback to solid color
+            let color = layout_box.style.background_color;
+            if color.a > 0.0 {
+                self.commands.push(DisplayCommand::SolidColor(
+                    color,
+                    rect,
+                ));
+            }
         }
     }
 

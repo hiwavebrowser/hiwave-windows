@@ -77,6 +77,184 @@ impl Default for Color {
     }
 }
 
+// ==================== Gradient Types ====================
+
+/// A color stop for gradients.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorStop {
+    /// The color at this stop.
+    pub color: Color,
+    /// Position along the gradient (0.0 to 1.0, or None for auto).
+    pub position: Option<f32>,
+}
+
+impl ColorStop {
+    pub fn new(color: Color, position: Option<f32>) -> Self {
+        Self { color, position }
+    }
+}
+
+/// Direction for linear gradients.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum GradientDirection {
+    /// Angle in degrees (0 = to top, 90 = to right, 180 = to bottom, 270 = to left).
+    Angle(f32),
+    /// To top (0deg).
+    #[default]
+    ToTop,
+    /// To right (90deg).
+    ToRight,
+    /// To bottom (180deg).
+    ToBottom,
+    /// To left (270deg).
+    ToLeft,
+    /// To top-right (45deg).
+    ToTopRight,
+    /// To top-left (315deg).
+    ToTopLeft,
+    /// To bottom-right (135deg).
+    ToBottomRight,
+    /// To bottom-left (225deg).
+    ToBottomLeft,
+}
+
+impl GradientDirection {
+    /// Convert to angle in degrees.
+    pub fn to_degrees(&self) -> f32 {
+        match self {
+            GradientDirection::Angle(deg) => *deg,
+            GradientDirection::ToTop => 0.0,
+            GradientDirection::ToRight => 90.0,
+            GradientDirection::ToBottom => 180.0,
+            GradientDirection::ToLeft => 270.0,
+            GradientDirection::ToTopRight => 45.0,
+            GradientDirection::ToTopLeft => 315.0,
+            GradientDirection::ToBottomRight => 135.0,
+            GradientDirection::ToBottomLeft => 225.0,
+        }
+    }
+}
+
+/// A CSS linear gradient.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearGradient {
+    /// Direction of the gradient.
+    pub direction: GradientDirection,
+    /// Color stops.
+    pub stops: Vec<ColorStop>,
+    /// Whether this is a repeating gradient.
+    pub repeating: bool,
+}
+
+impl LinearGradient {
+    pub fn new(direction: GradientDirection, stops: Vec<ColorStop>) -> Self {
+        Self { direction, stops, repeating: false }
+    }
+
+    pub fn new_repeating(direction: GradientDirection, stops: Vec<ColorStop>) -> Self {
+        Self { direction, stops, repeating: true }
+    }
+}
+
+/// Shape of a radial gradient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RadialShape {
+    /// Circle (equal radius in all directions).
+    Circle,
+    /// Ellipse (can stretch in one direction).
+    #[default]
+    Ellipse,
+}
+
+/// Size of a radial gradient.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum RadialSize {
+    /// Closest side.
+    ClosestSide,
+    /// Farthest side.
+    #[default]
+    FarthestSide,
+    /// Closest corner.
+    ClosestCorner,
+    /// Farthest corner.
+    FarthestCorner,
+    /// Explicit radius (for circles) or radii (for ellipses).
+    Explicit(f32, f32),
+}
+
+/// A CSS radial gradient.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadialGradient {
+    /// Shape: "circle" or "ellipse".
+    pub shape: RadialShape,
+    /// Size of the gradient.
+    pub size: RadialSize,
+    /// Center position (0.0 to 1.0, default 0.5).
+    pub center: (f32, f32),
+    /// Color stops.
+    pub stops: Vec<ColorStop>,
+    /// Whether this is a repeating gradient.
+    pub repeating: bool,
+}
+
+impl RadialGradient {
+    pub fn new(shape: RadialShape, size: RadialSize, center: (f32, f32), stops: Vec<ColorStop>) -> Self {
+        Self { shape, size, center, stops, repeating: false }
+    }
+
+    pub fn new_repeating(shape: RadialShape, size: RadialSize, center: (f32, f32), stops: Vec<ColorStop>) -> Self {
+        Self { shape, size, center, stops, repeating: true }
+    }
+}
+
+/// A CSS conic gradient.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConicGradient {
+    /// Starting angle in degrees (default 0, pointing up).
+    pub from_angle: f32,
+    /// Center position (0.0 to 1.0, default 0.5).
+    pub center: (f32, f32),
+    /// Color stops (positions are in degrees or percentages).
+    pub stops: Vec<ColorStop>,
+    /// Whether this is a repeating gradient.
+    pub repeating: bool,
+}
+
+impl ConicGradient {
+    pub fn new(from_angle: f32, center: (f32, f32), stops: Vec<ColorStop>) -> Self {
+        Self { from_angle, center, stops, repeating: false }
+    }
+
+    pub fn new_repeating(from_angle: f32, center: (f32, f32), stops: Vec<ColorStop>) -> Self {
+        Self { from_angle, center, stops, repeating: true }
+    }
+}
+
+/// A CSS gradient (linear, radial, or conic).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Gradient {
+    Linear(LinearGradient),
+    Radial(RadialGradient),
+    Conic(ConicGradient),
+}
+
+/// The image source for a background layer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundImage {
+    /// No image (transparent).
+    None,
+    /// A gradient.
+    Gradient(Gradient),
+    /// A URL reference to an image.
+    Url(String),
+}
+
+impl Default for BackgroundImage {
+    fn default() -> Self {
+        BackgroundImage::None
+    }
+}
+
 /// A CSS length value.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Length {
@@ -867,6 +1045,9 @@ pub struct ComputedStyle {
     // Colors
     pub color: Color,
     pub background_color: Color,
+
+    // Background
+    pub background_gradient: Option<Gradient>,
 
     // Typography - Basic
     pub font_size: Length,

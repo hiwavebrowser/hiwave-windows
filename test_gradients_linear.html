@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+
+        h1 {
+            font-size: 28px;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        h2 {
+            font-size: 20px;
+            color: #666;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #999;
+            padding-bottom: 5px;
+        }
+
+        .gradient-box {
+            width: 300px;
+            height: 150px;
+            margin: 10px;
+            display: inline-block;
+            border: 2px solid #333;
+            position: relative;
+        }
+
+        .gradient-box::after {
+            content: attr(data-gradient);
+            position: absolute;
+            bottom: 5px;
+            left: 5px;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 5px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+
+        /* Direction Tests */
+        .grad-to-right {
+            background: linear-gradient(to right, #ff0000, #0000ff);
+        }
+
+        .grad-to-left {
+            background: linear-gradient(to left, #ff0000, #0000ff);
+        }
+
+        .grad-to-bottom {
+            background: linear-gradient(to bottom, #ff0000, #0000ff);
+        }
+
+        .grad-to-top {
+            background: linear-gradient(to top, #ff0000, #0000ff);
+        }
+
+        .grad-to-top-right {
+            background: linear-gradient(to top right, #ff0000, #0000ff);
+        }
+
+        .grad-to-bottom-left {
+            background: linear-gradient(to bottom left, #ff0000, #0000ff);
+        }
+
+        /* Angle Tests */
+        .grad-0deg {
+            background: linear-gradient(0deg, #ff0000, #0000ff);
+        }
+
+        .grad-45deg {
+            background: linear-gradient(45deg, #ff0000, #0000ff);
+        }
+
+        .grad-90deg {
+            background: linear-gradient(90deg, #ff0000, #0000ff);
+        }
+
+        .grad-135deg {
+            background: linear-gradient(135deg, #ff0000, #0000ff);
+        }
+
+        .grad-180deg {
+            background: linear-gradient(180deg, #ff0000, #0000ff);
+        }
+
+        .grad-270deg {
+            background: linear-gradient(270deg, #ff0000, #0000ff);
+        }
+
+        /* Multi-Stop Tests */
+        .grad-3-stops {
+            background: linear-gradient(to right, #ff0000, #00ff00, #0000ff);
+        }
+
+        .grad-rainbow {
+            background: linear-gradient(to right,
+                hsl(0, 100%, 50%),
+                hsl(60, 100%, 50%),
+                hsl(120, 100%, 50%),
+                hsl(180, 100%, 50%),
+                hsl(240, 100%, 50%),
+                hsl(300, 100%, 50%),
+                hsl(360, 100%, 50%)
+            );
+        }
+
+        .grad-positioned {
+            background: linear-gradient(to right,
+                #ff0000 0%,
+                #00ff00 50%,
+                #0000ff 100%
+            );
+        }
+
+        .grad-uneven {
+            background: linear-gradient(to right,
+                #ff0000 0%,
+                #ff0000 30%,
+                #0000ff 30%,
+                #0000ff 100%
+            );
+        }
+
+        /* Transparency Tests */
+        .grad-alpha {
+            background: linear-gradient(to right,
+                rgba(255, 0, 0, 1),
+                rgba(255, 0, 0, 0)
+            );
+        }
+
+        .grad-hsla {
+            background: linear-gradient(to bottom,
+                hsla(0, 100%, 50%, 1),
+                hsla(240, 100%, 50%, 0.3)
+            );
+        }
+
+        /* Repeating Gradients */
+        .grad-repeating-h {
+            background: repeating-linear-gradient(to right,
+                #ff0000 0px,
+                #ff0000 50px,
+                #0000ff 50px,
+                #0000ff 100px
+            );
+        }
+
+        .grad-repeating-v {
+            background: repeating-linear-gradient(to bottom,
+                #00ff00 0%,
+                #ffff00 10%
+            );
+        }
+
+        .grad-repeating-diagonal {
+            background: repeating-linear-gradient(45deg,
+                #ff0000 0px,
+                #ff0000 30px,
+                #ffffff 30px,
+                #ffffff 60px
+            );
+        }
+    </style>
+</head>
+<body>
+    <h1>Linear Gradient Tests - Windows RustKit</h1>
+
+    <h2>Direction Keywords</h2>
+    <div class="gradient-box grad-to-right" data-gradient="to right"></div>
+    <div class="gradient-box grad-to-left" data-gradient="to left"></div>
+    <div class="gradient-box grad-to-bottom" data-gradient="to bottom"></div>
+    <div class="gradient-box grad-to-top" data-gradient="to top"></div>
+    <div class="gradient-box grad-to-top-right" data-gradient="to top right"></div>
+    <div class="gradient-box grad-to-bottom-left" data-gradient="to bottom left"></div>
+
+    <h2>Angle Values</h2>
+    <div class="gradient-box grad-0deg" data-gradient="0deg (to top)"></div>
+    <div class="gradient-box grad-45deg" data-gradient="45deg"></div>
+    <div class="gradient-box grad-90deg" data-gradient="90deg (to right)"></div>
+    <div class="gradient-box grad-135deg" data-gradient="135deg"></div>
+    <div class="gradient-box grad-180deg" data-gradient="180deg (to bottom)"></div>
+    <div class="gradient-box grad-270deg" data-gradient="270deg (to left)"></div>
+
+    <h2>Multiple Color Stops</h2>
+    <div class="gradient-box grad-3-stops" data-gradient="3 colors"></div>
+    <div class="gradient-box grad-rainbow" data-gradient="rainbow (HSL)"></div>
+    <div class="gradient-box grad-positioned" data-gradient="positioned 0% 50% 100%"></div>
+    <div class="gradient-box grad-uneven" data-gradient="hard stop at 30%"></div>
+
+    <h2>Transparency</h2>
+    <div class="gradient-box grad-alpha" data-gradient="rgba() fade"></div>
+    <div class="gradient-box grad-hsla" data-gradient="hsla() fade"></div>
+
+    <h2>Repeating Gradients</h2>
+    <div class="gradient-box grad-repeating-h" data-gradient="repeating horizontal"></div>
+    <div class="gradient-box grad-repeating-v" data-gradient="repeating vertical"></div>
+    <div class="gradient-box grad-repeating-diagonal" data-gradient="repeating diagonal"></div>
+
+</body>
+</html>
