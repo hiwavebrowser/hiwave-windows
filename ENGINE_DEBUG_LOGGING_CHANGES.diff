@@ -1,0 +1,37 @@
+diff --git a/crates/rustkit-engine/src/lib.rs b/crates/rustkit-engine/src/lib.rs
+index b6bc220..bd58cf3 100644
+--- a/crates/rustkit-engine/src/lib.rs
++++ b/crates/rustkit-engine/src/lib.rs
+@@ -788,7 +788,10 @@ impl Engine {
+     fn build_layout_from_document(&self, document: &Document) -> LayoutBox {
+         // Extract stylesheets from <style> tags
+         let stylesheets = self.extract_stylesheets(document);
+-        debug!(stylesheet_count = stylesheets.len(), "Extracted stylesheets");
++        info!(stylesheet_count = stylesheets.len(), "CSS: Extracted stylesheets");
++        for (i, stylesheet) in stylesheets.iter().enumerate() {
++            info!(index = i, rule_count = stylesheet.rules.len(), "CSS: Stylesheet rules");
++        }
+ 
+         // Create root layout box for the document
+         let mut root_style = ComputedStyle::new();
+@@ -1057,7 +1060,11 @@ impl Engine {
+         });
+ 
+         // Apply matching rules in order
+-        for (rule, _, _) in matching_rules {
++        if !matching_rules.is_empty() {
++            info!(tag = tag_name, matched_rules = matching_rules.len(), "CSS: Rules matched for element");
++        }
++        for (rule, spec, _) in matching_rules {
++            info!(selector = rule.selector.as_str(), specificity = ?spec, "CSS: Applying rule");
+             for decl in &rule.declarations {
+                 // Extract string value from PropertyValue
+                 let value_str = match &decl.value {
+@@ -1144,6 +1151,7 @@ impl Engine {
+ 
+         // Find all <style> elements
+         let style_elements = document.get_elements_by_tag_name("style");
++        info!(style_element_count = style_elements.len(), "CSS: Found <style> elements");
+ 
+         for style_el in style_elements {
+             // Get text content

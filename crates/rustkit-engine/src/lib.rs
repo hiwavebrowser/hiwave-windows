@@ -788,7 +788,10 @@ impl Engine {
     fn build_layout_from_document(&self, document: &Document) -> LayoutBox {
         // Extract stylesheets from <style> tags
         let stylesheets = self.extract_stylesheets(document);
-        debug!(stylesheet_count = stylesheets.len(), "Extracted stylesheets");
+        info!(stylesheet_count = stylesheets.len(), "CSS: Extracted stylesheets");
+        for (i, stylesheet) in stylesheets.iter().enumerate() {
+            info!(index = i, rule_count = stylesheet.rules.len(), "CSS: Stylesheet rules");
+        }
 
         // Create root layout box for the document
         let mut root_style = ComputedStyle::new();
@@ -835,7 +838,7 @@ impl Engine {
             }
             
             let empty_ancestors: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
-            let body_box = self.build_layout_from_node(&body, &stylesheets, &empty_ancestors);
+            let body_box = self.build_layout_from_node(&body, &stylesheets, &empty_ancestors, None);
             info!(
                 layout_children = body_box.children.len(),
                 "Layout: body box built"
@@ -853,7 +856,7 @@ impl Engine {
                 }
             }
             let empty_ancestors: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
-            let html_box = self.build_layout_from_node(&html, &stylesheets, &empty_ancestors);
+            let html_box = self.build_layout_from_node(&html, &stylesheets, &empty_ancestors, None);
             root_box.children.push(html_box);
         } else {
             warn!("DOM: no body or html element found");
@@ -868,6 +871,7 @@ impl Engine {
         node: &Rc<Node>,
         stylesheets: &[Stylesheet],
         ancestors: &[(String, Vec<String>, Option<String>)],
+        parent_style: Option<&ComputedStyle>,
     ) -> LayoutBox {
         match &node.node_type {
             NodeType::Element { tag_name, attributes, .. } => {
@@ -913,9 +917,9 @@ impl Engine {
                 let dom_children = node.children();
                 trace!(tag = %tag_name, dom_children = dom_children.len(), "Processing element");
 
-                // Process children
+                // Process children - pass this element's style for inheritance
                 for child in dom_children {
-                    let child_box = self.build_layout_from_node(&child, stylesheets, &child_ancestors);
+                    let child_box = self.build_layout_from_node(&child, stylesheets, &child_ancestors, Some(&layout_box.style));
                     // Add all boxes - don't filter based on children
                     // The display list builder will handle empty boxes
                     layout_box.children.push(child_box);
@@ -928,10 +932,25 @@ impl Engine {
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
                     // Return minimal box for whitespace-only text
-                    LayoutBox::new(BoxType::Block, ComputedStyle::new())
+                    LayoutBox::new(BoxType::Inline, ComputedStyle::new())
                 } else {
-                    let mut style = ComputedStyle::new();
-                    style.color = rustkit_css::Color::BLACK;
+                    // Inherit font properties from parent style
+                    let style = if let Some(parent) = parent_style {
+                        let mut s = ComputedStyle::new();
+                        s.font_family = parent.font_family.clone();
+                        s.font_size = parent.font_size;
+                        s.font_weight = parent.font_weight;
+                        s.font_style = parent.font_style;
+                        s.color = parent.color;
+                        s.text_align = parent.text_align;
+                        s.text_transform = parent.text_transform;
+                        s.line_height = parent.line_height;
+                        s
+                    } else {
+                        let mut s = ComputedStyle::new();
+                        s.color = rustkit_css::Color::BLACK;
+                        s
+                    };
                     LayoutBox::new(BoxType::Text(trimmed.to_string()), style)
                 }
             }
@@ -1057,7 +1076,11 @@ impl Engine {
         });
 
         // Apply matching rules in order
-        for (rule, _, _) in matching_rules {
+        if !matching_rules.is_empty() {
+            info!(tag = tag_name, matched_rules = matching_rules.len(), "CSS: Rules matched for element");
+        }
+        for (rule, spec, _) in matching_rules {
+            info!(selector = rule.selector.as_str(), specificity = ?spec, "CSS: Applying rule");
             for decl in &rule.declarations {
                 // Extract string value from PropertyValue
                 let value_str = match &decl.value {
@@ -1144,6 +1167,7 @@ impl Engine {
 
         // Find all <style> elements
         let style_elements = document.get_elements_by_tag_name("style");
+        info!(style_element_count = style_elements.len(), "CSS: Found <style> elements");
 
         for style_el in style_elements {
             // Get text content
@@ -2090,8 +2114,12 @@ impl Engine {
 
             // Typography
             "font-size" => {
+                info!(value = value, "CSS: Parsing font-size");
                 if let Some(length) = parse_length(value) {
+                    info!(?length, "CSS: Setting font-size");
                     style.font_size = length;
+                } else {
+                    warn!(value = value, "CSS: Failed to parse font-size");
                 }
             }
             "font-family" => {

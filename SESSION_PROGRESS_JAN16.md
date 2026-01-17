@@ -400,6 +400,29 @@ All code compiles cleanly with only minor unused variable warnings.
 
 ---
 
-**Last Updated**: January 16, 2026, Evening
-**Status**: ✅ **INTEGRATION COMPLETE**
-**Next Action**: Test with hiwave-app, then commit progress
+## SESSION 3: DEBUGGING (Evening, 8:30 PM)
+
+**Problem Discovered**: CSS integration code compiles and was committed (7cf57f3), but testing shows CSS is **NOT being applied**.
+
+**Symptoms**:
+- All text renders at 16px (default)
+- No CSS colors applied
+- No CSS layouts (flexbox/grid) working
+- Test file `test_css_basic.html` renders unstyled
+
+**Debug Logging Added**:
+- `info!()` logs in extract_stylesheets()
+- `info!()` logs in compute_style_for_element()
+- Tracking stylesheet extraction and rule matching
+
+**Status**: Awaiting test results to identify root cause
+
+**Most Likely Cause**: `document.get_elements_by_tag_name("style")` not finding style elements
+
+**Debug Session Notes**: See `CSS_DEBUGGING_SESSION_JAN16_EVENING.md` for full details
+
+---
+
+**Last Updated**: January 16, 2026, 8:30 PM Evening
+**Status**: ⚠️ **DEBUGGING REQUIRED** - Integration complete, CSS not applying
+**Next Action**: Run hiwave-smoke with debug logging, analyze why stylesheets aren't being extracted
