@@ -252,14 +252,48 @@ The implementation is complete and ready to test. To verify:
 
 ---
 
-## Next Session TODO:
+## Phase 6: Testing Challenges ⚠️ BLOCKED
+
+**Time**: 5:40 AM - 6:00 AM
+
+### Testing Attempts:
+
+1. **Hybrid Mode (rustkit feature)**:
+   - Status: Working UI, builds successfully
+   - Issue: Content webview uses WebView2 (WRY), **not RustKit**
+   - Evidence: Lines 1257, 1770 in main.rs show `WebViewBuilder::new()` which is WRY
+   - Conclusion: Cannot test RustKit gradient implementation in this mode
+
+2. **Native-win32 Mode (100% RustKit)**:
+   - Status: Uses RustKit for all rendering
+   - Issue: **Critical text rendering bug** - all glyphs render as solid black/gray rectangles
+   - Evidence: Screenshot shows broken UI with unreadable text
+   - Impact: No usable address bar, cannot navigate to test files
+   - Root cause: DirectWrite/glyph texture rendering broken in native-win32
+   - Conclusion: Cannot test until text rendering is fixed
+
+3. **Browser Testing**:
+   - Created `test_gradients_simple.html` - text-free grid of 20 gradient boxes
+   - Opened in Edge/Chrome to verify CSS correctness
+   - Result: Gradients render correctly in browsers (but this tests browser implementation, not RustKit)
+
+### Critical Finding:
+
+**RustKit gradient implementation cannot be fully tested** until one of:
+1. Fix native-win32 text rendering bug (DirectWrite/glyph textures)
+2. Modify hybrid mode to use RustKit for content rendering (architectural change)
+3. Create headless/automated rendering tests that don't require UI
+
+### Next Session TODO:
 1. ✅ Port CSS gradient parsing functions
 2. ✅ Test linear gradient rendering
 3. ✅ Implement draw_radial_gradient()
 4. ✅ Implement draw_conic_gradient()
 5. ✅ Create additional visual test files (radial, conic)
-6. ⏳ Build and test complete gradient suite
-7. ⏳ Commit radial/conic implementation
+6. ⚠️ **BLOCKED**: RustKit gradient testing requires native-win32 text fix
+7. ✅ Commit radial/conic implementation
+8. ⏳ Fix native-win32 text rendering (future work)
+9. ⏳ Visual regression testing (after text fix)
 
 ---
 

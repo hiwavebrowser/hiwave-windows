@@ -245,18 +245,32 @@ impl GlyphCache {
     ) -> Option<GlyphEntry> {
         use windows::core::PCWSTR;
         use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-        
+
+        tracing::trace!("Rasterizing glyph '{}' (U+{:04X}) size={} family={}",
+            key.codepoint, key.codepoint as u32, key.font_size, key.font_family);
+
+        // key.font_size is fixed-point (size * 10), so divide by 10.0
         let font_size = key.font_size as f32 / 10.0;
-        
+
+        // Resolve CSS generic font families to actual Windows fonts
+        let resolved_family = match key.font_family.as_str() {
+            "sans-serif" => "Segoe UI",
+            "serif" => "Times New Roman",
+            "monospace" => "Consolas",
+            "cursive" => "Comic Sans MS",
+            "fantasy" => "Impact",
+            _ => &key.font_family,
+        };
+
         unsafe {
             // Ensure COM is initialized
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            
+
             // Create DirectWrite factory
             let factory: IDWriteFactory = match DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) {
                 Ok(f) => f,
                 Err(e) => {
-                    tracing::warn!("Failed to create DWrite factory: {:?}", e);
+                    tracing::warn!("Failed to create DWrite factory for '{}': {:?}", key.codepoint, e);
                     return self.rasterize_glyph_fallback(queue, key);
                 }
             };
@@ -264,77 +278,108 @@ impl GlyphCache {
             // Get system font collection
             let mut collection: Option<IDWriteFontCollection> = None;
             if factory.GetSystemFontCollection(&mut collection, false).is_err() {
+                tracing::warn!("Failed to get font collection for '{}' family={}", key.codepoint, key.font_family);
                 return self.rasterize_glyph_fallback(queue, key);
             }
-            let collection = collection?;
-            
+            let collection = match collection {
+                Some(c) => c,
+                None => {
+                    tracing::warn!("GetSystemFontCollection returned Ok but collection is None for '{}'", key.codepoint);
+                    return self.rasterize_glyph_fallback(queue, key);
+                }
+            };
+
             // Find font family
-            let family_wide: Vec<u16> = key.font_family.encode_utf16().chain(std::iter::once(0)).collect();
+            let family_wide: Vec<u16> = resolved_family.encode_utf16().chain(std::iter::once(0)).collect();
             let mut index: u32 = 0;
             let mut exists = windows::core::BOOL(0);
             if collection.FindFamilyName(PCWSTR(family_wide.as_ptr()), &mut index, &mut exists).is_err() || !exists.as_bool() {
+                tracing::trace!("FindFamilyName failed or font not found for '{}', trying fallbacks", resolved_family);
                 // Try fallback fonts
                 let fallbacks = ["Segoe UI", "Arial", "Tahoma"];
                 let mut found = false;
                 for fallback in fallbacks {
                     let fb_wide: Vec<u16> = fallback.encode_utf16().chain(std::iter::once(0)).collect();
                     if collection.FindFamilyName(PCWSTR(fb_wide.as_ptr()), &mut index, &mut exists).is_ok() && exists.as_bool() {
+                        tracing::trace!("Using fallback font '{}' for '{}'", fallback, key.codepoint);
                         found = true;
                         break;
                     }
                 }
                 if !found {
+                    tracing::error!("No fallback font found for '{}' family={}", key.codepoint, key.font_family);
                     return self.rasterize_glyph_fallback(queue, key);
                 }
+            } else {
             }
-            
+
             // Get font family
             let family = match collection.GetFontFamily(index) {
-                Ok(f) => f,
-                Err(_) => return self.rasterize_glyph_fallback(queue, key),
+                Ok(f) => {
+                    f
+                }
+                Err(e) => {
+                    tracing::error!("GetFontFamily FAILED: {:?}", e);
+                    return self.rasterize_glyph_fallback(queue, key);
+                }
             };
-            
+
+
             // Get matching font
             let dw_weight = DWRITE_FONT_WEIGHT(key.font_weight as i32);
             let dw_stretch = DWRITE_FONT_STRETCH(5); // Normal
             let dw_style = if key.font_style == 1 { DWRITE_FONT_STYLE_ITALIC } else { DWRITE_FONT_STYLE_NORMAL };
-            
+
             let font = match family.GetFirstMatchingFont(dw_weight, dw_stretch, dw_style) {
-                Ok(f) => f,
-                Err(_) => return self.rasterize_glyph_fallback(queue, key),
+                Ok(f) => {
+                    f
+                }
+                Err(e) => {
+                    tracing::error!("GetFirstMatchingFont FAILED: {:?}", e);
+                    return self.rasterize_glyph_fallback(queue, key);
+                }
             };
-            
+
             // Create font face
             let face = match font.CreateFontFace() {
-                Ok(f) => f,
-                Err(_) => return self.rasterize_glyph_fallback(queue, key),
+                Ok(f) => {
+                    f
+                }
+                Err(e) => {
+                    tracing::error!("CreateFontFace FAILED: {:?}", e);
+                    return self.rasterize_glyph_fallback(queue, key);
+                }
             };
-            
+
+
             // Get glyph index for codepoint
             let codepoint = key.codepoint as u32;
             let mut glyph_indices = [0u16; 1];
             if face.GetGlyphIndices(&codepoint as *const u32, 1, glyph_indices.as_mut_ptr()).is_err() {
+                tracing::error!("GetGlyphIndices FAILED (returned Err) for '{}' (U+{:04X})", key.codepoint, codepoint);
                 return self.rasterize_glyph_fallback(queue, key);
             }
-            
+
             let glyph_index = glyph_indices[0];
             if glyph_index == 0 {
-                // Glyph not found - use fallback
+                tracing::error!("GetGlyphIndices returned 0 (glyph not found in font) for '{}' (U+{:04X})", key.codepoint, codepoint);
                 return self.rasterize_glyph_fallback(queue, key);
             }
-            
+
+
             // Get font metrics for baseline calculation
             let mut font_metrics = DWRITE_FONT_METRICS::default();
             face.GetMetrics(&mut font_metrics);
             let design_units_per_em = font_metrics.designUnitsPerEm as f32;
             let ascent = font_metrics.ascent as f32 * font_size / design_units_per_em;
-            
+
             // Get glyph metrics
             let mut glyph_metrics = [DWRITE_GLYPH_METRICS::default()];
             if face.GetDesignGlyphMetrics(&glyph_index, 1, glyph_metrics.as_mut_ptr(), false).is_err() {
+                tracing::error!("GetDesignGlyphMetrics FAILED");
                 return self.rasterize_glyph_fallback(queue, key);
             }
-            
+
             let advance_width = glyph_metrics[0].advanceWidth as f32 * font_size / design_units_per_em;
             let left_bearing = glyph_metrics[0].leftSideBearing as f32 * font_size / design_units_per_em;
             let top_bearing = glyph_metrics[0].topSideBearing as f32 * font_size / design_units_per_em;
@@ -377,6 +422,7 @@ impl GlyphCache {
             }
             
             // Create glyph run for rendering
+            // Note: glyphAdvances is null to let DirectWrite calculate advances automatically
             let glyph_run = DWRITE_GLYPH_RUN {
                 fontFace: std::mem::ManuallyDrop::new(Some(face.clone())),
                 fontEmSize: font_size,
@@ -388,45 +434,67 @@ impl GlyphCache {
                 bidiLevel: 0,
             };
             
+            // Create identity transform matrix
+            let transform = DWRITE_MATRIX {
+                m11: 1.0, m12: 0.0,
+                m21: 0.0, m22: 1.0,
+                dx: 0.0, dy: 0.0,
+            };
+
             // Create glyph run analysis
+            // Try ALIASED rendering mode instead of NATURAL
             let analysis: IDWriteGlyphRunAnalysis = match factory.CreateGlyphRunAnalysis(
                 &glyph_run,
                 1.0, // pixels per DIP
-                None,
-                DWRITE_RENDERING_MODE_NATURAL,
+                Some(&transform), // Provide identity matrix instead of None
+                DWRITE_RENDERING_MODE_ALIASED,
                 DWRITE_MEASURING_MODE_NATURAL,
                 0.0, // baseline origin x
                 0.0, // baseline origin y
             ) {
-                Ok(a) => a,
+                Ok(a) => {
+                    a
+                }
                 Err(e) => {
-                    tracing::trace!("CreateGlyphRunAnalysis failed: {:?}", e);
+                    tracing::warn!("CreateGlyphRunAnalysis failed for '{}': {:?}", key.codepoint, e);
                     // Clean up manually dropped face
                     std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
                     return self.rasterize_glyph_fallback(queue, key);
                 }
             };
-            
+
             // Get texture bounds
             let bounds = match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1) {
-                Ok(b) => b,
-                Err(_) => match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) {
-                    Ok(b) => b,
-                    Err(_) => {
+                Ok(b) => {
+                    tracing::trace!("Got aliased texture bounds for '{}': left={}, top={}, right={}, bottom={} ({}x{})",
+                        key.codepoint, b.left, b.top, b.right, b.bottom, b.right - b.left, b.bottom - b.top);
+                    b
+                }
+                Err(e1) => match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) {
+                    Ok(b) => {
+                        tracing::trace!("Got cleartype texture bounds for '{}': left={}, top={}, right={}, bottom={} ({}x{})",
+                            key.codepoint, b.left, b.top, b.right, b.bottom, b.right - b.left, b.bottom - b.top);
+                        b
+                    }
+                    Err(e2) => {
+                        tracing::error!("GetAlphaTextureBounds FAILED for '{}': aliased={:?}, cleartype={:?}", key.codepoint, e1, e2);
                         std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
                         return self.rasterize_glyph_fallback(queue, key);
                     }
                 },
             };
-            
+
             let tex_width = (bounds.right - bounds.left) as u32;
             let tex_height = (bounds.bottom - bounds.top) as u32;
-            
+            tracing::trace!("Texture dimensions: {}x{}", tex_width, tex_height);
+
             if tex_width == 0 || tex_height == 0 {
+                tracing::trace!("Texture dimensions are zero (whitespace glyph)");
                 // Empty glyph (whitespace)
                 std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
                 return self.rasterize_glyph_fallback(queue, key);
             }
+
             
             // Allocate atlas space
             let (atlas_x, atlas_y) = match self.allocate_space(tex_width + 2, tex_height + 2) {
@@ -535,6 +603,9 @@ impl GlyphCache {
         queue: &wgpu::Queue,
         key: &GlyphKey,
     ) -> Option<GlyphEntry> {
+        tracing::warn!("Using fallback rectangle for glyph '{}' (U+{:04X}) size={} family={}",
+            key.codepoint, key.codepoint as u32, key.font_size, key.font_family);
+
         let font_size = key.font_size as f32 / 10.0;
         
         #[cfg(windows)]

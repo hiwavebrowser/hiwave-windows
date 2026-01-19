@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Simple Gradient Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #f0f0f0;
+        }
+
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            padding: 10px;
+        }
+
+        .box {
+            width: 200px;
+            height: 200px;
+            margin: 10px;
+            border: 3px solid #000;
+        }
+
+        /* LINEAR GRADIENTS */
+        .linear-1 { background: linear-gradient(to right, red, blue); }
+        .linear-2 { background: linear-gradient(to bottom, red, blue); }
+        .linear-3 { background: linear-gradient(45deg, red, blue); }
+        .linear-4 { background: linear-gradient(to right, red, yellow, green, blue); }
+        .linear-5 { background: repeating-linear-gradient(to right, red 0px, red 30px, blue 30px, blue 60px); }
+
+        /* RADIAL GRADIENTS */
+        .radial-1 { background: radial-gradient(circle, red, blue); }
+        .radial-2 { background: radial-gradient(ellipse, red, blue); }
+        .radial-3 { background: radial-gradient(circle at top left, red, blue); }
+        .radial-4 { background: radial-gradient(circle, red, yellow, green, blue); }
+        .radial-5 { background: repeating-radial-gradient(circle, red 0%, red 10%, blue 10%, blue 20%); }
+
+        /* CONIC GRADIENTS */
+        .conic-1 { background: conic-gradient(red, blue); }
+        .conic-2 { background: conic-gradient(red, yellow, green, blue, red); }
+        .conic-3 { background: conic-gradient(from 45deg, red, blue); }
+        .conic-4 { background: conic-gradient(from 0deg, hsl(0, 100%, 50%), hsl(60, 100%, 50%), hsl(120, 100%, 50%), hsl(180, 100%, 50%), hsl(240, 100%, 50%), hsl(300, 100%, 50%), hsl(360, 100%, 50%)); }
+        .conic-5 { background: repeating-conic-gradient(red 0deg, blue 45deg); }
+
+        /* COMPLEX GRADIENTS */
+        .complex-1 { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .complex-2 { background: radial-gradient(circle at center, #ffffff 0%, #ffeb3b 20%, #ff9800 40%, #ff5722 60%, #c62828 80%, #000000 100%); }
+        .complex-3 { background: conic-gradient(at 30% 30%, red, yellow, green, blue, red); }
+        .complex-4 { background: linear-gradient(to bottom, rgba(255,0,0,1), rgba(255,0,0,0)); }
+        .complex-5 { background: radial-gradient(ellipse at 70% 30%, orange, purple); }
+    </style>
+</head>
+<body>
+    <!-- LINEAR GRADIENTS -->
+    <div class="row">
+        <div class="box linear-1"></div>
+        <div class="box linear-2"></div>
+        <div class="box linear-3"></div>
+        <div class="box linear-4"></div>
+        <div class="box linear-5"></div>
+    </div>
+
+    <!-- RADIAL GRADIENTS -->
+    <div class="row">
+        <div class="box radial-1"></div>
+        <div class="box radial-2"></div>
+        <div class="box radial-3"></div>
+        <div class="box radial-4"></div>
+        <div class="box radial-5"></div>
+    </div>
+
+    <!-- CONIC GRADIENTS -->
+    <div class="row">
+        <div class="box conic-1"></div>
+        <div class="box conic-2"></div>
+        <div class="box conic-3"></div>
+        <div class="box conic-4"></div>
+        <div class="box conic-5"></div>
+    </div>
+
+    <!-- COMPLEX GRADIENTS -->
+    <div class="row">
+        <div class="box complex-1"></div>
+        <div class="box complex-2"></div>
+        <div class="box complex-3"></div>
+        <div class="box complex-4"></div>
+        <div class="box complex-5"></div>
+    </div>
+</body>
+</html>
