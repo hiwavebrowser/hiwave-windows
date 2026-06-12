@@ -62,3 +62,10 @@ rustkit-bindings = { workspace = true, optional = true }
 rustkit-net = { workspace = true, optional = true }
 windows = { version = "0.58", features = ["Win32_Foundation"], optional = true }
 tokio = { version = "1.42", features = ["rt", "time"], optional = true }
+
+[dev-dependencies]
+# shield_adapter tests build rustkit_net::Request directly, whose `method`
+# field is an http::Method — same major as rustkit-net's own dependency.
+# Without this, `cargo test` fails to compile in every feature config that
+# doesn't happen to pull wry's http re-export into scope.
+http = "1.2"
