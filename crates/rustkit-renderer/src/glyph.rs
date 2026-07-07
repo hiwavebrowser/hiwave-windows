@@ -505,7 +505,8 @@ impl GlyphCache {
             let offset_x = bounds.left as f32;
             let offset_y = ascent + bounds.top as f32; // Position relative to line top
             
-            tracing::trace!(
+            // Log at info level to see during development
+            tracing::info!(
                 codepoint = ?key.codepoint,
                 bounds_left = bounds.left,
                 bounds_top = bounds.top,
@@ -515,6 +516,13 @@ impl GlyphCache {
                 offset_x,
                 offset_y,
                 advance_width,
+                atlas_x = atlas_x + 1,
+                atlas_y = atlas_y + 1,
+                u0,
+                v0,
+                u1,
+                v1,
+                alpha_nonzero_count = alpha_values.iter().filter(|&&a| a > 0).count(),
                 "Glyph rasterized via DirectWrite"
             );
             

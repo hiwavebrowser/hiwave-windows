@@ -798,6 +798,19 @@ impl Renderer {
         // Get atlas size before the loop to avoid borrow issues
         let atlas_size = self.glyph_cache.atlas_size() as f32;
 
+        tracing::info!(
+            text = %text,
+            x,
+            y,
+            font_size,
+            font_family,
+            color_r = color.r,
+            color_g = color.g,
+            color_b = color.b,
+            color_a = color.a,
+            "Drawing text"
+        );
+
         for ch in text.chars() {
             let key = GlyphKey {
                 codepoint: ch,
@@ -813,6 +826,18 @@ impl Renderer {
                 let glyph_y = y + entry.offset[1];
                 let glyph_w = (entry.tex_coords[2] - entry.tex_coords[0]) * atlas_size;
                 let glyph_h = (entry.tex_coords[3] - entry.tex_coords[1]) * atlas_size;
+
+                tracing::trace!(
+                    ch = ?ch,
+                    glyph_x,
+                    glyph_y,
+                    glyph_w,
+                    glyph_h,
+                    tex_coords = ?entry.tex_coords,
+                    offset = ?entry.offset,
+                    advance = entry.advance,
+                    "Rendering glyph"
+                );
 
                 let base = self.texture_vertices.len() as u32;
 
@@ -915,6 +940,14 @@ impl Renderer {
 
     /// Flush all batched vertices to the target.
     fn flush_to(&mut self, target: &wgpu::TextureView) -> Result<(), RendererError> {
+        tracing::info!(
+            color_vertices = self.color_vertices.len(),
+            color_indices = self.color_indices.len(),
+            texture_vertices = self.texture_vertices.len(),
+            texture_indices = self.texture_indices.len(),
+            "Flushing render batches"
+        );
+
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
