@@ -35,7 +35,7 @@ def load_summary(history_dir: Path, run_id: str) -> Optional[Dict[str, Any]]:
     if not summary_path.exists():
         return None
     
-    with open(summary_path) as f:
+    with open(summary_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -310,7 +310,7 @@ def main():
     
     # Save comparison to file
     output_path = history_dir / f"comparison_{run1}_to_{run2}.json"
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(comparison, f, indent=2)
     print(f"Comparison saved to: {output_path}")
 

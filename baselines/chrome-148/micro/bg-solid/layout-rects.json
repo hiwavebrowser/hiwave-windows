@@ -1,0 +1,322 @@
+{
+  "timestamp": "2026-07-07T23:57:32.540Z",
+  "viewport": {
+    "width": 600,
+    "height": 500
+  },
+  "elementCount": 13,
+  "elements": [
+    {
+      "selector": "html > body",
+      "tag": "body",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 600,
+        "height": 775,
+        "top": 0,
+        "right": 600,
+        "bottom": 775,
+        "left": 0
+      },
+      "client": {
+        "width": 600,
+        "height": 775
+      },
+      "scroll": {
+        "width": 600,
+        "height": 775,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > h1",
+      "tag": "h1",
+      "rect": {
+        "x": 20,
+        "y": 20,
+        "width": 560,
+        "height": 43,
+        "top": 20,
+        "right": 580,
+        "bottom": 63,
+        "left": 20
+      },
+      "client": {
+        "width": 560,
+        "height": 43
+      },
+      "scroll": {
+        "width": 560,
+        "height": 43,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > h2:nth-of-type(1)",
+      "tag": "h2",
+      "rect": {
+        "x": 20,
+        "y": 83,
+        "width": 560,
+        "height": 19,
+        "top": 83,
+        "right": 580,
+        "bottom": 102,
+        "left": 20
+      },
+      "client": {
+        "width": 560,
+        "height": 19
+      },
+      "scroll": {
+        "width": 560,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.box red:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 122,
+        "width": 200,
+        "height": 100,
+        "top": 122,
+        "right": 230,
+        "bottom": 222,
+        "left": 30
+      },
+      "client": {
+        "width": 198,
+        "height": 98
+      },
+      "scroll": {
+        "width": 198,
+        "height": 98,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.box named:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 254.390625,
+        "y": 122,
+        "width": 200,
+        "height": 100,
+        "top": 122,
+        "right": 454.390625,
+        "bottom": 222,
+        "left": 254.390625
+      },
+      "client": {
+        "width": 198,
+        "height": 98
+      },
+      "scroll": {
+        "width": 198,
+        "height": 98,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > h2:nth-of-type(2)",
+      "tag": "h2",
+      "rect": {
+        "x": 20,
+        "y": 256,
+        "width": 560,
+        "height": 19,
+        "top": 256,
+        "right": 580,
+        "bottom": 275,
+        "left": 20
+      },
+      "client": {
+        "width": 560,
+        "height": 19
+      },
+      "scroll": {
+        "width": 560,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.box hex:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 295,
+        "width": 200,
+        "height": 100,
+        "top": 295,
+        "right": 230,
+        "bottom": 395,
+        "left": 30
+      },
+      "client": {
+        "width": 198,
+        "height": 98
+      },
+      "scroll": {
+        "width": 198,
+        "height": 98,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > h2:nth-of-type(3)",
+      "tag": "h2",
+      "rect": {
+        "x": 20,
+        "y": 429,
+        "width": 560,
+        "height": 19,
+        "top": 429,
+        "right": 580,
+        "bottom": 448,
+        "left": 20
+      },
+      "client": {
+        "width": 560,
+        "height": 19
+      },
+      "scroll": {
+        "width": 560,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.box rgb:nth-of-type(4)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 468,
+        "width": 200,
+        "height": 100,
+        "top": 468,
+        "right": 230,
+        "bottom": 568,
+        "left": 30
+      },
+      "client": {
+        "width": 198,
+        "height": 98
+      },
+      "scroll": {
+        "width": 198,
+        "height": 98,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.box rgba:nth-of-type(5)",
+      "tag": "div",
+      "rect": {
+        "x": 254.390625,
+        "y": 468,
+        "width": 200,
+        "height": 100,
+        "top": 468,
+        "right": 454.390625,
+        "bottom": 568,
+        "left": 254.390625
+      },
+      "client": {
+        "width": 198,
+        "height": 98
+      },
+      "scroll": {
+        "width": 198,
+        "height": 98,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > h2:nth-of-type(4)",
+      "tag": "h2",
+      "rect": {
+        "x": 20,
+        "y": 602,
+        "width": 560,
+        "height": 19,
+        "top": 602,
+        "right": 580,
+        "bottom": 621,
+        "left": 20
+      },
+      "client": {
+        "width": 560,
+        "height": 19
+      },
+      "scroll": {
+        "width": 560,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.box hsl:nth-of-type(6)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 641,
+        "width": 200,
+        "height": 100,
+        "top": 641,
+        "right": 230,
+        "bottom": 741,
+        "left": 30
+      },
+      "client": {
+        "width": 198,
+        "height": 98
+      },
+      "scroll": {
+        "width": 198,
+        "height": 98,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.box hsla:nth-of-type(7)",
+      "tag": "div",
+      "rect": {
+        "x": 254.390625,
+        "y": 641,
+        "width": 200,
+        "height": 100,
+        "top": 641,
+        "right": 454.390625,
+        "bottom": 741,
+        "left": 254.390625
+      },
+      "client": {
+        "width": 198,
+        "height": 98
+      },
+      "scroll": {
+        "width": 198,
+        "height": 98,
+        "top": 0,
+        "left": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,322 @@
+{
+  "timestamp": "2026-07-07T23:57:39.330Z",
+  "viewport": {
+    "width": 800,
+    "height": 600
+  },
+  "elementCount": 13,
+  "elements": [
+    {
+      "selector": "html > body",
+      "tag": "body",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 800,
+        "height": 714,
+        "top": 0,
+        "right": 800,
+        "bottom": 714,
+        "left": 0
+      },
+      "client": {
+        "width": 800,
+        "height": 714
+      },
+      "scroll": {
+        "width": 800,
+        "height": 714,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > h1",
+      "tag": "h1",
+      "rect": {
+        "x": 20,
+        "y": 20,
+        "width": 760,
+        "height": 43,
+        "top": 20,
+        "right": 780,
+        "bottom": 63,
+        "left": 20
+      },
+      "client": {
+        "width": 760,
+        "height": 43
+      },
+      "scroll": {
+        "width": 760,
+        "height": 43,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > p",
+      "tag": "p",
+      "rect": {
+        "x": 20,
+        "y": 63,
+        "width": 760,
+        "height": 21,
+        "top": 63,
+        "right": 780,
+        "bottom": 84,
+        "left": 20
+      },
+      "client": {
+        "width": 760,
+        "height": 21
+      },
+      "scroll": {
+        "width": 760,
+        "height": 21,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#test1",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 94,
+        "width": 200,
+        "height": 50,
+        "top": 94,
+        "right": 230,
+        "bottom": 144,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#test2",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 154,
+        "width": 200,
+        "height": 50,
+        "top": 154,
+        "right": 230,
+        "bottom": 204,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.test-box test3:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 214,
+        "width": 200,
+        "height": 50,
+        "top": 214,
+        "right": 230,
+        "bottom": 264,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.test-box test4:nth-of-type(4)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 274,
+        "width": 200,
+        "height": 50,
+        "top": 274,
+        "right": 230,
+        "bottom": 324,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#test5",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 334,
+        "width": 200,
+        "height": 50,
+        "top": 334,
+        "right": 230,
+        "bottom": 384,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.test-box test6:nth-of-type(6)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 394,
+        "width": 200,
+        "height": 50,
+        "top": 394,
+        "right": 230,
+        "bottom": 444,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.test-box test7:nth-of-type(7)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 454,
+        "width": 200,
+        "height": 50,
+        "top": 454,
+        "right": 230,
+        "bottom": 504,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.test-box test8a test8b:nth-of-type(8)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 514,
+        "width": 200,
+        "height": 50,
+        "top": 514,
+        "right": 230,
+        "bottom": 564,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.test-box test9:nth-of-type(9)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 574,
+        "width": 200,
+        "height": 50,
+        "top": 574,
+        "right": 230,
+        "bottom": 624,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.test-box test10 extra:nth-of-type(10)",
+      "tag": "div",
+      "rect": {
+        "x": 30,
+        "y": 634,
+        "width": 200,
+        "height": 50,
+        "top": 634,
+        "right": 230,
+        "bottom": 684,
+        "left": 30
+      },
+      "client": {
+        "width": 200,
+        "height": 50
+      },
+      "scroll": {
+        "width": 200,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    }
+  ]
+}

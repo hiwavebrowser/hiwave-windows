@@ -31,7 +31,7 @@ def load_all_summaries(history_dir: Path, limit: Optional[int] = None) -> List[D
         if d.is_dir() and d.name != "latest":
             summary_path = d / "summary.json"
             if summary_path.exists():
-                with open(summary_path) as f:
+                with open(summary_path, encoding="utf-8") as f:
                     summary = json.load(f)
                     summary["run_id"] = d.name
                     runs.append(summary)
@@ -366,14 +366,14 @@ def main():
     
     # Save JSON report
     json_path = output_dir / "progress_report.json"
-    with open(json_path, "w") as f:
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
     print(f"JSON report saved to: {json_path}")
     
     # Generate and save markdown
     markdown = generate_markdown(report)
     md_path = output_dir / "PARITY_PROGRESS.md"
-    with open(md_path, "w") as f:
+    with open(md_path, "w", encoding="utf-8") as f:
         f.write(markdown)
     print(f"Markdown report saved to: {md_path}")
     

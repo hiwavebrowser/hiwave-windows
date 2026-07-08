@@ -105,7 +105,7 @@ def archive_run(
         print(f"Error: No baseline report found at {report_path}")
         return None
     
-    with open(report_path) as f:
+    with open(report_path, encoding="utf-8") as f:
         report = json.load(f)
     
     # Create timestamp-based directory name
@@ -128,11 +128,11 @@ def archive_run(
     summary["git_commit"] = get_git_commit()
     summary["git_branch"] = get_git_branch()
     
-    with open(run_dir / "summary.json", "w") as f:
+    with open(run_dir / "summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     
     # Save git commit
-    with open(run_dir / "git_commit.txt", "w") as f:
+    with open(run_dir / "git_commit.txt", "w", encoding="utf-8") as f:
         f.write(f"commit: {summary['git_commit']}\n")
         f.write(f"branch: {summary['git_branch']}\n")
         if tag:
@@ -146,13 +146,17 @@ def archive_run(
             shutil.rmtree(captures_dst)
         shutil.copytree(captures_src, captures_dst)
     
-    # Update 'latest' symlink
+    # Update 'latest' pointer. Symlinks need elevation on Windows
+    # (WinError 1314), so fall back to a plain latest.txt pointer file.
     latest_link = history_dir / "latest"
     if latest_link.is_symlink():
         latest_link.unlink()
     elif latest_link.exists():
         latest_link.unlink()
-    latest_link.symlink_to(timestamp)
+    try:
+        latest_link.symlink_to(timestamp)
+    except OSError:
+        (history_dir / "latest.txt").write_text(timestamp, encoding="utf-8")
     
     return run_dir
 
@@ -250,7 +254,7 @@ def main():
     print(f"\nArchived to: {run_dir}")
     
     # Load summary and previous for comparison
-    with open(run_dir / "summary.json") as f:
+    with open(run_dir / "summary.json", encoding="utf-8") as f:
         summary = json.load(f)
     
     previous = None
@@ -258,7 +262,7 @@ def main():
     if prev_run_id:
         prev_summary_path = history_dir / prev_run_id / "summary.json"
         if prev_summary_path.exists():
-            with open(prev_summary_path) as f:
+            with open(prev_summary_path, encoding="utf-8") as f:
                 previous = json.load(f)
     
     print_summary(summary, previous)

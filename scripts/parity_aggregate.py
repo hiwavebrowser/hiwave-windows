@@ -93,7 +93,7 @@ def load_swarm_report(run_id: str, results_root: Path = DEFAULT_RESULTS_ROOT) ->
         print(f"Warning: No swarm report at {report_path}")
         return None
 
-    with open(report_path) as f:
+    with open(report_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -102,7 +102,7 @@ def load_attribution(path: Path) -> Optional[Dict]:
     if not path.exists():
         return None
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
         print(f"Warning: Failed to load {path}: {e}")
@@ -507,17 +507,17 @@ def main():
             # Try as path first
             path = Path(ref)
             if path.exists():
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     return json.load(f)
             # Try as run ID
             report_path = results_root / ref / "aggregate_report.json"
             if report_path.exists():
-                with open(report_path) as f:
+                with open(report_path, encoding="utf-8") as f:
                     return json.load(f)
             # Try swarm report
             swarm_path = results_root / ref / "swarm_report.json"
             if swarm_path.exists():
-                with open(swarm_path) as f:
+                with open(swarm_path, encoding="utf-8") as f:
                     return json.load(f)
             raise FileNotFoundError(f"Could not find report: {ref}")
 
@@ -528,7 +528,7 @@ def main():
 
         # Output
         output_path = args.output or "regression_report.json"
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(comparison, f, indent=2)
 
         # Print summary
@@ -599,7 +599,7 @@ def main():
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     # Print summary

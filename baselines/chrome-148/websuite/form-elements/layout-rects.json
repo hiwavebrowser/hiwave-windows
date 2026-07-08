@@ -1,0 +1,1546 @@
+{
+  "timestamp": "2026-07-07T23:57:44.304Z",
+  "viewport": {
+    "width": 800,
+    "height": 600
+  },
+  "elementCount": 64,
+  "elements": [
+    {
+      "selector": "html > body",
+      "tag": "body",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 800,
+        "height": 1758,
+        "top": 0,
+        "right": 800,
+        "bottom": 1758,
+        "left": 0
+      },
+      "client": {
+        "width": 800,
+        "height": 1758
+      },
+      "scroll": {
+        "width": 800,
+        "height": 1758,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container",
+      "tag": "div",
+      "rect": {
+        "x": 100,
+        "y": 40,
+        "width": 600,
+        "height": 1658,
+        "top": 40,
+        "right": 700,
+        "bottom": 1698,
+        "left": 100
+      },
+      "client": {
+        "width": 600,
+        "height": 1658
+      },
+      "scroll": {
+        "width": 600,
+        "height": 1658,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > h1",
+      "tag": "h1",
+      "rect": {
+        "x": 100,
+        "y": 40,
+        "width": 600,
+        "height": 38,
+        "top": 40,
+        "right": 700,
+        "bottom": 78,
+        "left": 100
+      },
+      "client": {
+        "width": 600,
+        "height": 38
+      },
+      "scroll": {
+        "width": 600,
+        "height": 38,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 100,
+        "y": 108,
+        "width": 600,
+        "height": 540,
+        "top": 108,
+        "right": 700,
+        "bottom": 648,
+        "left": 100
+      },
+      "client": {
+        "width": 600,
+        "height": 540
+      },
+      "scroll": {
+        "width": 600,
+        "height": 540,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > h2",
+      "tag": "h2",
+      "rect": {
+        "x": 130,
+        "y": 138,
+        "width": 540,
+        "height": 37,
+        "top": 138,
+        "right": 670,
+        "bottom": 175,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 36
+      },
+      "scroll": {
+        "width": 540,
+        "height": 36,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 195,
+        "width": 540,
+        "height": 70,
+        "top": 195,
+        "right": 670,
+        "bottom": 265,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 70
+      },
+      "scroll": {
+        "width": 540,
+        "height": 70,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group:nth-of-type(1) > label",
+      "tag": "label",
+      "rect": {
+        "x": 130,
+        "y": 195,
+        "width": 540,
+        "height": 20,
+        "top": 195,
+        "right": 670,
+        "bottom": 215,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#name",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 221,
+        "width": 540,
+        "height": 44,
+        "top": 221,
+        "right": 670,
+        "bottom": 265,
+        "left": 130
+      },
+      "client": {
+        "width": 538,
+        "height": 42
+      },
+      "scroll": {
+        "width": 538,
+        "height": 42,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 285,
+        "width": 540,
+        "height": 91,
+        "top": 285,
+        "right": 670,
+        "bottom": 376,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 91
+      },
+      "scroll": {
+        "width": 540,
+        "height": 91,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group:nth-of-type(2) > label",
+      "tag": "label",
+      "rect": {
+        "x": 130,
+        "y": 285,
+        "width": 540,
+        "height": 20,
+        "top": 285,
+        "right": 670,
+        "bottom": 305,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#email",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 311,
+        "width": 540,
+        "height": 44,
+        "top": 311,
+        "right": 670,
+        "bottom": 355,
+        "left": 130
+      },
+      "client": {
+        "width": 538,
+        "height": 42
+      },
+      "scroll": {
+        "width": 538,
+        "height": 42,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group:nth-of-type(2) > p.helper-text",
+      "tag": "p",
+      "rect": {
+        "x": 130,
+        "y": 359,
+        "width": 540,
+        "height": 17,
+        "top": 359,
+        "right": 670,
+        "bottom": 376,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 17
+      },
+      "scroll": {
+        "width": 540,
+        "height": 17,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group error:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 396,
+        "width": 540,
+        "height": 91,
+        "top": 396,
+        "right": 670,
+        "bottom": 487,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 91
+      },
+      "scroll": {
+        "width": 540,
+        "height": 91,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group error:nth-of-type(3) > label",
+      "tag": "label",
+      "rect": {
+        "x": 130,
+        "y": 396,
+        "width": 540,
+        "height": 20,
+        "top": 396,
+        "right": 670,
+        "bottom": 416,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#password",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 422,
+        "width": 540,
+        "height": 44,
+        "top": 422,
+        "right": 670,
+        "bottom": 466,
+        "left": 130
+      },
+      "client": {
+        "width": 538,
+        "height": 42
+      },
+      "scroll": {
+        "width": 538,
+        "height": 42,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group error:nth-of-type(3) > p.helper-text",
+      "tag": "p",
+      "rect": {
+        "x": 130,
+        "y": 470,
+        "width": 540,
+        "height": 17,
+        "top": 470,
+        "right": 670,
+        "bottom": 487,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 17
+      },
+      "scroll": {
+        "width": 540,
+        "height": 17,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group success:nth-of-type(4)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 507,
+        "width": 540,
+        "height": 91,
+        "top": 507,
+        "right": 670,
+        "bottom": 598,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 91
+      },
+      "scroll": {
+        "width": 540,
+        "height": 91,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group success:nth-of-type(4) > label",
+      "tag": "label",
+      "rect": {
+        "x": 130,
+        "y": 507,
+        "width": 540,
+        "height": 20,
+        "top": 507,
+        "right": 670,
+        "bottom": 527,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#username",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 533,
+        "width": 540,
+        "height": 44,
+        "top": 533,
+        "right": 670,
+        "bottom": 577,
+        "left": 130
+      },
+      "client": {
+        "width": 538,
+        "height": 42
+      },
+      "scroll": {
+        "width": 538,
+        "height": 42,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(1) > div.form-group success:nth-of-type(4) > p.helper-text",
+      "tag": "p",
+      "rect": {
+        "x": 130,
+        "y": 581,
+        "width": 540,
+        "height": 17,
+        "top": 581,
+        "right": 670,
+        "bottom": 598,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 17
+      },
+      "scroll": {
+        "width": 540,
+        "height": 17,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 100,
+        "y": 668,
+        "width": 600,
+        "height": 506,
+        "top": 668,
+        "right": 700,
+        "bottom": 1174,
+        "left": 100
+      },
+      "client": {
+        "width": 600,
+        "height": 506
+      },
+      "scroll": {
+        "width": 600,
+        "height": 506,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > h2",
+      "tag": "h2",
+      "rect": {
+        "x": 130,
+        "y": 698,
+        "width": 540,
+        "height": 37,
+        "top": 698,
+        "right": 670,
+        "bottom": 735,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 36
+      },
+      "scroll": {
+        "width": 540,
+        "height": 36,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 755,
+        "width": 540,
+        "height": 71,
+        "top": 755,
+        "right": 670,
+        "bottom": 826,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 71
+      },
+      "scroll": {
+        "width": 540,
+        "height": 71,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(1) > label",
+      "tag": "label",
+      "rect": {
+        "x": 130,
+        "y": 755,
+        "width": 540,
+        "height": 20,
+        "top": 755,
+        "right": 670,
+        "bottom": 775,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#country",
+      "tag": "select",
+      "rect": {
+        "x": 130,
+        "y": 781,
+        "width": 540,
+        "height": 45,
+        "top": 781,
+        "right": 670,
+        "bottom": 826,
+        "left": 130
+      },
+      "client": {
+        "width": 538,
+        "height": 43
+      },
+      "scroll": {
+        "width": 538,
+        "height": 43,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 846,
+        "width": 540,
+        "height": 106,
+        "top": 846,
+        "right": 670,
+        "bottom": 952,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 106
+      },
+      "scroll": {
+        "width": 540,
+        "height": 106,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(2) > label",
+      "tag": "label",
+      "rect": {
+        "x": 130,
+        "y": 846,
+        "width": 540,
+        "height": 20,
+        "top": 846,
+        "right": 670,
+        "bottom": 866,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(2) > div.checkbox-group:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 872,
+        "width": 540,
+        "height": 20,
+        "top": 872,
+        "right": 670,
+        "bottom": 892,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#tech",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 873,
+        "width": 18,
+        "height": 18,
+        "top": 873,
+        "right": 148,
+        "bottom": 891,
+        "left": 130
+      },
+      "client": {
+        "width": 18,
+        "height": 18
+      },
+      "scroll": {
+        "width": 18,
+        "height": 18,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(2) > div.checkbox-group:nth-of-type(1) > label",
+      "tag": "label",
+      "rect": {
+        "x": 158,
+        "y": 872,
+        "width": 74.71875,
+        "height": 20,
+        "top": 872,
+        "right": 232.71875,
+        "bottom": 892,
+        "left": 158
+      },
+      "client": {
+        "width": 75,
+        "height": 20
+      },
+      "scroll": {
+        "width": 75,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(2) > div.checkbox-group:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 902,
+        "width": 540,
+        "height": 20,
+        "top": 902,
+        "right": 670,
+        "bottom": 922,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#design",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 903,
+        "width": 18,
+        "height": 18,
+        "top": 903,
+        "right": 148,
+        "bottom": 921,
+        "left": 130
+      },
+      "client": {
+        "width": 18,
+        "height": 18
+      },
+      "scroll": {
+        "width": 18,
+        "height": 18,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(2) > div.checkbox-group:nth-of-type(2) > label",
+      "tag": "label",
+      "rect": {
+        "x": 158,
+        "y": 902,
+        "width": 45.03125,
+        "height": 20,
+        "top": 902,
+        "right": 203.03125,
+        "bottom": 922,
+        "left": 158
+      },
+      "client": {
+        "width": 45,
+        "height": 20
+      },
+      "scroll": {
+        "width": 45,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(2) > div.checkbox-group:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 932,
+        "width": 540,
+        "height": 20,
+        "top": 932,
+        "right": 670,
+        "bottom": 952,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#business",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 933,
+        "width": 18,
+        "height": 18,
+        "top": 933,
+        "right": 148,
+        "bottom": 951,
+        "left": 130
+      },
+      "client": {
+        "width": 18,
+        "height": 18
+      },
+      "scroll": {
+        "width": 18,
+        "height": 18,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(2) > div.checkbox-group:nth-of-type(3) > label",
+      "tag": "label",
+      "rect": {
+        "x": 158,
+        "y": 932,
+        "width": 55.546875,
+        "height": 20,
+        "top": 932,
+        "right": 213.546875,
+        "bottom": 952,
+        "left": 158
+      },
+      "client": {
+        "width": 56,
+        "height": 20
+      },
+      "scroll": {
+        "width": 56,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 972,
+        "width": 540,
+        "height": 106,
+        "top": 972,
+        "right": 670,
+        "bottom": 1078,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 106
+      },
+      "scroll": {
+        "width": 540,
+        "height": 106,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(3) > label",
+      "tag": "label",
+      "rect": {
+        "x": 130,
+        "y": 972,
+        "width": 540,
+        "height": 20,
+        "top": 972,
+        "right": 670,
+        "bottom": 992,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(3) > div.radio-group:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 998,
+        "width": 540,
+        "height": 20,
+        "top": 998,
+        "right": 670,
+        "bottom": 1018,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#free",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 999,
+        "width": 18,
+        "height": 18,
+        "top": 999,
+        "right": 148,
+        "bottom": 1017,
+        "left": 130
+      },
+      "client": {
+        "width": 18,
+        "height": 18
+      },
+      "scroll": {
+        "width": 18,
+        "height": 18,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(3) > div.radio-group:nth-of-type(1) > label",
+      "tag": "label",
+      "rect": {
+        "x": 158,
+        "y": 998,
+        "width": 27.75,
+        "height": 20,
+        "top": 998,
+        "right": 185.75,
+        "bottom": 1018,
+        "left": 158
+      },
+      "client": {
+        "width": 28,
+        "height": 20
+      },
+      "scroll": {
+        "width": 28,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(3) > div.radio-group:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 1028,
+        "width": 540,
+        "height": 20,
+        "top": 1028,
+        "right": 670,
+        "bottom": 1048,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#pro",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 1029,
+        "width": 18,
+        "height": 18,
+        "top": 1029,
+        "right": 148,
+        "bottom": 1047,
+        "left": 130
+      },
+      "client": {
+        "width": 18,
+        "height": 18
+      },
+      "scroll": {
+        "width": 18,
+        "height": 18,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(3) > div.radio-group:nth-of-type(2) > label",
+      "tag": "label",
+      "rect": {
+        "x": 158,
+        "y": 1028,
+        "width": 79.265625,
+        "height": 20,
+        "top": 1028,
+        "right": 237.265625,
+        "bottom": 1048,
+        "left": 158
+      },
+      "client": {
+        "width": 79,
+        "height": 20
+      },
+      "scroll": {
+        "width": 79,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(3) > div.radio-group:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 1058,
+        "width": 540,
+        "height": 20,
+        "top": 1058,
+        "right": 670,
+        "bottom": 1078,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#team",
+      "tag": "input",
+      "rect": {
+        "x": 130,
+        "y": 1059,
+        "width": 18,
+        "height": 18,
+        "top": 1059,
+        "right": 148,
+        "bottom": 1077,
+        "left": 130
+      },
+      "client": {
+        "width": 18,
+        "height": 18
+      },
+      "scroll": {
+        "width": 18,
+        "height": 18,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(3) > div.radio-group:nth-of-type(3) > label",
+      "tag": "label",
+      "rect": {
+        "x": 158,
+        "y": 1058,
+        "width": 99.515625,
+        "height": 20,
+        "top": 1058,
+        "right": 257.515625,
+        "bottom": 1078,
+        "left": 158
+      },
+      "client": {
+        "width": 100,
+        "height": 20
+      },
+      "scroll": {
+        "width": 100,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(4)",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 1098,
+        "width": 540,
+        "height": 26,
+        "top": 1098,
+        "right": 670,
+        "bottom": 1124,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 26
+      },
+      "scroll": {
+        "width": 540,
+        "height": 26,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(4) > label.toggle-label",
+      "tag": "label",
+      "rect": {
+        "x": 130,
+        "y": 1098,
+        "width": 540,
+        "height": 26,
+        "top": 1098,
+        "right": 670,
+        "bottom": 1124,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 26
+      },
+      "scroll": {
+        "width": 540,
+        "height": 26,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(4) > label.toggle-label > div.toggle-switch",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 1098,
+        "width": 50,
+        "height": 26,
+        "top": 1098,
+        "right": 180,
+        "bottom": 1124,
+        "left": 130
+      },
+      "client": {
+        "width": 50,
+        "height": 26
+      },
+      "scroll": {
+        "width": 50,
+        "height": 26,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(2) > div.form-group:nth-of-type(4) > label.toggle-label > div.toggle-switch > span.toggle-slider",
+      "tag": "span",
+      "rect": {
+        "x": 130,
+        "y": 1098,
+        "width": 50,
+        "height": 26,
+        "top": 1098,
+        "right": 180,
+        "bottom": 1124,
+        "left": 130
+      },
+      "client": {
+        "width": 50,
+        "height": 26
+      },
+      "scroll": {
+        "width": 50,
+        "height": 26,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 100,
+        "y": 1194,
+        "width": 600,
+        "height": 267,
+        "top": 1194,
+        "right": 700,
+        "bottom": 1461,
+        "left": 100
+      },
+      "client": {
+        "width": 600,
+        "height": 267
+      },
+      "scroll": {
+        "width": 600,
+        "height": 267,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(3) > h2",
+      "tag": "h2",
+      "rect": {
+        "x": 130,
+        "y": 1224,
+        "width": 540,
+        "height": 37,
+        "top": 1224,
+        "right": 670,
+        "bottom": 1261,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 36
+      },
+      "scroll": {
+        "width": 540,
+        "height": 36,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(3) > div.form-group",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 1281,
+        "width": 540,
+        "height": 130,
+        "top": 1281,
+        "right": 670,
+        "bottom": 1411,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 130
+      },
+      "scroll": {
+        "width": 540,
+        "height": 130,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(3) > div.form-group > label",
+      "tag": "label",
+      "rect": {
+        "x": 130,
+        "y": 1281,
+        "width": 540,
+        "height": 20,
+        "top": 1281,
+        "right": 670,
+        "bottom": 1301,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 20
+      },
+      "scroll": {
+        "width": 540,
+        "height": 20,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#bio",
+      "tag": "textarea",
+      "rect": {
+        "x": 130,
+        "y": 1307,
+        "width": 540,
+        "height": 100,
+        "top": 1307,
+        "right": 670,
+        "bottom": 1407,
+        "left": 130
+      },
+      "client": {
+        "width": 538,
+        "height": 98
+      },
+      "scroll": {
+        "width": 538,
+        "height": 98,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(4)",
+      "tag": "div",
+      "rect": {
+        "x": 100,
+        "y": 1481,
+        "width": 600,
+        "height": 217,
+        "top": 1481,
+        "right": 700,
+        "bottom": 1698,
+        "left": 100
+      },
+      "client": {
+        "width": 600,
+        "height": 217
+      },
+      "scroll": {
+        "width": 600,
+        "height": 217,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(4) > h2",
+      "tag": "h2",
+      "rect": {
+        "x": 130,
+        "y": 1511,
+        "width": 540,
+        "height": 37,
+        "top": 1511,
+        "right": 670,
+        "bottom": 1548,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 36
+      },
+      "scroll": {
+        "width": 540,
+        "height": 36,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(4) > div.button-row",
+      "tag": "div",
+      "rect": {
+        "x": 130,
+        "y": 1568,
+        "width": 540,
+        "height": 100,
+        "top": 1568,
+        "right": 670,
+        "bottom": 1668,
+        "left": 130
+      },
+      "client": {
+        "width": 540,
+        "height": 100
+      },
+      "scroll": {
+        "width": 540,
+        "height": 100,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(4) > div.button-row > button.btn-primary:nth-of-type(1)",
+      "tag": "button",
+      "rect": {
+        "x": 130,
+        "y": 1568,
+        "width": 103.109375,
+        "height": 46,
+        "top": 1568,
+        "right": 233.109375,
+        "bottom": 1614,
+        "left": 130
+      },
+      "client": {
+        "width": 103,
+        "height": 46
+      },
+      "scroll": {
+        "width": 103,
+        "height": 46,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(4) > div.button-row > button.btn-secondary:nth-of-type(2)",
+      "tag": "button",
+      "rect": {
+        "x": 245.109375,
+        "y": 1568,
+        "width": 124.5,
+        "height": 46,
+        "top": 1568,
+        "right": 369.609375,
+        "bottom": 1614,
+        "left": 245.109375
+      },
+      "client": {
+        "width": 125,
+        "height": 46
+      },
+      "scroll": {
+        "width": 125,
+        "height": 46,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(4) > div.button-row > button.btn-outline:nth-of-type(3)",
+      "tag": "button",
+      "rect": {
+        "x": 381.609375,
+        "y": 1568,
+        "width": 102.703125,
+        "height": 46,
+        "top": 1568,
+        "right": 484.3125,
+        "bottom": 1614,
+        "left": 381.609375
+      },
+      "client": {
+        "width": 99,
+        "height": 42
+      },
+      "scroll": {
+        "width": 99,
+        "height": 42,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(4) > div.button-row > button.btn-danger:nth-of-type(4)",
+      "tag": "button",
+      "rect": {
+        "x": 496.3125,
+        "y": 1568,
+        "width": 94.25,
+        "height": 46,
+        "top": 1568,
+        "right": 590.5625,
+        "bottom": 1614,
+        "left": 496.3125
+      },
+      "client": {
+        "width": 94,
+        "height": 46
+      },
+      "scroll": {
+        "width": 94,
+        "height": 46,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container > div.form-card:nth-of-type(4) > div.button-row > button.btn-success:nth-of-type(5)",
+      "tag": "button",
+      "rect": {
+        "x": 130,
+        "y": 1626,
+        "width": 84.46875,
+        "height": 42,
+        "top": 1626,
+        "right": 214.46875,
+        "bottom": 1668,
+        "left": 130
+      },
+      "client": {
+        "width": 84,
+        "height": 42
+      },
+      "scroll": {
+        "width": 84,
+        "height": 42,
+        "top": 0,
+        "left": 0
+      }
+    }
+  ]
+}

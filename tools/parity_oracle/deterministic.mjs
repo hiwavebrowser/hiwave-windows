@@ -33,6 +33,19 @@ function getResetCssWithAbsoluteFontPaths() {
 
 const RESET_CSS = getResetCssWithAbsoluteFontPaths();
 
+// Campaign pin: PARITY_CHROME_PATH points at the exact Chrome for Testing
+// binary recorded in trench/BASELINE-<os>.md. Without it, captures fall back
+// to Playwright's bundled Chromium, whose version drifts with the npm package
+// — fine for local iteration, invalid for pinned-baseline capture.
+function getPinnedExecutablePath() {
+  const p = process.env.PARITY_CHROME_PATH;
+  if (!p) return undefined;
+  if (!existsSync(p)) {
+    throw new Error(`PARITY_CHROME_PATH set but not found: ${p}`);
+  }
+  return p;
+}
+
 export function getDeterministicLaunchOptions() {
   // Note: some flags may be ignored depending on platform/Chromium build.
   // We keep them because they reduce variance in practice.
@@ -46,11 +59,15 @@ export function getDeterministicLaunchOptions() {
     '--disable-lcd-text',
     '--disable-font-subpixel-positioning',
     '--disable-accelerated-2d-canvas',
-    '--use-gl=swiftshader',
+    // Chrome >=~148 removed --use-gl=swiftshader (screenshots fail with
+    // "Unable to capture screenshot"); ANGLE swiftshader is the supported
+    // software-GL path and keeps captures deterministic.
+    '--use-angle=swiftshader',
   ];
 
   return {
     headless: true,
+    executablePath: getPinnedExecutablePath(),
     args,
   };
 }

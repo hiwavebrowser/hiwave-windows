@@ -205,7 +205,7 @@ def analyze_layout(layout_path: str) -> Dict[str, Any]:
     if not layout_path or not Path(layout_path).exists():
         return {"error": "No layout file"}
     
-    with open(layout_path) as f:
+    with open(layout_path, encoding="utf-8") as f:
         data = json.load(f)
     
     stats = {
@@ -487,7 +487,7 @@ def run_oracle(cases: List[str], output_dir: Path, scope: str = "top") -> Option
         # Load oracle results
         oracle_results_path = output_dir / "oracle_results.json"
         if oracle_results_path.exists():
-            with open(oracle_results_path) as f:
+            with open(oracle_results_path, encoding="utf-8") as f:
                 return json.load(f)
         
         return None
@@ -703,7 +703,7 @@ def main():
     
     # Save report
     report_path = output_dir / "baseline_report.json"
-    with open(report_path, "w") as f:
+    with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, default=str)
     
     # Print summary
@@ -777,9 +777,9 @@ def main():
                 curr_summary_path = run_dir / "summary.json"
                 
                 if prev_summary_path.exists() and curr_summary_path.exists():
-                    with open(prev_summary_path) as f:
+                    with open(prev_summary_path, encoding="utf-8") as f:
                         prev_summary = json.load(f)
-                    with open(curr_summary_path) as f:
+                    with open(curr_summary_path, encoding="utf-8") as f:
                         curr_summary = json.load(f)
                     
                     prev_parity = prev_summary["estimated_parity"]
@@ -868,7 +868,7 @@ def generate_failure_packet(case_id: str, result: Dict[str, Any], output_dir: Pa
     
     # Save packet manifest
     manifest_path = packet_dir / "manifest.json"
-    with open(manifest_path, "w") as f:
+    with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(packet, f, indent=2)
     
     return str(packet_dir)
@@ -903,7 +903,7 @@ def generate_workorders(clusters: Dict[str, int], worst_cases: List[Dict], outpu
         }
         
         wo_path = output_dir / f"{cluster_name}.json"
-        with open(wo_path, "w") as f:
+        with open(wo_path, "w", encoding="utf-8") as f:
             json.dump(workorder, f, indent=2)
         
         created.append(str(wo_path))
@@ -924,7 +924,7 @@ def generate_workorders(clusters: Dict[str, int], worst_cases: List[Dict], outpu
         }
         
         wo_path = output_dir / "top_failures.json"
-        with open(wo_path, "w") as f:
+        with open(wo_path, "w", encoding="utf-8") as f:
             json.dump(summary_wo, f, indent=2)
         
         created.append(str(wo_path))

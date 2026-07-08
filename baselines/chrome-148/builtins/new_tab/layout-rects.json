@@ -1,0 +1,1618 @@
+{
+  "timestamp": "2026-07-07T23:57:28.587Z",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "elementCount": 67,
+  "elements": [
+    {
+      "selector": "html > body",
+      "tag": "body",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 800,
+        "top": 0,
+        "right": 1280,
+        "bottom": 800,
+        "left": 0
+      },
+      "client": {
+        "width": 1280,
+        "height": 800
+      },
+      "scroll": {
+        "width": 1280,
+        "height": 800,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.ambient-glow:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 240,
+        "y": -400,
+        "width": 800,
+        "height": 800,
+        "top": -400,
+        "right": 1040,
+        "bottom": 400,
+        "left": 240
+      },
+      "client": {
+        "width": 800,
+        "height": 800
+      },
+      "scroll": {
+        "width": 800,
+        "height": 800,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 340,
+        "y": 21.991519927978516,
+        "width": 600,
+        "height": 761,
+        "top": 21.991519927978516,
+        "right": 940,
+        "bottom": 782.9915199279785,
+        "left": 340
+      },
+      "client": {
+        "width": 600,
+        "height": 761
+      },
+      "scroll": {
+        "width": 600,
+        "height": 761,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.logo-wrapper:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 534.625,
+        "y": 53.991519927978516,
+        "width": 210.75,
+        "height": 63.999996185302734,
+        "top": 53.991519927978516,
+        "right": 745.375,
+        "bottom": 117.99151611328125,
+        "left": 534.625
+      },
+      "client": {
+        "width": 211,
+        "height": 64
+      },
+      "scroll": {
+        "width": 211,
+        "height": 64,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.logo-wrapper:nth-of-type(1) > h1.logo",
+      "tag": "h1",
+      "rect": {
+        "x": 534.625,
+        "y": 53.991519927978516,
+        "width": 210.75,
+        "height": 63.999996185302734,
+        "top": 53.991519927978516,
+        "right": 745.375,
+        "bottom": 117.99151611328125,
+        "left": 534.625
+      },
+      "client": {
+        "width": 211,
+        "height": 64
+      },
+      "scroll": {
+        "width": 211,
+        "height": 64,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > p.tagline",
+      "tag": "p",
+      "rect": {
+        "x": 372,
+        "y": 125.99151611328125,
+        "width": 536,
+        "height": 21,
+        "top": 125.99151611328125,
+        "right": 908,
+        "bottom": 146.99151611328125,
+        "left": 372
+      },
+      "client": {
+        "width": 536,
+        "height": 21
+      },
+      "scroll": {
+        "width": 536,
+        "height": 21,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.search-container:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 390,
+        "y": 194.99151611328125,
+        "width": 500,
+        "height": 52,
+        "top": 194.99151611328125,
+        "right": 890,
+        "bottom": 246.99151611328125,
+        "left": 390
+      },
+      "client": {
+        "width": 500,
+        "height": 52
+      },
+      "scroll": {
+        "width": 500,
+        "height": 52,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "#searchInput",
+      "tag": "input",
+      "rect": {
+        "x": 390,
+        "y": 192.99151611328125,
+        "width": 500,
+        "height": 52,
+        "top": 192.99151611328125,
+        "right": 890,
+        "bottom": 244.99151611328125,
+        "left": 390
+      },
+      "client": {
+        "width": 498,
+        "height": 50
+      },
+      "scroll": {
+        "width": 498,
+        "height": 50,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 372,
+        "y": 294.99151611328125,
+        "width": 536,
+        "height": 456,
+        "top": 294.99151611328125,
+        "right": 908,
+        "bottom": 750.9915161132812,
+        "left": 372
+      },
+      "client": {
+        "width": 536,
+        "height": 456
+      },
+      "scroll": {
+        "width": 536,
+        "height": 476,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts-title:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 372,
+        "y": 294.99151611328125,
+        "width": 536,
+        "height": 16,
+        "top": 294.99151611328125,
+        "right": 908,
+        "bottom": 310.99151611328125,
+        "left": 372
+      },
+      "client": {
+        "width": 536,
+        "height": 16
+      },
+      "scroll": {
+        "width": 536,
+        "height": 16,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 372,
+        "y": 334.99151611328125,
+        "width": 536,
+        "height": 416,
+        "top": 334.99151611328125,
+        "right": 908,
+        "bottom": 750.9915161132812,
+        "left": 372
+      },
+      "client": {
+        "width": 536,
+        "height": 416
+      },
+      "scroll": {
+        "width": 536,
+        "height": 436,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 372,
+        "y": 336.126953125,
+        "width": 262,
+        "height": 64,
+        "top": 336.126953125,
+        "right": 634,
+        "bottom": 400.126953125,
+        "left": 372
+      },
+      "client": {
+        "width": 260,
+        "height": 62
+      },
+      "scroll": {
+        "width": 260,
+        "height": 62,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(1) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 389,
+        "y": 356.126953125,
+        "width": 44.390625,
+        "height": 24,
+        "top": 356.126953125,
+        "right": 433.390625,
+        "bottom": 380.126953125,
+        "left": 389
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(1) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 454.859375,
+        "y": 356.126953125,
+        "width": 37.796875,
+        "height": 24,
+        "top": 356.126953125,
+        "right": 492.65625,
+        "bottom": 380.126953125,
+        "left": 454.859375
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(1) > kbd:nth-of-type(3)",
+      "tag": "kbd",
+      "rect": {
+        "x": 518.234375,
+        "y": 356.126953125,
+        "width": 24.609375,
+        "height": 24,
+        "top": 356.126953125,
+        "right": 542.84375,
+        "bottom": 380.126953125,
+        "left": 518.234375
+      },
+      "client": {
+        "width": 23,
+        "height": 22
+      },
+      "scroll": {
+        "width": 23,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(1) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 550.84375,
+        "y": 349.126953125,
+        "width": 66.15625,
+        "height": 38,
+        "top": 349.126953125,
+        "right": 617,
+        "bottom": 387.126953125,
+        "left": 550.84375
+      },
+      "client": {
+        "width": 66,
+        "height": 38
+      },
+      "scroll": {
+        "width": 66,
+        "height": 38,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 646,
+        "y": 337.82012939453125,
+        "width": 262,
+        "height": 64,
+        "top": 337.82012939453125,
+        "right": 908,
+        "bottom": 401.82012939453125,
+        "left": 646
+      },
+      "client": {
+        "width": 260,
+        "height": 62
+      },
+      "scroll": {
+        "width": 260,
+        "height": 62,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(2) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 663,
+        "y": 357.82012939453125,
+        "width": 44.390625,
+        "height": 24,
+        "top": 357.82012939453125,
+        "right": 707.390625,
+        "bottom": 381.82012939453125,
+        "left": 663
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(2) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 728.859375,
+        "y": 357.82012939453125,
+        "width": 37.796875,
+        "height": 24,
+        "top": 357.82012939453125,
+        "right": 766.65625,
+        "bottom": 381.82012939453125,
+        "left": 728.859375
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(2) > kbd:nth-of-type(3)",
+      "tag": "kbd",
+      "rect": {
+        "x": 792.234375,
+        "y": 357.82012939453125,
+        "width": 24.609375,
+        "height": 24,
+        "top": 357.82012939453125,
+        "right": 816.84375,
+        "bottom": 381.82012939453125,
+        "left": 792.234375
+      },
+      "client": {
+        "width": 23,
+        "height": 22
+      },
+      "scroll": {
+        "width": 23,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(2) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 824.84375,
+        "y": 360.32012939453125,
+        "width": 66.15625,
+        "height": 19,
+        "top": 360.32012939453125,
+        "right": 891,
+        "bottom": 379.32012939453125,
+        "left": 824.84375
+      },
+      "client": {
+        "width": 66,
+        "height": 19
+      },
+      "scroll": {
+        "width": 66,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 372,
+        "y": 416.0618896484375,
+        "width": 262,
+        "height": 64,
+        "top": 416.0618896484375,
+        "right": 634,
+        "bottom": 480.0618896484375,
+        "left": 372
+      },
+      "client": {
+        "width": 260,
+        "height": 62
+      },
+      "scroll": {
+        "width": 260,
+        "height": 62,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(3) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 389,
+        "y": 436.0618896484375,
+        "width": 44.390625,
+        "height": 24,
+        "top": 436.0618896484375,
+        "right": 433.390625,
+        "bottom": 460.0618896484375,
+        "left": 389
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(3) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 454.859375,
+        "y": 436.0618896484375,
+        "width": 37.796875,
+        "height": 24,
+        "top": 436.0618896484375,
+        "right": 492.65625,
+        "bottom": 460.0618896484375,
+        "left": 454.859375
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(3) > kbd:nth-of-type(3)",
+      "tag": "kbd",
+      "rect": {
+        "x": 518.234375,
+        "y": 436.0618896484375,
+        "width": 24.609375,
+        "height": 24,
+        "top": 436.0618896484375,
+        "right": 542.84375,
+        "bottom": 460.0618896484375,
+        "left": 518.234375
+      },
+      "client": {
+        "width": 23,
+        "height": 22
+      },
+      "scroll": {
+        "width": 23,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(3) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 550.84375,
+        "y": 438.5618896484375,
+        "width": 66.15625,
+        "height": 19,
+        "top": 438.5618896484375,
+        "right": 617,
+        "bottom": 457.5618896484375,
+        "left": 550.84375
+      },
+      "client": {
+        "width": 66,
+        "height": 19
+      },
+      "scroll": {
+        "width": 66,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(4)",
+      "tag": "div",
+      "rect": {
+        "x": 646,
+        "y": 418.7530517578125,
+        "width": 262,
+        "height": 64,
+        "top": 418.7530517578125,
+        "right": 908,
+        "bottom": 482.7530517578125,
+        "left": 646
+      },
+      "client": {
+        "width": 260,
+        "height": 62
+      },
+      "scroll": {
+        "width": 260,
+        "height": 62,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(4) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 663,
+        "y": 438.7530517578125,
+        "width": 44.390625,
+        "height": 24,
+        "top": 438.7530517578125,
+        "right": 707.390625,
+        "bottom": 462.7530517578125,
+        "left": 663
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(4) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 732.96875,
+        "y": 438.7530517578125,
+        "width": 51,
+        "height": 24,
+        "top": 438.7530517578125,
+        "right": 783.96875,
+        "bottom": 462.7530517578125,
+        "left": 732.96875
+      },
+      "client": {
+        "width": 49,
+        "height": 22
+      },
+      "scroll": {
+        "width": 49,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(4) > kbd:nth-of-type(3)",
+      "tag": "kbd",
+      "rect": {
+        "x": 809.546875,
+        "y": 438.7530517578125,
+        "width": 24.609375,
+        "height": 24,
+        "top": 438.7530517578125,
+        "right": 834.15625,
+        "bottom": 462.7530517578125,
+        "left": 809.546875
+      },
+      "client": {
+        "width": 23,
+        "height": 22
+      },
+      "scroll": {
+        "width": 23,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(4) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 842.15625,
+        "y": 431.7530517578125,
+        "width": 48.84375,
+        "height": 38,
+        "top": 431.7530517578125,
+        "right": 891,
+        "bottom": 469.7530517578125,
+        "left": 842.15625
+      },
+      "client": {
+        "width": 49,
+        "height": 38
+      },
+      "scroll": {
+        "width": 49,
+        "height": 38,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(5)",
+      "tag": "div",
+      "rect": {
+        "x": 372,
+        "y": 497.8304443359375,
+        "width": 262,
+        "height": 64,
+        "top": 497.8304443359375,
+        "right": 634,
+        "bottom": 561.8304443359375,
+        "left": 372
+      },
+      "client": {
+        "width": 260,
+        "height": 62
+      },
+      "scroll": {
+        "width": 260,
+        "height": 62,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(5) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 389,
+        "y": 517.8304443359375,
+        "width": 44.390625,
+        "height": 24,
+        "top": 517.8304443359375,
+        "right": 433.390625,
+        "bottom": 541.8304443359375,
+        "left": 389
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(5) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 454.859375,
+        "y": 517.8304443359375,
+        "width": 37.796875,
+        "height": 24,
+        "top": 517.8304443359375,
+        "right": 492.65625,
+        "bottom": 541.8304443359375,
+        "left": 454.859375
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(5) > kbd:nth-of-type(3)",
+      "tag": "kbd",
+      "rect": {
+        "x": 518.234375,
+        "y": 517.8304443359375,
+        "width": 24.609375,
+        "height": 24,
+        "top": 517.8304443359375,
+        "right": 542.84375,
+        "bottom": 541.8304443359375,
+        "left": 518.234375
+      },
+      "client": {
+        "width": 23,
+        "height": 22
+      },
+      "scroll": {
+        "width": 23,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(5) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 550.84375,
+        "y": 510.8304443359375,
+        "width": 66.15625,
+        "height": 38,
+        "top": 510.8304443359375,
+        "right": 617,
+        "bottom": 548.8304443359375,
+        "left": 550.84375
+      },
+      "client": {
+        "width": 66,
+        "height": 38
+      },
+      "scroll": {
+        "width": 66,
+        "height": 38,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(6)",
+      "tag": "div",
+      "rect": {
+        "x": 646,
+        "y": 501.25811767578125,
+        "width": 262,
+        "height": 64,
+        "top": 501.25811767578125,
+        "right": 908,
+        "bottom": 565.2581176757812,
+        "left": 646
+      },
+      "client": {
+        "width": 260,
+        "height": 62
+      },
+      "scroll": {
+        "width": 260,
+        "height": 62,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(6) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 663,
+        "y": 521.2581176757812,
+        "width": 44.390625,
+        "height": 24,
+        "top": 521.2581176757812,
+        "right": 707.390625,
+        "bottom": 545.2581176757812,
+        "left": 663
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(6) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 728.859375,
+        "y": 521.2581176757812,
+        "width": 37.796875,
+        "height": 24,
+        "top": 521.2581176757812,
+        "right": 766.65625,
+        "bottom": 545.2581176757812,
+        "left": 728.859375
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(6) > kbd:nth-of-type(3)",
+      "tag": "kbd",
+      "rect": {
+        "x": 792.234375,
+        "y": 521.2581176757812,
+        "width": 24.609375,
+        "height": 24,
+        "top": 521.2581176757812,
+        "right": 816.84375,
+        "bottom": 545.2581176757812,
+        "left": 792.234375
+      },
+      "client": {
+        "width": 23,
+        "height": 22
+      },
+      "scroll": {
+        "width": 23,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(6) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 824.84375,
+        "y": 514.2581176757812,
+        "width": 66.15625,
+        "height": 38,
+        "top": 514.2581176757812,
+        "right": 891,
+        "bottom": 552.2581176757812,
+        "left": 824.84375
+      },
+      "client": {
+        "width": 66,
+        "height": 38
+      },
+      "scroll": {
+        "width": 66,
+        "height": 38,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(7)",
+      "tag": "div",
+      "rect": {
+        "x": 372,
+        "y": 581.033203125,
+        "width": 262,
+        "height": 64,
+        "top": 581.033203125,
+        "right": 634,
+        "bottom": 645.033203125,
+        "left": 372
+      },
+      "client": {
+        "width": 260,
+        "height": 62
+      },
+      "scroll": {
+        "width": 260,
+        "height": 62,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(7) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 389,
+        "y": 601.033203125,
+        "width": 44.390625,
+        "height": 24,
+        "top": 601.033203125,
+        "right": 433.390625,
+        "bottom": 625.033203125,
+        "left": 389
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(7) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 454.859375,
+        "y": 601.033203125,
+        "width": 37.796875,
+        "height": 24,
+        "top": 601.033203125,
+        "right": 492.65625,
+        "bottom": 625.033203125,
+        "left": 454.859375
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(7) > kbd:nth-of-type(3)",
+      "tag": "kbd",
+      "rect": {
+        "x": 518.234375,
+        "y": 601.033203125,
+        "width": 24.609375,
+        "height": 24,
+        "top": 601.033203125,
+        "right": 542.84375,
+        "bottom": 625.033203125,
+        "left": 518.234375
+      },
+      "client": {
+        "width": 23,
+        "height": 22
+      },
+      "scroll": {
+        "width": 23,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(7) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 550.84375,
+        "y": 594.033203125,
+        "width": 66.15625,
+        "height": 38,
+        "top": 594.033203125,
+        "right": 617,
+        "bottom": 632.033203125,
+        "left": 550.84375
+      },
+      "client": {
+        "width": 66,
+        "height": 38
+      },
+      "scroll": {
+        "width": 66,
+        "height": 38,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(8)",
+      "tag": "div",
+      "rect": {
+        "x": 646,
+        "y": 582.9915161132812,
+        "width": 262,
+        "height": 64,
+        "top": 582.9915161132812,
+        "right": 908,
+        "bottom": 646.9915161132812,
+        "left": 646
+      },
+      "client": {
+        "width": 260,
+        "height": 62
+      },
+      "scroll": {
+        "width": 260,
+        "height": 62,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(8) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 663,
+        "y": 602.9915161132812,
+        "width": 37.796875,
+        "height": 24,
+        "top": 602.9915161132812,
+        "right": 700.796875,
+        "bottom": 626.9915161132812,
+        "left": 663
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(8) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 726.375,
+        "y": 602.9915161132812,
+        "width": 44.390625,
+        "height": 24,
+        "top": 602.9915161132812,
+        "right": 770.765625,
+        "bottom": 626.9915161132812,
+        "left": 726.375
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(8) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 778.765625,
+        "y": 605.4915161132812,
+        "width": 112.234375,
+        "height": 19,
+        "top": 605.4915161132812,
+        "right": 891,
+        "bottom": 624.4915161132812,
+        "left": 778.765625
+      },
+      "client": {
+        "width": 112,
+        "height": 19
+      },
+      "scroll": {
+        "width": 112,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(9)",
+      "tag": "div",
+      "rect": {
+        "x": 372,
+        "y": 658.9915161132812,
+        "width": 262,
+        "height": 50,
+        "top": 658.9915161132812,
+        "right": 634,
+        "bottom": 708.9915161132812,
+        "left": 372
+      },
+      "client": {
+        "width": 260,
+        "height": 48
+      },
+      "scroll": {
+        "width": 260,
+        "height": 48,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(9) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 389,
+        "y": 671.9915161132812,
+        "width": 37.796875,
+        "height": 24,
+        "top": 671.9915161132812,
+        "right": 426.796875,
+        "bottom": 695.9915161132812,
+        "left": 389
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(9) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 452.375,
+        "y": 671.9915161132812,
+        "width": 51,
+        "height": 24,
+        "top": 671.9915161132812,
+        "right": 503.375,
+        "bottom": 695.9915161132812,
+        "left": 452.375
+      },
+      "client": {
+        "width": 49,
+        "height": 22
+      },
+      "scroll": {
+        "width": 49,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(9) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 511.375,
+        "y": 674.4915161132812,
+        "width": 105.625,
+        "height": 19,
+        "top": 674.4915161132812,
+        "right": 617,
+        "bottom": 693.4915161132812,
+        "left": 511.375
+      },
+      "client": {
+        "width": 106,
+        "height": 19
+      },
+      "scroll": {
+        "width": 106,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(10)",
+      "tag": "div",
+      "rect": {
+        "x": 646,
+        "y": 658.9915161132812,
+        "width": 262,
+        "height": 50,
+        "top": 658.9915161132812,
+        "right": 908,
+        "bottom": 708.9915161132812,
+        "left": 646
+      },
+      "client": {
+        "width": 260,
+        "height": 48
+      },
+      "scroll": {
+        "width": 260,
+        "height": 48,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(10) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 663,
+        "y": 671.9915161132812,
+        "width": 37.796875,
+        "height": 24,
+        "top": 671.9915161132812,
+        "right": 700.796875,
+        "bottom": 695.9915161132812,
+        "left": 663
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(10) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 726.375,
+        "y": 671.9915161132812,
+        "width": 44.390625,
+        "height": 24,
+        "top": 671.9915161132812,
+        "right": 770.765625,
+        "bottom": 695.9915161132812,
+        "left": 726.375
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(10) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 778.765625,
+        "y": 674.4915161132812,
+        "width": 112.234375,
+        "height": 19,
+        "top": 674.4915161132812,
+        "right": 891,
+        "bottom": 693.4915161132812,
+        "left": 778.765625
+      },
+      "client": {
+        "width": 112,
+        "height": 19
+      },
+      "scroll": {
+        "width": 112,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(11)",
+      "tag": "div",
+      "rect": {
+        "x": 372,
+        "y": 720.9915161132812,
+        "width": 262,
+        "height": 50,
+        "top": 720.9915161132812,
+        "right": 634,
+        "bottom": 770.9915161132812,
+        "left": 372
+      },
+      "client": {
+        "width": 260,
+        "height": 48
+      },
+      "scroll": {
+        "width": 260,
+        "height": 48,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(11) > kbd:nth-of-type(1)",
+      "tag": "kbd",
+      "rect": {
+        "x": 389,
+        "y": 733.9915161132812,
+        "width": 44.390625,
+        "height": 24,
+        "top": 733.9915161132812,
+        "right": 433.390625,
+        "bottom": 757.9915161132812,
+        "left": 389
+      },
+      "client": {
+        "width": 42,
+        "height": 22
+      },
+      "scroll": {
+        "width": 42,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(11) > kbd:nth-of-type(2)",
+      "tag": "kbd",
+      "rect": {
+        "x": 458.96875,
+        "y": 733.9915161132812,
+        "width": 37.796875,
+        "height": 24,
+        "top": 733.9915161132812,
+        "right": 496.765625,
+        "bottom": 757.9915161132812,
+        "left": 458.96875
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(11) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 504.765625,
+        "y": 736.4915161132812,
+        "width": 112.234375,
+        "height": 19,
+        "top": 736.4915161132812,
+        "right": 617,
+        "bottom": 755.4915161132812,
+        "left": 504.765625
+      },
+      "client": {
+        "width": 112,
+        "height": 19
+      },
+      "scroll": {
+        "width": 112,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(12)",
+      "tag": "div",
+      "rect": {
+        "x": 646,
+        "y": 720.9915161132812,
+        "width": 262,
+        "height": 50,
+        "top": 720.9915161132812,
+        "right": 908,
+        "bottom": 770.9915161132812,
+        "left": 646
+      },
+      "client": {
+        "width": 260,
+        "height": 48
+      },
+      "scroll": {
+        "width": 260,
+        "height": 48,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(12) > kbd",
+      "tag": "kbd",
+      "rect": {
+        "x": 663,
+        "y": 733.9915161132812,
+        "width": 37.796875,
+        "height": 24,
+        "top": 733.9915161132812,
+        "right": 700.796875,
+        "bottom": 757.9915161132812,
+        "left": 663
+      },
+      "client": {
+        "width": 36,
+        "height": 22
+      },
+      "scroll": {
+        "width": 36,
+        "height": 22,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.container:nth-of-type(2) > div.shortcuts-section:nth-of-type(3) > div.shortcuts:nth-of-type(2) > div.shortcut:nth-of-type(12) > span.shortcut-label",
+      "tag": "span",
+      "rect": {
+        "x": 708.796875,
+        "y": 736.4915161132812,
+        "width": 182.203125,
+        "height": 19,
+        "top": 736.4915161132812,
+        "right": 891,
+        "bottom": 755.4915161132812,
+        "left": 708.796875
+      },
+      "client": {
+        "width": 182,
+        "height": 19
+      },
+      "scroll": {
+        "width": 182,
+        "height": 19,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.footer:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 576.015625,
+        "y": 768,
+        "width": 127.953125,
+        "height": 16,
+        "top": 768,
+        "right": 703.96875,
+        "bottom": 784,
+        "left": 576.015625
+      },
+      "client": {
+        "width": 128,
+        "height": 16
+      },
+      "scroll": {
+        "width": 128,
+        "height": 16,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.footer:nth-of-type(3) > a",
+      "tag": "a",
+      "rect": {
+        "x": 661.328125,
+        "y": 768,
+        "width": 42.640625,
+        "height": 16,
+        "top": 768,
+        "right": 703.96875,
+        "bottom": 784,
+        "left": 661.328125
+      },
+      "client": {
+        "width": 0,
+        "height": 0
+      },
+      "scroll": {
+        "width": 0,
+        "height": 0,
+        "top": 0,
+        "left": 0
+      }
+    }
+  ]
+}
