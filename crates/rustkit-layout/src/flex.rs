@@ -99,6 +99,16 @@ pub struct FlexItem<'a> {
 
     /// Outer margin on cross axis end.
     pub cross_margin_end: f32,
+
+    /// Content size on the cross axis measured by the normal-flow pre-pass
+    /// (layout_block runs before flex and leaves real dimensions on every
+    /// child). Used as the hypothetical cross size for non-stretch items.
+    pub measured_cross_size: f32,
+
+    /// Definite cross-size from the style (height for row axis, width for
+    /// column axis), if any. Stretch only applies when this is None
+    /// (§9.4.11 — a definite cross size wins over align-items: stretch).
+    pub explicit_cross_size: Option<f32>,
 }
 
 impl<'a> FlexItem<'a> {
@@ -248,8 +258,93 @@ pub fn layout_flex_container(
         align_cross_axis(line, style.align_items);
     }
 
-    // 10. Apply final positions to layout boxes
-    apply_positions(&mut lines, main_axis, direction.is_reverse(), wrap == FlexWrap::WrapReverse);
+    // 10. Apply final positions to layout boxes.
+    // Positions computed above are container-relative; translate by the
+    // container's content origin so item rects stay in the same absolute
+    // frame as every other box in the tree (the normal-flow pre-pass wrote
+    // absolute coordinates — overwriting them with relative ones put flex
+    // items in a different coordinate space from their own descendants).
+    let container_origin = (containing_block.content.x, containing_block.content.y);
+    apply_positions(&mut lines, main_axis, direction.is_reverse(), wrap == FlexWrap::WrapReverse, container_origin);
+
+    // 11. Recursively lay out children of flex items. apply_positions just
+    // moved/resized every item, so their subtrees (laid out by the pre-pass
+    // against stale geometry) must be re-laid against the final rects.
+    // Without this step every flex item's subtree keeps pre-flex geometry —
+    // the zero-width tree of the 2026-07-07 Windows baseline.
+    for line in &mut lines {
+        for item in &mut line.items {
+            if !item.layout_box.children.is_empty() {
+                if item.layout_box.style.display.is_flex() {
+                    // Nested flex container: recursively apply flex layout
+                    let child_containing = item.layout_box.dimensions.clone();
+                    layout_flex_container(item.layout_box, &child_containing);
+                } else {
+                    // Block container: normal flow from the item's content
+                    // top. (Per-child clones of the item's FINAL dimensions
+                    // would stack every child at the bottom edge — block
+                    // layout uses content.height as the flow cursor. Same
+                    // fix as macOS hiwave-macos#3.)
+                    item.layout_box.layout_block_children();
+                }
+            }
+        }
+    }
+
+    // 11b. Recompute cross sizes now that children hold real geometry —
+    // resolves the chicken-and-egg between item cross size and child heights.
+    for line in &mut lines {
+        for item in &mut line.items {
+            if !item.layout_box.children.is_empty() {
+                let children_height: f32 = item.layout_box.children
+                    .iter()
+                    .map(|c| c.dimensions.margin_box().height)
+                    .sum();
+
+                if children_height > 0.0 && children_height > item.cross_size {
+                    item.cross_size = children_height.max(item.min_cross_size).min(item.max_cross_size);
+                    match cross_axis {
+                        Axis::Vertical => {
+                            if item.layout_box.dimensions.content.height < children_height {
+                                item.layout_box.dimensions.content.height = children_height;
+                            }
+                        }
+                        Axis::Horizontal => {
+                            if item.layout_box.dimensions.content.width < children_height {
+                                item.layout_box.dimensions.content.width = children_height;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        line.cross_size = line.items
+            .iter()
+            .map(|i| i.cross_size + i.cross_margin_start + i.cross_margin_end)
+            .fold(0.0, f32::max);
+    }
+
+    // 12. Update the container's auto height from the flexed content —
+    // layout_block computed it from the pre-flex normal-flow pass, which is
+    // stale once items have been repositioned.
+    if !lines.is_empty() {
+        let max_main: f32 = lines.iter()
+            .flat_map(|l| l.items.iter())
+            .map(|item| item.main_position + item.target_main_size)
+            .fold(0.0f32, f32::max);
+        let total_cross: f32 = lines.iter().map(|l| l.cross_size).sum::<f32>()
+            + cross_gap * (lines.len().saturating_sub(1)) as f32;
+
+        if container.dimensions.content.height == 0.0
+            || matches!(container.style.height, Length::Auto)
+        {
+            container.dimensions.content.height = match main_axis {
+                Axis::Horizontal => total_cross,
+                Axis::Vertical => max_main,
+            };
+        }
+    }
 }
 
 /// Create a FlexItem from a LayoutBox.
@@ -282,19 +377,46 @@ fn create_flex_item<'a>(
         ),
     };
 
+    // Definite cross size from style, if any (Auto/Zero = unset).
+    let explicit_cross = {
+        let cross_len = match main_axis {
+            Axis::Horizontal => &layout_box.style.height,
+            Axis::Vertical => &layout_box.style.width,
+        };
+        match cross_len {
+            Length::Auto | Length::Zero => None,
+            l => Some(resolve_length(l, container_cross)),
+        }
+    };
+
+    // Content size measured by the normal-flow pre-pass: LayoutBox::layout
+    // runs layout_block() on the container BEFORE flex, so every child
+    // already carries real dimensions. This is what makes flex-basis:auto
+    // (§9.2.3) and hypothetical cross sizes resolvable without a separate
+    // measurement pass — basis 0.0 here is why every auto-sized flex item
+    // used to collapse to zero width.
+    let (measured_main, measured_cross) = match main_axis {
+        Axis::Horizontal => (
+            layout_box.dimensions.content.width,
+            layout_box.dimensions.content.height,
+        ),
+        Axis::Vertical => (
+            layout_box.dimensions.content.height,
+            layout_box.dimensions.content.width,
+        ),
+    };
+
     // Calculate flex basis
     let flex_basis = match flex_basis_value {
         FlexBasis::Auto => {
-            // Use main size property
-            match main_axis {
+            // Main size property if definite, else the measured content size
+            let explicit = match main_axis {
                 Axis::Horizontal => resolve_length(&layout_box.style.width, container_main),
                 Axis::Vertical => resolve_length(&layout_box.style.height, container_main),
-            }
+            };
+            if explicit > 0.0 { explicit } else { measured_main }
         }
-        FlexBasis::Content => {
-            // Use content size (simplified - would need actual content measurement)
-            0.0
-        }
+        FlexBasis::Content => measured_main,
         FlexBasis::Length(len) => len,
         FlexBasis::Percent(pct) => pct / 100.0 * container_main,
     };
@@ -339,6 +461,8 @@ fn create_flex_item<'a>(
         main_margin_end,
         cross_margin_start,
         cross_margin_end,
+        measured_cross_size: measured_cross,
+        explicit_cross_size: explicit_cross,
     }
 }
 
@@ -494,13 +618,18 @@ fn calculate_cross_sizes(line: &mut FlexLine, container_cross: f32, align_items:
             }
         };
 
-        if align == AlignItems::Stretch {
-            // Stretch to fill line (will be adjusted later)
+        // §9.4.11: stretch applies only when the item's cross size is auto;
+        // a definite cross size always wins. And stretching into an
+        // indefinite (0) container cross would collapse the item — fall back
+        // to the hypothetical size instead.
+        let hypothetical = item.explicit_cross_size.unwrap_or(item.measured_cross_size);
+        if align == AlignItems::Stretch
+            && item.explicit_cross_size.is_none()
+            && container_cross > 0.0
+        {
             item.cross_size = container_cross - item.cross_margin_start - item.cross_margin_end;
         } else {
-            // Use hypothetical cross size (content-based)
-            // For simplicity, use min_cross_size as a placeholder
-            item.cross_size = item.min_cross_size;
+            item.cross_size = hypothetical.max(item.min_cross_size);
         }
 
         // Clamp to min/max
@@ -652,11 +781,14 @@ fn align_cross_axis(line: &mut FlexLine, align_items: AlignItems) {
 }
 
 /// Apply computed positions to layout boxes.
+/// `origin` is the container's content origin — item positions are computed
+/// container-relative and must land in the tree's absolute frame.
 fn apply_positions(
     lines: &mut [FlexLine],
     main_axis: Axis,
     _reverse_main: bool,
     reverse_cross: bool,
+    origin: (f32, f32),
 ) {
     let lines_iter: Box<dyn Iterator<Item = &mut FlexLine>> = if reverse_cross {
         Box::new(lines.iter_mut().rev())
@@ -681,10 +813,10 @@ fn apply_positions(
                 ),
             };
 
-            // Update layout box dimensions
+            // Update layout box dimensions (absolute frame)
             item.layout_box.dimensions.content = Rect {
-                x,
-                y,
+                x: origin.0 + x,
+                y: origin.1 + y,
                 width,
                 height,
             };
@@ -720,10 +852,14 @@ fn resolve_length(length: &Length, container_size: f32) -> f32 {
     }
 }
 
-/// Resolve a max Length (returns f32::INFINITY for Auto).
+/// Resolve a max Length (returns f32::INFINITY when unconstrained).
+/// Length::Zero is the ComputedStyle derive-default meaning "unset" — the
+/// CSS initial value for max-width/max-height is `none`, not 0. Treating it
+/// as a real 0 ceiling clamped EVERY flex item's hypothetical size to zero
+/// (root cause of the 2026-07-07 Windows zero-width baseline).
 fn resolve_max_length(length: &Length, container_size: f32) -> f32 {
     match length {
-        Length::Auto => f32::INFINITY,
+        Length::Auto | Length::Zero => f32::INFINITY,
         _ => resolve_length(length, container_size),
     }
 }
@@ -816,6 +952,111 @@ mod tests {
         let child1_width = container.children[0].dimensions.content.width;
         let child2_width = container.children[1].dimensions.content.width;
         assert!((child1_width - child2_width).abs() < 1.0);
+    }
+
+    // ── trench regression tests (2026-07-08 Windows baseline fixes) ──
+
+    #[test]
+    fn test_auto_basis_uses_pre_pass_measurement() {
+        // width:auto item whose content was measured by the normal-flow
+        // pre-pass must NOT collapse to zero main size (§9.2.3 basis auto).
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let child_style = ComputedStyle::new(); // width auto, no grow
+        let mut child = LayoutBox::new(BoxType::Block, child_style);
+        child.dimensions.content = Rect::new(0.0, 0.0, 240.0, 60.0); // pre-pass result
+        container.children.push(child);
+
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        assert_eq!(container.children[0].dimensions.content.width, 240.0);
+        assert!(container.children[0].dimensions.content.height > 0.0);
+    }
+
+    #[test]
+    fn test_positions_land_in_absolute_frame() {
+        // Container content origin at (50, 70): first item must be placed at
+        // that origin, not at (0, 0) — flex output shares the tree's frame.
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let mut child_style = ComputedStyle::new();
+        child_style.width = Length::Px(100.0);
+        child_style.height = Length::Px(40.0);
+        container.children.push(LayoutBox::new(BoxType::Block, child_style));
+
+        let containing = Dimensions {
+            content: Rect::new(50.0, 70.0, 400.0, 300.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        assert_eq!(container.children[0].dimensions.content.x, 50.0);
+        assert_eq!(container.children[0].dimensions.content.y, 70.0);
+    }
+
+    #[test]
+    fn test_item_subtree_relaid_after_flex() {
+        // A block flex item's own children must be laid out against the
+        // item's FINAL rect (step 11) — not left with stale/zero geometry.
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let mut item_style = ComputedStyle::new();
+        item_style.width = Length::Px(300.0);
+        item_style.height = Length::Px(200.0);
+        let mut item = LayoutBox::new(BoxType::Block, item_style);
+
+        let mut grandchild_style = ComputedStyle::new();
+        grandchild_style.width = Length::Auto; // cascade default (::new() is Zero)
+        grandchild_style.height = Length::Px(50.0);
+        item.children.push(LayoutBox::new(BoxType::Block, grandchild_style));
+        container.children.push(item);
+
+        let containing = Dimensions {
+            content: Rect::new(10.0, 20.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        let item_rect = container.children[0].dimensions.content;
+        let gc = container.children[0].children[0].dimensions.content;
+        // Grandchild starts at the item's content top (normal flow), not its
+        // bottom edge, not (0,0), and spans the item's width.
+        assert_eq!(gc.y, item_rect.y);
+        assert_eq!(gc.x, item_rect.x);
+        assert_eq!(gc.height, 50.0);
+        assert!(gc.width > 0.0);
+    }
+
+    #[test]
+    fn test_container_auto_height_updated_from_flex_extent() {
+        // Row container with auto height: content height must reflect the
+        // tallest line after flex, not the stale pre-pass value.
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let mut child_style = ComputedStyle::new();
+        child_style.width = Length::Px(100.0);
+        child_style.height = Length::Px(120.0);
+        container.children.push(LayoutBox::new(BoxType::Block, child_style));
+
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 400.0, 0.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        assert_eq!(container.dimensions.content.height, 120.0);
     }
 
     #[test]

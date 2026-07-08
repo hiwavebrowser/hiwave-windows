@@ -946,6 +946,14 @@ impl ComputedStyle {
             text_decoration_thickness: Length::Auto,
             // Flexbox item defaults
             flex_shrink: 1.0, // Default is 1, not 0
+            // CSS initial values: width/height are `auto`, max-width/max-height
+            // are `none` (no constraint). The derive-default Length::Zero made
+            // every unstyled element lay out at width 0 — the zero-width tree
+            // in the 2026-07-07 Windows parity baseline.
+            width: Length::Auto,
+            height: Length::Auto,
+            max_width: Length::Auto,
+            max_height: Length::Auto,
             ..Default::default()
         }
     }
@@ -977,7 +985,14 @@ impl ComputedStyle {
             text_decoration_style: TextDecorationStyle::Solid,
             text_decoration_thickness: Length::Auto,
 
-            // Non-inherited get defaults
+            // Non-inherited sizing gets CSS initial values (see new())
+            width: Length::Auto,
+            height: Length::Auto,
+            max_width: Length::Auto,
+            max_height: Length::Auto,
+            flex_shrink: 1.0,
+
+            // Remaining non-inherited get defaults
             ..Default::default()
         }
     }
