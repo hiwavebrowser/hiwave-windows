@@ -1,0 +1,16 @@
+# Vendor masking for the trench campaign (BASELINE-windows.md).
+# aleph's default mask only catches vendor/, third_party/, thirdparty/ —
+# this repo vendors under deps/, and build/capture output must never be indexed.
+deps/
+target/
+.browsers/
+parity-baseline/
+parity-history/
+parity-results/
+baselines/
+websuite/captures/
+websuite/baselines/
+websuite/diffs/
+websuite/live-site-results/
+churn-reports/
+test-infrastructure/venv/
