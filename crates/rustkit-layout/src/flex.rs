@@ -293,25 +293,36 @@ pub fn layout_flex_container(
 
     // 11b. Recompute cross sizes now that children hold real geometry —
     // resolves the chicken-and-egg between item cross size and child heights.
+    // The cross-extent of a block item's children depends on the axis: in a
+    // row container (cross = vertical) children stack, so it's the HEIGHT
+    // SUM; in a column container (cross = horizontal) it's the WIDEST child
+    // (a height-sum written into width corrupts narrow column items — Atlas
+    // review of PR #5).
     for line in &mut lines {
         for item in &mut line.items {
             if !item.layout_box.children.is_empty() {
-                let children_height: f32 = item.layout_box.children
-                    .iter()
-                    .map(|c| c.dimensions.margin_box().height)
-                    .sum();
+                let children_cross_extent: f32 = match cross_axis {
+                    Axis::Vertical => item.layout_box.children
+                        .iter()
+                        .map(|c| c.dimensions.margin_box().height)
+                        .sum(),
+                    Axis::Horizontal => item.layout_box.children
+                        .iter()
+                        .map(|c| c.dimensions.margin_box().width)
+                        .fold(0.0, f32::max),
+                };
 
-                if children_height > 0.0 && children_height > item.cross_size {
-                    item.cross_size = children_height.max(item.min_cross_size).min(item.max_cross_size);
+                if children_cross_extent > 0.0 && children_cross_extent > item.cross_size {
+                    item.cross_size = children_cross_extent.max(item.min_cross_size).min(item.max_cross_size);
                     match cross_axis {
                         Axis::Vertical => {
-                            if item.layout_box.dimensions.content.height < children_height {
-                                item.layout_box.dimensions.content.height = children_height;
+                            if item.layout_box.dimensions.content.height < children_cross_extent {
+                                item.layout_box.dimensions.content.height = children_cross_extent;
                             }
                         }
                         Axis::Horizontal => {
-                            if item.layout_box.dimensions.content.width < children_height {
-                                item.layout_box.dimensions.content.width = children_height;
+                            if item.layout_box.dimensions.content.width < children_cross_extent {
+                                item.layout_box.dimensions.content.width = children_cross_extent;
                             }
                         }
                     }
@@ -1035,6 +1046,39 @@ mod tests {
         assert_eq!(gc.x, item_rect.x);
         assert_eq!(gc.height, 50.0);
         assert!(gc.width > 0.0);
+    }
+
+    #[test]
+    fn test_column_item_width_not_corrupted_by_tall_children() {
+        // Column-direction container (cross axis = horizontal): a 200px-wide
+        // item whose children stack to 500px tall must KEEP width 200 —
+        // 11b must not write the children's height-sum into content.width
+        // (Atlas cross-seat review of PR #5).
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Column;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let mut item_style = ComputedStyle::new();
+        item_style.width = Length::Px(200.0);
+        item_style.height = Length::Px(500.0);
+        let mut item = LayoutBox::new(BoxType::Block, item_style);
+        for _ in 0..2 {
+            let mut gc_style = ComputedStyle::new();
+            gc_style.width = Length::Auto;
+            gc_style.height = Length::Px(250.0);
+            item.children.push(LayoutBox::new(BoxType::Block, gc_style));
+        }
+        container.children.push(item);
+
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        assert_eq!(container.children[0].dimensions.content.width, 200.0);
+        assert_eq!(container.children[0].dimensions.content.height, 500.0);
     }
 
     #[test]
