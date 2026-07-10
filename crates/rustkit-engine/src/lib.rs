@@ -21,7 +21,7 @@ pub use rustkit_bindings::IpcMessage;
 pub use rustkit_renderer::{RenderStats, ScreenshotMetadata};
 use rustkit_compositor::Compositor;
 use rustkit_core::{LoadEvent, NavigationRequest, NavigationStateMachine};
-use rustkit_css::ComputedStyle;
+use rustkit_css::{ComputedStyle, Length, PropertyValue, Stylesheet};
 use rustkit_dom::{Document, Node, NodeType};
 use rustkit_image::ImageManager;
 use rustkit_js::JsRuntime;
@@ -791,6 +791,16 @@ impl Engine {
         root_style.background_color = rustkit_css::Color::WHITE;
         let mut root_box = LayoutBox::new(BoxType::Block, root_style);
 
+        // Collect and parse author stylesheets from <style> elements so the
+        // cascade can apply them (previously only UA defaults + inline applied,
+        // so every `<style>` rule — backgrounds, class selectors, sizes — was
+        // silently ignored).
+        let mut css_text = String::new();
+        self.collect_style_text(&document.root(), &mut css_text);
+        let sheet = Stylesheet::parse(&css_text).unwrap_or_else(|_| Stylesheet::new());
+        info!(rule_count = sheet.rules.len(), css_len = css_text.len(), "CSS: author stylesheet parsed");
+        let root_inherited = ComputedStyle::new();
+
         // Debug: print root children to understand DOM structure
         let root_children = document.root().children();
         info!(
@@ -830,7 +840,7 @@ impl Engine {
                 }
             }
             
-            let body_box = self.build_layout_from_node(&body);
+            let body_box = self.build_layout_from_node(&body, &sheet, &root_inherited);
             info!(
                 layout_children = body_box.children.len(),
                 "Layout: body box built"
@@ -847,7 +857,7 @@ impl Engine {
                     info!(index = i, tag = %tag_name, "DOM: html child");
                 }
             }
-            let html_box = self.build_layout_from_node(&html);
+            let html_box = self.build_layout_from_node(&html, &sheet, &root_inherited);
             root_box.children.push(html_box);
         } else {
             warn!("DOM: no body or html element found");
@@ -857,7 +867,12 @@ impl Engine {
     }
 
     /// Build a layout box from a DOM node.
-    fn build_layout_from_node(&self, node: &Rc<Node>) -> LayoutBox {
+    fn build_layout_from_node(
+        &self,
+        node: &Rc<Node>,
+        sheet: &Stylesheet,
+        parent: &ComputedStyle,
+    ) -> LayoutBox {
         match &node.node_type {
             NodeType::Element { tag_name, attributes, .. } => {
                 // Determine box type based on tag
@@ -883,8 +898,9 @@ impl Engine {
                     BoxType::Block
                 };
 
-                // Create computed style based on element and attributes
-                let style = self.compute_style_for_element(tag_name, attributes);
+                // Create computed style: inheritance + UA defaults + author
+                // stylesheet (selector-matched) + inline.
+                let style = self.compute_style_for_element(tag_name, attributes, sheet, parent);
 
                 let mut layout_box = LayoutBox::new(box_type, style);
 
@@ -892,9 +908,9 @@ impl Engine {
                 let dom_children = node.children();
                 trace!(tag = %tag_name, dom_children = dom_children.len(), "Processing element");
 
-                // Process children
+                // Process children, inheriting from this element's computed style.
                 for child in dom_children {
-                    let child_box = self.build_layout_from_node(&child);
+                    let child_box = self.build_layout_from_node(&child, sheet, &layout_box.style);
                     // Add all boxes - don't filter based on children
                     // The display list builder will handle empty boxes
                     layout_box.children.push(child_box);
@@ -903,20 +919,20 @@ impl Engine {
                 layout_box
             }
             NodeType::Text(text) => {
-                // Create text box for non-empty text
+                // Create text box for non-empty text. Text inherits its parent's
+                // font/color so headings, colored spans, etc. reach the glyphs
+                // (a fresh default here rendered every run at 16px black).
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
-                    // Return minimal box for whitespace-only text
-                    LayoutBox::new(BoxType::Block, ComputedStyle::new())
+                    LayoutBox::new(BoxType::Block, ComputedStyle::inherit_from(parent))
                 } else {
-                    let mut style = ComputedStyle::new();
-                    style.color = rustkit_css::Color::BLACK;
+                    let style = ComputedStyle::inherit_from(parent);
                     LayoutBox::new(BoxType::Text(trimmed.to_string()), style)
                 }
             }
             _ => {
                 // For other node types (Document, Comment, etc.), return empty box
-                LayoutBox::new(BoxType::Block, ComputedStyle::new())
+                LayoutBox::new(BoxType::Block, ComputedStyle::inherit_from(parent))
             }
         }
     }
@@ -926,11 +942,13 @@ impl Engine {
         &self,
         tag_name: &str,
         attributes: &std::collections::HashMap<String, String>,
+        sheet: &Stylesheet,
+        parent: &ComputedStyle,
     ) -> ComputedStyle {
-        let mut style = ComputedStyle::new();
-        style.color = rustkit_css::Color::BLACK;
+        // 1. Start from inherited properties (color, font-*, line-height, ...).
+        let mut style = ComputedStyle::inherit_from(parent);
 
-        // Apply tag-specific default styles
+        // 2. Apply tag-specific user-agent default styles
         match tag_name.to_lowercase().as_str() {
             "body" => {
                 style.background_color = rustkit_css::Color::WHITE;
@@ -999,12 +1017,130 @@ impl Engine {
             _ => {}
         }
 
-        // Parse inline style attribute if present
+        // 3. Author stylesheet rules, selector-matched, applied by
+        //    (specificity, source order) so later/more-specific rules win.
+        let classes: Vec<&str> = attributes
+            .get("class")
+            .map(|c| c.split_whitespace().collect())
+            .unwrap_or_default();
+        let id = attributes.get("id").map(|s| s.as_str());
+        let mut matched: Vec<(u32, usize)> = Vec::new();
+        for (i, rule) in sheet.rules.iter().enumerate() {
+            if let Some(spec) = Self::selector_matches(&rule.selector, tag_name, &classes, id) {
+                matched.push((spec, i));
+            }
+        }
+        matched.sort_by_key(|&(spec, i)| (spec, i));
+        for (_, i) in matched {
+            for decl in &sheet.rules[i].declarations {
+                if let PropertyValue::Specified(v) = &decl.value {
+                    self.apply_declaration(&mut style, &decl.property, v);
+                }
+            }
+        }
+
+        // 4. Inline style attribute (highest priority).
         if let Some(style_attr) = attributes.get("style") {
             self.apply_inline_style(&mut style, style_attr);
         }
 
         style
+    }
+
+    /// Test whether a CSS selector matches an element, returning its
+    /// specificity if so. Supports comma groups, `*`, type, `.class`, `#id`,
+    /// and compounds (`div.foo`, `h1#bar`). For descendant selectors
+    /// (`.card p`) only the rightmost compound (the subject) is matched — an
+    /// approximation that covers the common cases without ancestor context.
+    fn selector_matches(
+        selector: &str,
+        tag: &str,
+        classes: &[&str],
+        id: Option<&str>,
+    ) -> Option<u32> {
+        let mut best: Option<u32> = None;
+        for group in selector.split(',') {
+            let group = group.trim();
+            if group.is_empty() {
+                continue;
+            }
+            // Subject = rightmost compound selector.
+            let subject = group.split_whitespace().last().unwrap_or(group);
+            if let Some(spec) = Self::simple_selector_match(subject, tag, classes, id) {
+                best = Some(best.map_or(spec, |b| b.max(spec)));
+            }
+        }
+        best
+    }
+
+    /// Match a single compound selector (no combinators) like `div.foo#bar`.
+    fn simple_selector_match(
+        sel: &str,
+        tag: &str,
+        classes: &[&str],
+        id: Option<&str>,
+    ) -> Option<u32> {
+        let mut spec = 0u32;
+        // Leading type selector (up to the first '.' or '#').
+        let first_special = sel.find(['.', '#']).unwrap_or(sel.len());
+        let type_sel = &sel[..first_special];
+        if !type_sel.is_empty() && type_sel != "*" {
+            if !type_sel.eq_ignore_ascii_case(tag) {
+                return None;
+            }
+            spec += 1;
+        }
+        // Remaining `.class` / `#id` segments.
+        let rest = &sel[first_special..];
+        let bytes = rest.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let kind = bytes[i];
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != b'.' && bytes[j] != b'#' {
+                j += 1;
+            }
+            let name = &rest[start..j];
+            if name.is_empty() {
+                return None;
+            }
+            match kind {
+                b'.' => {
+                    if !classes.iter().any(|c| *c == name) {
+                        return None;
+                    }
+                    spec += 10;
+                }
+                b'#' => {
+                    if id != Some(name) {
+                        return None;
+                    }
+                    spec += 100;
+                }
+                _ => return None,
+            }
+            i = j;
+        }
+        Some(spec)
+    }
+
+    /// Recursively gather the text content of every `<style>` element.
+    fn collect_style_text(&self, node: &Rc<Node>, out: &mut String) {
+        if let NodeType::Element { tag_name, .. } = &node.node_type {
+            if tag_name.eq_ignore_ascii_case("style") {
+                for child in node.children() {
+                    if let NodeType::Text(t) = &child.node_type {
+                        out.push_str(t);
+                        out.push('\n');
+                    }
+                }
+                return;
+            }
+        }
+        for child in node.children() {
+            self.collect_style_text(&child, out);
+        }
     }
 
     /// Apply inline style attribute to computed style.
@@ -1015,48 +1151,234 @@ impl Engine {
                 continue;
             }
             if let Some((property, value)) = declaration.split_once(':') {
-                let property = property.trim().to_lowercase();
-                let value = value.trim();
+                self.apply_declaration(style, property.trim(), value.trim());
+            }
+        }
+    }
 
-                match property.as_str() {
-                    "color" => {
-                        if let Some(color) = parse_color(value) {
-                            style.color = color;
-                        }
-                    }
-                    "background-color" | "background" => {
-                        if let Some(color) = parse_color(value) {
-                            style.background_color = color;
-                        }
-                    }
-                    "font-size" => {
-                        if let Some(length) = parse_length(value) {
-                            style.font_size = length;
-                        }
-                    }
-                    "font-weight" => {
-                        if value == "bold" || value == "700" || value == "800" || value == "900" {
-                            style.font_weight = rustkit_css::FontWeight::BOLD;
-                        }
-                    }
-                    "margin" => {
-                        if let Some(length) = parse_length(value) {
-                            style.margin_top = length;
-                            style.margin_right = length;
-                            style.margin_bottom = length;
-                            style.margin_left = length;
-                        }
-                    }
-                    "padding" => {
-                        if let Some(length) = parse_length(value) {
-                            style.padding_top = length;
-                            style.padding_right = length;
-                            style.padding_bottom = length;
-                            style.padding_left = length;
-                        }
-                    }
-                    _ => {}
+    /// Apply a single `property: value` declaration to a computed style.
+    /// Shared by the inline-style and author-stylesheet paths.
+    fn apply_declaration(&self, style: &mut ComputedStyle, property: &str, value: &str) {
+        let property = property.to_lowercase();
+        let value = value.trim();
+        match property.as_str() {
+            "color" => {
+                if let Some(c) = parse_color(value) {
+                    style.color = c;
                 }
+            }
+            "background-color" | "background" => {
+                // `background` shorthand: use the first token that parses as a color.
+                let color = if property == "background" {
+                    value.split_whitespace().find_map(parse_color)
+                } else {
+                    parse_color(value)
+                };
+                if let Some(c) = color {
+                    style.background_color = c;
+                }
+            }
+            "font-size" => {
+                if let Some(l) = parse_length(value) {
+                    style.font_size = l;
+                }
+            }
+            "font-weight" => {
+                if matches!(value, "bold" | "600" | "700" | "800" | "900") {
+                    style.font_weight = rustkit_css::FontWeight::BOLD;
+                } else {
+                    style.font_weight = rustkit_css::FontWeight::NORMAL;
+                }
+            }
+            "font-style" => {
+                if value == "italic" || value == "oblique" {
+                    style.font_style = rustkit_css::FontStyle::Italic;
+                }
+            }
+            "font-family" => {
+                let fam = value.split(',').next().unwrap_or(value).trim();
+                let fam = fam.trim_matches(['"', '\'']);
+                if !fam.is_empty() {
+                    style.font_family = fam.to_string();
+                }
+            }
+            "line-height" => {
+                if let Ok(n) = value.parse::<f32>() {
+                    style.line_height = n;
+                } else if let Some(Length::Px(px)) = parse_length(value) {
+                    if let Length::Px(fs) = style.font_size {
+                        if fs > 0.0 {
+                            style.line_height = px / fs;
+                        }
+                    }
+                }
+            }
+            "text-align" => {
+                style.text_align = match value {
+                    "center" => rustkit_css::TextAlign::Center,
+                    "right" => rustkit_css::TextAlign::Right,
+                    "justify" => rustkit_css::TextAlign::Justify,
+                    _ => rustkit_css::TextAlign::Left,
+                };
+            }
+            "width" => {
+                if let Some(l) = parse_length(value) {
+                    style.width = l;
+                }
+            }
+            "height" => {
+                if let Some(l) = parse_length(value) {
+                    style.height = l;
+                }
+            }
+            "min-width" => {
+                if let Some(l) = parse_length(value) {
+                    style.min_width = l;
+                }
+            }
+            "max-width" => {
+                if let Some(l) = parse_length(value) {
+                    style.max_width = l;
+                }
+            }
+            "min-height" => {
+                if let Some(l) = parse_length(value) {
+                    style.min_height = l;
+                }
+            }
+            "max-height" => {
+                if let Some(l) = parse_length(value) {
+                    style.max_height = l;
+                }
+            }
+            "margin" => self.apply_box_shorthand(value, |s, l| {
+                s.margin_top = l;
+                s.margin_right = l;
+                s.margin_bottom = l;
+                s.margin_left = l;
+            }, style),
+            "margin-top" => {
+                if let Some(l) = parse_length(value) { style.margin_top = l; }
+            }
+            "margin-right" => {
+                if let Some(l) = parse_length(value) { style.margin_right = l; }
+            }
+            "margin-bottom" => {
+                if let Some(l) = parse_length(value) { style.margin_bottom = l; }
+            }
+            "margin-left" => {
+                if let Some(l) = parse_length(value) { style.margin_left = l; }
+            }
+            "padding" => self.apply_box_shorthand(value, |s, l| {
+                s.padding_top = l;
+                s.padding_right = l;
+                s.padding_bottom = l;
+                s.padding_left = l;
+            }, style),
+            "padding-top" => {
+                if let Some(l) = parse_length(value) { style.padding_top = l; }
+            }
+            "padding-right" => {
+                if let Some(l) = parse_length(value) { style.padding_right = l; }
+            }
+            "padding-bottom" => {
+                if let Some(l) = parse_length(value) { style.padding_bottom = l; }
+            }
+            "padding-left" => {
+                if let Some(l) = parse_length(value) { style.padding_left = l; }
+            }
+            "border" => {
+                // `<width> <style> <color>` in any order; ignore the line style.
+                let mut w = None;
+                let mut c = None;
+                for tok in value.split_whitespace() {
+                    if let Some(l) = parse_length(tok) {
+                        w = Some(l);
+                    } else if let Some(col) = parse_color(tok) {
+                        c = Some(col);
+                    }
+                }
+                let w = w.unwrap_or(Length::Px(1.0));
+                style.border_top_width = w;
+                style.border_right_width = w;
+                style.border_bottom_width = w;
+                style.border_left_width = w;
+                if let Some(col) = c {
+                    style.border_top_color = col;
+                    style.border_right_color = col;
+                    style.border_bottom_color = col;
+                    style.border_left_color = col;
+                }
+            }
+            "border-color" => {
+                if let Some(c) = parse_color(value) {
+                    style.border_top_color = c;
+                    style.border_right_color = c;
+                    style.border_bottom_color = c;
+                    style.border_left_color = c;
+                }
+            }
+            "border-width" => {
+                if let Some(l) = parse_length(value) {
+                    style.border_top_width = l;
+                    style.border_right_width = l;
+                    style.border_bottom_width = l;
+                    style.border_left_width = l;
+                }
+            }
+            "display" => {
+                if let Some(d) = rustkit_css::parse_display(value) {
+                    style.display = d;
+                }
+            }
+            "flex-direction" => {
+                style.flex_direction = match value {
+                    "column" => rustkit_css::FlexDirection::Column,
+                    "row-reverse" => rustkit_css::FlexDirection::RowReverse,
+                    "column-reverse" => rustkit_css::FlexDirection::ColumnReverse,
+                    _ => rustkit_css::FlexDirection::Row,
+                };
+            }
+            "justify-content" => {
+                style.justify_content = match value {
+                    "center" => rustkit_css::JustifyContent::Center,
+                    "flex-end" | "end" => rustkit_css::JustifyContent::FlexEnd,
+                    "space-between" => rustkit_css::JustifyContent::SpaceBetween,
+                    "space-around" => rustkit_css::JustifyContent::SpaceAround,
+                    "space-evenly" => rustkit_css::JustifyContent::SpaceEvenly,
+                    _ => rustkit_css::JustifyContent::FlexStart,
+                };
+            }
+            "align-items" => {
+                style.align_items = match value {
+                    "center" => rustkit_css::AlignItems::Center,
+                    "flex-end" | "end" => rustkit_css::AlignItems::FlexEnd,
+                    "stretch" => rustkit_css::AlignItems::Stretch,
+                    _ => rustkit_css::AlignItems::FlexStart,
+                };
+            }
+            "gap" => {
+                if let Some(l) = parse_length(value) {
+                    style.row_gap = l;
+                    style.column_gap = l;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply a 1-value box shorthand (margin/padding). Only the common
+    /// single-value form is handled; multi-value forms fall back to the
+    /// first value on all sides.
+    fn apply_box_shorthand(
+        &self,
+        value: &str,
+        set: impl Fn(&mut ComputedStyle, Length),
+        style: &mut ComputedStyle,
+    ) {
+        if let Some(first) = value.split_whitespace().next() {
+            if let Some(l) = parse_length(first) {
+                set(style, l);
             }
         }
     }

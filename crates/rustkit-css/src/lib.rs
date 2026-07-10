@@ -992,6 +992,13 @@ impl ComputedStyle {
             max_height: Length::Auto,
             flex_shrink: 1.0,
 
+            // Non-inherited paint initials. background-color is NOT inherited;
+            // its initial value is `transparent`, and opacity's is 1.0 — without
+            // these, `..Default::default()` gives opaque black / 0.0, so every
+            // inheriting element painted a black box and could vanish.
+            background_color: Color::TRANSPARENT,
+            opacity: 1.0,
+
             // Remaining non-inherited get defaults
             ..Default::default()
         }
