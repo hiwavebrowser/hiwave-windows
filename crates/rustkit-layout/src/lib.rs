@@ -501,28 +501,20 @@ impl LayoutBox {
 
     /// Layout a text box.
     fn layout_text(&mut self, text: String, containing_block: &Dimensions) {
-        // Get font size
-        let font_size = match self.style.font_size {
-            Length::Px(px) => px,
-            _ => 16.0,
-        };
-
         // Wrap the text into lines that fit the available width, so a long
         // paragraph occupies multiple lines (and multiple lines of height)
         // instead of overflowing its container as one run.
         let avail = containing_block.content.width;
-        let lines = wrap_text(&text, avail, font_size);
+        let lines = wrap_text(&text, avail, &self.style);
         let line_height = self.get_line_height();
 
-        // Width = widest line (single-line: the text's width; wrapped: the
-        // available width). Height = one line-height per wrapped line.
-        let char_w = font_size * 0.5;
+        // Width = widest line's real shaped width (single-line: the text's
+        // width; wrapped: up to the available width). Height = one line-height
+        // per wrapped line.
         let widest = lines
             .iter()
-            .map(|l| l.chars().count())
-            .max()
-            .unwrap_or(0) as f32
-            * char_w;
+            .map(|l| measured_text_width(l, &self.style))
+            .fold(0.0f32, f32::max);
         let width = if lines.len() > 1 { avail } else { widest.min(avail) };
 
         // Position at containing block's content area
@@ -879,7 +871,115 @@ impl LayoutBox {
     }
 
     /// Layout block children.
+    /// True when this block establishes an inline formatting context: it holds
+    /// at least one inline-level element (`<strong>`, `<a>`, …) and no
+    /// block-level child that carries content. Whitespace-only anonymous blocks
+    /// are ignored.
+    fn is_inline_context(&self) -> bool {
+        let has_inline = self
+            .children
+            .iter()
+            .any(|c| matches!(c.box_type, BoxType::Inline));
+        let has_block_content = self.children.iter().any(|c| {
+            matches!(c.box_type, BoxType::Block | BoxType::AnonymousBlock)
+                && !c.children.is_empty()
+        });
+        has_inline && !has_block_content
+    }
+
+    /// Flow the inline runs of this block horizontally, wrapping at the content
+    /// width, and return the total height. Each leaf text run (including runs
+    /// nested inside inline elements) is positioned as a segment; a segment
+    /// wider than a full line gets its own wrapped line(s). Inter-segment gaps
+    /// approximate the collapsed whitespace between inline boxes.
+    fn layout_inline_context(&mut self) -> f32 {
+        let ox = self.dimensions.content.x;
+        let oy = self.dimensions.content.y;
+        let cw = self.dimensions.content.width;
+        let mut cx = 0.0f32;
+        let mut cy = 0.0f32;
+        let mut line_h = 0.0f32;
+        Self::flow_inline_boxes(&mut self.children, ox, oy, cw, &mut cx, &mut cy, &mut line_h);
+        cy + line_h
+    }
+
+    fn flow_inline_boxes(
+        children: &mut [LayoutBox],
+        origin_x: f32,
+        origin_y: f32,
+        content_width: f32,
+        cx: &mut f32,
+        cy: &mut f32,
+        line_h: &mut f32,
+    ) {
+        for child in children.iter_mut() {
+            // Recurse into inline containers; their leaf text carries the style.
+            if matches!(child.box_type, BoxType::Inline) {
+                Self::flow_inline_boxes(
+                    &mut child.children,
+                    origin_x,
+                    origin_y,
+                    content_width,
+                    cx,
+                    cy,
+                    line_h,
+                );
+                continue;
+            }
+            let text = match child.box_type {
+                BoxType::Text(ref t) => t.clone(),
+                _ => continue,
+            };
+            let font_size = match child.style.font_size {
+                Length::Px(px) => px,
+                _ => 16.0,
+            };
+            let lh = font_size
+                * if child.style.line_height > 0.0 {
+                    child.style.line_height
+                } else {
+                    1.2
+                };
+            // Real shaped width of the segment + a real space before the next
+            // one (was a 0.5*font_size estimate, which oversized every run and
+            // left loose gaps between inline pieces).
+            let seg_w = measured_text_width(&text, &child.style);
+            let space_w = font_size * 0.25;
+
+            if seg_w > content_width {
+                // Segment wider than a line: break to a fresh line and wrap it.
+                if *cx > 0.0 {
+                    *cx = 0.0;
+                    *cy += *line_h;
+                    *line_h = 0.0;
+                }
+                let n = wrap_text(&text, content_width, &child.style).len().max(1) as f32;
+                child.dimensions.content.x = origin_x;
+                child.dimensions.content.y = origin_y + *cy;
+                child.dimensions.content.width = content_width;
+                child.dimensions.content.height = lh * n;
+                *cy += lh * n;
+            } else {
+                if *cx + seg_w > content_width && *cx > 0.0 {
+                    *cx = 0.0;
+                    *cy += *line_h;
+                    *line_h = 0.0;
+                }
+                child.dimensions.content.x = origin_x + *cx;
+                child.dimensions.content.y = origin_y + *cy;
+                child.dimensions.content.width = seg_w;
+                child.dimensions.content.height = lh;
+                *cx += seg_w + space_w; // real space between segments
+                *line_h = line_h.max(lh);
+            }
+        }
+    }
+
     fn layout_block_children(&mut self) {
+        if self.is_inline_context() {
+            self.dimensions.content.height = self.layout_inline_context();
+            return;
+        }
         let mut cursor_y = 0.0;
 
         for child in &mut self.children {
@@ -907,6 +1007,10 @@ impl LayoutBox {
         margin_context: &mut MarginCollapseContext,
         float_context: &mut FloatContext,
     ) {
+        if self.is_inline_context() {
+            self.dimensions.content.height = self.layout_inline_context();
+            return;
+        }
         let mut cursor_y = 0.0;
 
         for child in &mut self.children {
@@ -1715,10 +1819,10 @@ impl DisplayList {
                     1.2
                 };
 
-            // Wrap to the box width (same estimate as layout) and emit one text
-            // command per line, stacked by line-height. Single-line text yields
-            // exactly one command.
-            let lines = wrap_text(text, text_width, font_size);
+            // Wrap to the box width (real shaped widths, matching layout) and
+            // emit one text command per line, stacked by line-height.
+            // Single-line text yields exactly one command.
+            let lines = wrap_text(text, text_width, style);
             for (i, line) in lines.iter().enumerate() {
                 self.commands.push(DisplayCommand::Text {
                     text: line.clone(),
@@ -1797,35 +1901,64 @@ impl DisplayList {
 
 /// Measure text using the text shaper.
 ///
-/// This provides accurate text measurement using DirectWrite on Windows.
 /// Greedily wrap `text` into lines that each fit within `max_width`, breaking
 /// only at whitespace. A single word wider than `max_width` OVERFLOWS on its
 /// own line rather than being force-broken (CSS `word-break: normal`, css-text-3
-/// §5.2). Width is estimated with the same `0.5 * font_size` per-character rule
-/// the rest of the layout uses, so wrapping and painting agree. Always returns
-/// at least one line.
-pub fn wrap_text(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
-    let char_w = font_size * 0.5;
+/// §5.2). Word widths are measured with the real DirectWrite shaper (via
+/// `measure_text_advanced`), so break points match what is actually painted
+/// instead of a `0.5 * font_size` per-character estimate. Always returns at
+/// least one line.
+pub fn wrap_text(text: &str, max_width: f32, style: &ComputedStyle) -> Vec<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return vec![String::new()];
     }
-    if max_width <= 0.0 || char_w <= 0.0 {
+    if max_width <= 0.0 {
         return vec![words.join(" ")];
     }
-    let max_chars = (max_width / char_w).floor().max(1.0) as usize;
+    let font_size = match style.font_size {
+        Length::Px(px) => px,
+        _ => 16.0,
+    };
+    // One shaper for the whole run; measure each fragment's real advance width.
+    let shaper = TextShaper::new();
+    let chain = FontFamilyChain::from_css_value(&style.font_family);
+    let measure = |s: &str| -> f32 {
+        shaper
+            .shape(
+                s,
+                &chain,
+                style.font_weight,
+                style.font_style,
+                rustkit_css::FontStretch::Normal,
+                font_size,
+            )
+            .map(|r| r.metrics.width)
+            .unwrap_or_else(|_| s.chars().count() as f32 * font_size * 0.5)
+    };
+
+    // Fast path: the whole run fits on one line (the common case).
+    if measure(text) <= max_width {
+        return vec![words.join(" ")];
+    }
+    let space_w = (measure("x x") - measure("xx")).max(font_size * 0.25);
 
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
+    let mut cur_w = 0.0f32;
     for word in words {
+        let ww = measure(word);
         if cur.is_empty() {
             cur.push_str(word);
-        } else if cur.chars().count() + 1 + word.chars().count() <= max_chars {
+            cur_w = ww;
+        } else if cur_w + space_w + ww <= max_width {
             cur.push(' ');
             cur.push_str(word);
+            cur_w += space_w + ww;
         } else {
             lines.push(std::mem::take(&mut cur));
             cur.push_str(word);
+            cur_w = ww;
         }
     }
     if !cur.is_empty() {
@@ -1835,6 +1968,23 @@ pub fn wrap_text(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+/// Real shaped width of `text` in the given style (DirectWrite advances),
+/// falling back to a rough estimate only if shaping is unavailable.
+pub fn measured_text_width(text: &str, style: &ComputedStyle) -> f32 {
+    let font_size = match style.font_size {
+        Length::Px(px) => px,
+        _ => 16.0,
+    };
+    measure_text_advanced(
+        text,
+        &style.font_family,
+        font_size,
+        style.font_weight,
+        style.font_style,
+    )
+    .width
 }
 
 pub fn measure_text_advanced(
@@ -2095,20 +2245,26 @@ mod tests {
         assert_eq!(paint_order[2].z_index, 1);
     }
 
+    fn wrap_style(px: f32) -> rustkit_css::ComputedStyle {
+        let mut s = rustkit_css::ComputedStyle::new();
+        s.font_size = rustkit_css::Length::Px(px);
+        s
+    }
+
     #[test]
     fn test_wrap_text_breaks_on_words() {
-        // At 20px font, char width ~= 10px; 100px => ~10 chars per line.
-        let lines = wrap_text("the quick brown fox jumps", 100.0, 20.0);
+        // The run is far wider than 100px at 20px, so it must wrap.
+        let lines = wrap_text("the quick brown fox jumps over", 100.0, &wrap_style(20.0));
         assert!(lines.len() > 1, "expected multiple lines, got {:?}", lines);
         for line in &lines {
             assert!(!line.starts_with(' ') && !line.ends_with(' '));
         }
-        assert_eq!(lines.join(" "), "the quick brown fox jumps");
+        assert_eq!(lines.join(" "), "the quick brown fox jumps over");
     }
 
     #[test]
     fn test_wrap_text_single_line_fits() {
-        let lines = wrap_text("short", 1000.0, 16.0);
+        let lines = wrap_text("short", 1000.0, &wrap_style(16.0));
         assert_eq!(lines, vec!["short".to_string()]);
     }
 
@@ -2116,7 +2272,7 @@ mod tests {
     fn test_wrap_text_long_word_overflows_not_broken() {
         // A single word wider than the line must NOT be force-broken
         // (word-break: normal) — it overflows on its own line.
-        let lines = wrap_text("antidisestablishmentarianism", 40.0, 20.0);
+        let lines = wrap_text("antidisestablishmentarianism", 40.0, &wrap_style(20.0));
         assert_eq!(lines, vec!["antidisestablishmentarianism".to_string()]);
     }
 }
