@@ -879,7 +879,112 @@ impl LayoutBox {
     }
 
     /// Layout block children.
+    /// True when this block establishes an inline formatting context: it holds
+    /// at least one inline-level element (`<strong>`, `<a>`, …) and no
+    /// block-level child that carries content. Whitespace-only anonymous blocks
+    /// are ignored.
+    fn is_inline_context(&self) -> bool {
+        let has_inline = self
+            .children
+            .iter()
+            .any(|c| matches!(c.box_type, BoxType::Inline));
+        let has_block_content = self.children.iter().any(|c| {
+            matches!(c.box_type, BoxType::Block | BoxType::AnonymousBlock)
+                && !c.children.is_empty()
+        });
+        has_inline && !has_block_content
+    }
+
+    /// Flow the inline runs of this block horizontally, wrapping at the content
+    /// width, and return the total height. Each leaf text run (including runs
+    /// nested inside inline elements) is positioned as a segment; a segment
+    /// wider than a full line gets its own wrapped line(s). Inter-segment gaps
+    /// approximate the collapsed whitespace between inline boxes.
+    fn layout_inline_context(&mut self) -> f32 {
+        let ox = self.dimensions.content.x;
+        let oy = self.dimensions.content.y;
+        let cw = self.dimensions.content.width;
+        let mut cx = 0.0f32;
+        let mut cy = 0.0f32;
+        let mut line_h = 0.0f32;
+        Self::flow_inline_boxes(&mut self.children, ox, oy, cw, &mut cx, &mut cy, &mut line_h);
+        cy + line_h
+    }
+
+    fn flow_inline_boxes(
+        children: &mut [LayoutBox],
+        origin_x: f32,
+        origin_y: f32,
+        content_width: f32,
+        cx: &mut f32,
+        cy: &mut f32,
+        line_h: &mut f32,
+    ) {
+        for child in children.iter_mut() {
+            // Recurse into inline containers; their leaf text carries the style.
+            if matches!(child.box_type, BoxType::Inline) {
+                Self::flow_inline_boxes(
+                    &mut child.children,
+                    origin_x,
+                    origin_y,
+                    content_width,
+                    cx,
+                    cy,
+                    line_h,
+                );
+                continue;
+            }
+            let text = match child.box_type {
+                BoxType::Text(ref t) => t.clone(),
+                _ => continue,
+            };
+            let font_size = match child.style.font_size {
+                Length::Px(px) => px,
+                _ => 16.0,
+            };
+            let char_w = font_size * 0.5;
+            let lh = font_size
+                * if child.style.line_height > 0.0 {
+                    child.style.line_height
+                } else {
+                    1.2
+                };
+            let seg_w = text.chars().count() as f32 * char_w;
+
+            if seg_w > content_width {
+                // Segment wider than a line: break to a fresh line and wrap it.
+                if *cx > 0.0 {
+                    *cx = 0.0;
+                    *cy += *line_h;
+                    *line_h = 0.0;
+                }
+                let n = wrap_text(&text, content_width, font_size).len().max(1) as f32;
+                child.dimensions.content.x = origin_x;
+                child.dimensions.content.y = origin_y + *cy;
+                child.dimensions.content.width = content_width;
+                child.dimensions.content.height = lh * n;
+                *cy += lh * n;
+            } else {
+                if *cx + seg_w > content_width && *cx > 0.0 {
+                    *cx = 0.0;
+                    *cy += *line_h;
+                    *line_h = 0.0;
+                }
+                child.dimensions.content.x = origin_x + *cx;
+                child.dimensions.content.y = origin_y + *cy;
+                child.dimensions.content.width = seg_w;
+                child.dimensions.content.height = lh;
+                *cx += seg_w + char_w; // one space between segments
+                *line_h = line_h.max(lh);
+            }
+        }
+    }
+
     fn layout_block_children(&mut self) {
+        if self.is_inline_context() {
+            self.dimensions.content.height = self.layout_inline_context();
+            return;
+        }
         let mut cursor_y = 0.0;
 
         for child in &mut self.children {
@@ -907,6 +1012,10 @@ impl LayoutBox {
         margin_context: &mut MarginCollapseContext,
         float_context: &mut FloatContext,
     ) {
+        if self.is_inline_context() {
+            self.dimensions.content.height = self.layout_inline_context();
+            return;
+        }
         let mut cursor_y = 0.0;
 
         for child in &mut self.children {
