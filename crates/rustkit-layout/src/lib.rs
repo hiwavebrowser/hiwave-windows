@@ -501,28 +501,20 @@ impl LayoutBox {
 
     /// Layout a text box.
     fn layout_text(&mut self, text: String, containing_block: &Dimensions) {
-        // Get font size
-        let font_size = match self.style.font_size {
-            Length::Px(px) => px,
-            _ => 16.0,
-        };
-
         // Wrap the text into lines that fit the available width, so a long
         // paragraph occupies multiple lines (and multiple lines of height)
         // instead of overflowing its container as one run.
         let avail = containing_block.content.width;
-        let lines = wrap_text(&text, avail, font_size);
+        let lines = wrap_text(&text, avail, &self.style);
         let line_height = self.get_line_height();
 
-        // Width = widest line (single-line: the text's width; wrapped: the
-        // available width). Height = one line-height per wrapped line.
-        let char_w = font_size * 0.5;
+        // Width = widest line's real shaped width (single-line: the text's
+        // width; wrapped: up to the available width). Height = one line-height
+        // per wrapped line.
         let widest = lines
             .iter()
-            .map(|l| l.chars().count())
-            .max()
-            .unwrap_or(0) as f32
-            * char_w;
+            .map(|l| measured_text_width(l, &self.style))
+            .fold(0.0f32, f32::max);
         let width = if lines.len() > 1 { avail } else { widest.min(avail) };
 
         // Position at containing block's content area
@@ -942,14 +934,17 @@ impl LayoutBox {
                 Length::Px(px) => px,
                 _ => 16.0,
             };
-            let char_w = font_size * 0.5;
             let lh = font_size
                 * if child.style.line_height > 0.0 {
                     child.style.line_height
                 } else {
                     1.2
                 };
-            let seg_w = text.chars().count() as f32 * char_w;
+            // Real shaped width of the segment + a real space before the next
+            // one (was a 0.5*font_size estimate, which oversized every run and
+            // left loose gaps between inline pieces).
+            let seg_w = measured_text_width(&text, &child.style);
+            let space_w = font_size * 0.25;
 
             if seg_w > content_width {
                 // Segment wider than a line: break to a fresh line and wrap it.
@@ -958,7 +953,7 @@ impl LayoutBox {
                     *cy += *line_h;
                     *line_h = 0.0;
                 }
-                let n = wrap_text(&text, content_width, font_size).len().max(1) as f32;
+                let n = wrap_text(&text, content_width, &child.style).len().max(1) as f32;
                 child.dimensions.content.x = origin_x;
                 child.dimensions.content.y = origin_y + *cy;
                 child.dimensions.content.width = content_width;
@@ -974,7 +969,7 @@ impl LayoutBox {
                 child.dimensions.content.y = origin_y + *cy;
                 child.dimensions.content.width = seg_w;
                 child.dimensions.content.height = lh;
-                *cx += seg_w + char_w; // one space between segments
+                *cx += seg_w + space_w; // real space between segments
                 *line_h = line_h.max(lh);
             }
         }
@@ -1824,10 +1819,10 @@ impl DisplayList {
                     1.2
                 };
 
-            // Wrap to the box width (same estimate as layout) and emit one text
-            // command per line, stacked by line-height. Single-line text yields
-            // exactly one command.
-            let lines = wrap_text(text, text_width, font_size);
+            // Wrap to the box width (real shaped widths, matching layout) and
+            // emit one text command per line, stacked by line-height.
+            // Single-line text yields exactly one command.
+            let lines = wrap_text(text, text_width, style);
             for (i, line) in lines.iter().enumerate() {
                 self.commands.push(DisplayCommand::Text {
                     text: line.clone(),
@@ -1906,35 +1901,64 @@ impl DisplayList {
 
 /// Measure text using the text shaper.
 ///
-/// This provides accurate text measurement using DirectWrite on Windows.
 /// Greedily wrap `text` into lines that each fit within `max_width`, breaking
 /// only at whitespace. A single word wider than `max_width` OVERFLOWS on its
 /// own line rather than being force-broken (CSS `word-break: normal`, css-text-3
-/// §5.2). Width is estimated with the same `0.5 * font_size` per-character rule
-/// the rest of the layout uses, so wrapping and painting agree. Always returns
-/// at least one line.
-pub fn wrap_text(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
-    let char_w = font_size * 0.5;
+/// §5.2). Word widths are measured with the real DirectWrite shaper (via
+/// `measure_text_advanced`), so break points match what is actually painted
+/// instead of a `0.5 * font_size` per-character estimate. Always returns at
+/// least one line.
+pub fn wrap_text(text: &str, max_width: f32, style: &ComputedStyle) -> Vec<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return vec![String::new()];
     }
-    if max_width <= 0.0 || char_w <= 0.0 {
+    if max_width <= 0.0 {
         return vec![words.join(" ")];
     }
-    let max_chars = (max_width / char_w).floor().max(1.0) as usize;
+    let font_size = match style.font_size {
+        Length::Px(px) => px,
+        _ => 16.0,
+    };
+    // One shaper for the whole run; measure each fragment's real advance width.
+    let shaper = TextShaper::new();
+    let chain = FontFamilyChain::from_css_value(&style.font_family);
+    let measure = |s: &str| -> f32 {
+        shaper
+            .shape(
+                s,
+                &chain,
+                style.font_weight,
+                style.font_style,
+                rustkit_css::FontStretch::Normal,
+                font_size,
+            )
+            .map(|r| r.metrics.width)
+            .unwrap_or_else(|_| s.chars().count() as f32 * font_size * 0.5)
+    };
+
+    // Fast path: the whole run fits on one line (the common case).
+    if measure(text) <= max_width {
+        return vec![words.join(" ")];
+    }
+    let space_w = (measure("x x") - measure("xx")).max(font_size * 0.25);
 
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
+    let mut cur_w = 0.0f32;
     for word in words {
+        let ww = measure(word);
         if cur.is_empty() {
             cur.push_str(word);
-        } else if cur.chars().count() + 1 + word.chars().count() <= max_chars {
+            cur_w = ww;
+        } else if cur_w + space_w + ww <= max_width {
             cur.push(' ');
             cur.push_str(word);
+            cur_w += space_w + ww;
         } else {
             lines.push(std::mem::take(&mut cur));
             cur.push_str(word);
+            cur_w = ww;
         }
     }
     if !cur.is_empty() {
@@ -1944,6 +1968,23 @@ pub fn wrap_text(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+/// Real shaped width of `text` in the given style (DirectWrite advances),
+/// falling back to a rough estimate only if shaping is unavailable.
+pub fn measured_text_width(text: &str, style: &ComputedStyle) -> f32 {
+    let font_size = match style.font_size {
+        Length::Px(px) => px,
+        _ => 16.0,
+    };
+    measure_text_advanced(
+        text,
+        &style.font_family,
+        font_size,
+        style.font_weight,
+        style.font_style,
+    )
+    .width
 }
 
 pub fn measure_text_advanced(
@@ -2204,20 +2245,26 @@ mod tests {
         assert_eq!(paint_order[2].z_index, 1);
     }
 
+    fn wrap_style(px: f32) -> rustkit_css::ComputedStyle {
+        let mut s = rustkit_css::ComputedStyle::new();
+        s.font_size = rustkit_css::Length::Px(px);
+        s
+    }
+
     #[test]
     fn test_wrap_text_breaks_on_words() {
-        // At 20px font, char width ~= 10px; 100px => ~10 chars per line.
-        let lines = wrap_text("the quick brown fox jumps", 100.0, 20.0);
+        // The run is far wider than 100px at 20px, so it must wrap.
+        let lines = wrap_text("the quick brown fox jumps over", 100.0, &wrap_style(20.0));
         assert!(lines.len() > 1, "expected multiple lines, got {:?}", lines);
         for line in &lines {
             assert!(!line.starts_with(' ') && !line.ends_with(' '));
         }
-        assert_eq!(lines.join(" "), "the quick brown fox jumps");
+        assert_eq!(lines.join(" "), "the quick brown fox jumps over");
     }
 
     #[test]
     fn test_wrap_text_single_line_fits() {
-        let lines = wrap_text("short", 1000.0, 16.0);
+        let lines = wrap_text("short", 1000.0, &wrap_style(16.0));
         assert_eq!(lines, vec!["short".to_string()]);
     }
 
@@ -2225,7 +2272,7 @@ mod tests {
     fn test_wrap_text_long_word_overflows_not_broken() {
         // A single word wider than the line must NOT be force-broken
         // (word-break: normal) — it overflows on its own line.
-        let lines = wrap_text("antidisestablishmentarianism", 40.0, 20.0);
+        let lines = wrap_text("antidisestablishmentarianism", 40.0, &wrap_style(20.0));
         assert_eq!(lines, vec!["antidisestablishmentarianism".to_string()]);
     }
 }
