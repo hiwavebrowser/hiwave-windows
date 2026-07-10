@@ -928,6 +928,36 @@ impl Engine {
                     }
                 }
 
+                // <input>/<textarea> are void of DOM text; surface the `value`
+                // (or `placeholder`) as a text child so the field shows content.
+                // Password fields are masked with bullets.
+                if matches!(
+                    tag_name.to_lowercase().as_str(),
+                    "input" | "textarea"
+                ) {
+                    let value = attributes
+                        .get("value")
+                        .filter(|v| !v.is_empty())
+                        .or_else(|| attributes.get("placeholder"))
+                        .cloned()
+                        .unwrap_or_default();
+                    if !value.is_empty() {
+                        let is_password = attributes
+                            .get("type")
+                            .map(|t| t.eq_ignore_ascii_case("password"))
+                            .unwrap_or(false);
+                        let shown = if is_password {
+                            "\u{2022}".repeat(value.chars().count())
+                        } else {
+                            value
+                        };
+                        let text_style = ComputedStyle::inherit_from(&layout_box.style);
+                        layout_box
+                            .children
+                            .push(LayoutBox::new(BoxType::Text(shown), text_style));
+                    }
+                }
+
                 layout_box
             }
             NodeType::Text(text) => {
