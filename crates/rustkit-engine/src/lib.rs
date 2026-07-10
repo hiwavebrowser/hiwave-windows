@@ -1061,6 +1061,9 @@ impl Engine {
             // existing flex engine (full table sizing is a follow-up).
             "tr" => {
                 style.display = rustkit_css::Display::Flex;
+                // Don't stretch cells to the row's ambient cross height; let the
+                // row hug its tallest cell's content.
+                style.align_items = rustkit_css::AlignItems::FlexStart;
             }
             "td" | "th" => {
                 style.flex_grow = 1.0;
