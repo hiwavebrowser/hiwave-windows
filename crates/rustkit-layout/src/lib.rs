@@ -515,7 +515,17 @@ impl LayoutBox {
             .iter()
             .map(|l| measured_text_width(l, &self.style))
             .fold(0.0f32, f32::max);
-        let width = if lines.len() > 1 { avail } else { widest.min(avail) };
+        // Centered/right-aligned text needs the full available width to align
+        // within; left/justify keep the shrink-to-fit width (unchanged default).
+        let aligned = matches!(
+            self.style.text_align,
+            rustkit_css::TextAlign::Center | rustkit_css::TextAlign::Right
+        );
+        let width = if lines.len() > 1 || aligned {
+            avail
+        } else {
+            widest.min(avail)
+        };
 
         // Position at containing block's content area
         self.dimensions.content.x = containing_block.content.x;
@@ -1824,9 +1834,18 @@ impl DisplayList {
             // Single-line text yields exactly one command.
             let lines = wrap_text(text, text_width, style);
             for (i, line) in lines.iter().enumerate() {
+                // Horizontal alignment within the line box: measure the real
+                // shaped width of this line and offset it. Left/Justify start at
+                // the content edge; Center/Right shift by the slack.
+                let line_w = measured_text_width(line, style);
+                let align_dx = match style.text_align {
+                    rustkit_css::TextAlign::Center => ((text_width - line_w) * 0.5).max(0.0),
+                    rustkit_css::TextAlign::Right => (text_width - line_w).max(0.0),
+                    _ => 0.0,
+                };
                 self.commands.push(DisplayCommand::Text {
                     text: line.clone(),
-                    x,
+                    x: x + align_dx,
                     y: y + i as f32 * line_height,
                     color: style.color,
                     font_size,
