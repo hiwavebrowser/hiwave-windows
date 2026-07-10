@@ -15,7 +15,7 @@
 //! 9. Multi-line alignment (align-content)
 //! 10. Handle reverse directions
 
-use crate::{Dimensions, EdgeSizes, LayoutBox, Rect};
+use crate::{BoxType, Dimensions, EdgeSizes, LayoutBox, Rect};
 use rustkit_css::{
     AlignContent, AlignItems, AlignSelf, FlexBasis, FlexWrap, JustifyContent, Length,
 };
@@ -412,6 +412,48 @@ pub fn layout_flex_container(
     }
 }
 
+/// Own horizontal padding + border of a box (left + right edges).
+fn horizontal_edges(style: &rustkit_css::ComputedStyle) -> f32 {
+    resolve_length(&style.padding_left, 0.0)
+        + resolve_length(&style.padding_right, 0.0)
+        + resolve_length(&style.border_left_width, 0.0)
+        + resolve_length(&style.border_right_width, 0.0)
+}
+
+/// Max-content **content-box** width of a box: the width its content wants if it
+/// is never wrapped. Text reports its full unwrapped run; a box with inline
+/// content sums its children on one line, and a box with block children takes
+/// the widest child. The box's own padding/border is NOT included (that is the
+/// caller's border-box concern via `max_content_outer`).
+fn max_content_inner(b: &LayoutBox) -> f32 {
+    match &b.box_type {
+        BoxType::Text(t) => crate::measured_text_width(t, &b.style),
+        _ => {
+            if b.children.is_empty() {
+                return 0.0;
+            }
+            let has_inline = b
+                .children
+                .iter()
+                .any(|c| matches!(c.box_type, BoxType::Text(_) | BoxType::Inline));
+            if has_inline {
+                b.children.iter().map(max_content_outer).sum()
+            } else {
+                b.children.iter().map(max_content_outer).fold(0.0, f32::max)
+            }
+        }
+    }
+}
+
+/// Max-content **border-box** width of a box: its content max-content plus its
+/// own horizontal padding and border. Text has no box edges of its own.
+fn max_content_outer(b: &LayoutBox) -> f32 {
+    match &b.box_type {
+        BoxType::Text(_) => max_content_inner(b),
+        _ => max_content_inner(b) + horizontal_edges(&b.style),
+    }
+}
+
 /// Create a FlexItem from a LayoutBox.
 fn create_flex_item<'a>(
     layout_box: &'a mut LayoutBox,
@@ -474,12 +516,38 @@ fn create_flex_item<'a>(
     // Calculate flex basis
     let flex_basis = match flex_basis_value {
         FlexBasis::Auto => {
-            // Main size property if definite, else the measured content size
+            // Main size property if definite, else the content-based size.
             let explicit = match main_axis {
                 Axis::Horizontal => resolve_length(&layout_box.style.width, container_main),
                 Axis::Vertical => resolve_length(&layout_box.style.height, container_main),
             };
-            if explicit > 0.0 { explicit } else { measured_main }
+            if explicit > 0.0 {
+                explicit
+            } else {
+                match main_axis {
+                    // Horizontal: `measured_main` is the normal-flow content
+                    // width, but a block child was stretched to the container by
+                    // the pre-pass — using it as the basis inflates every item to
+                    // full width so they then shrink to equal fractions of the
+                    // row (buttons/pills splitting the container). Prefer the
+                    // max-content width; grow/shrink still adjusts from there, and
+                    // content-sized items stay content-sized. Fall back to the
+                    // pre-pass measurement when there is no measurable inline
+                    // content (images, intrinsically-sized or empty boxes), whose
+                    // measured width is meaningful rather than a stretch.
+                    Axis::Horizontal => {
+                        let mc = max_content_inner(layout_box);
+                        if mc > 0.0 {
+                            mc
+                        } else {
+                            measured_main
+                        }
+                    }
+                    // Vertical (column main axis): the measured height is already
+                    // content-derived, not stretched — keep it.
+                    Axis::Vertical => measured_main,
+                }
+            }
         }
         FlexBasis::Content => measured_main,
         FlexBasis::Length(len) => len,
@@ -1301,6 +1369,40 @@ mod tests {
             "stretch should equalize heights: {h0} vs {h1}"
         );
         assert!(h0 >= 89.5, "should stretch to the taller child (90): {h0}");
+    }
+
+    #[test]
+    fn test_auto_basis_uses_max_content_not_block_width() {
+        // Two content-sized items in a wide row must stay content-sized (their
+        // max-content), leaving free space — NOT inflate to the block full-width
+        // the pre-pass stretched them to and then shrink to equal halves. With
+        // the old behaviour each item used measured_main (~container width) as
+        // its basis and landed at ~half the row (~400px).
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Row;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        for label in ["Hi", "Yo"] {
+            let mut item = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+            // Simulate the normal-flow pre-pass stretching the block to the row.
+            item.dimensions.content = Rect::new(0.0, 0.0, 700.0, 20.0);
+            item.children
+                .push(LayoutBox::new(BoxType::Text(label.to_string()), ComputedStyle::new()));
+            container.children.push(item);
+        }
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 300.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        let w0 = container.children[0].dimensions.content.width;
+        assert!(
+            w0 < 200.0,
+            "auto-basis flex item should be content-sized, not a fraction of the \
+             row (block-width basis regression): got {w0}"
+        );
     }
 
     #[test]
