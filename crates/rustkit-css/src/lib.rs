@@ -929,6 +929,13 @@ pub struct ComputedStyle {
     // Grid Alignment (also used by Flexbox)
     pub justify_items: JustifyItems,
     pub justify_self: JustifySelf,
+
+    /// CSS custom properties (`--name: value`) in scope for this element.
+    /// Custom properties inherit, so this is shared via `Arc` — every
+    /// descendant of `:root` points at the same map (cheap refcount clone in
+    /// `inherit_from`); only an element that defines its own `--x` pays a
+    /// copy-on-write. Referenced by `var(--name)` at declaration time.
+    pub custom_properties: std::sync::Arc<std::collections::HashMap<String, String>>,
 }
 
 impl ComputedStyle {
@@ -998,6 +1005,9 @@ impl ComputedStyle {
             // inheriting element painted a black box and could vanish.
             background_color: Color::TRANSPARENT,
             opacity: 1.0,
+
+            // Custom properties inherit (cheap Arc clone).
+            custom_properties: parent.custom_properties.clone(),
 
             // Remaining non-inherited get defaults
             ..Default::default()

@@ -808,7 +808,15 @@ impl Engine {
         self.collect_style_text(&document.root(), &mut css_text);
         let sheet = Stylesheet::parse(&css_text).unwrap_or_else(|_| Stylesheet::new());
         info!(rule_count = sheet.rules.len(), css_len = css_text.len(), "CSS: author stylesheet parsed");
-        let root_inherited = ComputedStyle::new();
+        let mut root_inherited = ComputedStyle::new();
+        // Seed custom properties defined at the document root. The layout tree
+        // is built from <body>, so a `:root { --x: ... }` block (the design-token
+        // pattern every builtin UI uses) would otherwise never be computed and
+        // every `var(--x)` would resolve to nothing — a blank page.
+        let root_vars = Self::collect_root_custom_properties(&sheet);
+        if !root_vars.is_empty() {
+            root_inherited.custom_properties = Arc::new(root_vars);
+        }
 
         // Debug: print root children to understand DOM structure
         let root_children = document.root().children();
@@ -1018,6 +1026,32 @@ impl Engine {
         }
     }
 
+    /// Gather custom properties (`--x: value`) defined by selectors that apply
+    /// to the document root — `:root`, `html`, or `*` — into a base map that
+    /// seeds inheritance for the whole tree. Element-scoped custom properties
+    /// are layered on later, per element, in `compute_style_for_element`.
+    fn collect_root_custom_properties(sheet: &Stylesheet) -> HashMap<String, String> {
+        let mut map: HashMap<String, String> = HashMap::new();
+        for rule in &sheet.rules {
+            let applies = rule.selector.split(',').any(|s| {
+                let s = s.trim();
+                s == ":root" || s == "html" || s == "*"
+            });
+            if !applies {
+                continue;
+            }
+            for decl in &rule.declarations {
+                if decl.property.starts_with("--") {
+                    if let PropertyValue::Specified(v) = &decl.value {
+                        let resolved = resolve_var_refs(v, &map);
+                        map.insert(decl.property.clone(), resolved);
+                    }
+                }
+            }
+        }
+        map
+    }
+
     /// Compute a basic style for an element based on its tag and attributes.
     fn compute_style_for_element(
         &self,
@@ -1128,10 +1162,35 @@ impl Engine {
             }
         }
         matched.sort_by_key(|&(spec, i)| (spec, i));
+
+        // 3a. Collect this element's own custom properties (`--x`) first, in
+        //     cascade order over the inherited set, so var() lookups in this
+        //     element's other declarations (and in descendants) see them.
+        for &(_, i) in &matched {
+            for decl in &sheet.rules[i].declarations {
+                if decl.property.starts_with("--") {
+                    if let PropertyValue::Specified(v) = &decl.value {
+                        let resolved = resolve_var_refs(v, &style.custom_properties);
+                        Arc::make_mut(&mut style.custom_properties)
+                            .insert(decl.property.clone(), resolved);
+                    }
+                }
+            }
+        }
+
+        // 3b. Apply normal declarations, resolving any var(--x) references.
         for (_, i) in matched {
             for decl in &sheet.rules[i].declarations {
+                if decl.property.starts_with("--") {
+                    continue;
+                }
                 if let PropertyValue::Specified(v) = &decl.value {
-                    self.apply_declaration(&mut style, &decl.property, v);
+                    if v.contains("var(") {
+                        let resolved = resolve_var_refs(v, &style.custom_properties);
+                        self.apply_declaration(&mut style, &decl.property, &resolved);
+                    } else {
+                        self.apply_declaration(&mut style, &decl.property, v);
+                    }
                 }
             }
         }
@@ -1286,7 +1345,20 @@ impl Engine {
                 continue;
             }
             if let Some((property, value)) = declaration.split_once(':') {
-                self.apply_declaration(style, property.trim(), value.trim());
+                let property = property.trim();
+                let value = value.trim();
+                if property.starts_with("--") {
+                    let resolved = resolve_var_refs(value, &style.custom_properties);
+                    Arc::make_mut(&mut style.custom_properties)
+                        .insert(property.to_string(), resolved);
+                    continue;
+                }
+                if value.contains("var(") {
+                    let resolved = resolve_var_refs(value, &style.custom_properties);
+                    self.apply_declaration(style, property, &resolved);
+                } else {
+                    self.apply_declaration(style, property, value);
+                }
             }
         }
     }
@@ -2224,6 +2296,49 @@ impl Default for EngineBuilder {
     }
 }
 
+/// Resolve `var(--name)` / `var(--name, fallback)` references in a CSS value
+/// against the in-scope custom properties. Handles nested parens inside the
+/// fallback and resolves recursively (a variable whose value is itself a
+/// `var()`). Unknown variables with no fallback resolve to empty (matching CSS,
+/// which then treats the declaration as invalid — good enough here).
+fn resolve_var_refs(value: &str, vars: &HashMap<String, String>) -> String {
+    if !value.contains("var(") {
+        return value.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = value;
+    while let Some(pos) = rest.find("var(") {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + 4..];
+        // Find the matching close paren, tracking one level of nested parens
+        // (e.g. a fallback that contains rgb(...)).
+        let bytes = after.as_bytes();
+        let mut depth = 1usize;
+        let mut i = 0usize;
+        while i < bytes.len() && depth > 0 {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        let inner = &after[..i.saturating_sub(1)];
+        rest = &after[i..];
+        let (name, fallback) = match inner.find(',') {
+            Some(c) => (inner[..c].trim(), Some(inner[c + 1..].trim())),
+            None => (inner.trim(), None),
+        };
+        let resolved = match vars.get(name) {
+            Some(v) => resolve_var_refs(v, vars),
+            None => fallback.map(|f| resolve_var_refs(f, vars)).unwrap_or_default(),
+        };
+        out.push_str(&resolved);
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Parse a color value from CSS.
 fn parse_color(value: &str) -> Option<rustkit_css::Color> {
     let value = value.trim().to_lowercase();
@@ -2468,6 +2583,58 @@ mod tests {
         
         // Test rgb colors
         assert_eq!(parse_color("rgb(255, 0, 0)"), Some(rustkit_css::Color::new(255, 0, 0, 1.0)));
+    }
+
+    #[test]
+    fn test_resolve_var_refs() {
+        let mut vars = HashMap::new();
+        vars.insert("--bg".to_string(), "#0f172a".to_string());
+        vars.insert("--accent".to_string(), "#06b6d4".to_string());
+        vars.insert("--alias".to_string(), "var(--accent)".to_string());
+
+        assert_eq!(resolve_var_refs("var(--bg)", &vars), "#0f172a");
+        assert_eq!(
+            resolve_var_refs("1px solid var(--accent)", &vars),
+            "1px solid #06b6d4"
+        );
+        assert_eq!(resolve_var_refs("var(--missing, red)", &vars), "red");
+        assert_eq!(resolve_var_refs("var(--bg, red)", &vars), "#0f172a");
+        assert_eq!(resolve_var_refs("var(--alias)", &vars), "#06b6d4");
+        assert_eq!(
+            resolve_var_refs("var(--missing, rgb(1, 2, 3))", &vars),
+            "rgb(1, 2, 3)"
+        );
+        assert_eq!(resolve_var_refs("#fff", &vars), "#fff");
+    }
+
+    #[test]
+    fn test_root_custom_properties_reach_body() {
+        // `:root { --x }` must flow to a <body> descendant via inheritance even
+        // though the tree is built from <body> (the html element is not walked).
+        let html = "<html><head><style>:root{--brand:#123456}</style></head>\
+                    <body><p style=\"color: var(--brand)\">hi</p></body></html>";
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("compositor"),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+        let layout = engine.build_layout_from_document(&document);
+        fn find_colored(b: &rustkit_layout::LayoutBox) -> bool {
+            b.style.color == rustkit_css::Color::from_rgb(0x12, 0x34, 0x56)
+                || b.children.iter().any(find_colored)
+        }
+        assert!(
+            find_colored(&layout),
+            "var(--brand) from :root should resolve on a body descendant"
+        );
     }
 
     #[test]
