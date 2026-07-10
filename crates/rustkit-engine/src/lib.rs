@@ -916,6 +916,48 @@ impl Engine {
                     layout_box.children.push(child_box);
                 }
 
+                // Basic list marker: prepend a disc bullet to the first text run
+                // of an <li> so lists render with markers (the <ul>/<ol> UA
+                // padding-left already provides the indent).
+                if tag_name.eq_ignore_ascii_case("li") {
+                    for child in layout_box.children.iter_mut() {
+                        if let BoxType::Text(ref mut t) = child.box_type {
+                            *t = format!("\u{2022}  {t}");
+                            break;
+                        }
+                    }
+                }
+
+                // <input>/<textarea> are void of DOM text; surface the `value`
+                // (or `placeholder`) as a text child so the field shows content.
+                // Password fields are masked with bullets.
+                if matches!(
+                    tag_name.to_lowercase().as_str(),
+                    "input" | "textarea"
+                ) {
+                    let value = attributes
+                        .get("value")
+                        .filter(|v| !v.is_empty())
+                        .or_else(|| attributes.get("placeholder"))
+                        .cloned()
+                        .unwrap_or_default();
+                    if !value.is_empty() {
+                        let is_password = attributes
+                            .get("type")
+                            .map(|t| t.eq_ignore_ascii_case("password"))
+                            .unwrap_or(false);
+                        let shown = if is_password {
+                            "\u{2022}".repeat(value.chars().count())
+                        } else {
+                            value
+                        };
+                        let text_style = ComputedStyle::inherit_from(&layout_box.style);
+                        layout_box
+                            .children
+                            .push(LayoutBox::new(BoxType::Text(shown), text_style));
+                    }
+                }
+
                 layout_box
             }
             NodeType::Text(text) => {
@@ -1013,6 +1055,19 @@ impl Engine {
                 style.border_top_color = rustkit_css::Color::new(128, 128, 128, 1.0);
                 style.margin_top = rustkit_css::Length::Px(8.0);
                 style.margin_bottom = rustkit_css::Length::Px(8.0);
+            }
+            // Scoped table support: model rows as flex rows and cells as
+            // equal-growing flex items, so tables lay out as a grid via the
+            // existing flex engine (full table sizing is a follow-up).
+            "tr" => {
+                style.display = rustkit_css::Display::Flex;
+                // Don't stretch cells to the row's ambient cross height; let the
+                // row hug its tallest cell's content.
+                style.align_items = rustkit_css::AlignItems::FlexStart;
+            }
+            "td" | "th" => {
+                style.flex_grow = 1.0;
+                style.flex_basis = rustkit_css::FlexBasis::Length(0.0);
             }
             _ => {}
         }
