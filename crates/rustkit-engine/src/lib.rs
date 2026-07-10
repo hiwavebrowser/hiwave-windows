@@ -1026,6 +1026,16 @@ impl Engine {
                 style.margin_top = rustkit_css::Length::Px(8.0);
                 style.margin_bottom = rustkit_css::Length::Px(8.0);
             }
+            // Scoped table support: model rows as flex rows and cells as
+            // equal-growing flex items, so tables lay out as a grid via the
+            // existing flex engine (full table sizing is a follow-up).
+            "tr" => {
+                style.display = rustkit_css::Display::Flex;
+            }
+            "td" | "th" => {
+                style.flex_grow = 1.0;
+                style.flex_basis = rustkit_css::FlexBasis::Length(0.0);
+            }
             _ => {}
         }
 
