@@ -506,28 +506,44 @@ impl LayoutBox {
             Length::Px(px) => px,
             _ => 16.0,
         };
-        
-        // Estimate text width (rough approximation: 0.6 * font_size * char_count)
-        // In a real implementation, this would use font metrics
-        let char_count = text.chars().count() as f32;
-        let avg_char_width = font_size * 0.5; // Approximate average character width
-        let text_width = char_count * avg_char_width;
-        
+
+        // Wrap the text into lines that fit the available width, so a long
+        // paragraph occupies multiple lines (and multiple lines of height)
+        // instead of overflowing its container as one run.
+        let avail = containing_block.content.width;
+        let lines = wrap_text(&text, avail, font_size);
+        let line_height = self.get_line_height();
+
+        // Width = widest line (single-line: the text's width; wrapped: the
+        // available width). Height = one line-height per wrapped line.
+        let char_w = font_size * 0.5;
+        let widest = lines
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0) as f32
+            * char_w;
+        let width = if lines.len() > 1 { avail } else { widest.min(avail) };
+
         // Position at containing block's content area
         self.dimensions.content.x = containing_block.content.x;
         self.dimensions.content.y = containing_block.content.y + containing_block.content.height;
-        self.dimensions.content.width = text_width.min(containing_block.content.width);
-        self.dimensions.content.height = self.get_line_height();
+        self.dimensions.content.width = width;
+        self.dimensions.content.height = line_height * lines.len().max(1) as f32;
     }
 
-    /// Get line height for text layout.
+    /// Get line height for text layout (honours the `line-height` multiplier).
     fn get_line_height(&self) -> f32 {
         let font_size = match self.style.font_size {
             Length::Px(px) => px,
             _ => 16.0,
         };
-        // Default line height is 1.2 * font_size
-        font_size * 1.2
+        let mult = if self.style.line_height > 0.0 {
+            self.style.line_height
+        } else {
+            1.2
+        };
+        font_size * mult
     }
 
     /// Perform layout with margin collapse context.
@@ -1687,21 +1703,34 @@ impl DisplayList {
             let y = layout_box.dimensions.content.y;
             let text_width = layout_box.dimensions.content.width;
 
-            // Draw text
-            self.commands.push(DisplayCommand::Text {
-                text: text.clone(),
-                x,
-                y,
-                color: style.color,
-                font_size,
-                font_family: style.font_family.clone(),
-                font_weight: style.font_weight.0,
-                font_style: match style.font_style {
-                    rustkit_css::FontStyle::Normal => 0,
-                    rustkit_css::FontStyle::Italic => 1,
-                    rustkit_css::FontStyle::Oblique => 2,
-                },
-            });
+            let font_style_code = match style.font_style {
+                rustkit_css::FontStyle::Normal => 0,
+                rustkit_css::FontStyle::Italic => 1,
+                rustkit_css::FontStyle::Oblique => 2,
+            };
+            let line_height = font_size
+                * if style.line_height > 0.0 {
+                    style.line_height
+                } else {
+                    1.2
+                };
+
+            // Wrap to the box width (same estimate as layout) and emit one text
+            // command per line, stacked by line-height. Single-line text yields
+            // exactly one command.
+            let lines = wrap_text(text, text_width, font_size);
+            for (i, line) in lines.iter().enumerate() {
+                self.commands.push(DisplayCommand::Text {
+                    text: line.clone(),
+                    x,
+                    y: y + i as f32 * line_height,
+                    color: style.color,
+                    font_size,
+                    font_family: style.font_family.clone(),
+                    font_weight: style.font_weight.0,
+                    font_style: font_style_code,
+                });
+            }
 
             // Draw text decorations
             let decoration_line = style.text_decoration_line;
@@ -1769,6 +1798,45 @@ impl DisplayList {
 /// Measure text using the text shaper.
 ///
 /// This provides accurate text measurement using DirectWrite on Windows.
+/// Greedily wrap `text` into lines that each fit within `max_width`, breaking
+/// only at whitespace. A single word wider than `max_width` OVERFLOWS on its
+/// own line rather than being force-broken (CSS `word-break: normal`, css-text-3
+/// §5.2). Width is estimated with the same `0.5 * font_size` per-character rule
+/// the rest of the layout uses, so wrapping and painting agree. Always returns
+/// at least one line.
+pub fn wrap_text(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
+    let char_w = font_size * 0.5;
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return vec![String::new()];
+    }
+    if max_width <= 0.0 || char_w <= 0.0 {
+        return vec![words.join(" ")];
+    }
+    let max_chars = (max_width / char_w).floor().max(1.0) as usize;
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in words {
+        if cur.is_empty() {
+            cur.push_str(word);
+        } else if cur.chars().count() + 1 + word.chars().count() <= max_chars {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 pub fn measure_text_advanced(
     text: &str,
     font_family: &str,
@@ -2025,5 +2093,30 @@ mod tests {
         assert_eq!(paint_order[0].z_index, -1);
         assert_eq!(paint_order[1].position, Position::Static);
         assert_eq!(paint_order[2].z_index, 1);
+    }
+
+    #[test]
+    fn test_wrap_text_breaks_on_words() {
+        // At 20px font, char width ~= 10px; 100px => ~10 chars per line.
+        let lines = wrap_text("the quick brown fox jumps", 100.0, 20.0);
+        assert!(lines.len() > 1, "expected multiple lines, got {:?}", lines);
+        for line in &lines {
+            assert!(!line.starts_with(' ') && !line.ends_with(' '));
+        }
+        assert_eq!(lines.join(" "), "the quick brown fox jumps");
+    }
+
+    #[test]
+    fn test_wrap_text_single_line_fits() {
+        let lines = wrap_text("short", 1000.0, 16.0);
+        assert_eq!(lines, vec!["short".to_string()]);
+    }
+
+    #[test]
+    fn test_wrap_text_long_word_overflows_not_broken() {
+        // A single word wider than the line must NOT be force-broken
+        // (word-break: normal) — it overflows on its own line.
+        let lines = wrap_text("antidisestablishmentarianism", 40.0, 20.0);
+        assert_eq!(lines, vec!["antidisestablishmentarianism".to_string()]);
     }
 }
