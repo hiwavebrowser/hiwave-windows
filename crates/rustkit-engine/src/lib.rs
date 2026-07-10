@@ -208,6 +208,15 @@ pub struct Engine {
     event_rx: Option<mpsc::UnboundedReceiver<EngineEvent>>,
 }
 
+/// Minimal identity of an ancestor element, captured while walking the DOM so
+/// descendant selectors (`.card p`) can verify the ancestor chain instead of
+/// matching on the subject alone.
+struct ElementCtx {
+    tag: String,
+    classes: Vec<String>,
+    id: Option<String>,
+}
+
 impl Engine {
     /// Create a new browser engine.
     pub fn new(config: EngineConfig) -> Result<Self, EngineError> {
@@ -840,7 +849,7 @@ impl Engine {
                 }
             }
             
-            let body_box = self.build_layout_from_node(&body, &sheet, &root_inherited);
+            let body_box = self.build_layout_from_node(&body, &sheet, &root_inherited, &[]);
             info!(
                 layout_children = body_box.children.len(),
                 "Layout: body box built"
@@ -857,7 +866,7 @@ impl Engine {
                     info!(index = i, tag = %tag_name, "DOM: html child");
                 }
             }
-            let html_box = self.build_layout_from_node(&html, &sheet, &root_inherited);
+            let html_box = self.build_layout_from_node(&html, &sheet, &root_inherited, &[]);
             root_box.children.push(html_box);
         } else {
             warn!("DOM: no body or html element found");
@@ -872,6 +881,7 @@ impl Engine {
         node: &Rc<Node>,
         sheet: &Stylesheet,
         parent: &ComputedStyle,
+        ancestors: &[ElementCtx],
     ) -> LayoutBox {
         match &node.node_type {
             NodeType::Element { tag_name, attributes, .. } => {
@@ -900,7 +910,8 @@ impl Engine {
 
                 // Create computed style: inheritance + UA defaults + author
                 // stylesheet (selector-matched) + inline.
-                let style = self.compute_style_for_element(tag_name, attributes, sheet, parent);
+                let style =
+                    self.compute_style_for_element(tag_name, attributes, sheet, parent, ancestors);
 
                 let mut layout_box = LayoutBox::new(box_type, style);
 
@@ -908,11 +919,39 @@ impl Engine {
                 let dom_children = node.children();
                 trace!(tag = %tag_name, dom_children = dom_children.len(), "Processing element");
 
+                // Extend the ancestor chain with this element so descendant
+                // selectors evaluated on our children can see us.
+                let mut child_ancestors: Vec<ElementCtx> = Vec::with_capacity(ancestors.len() + 1);
+                for a in ancestors {
+                    child_ancestors.push(ElementCtx {
+                        tag: a.tag.clone(),
+                        classes: a.classes.clone(),
+                        id: a.id.clone(),
+                    });
+                }
+                child_ancestors.push(ElementCtx {
+                    tag: tag_name.to_string(),
+                    classes: attributes
+                        .get("class")
+                        .map(|c| c.split_whitespace().map(|s| s.to_string()).collect())
+                        .unwrap_or_default(),
+                    id: attributes.get("id").cloned(),
+                });
+
                 // Process children, inheriting from this element's computed style.
                 for child in dom_children {
-                    let child_box = self.build_layout_from_node(&child, sheet, &layout_box.style);
-                    // Add all boxes - don't filter based on children
-                    // The display list builder will handle empty boxes
+                    // Whitespace-only text between elements (e.g. the newlines
+                    // between sibling <div>s) must not generate a box. Otherwise
+                    // each gap becomes an empty anonymous block that a flex
+                    // container counts as a phantom flex item — stealing width
+                    // from the real items and blowing out the gaps.
+                    if let NodeType::Text(ref t) = child.node_type {
+                        if t.trim().is_empty() {
+                            continue;
+                        }
+                    }
+                    let child_box =
+                        self.build_layout_from_node(&child, sheet, &layout_box.style, &child_ancestors);
                     layout_box.children.push(child_box);
                 }
 
@@ -986,6 +1025,7 @@ impl Engine {
         attributes: &std::collections::HashMap<String, String>,
         sheet: &Stylesheet,
         parent: &ComputedStyle,
+        ancestors: &[ElementCtx],
     ) -> ComputedStyle {
         // 1. Start from inherited properties (color, font-*, line-height, ...).
         let mut style = ComputedStyle::inherit_from(parent);
@@ -1081,7 +1121,9 @@ impl Engine {
         let id = attributes.get("id").map(|s| s.as_str());
         let mut matched: Vec<(u32, usize)> = Vec::new();
         for (i, rule) in sheet.rules.iter().enumerate() {
-            if let Some(spec) = Self::selector_matches(&rule.selector, tag_name, &classes, id) {
+            if let Some(spec) =
+                Self::selector_matches(&rule.selector, tag_name, &classes, id, ancestors)
+            {
                 matched.push((spec, i));
             }
         }
@@ -1104,14 +1146,18 @@ impl Engine {
 
     /// Test whether a CSS selector matches an element, returning its
     /// specificity if so. Supports comma groups, `*`, type, `.class`, `#id`,
-    /// and compounds (`div.foo`, `h1#bar`). For descendant selectors
-    /// (`.card p`) only the rightmost compound (the subject) is matched — an
-    /// approximation that covers the common cases without ancestor context.
+    /// and compounds (`div.foo`, `h1#bar`). Descendant selectors (`.card p`)
+    /// are matched against the ancestor chain: the subject (rightmost compound)
+    /// must match the element, and every ancestor compound must match some
+    /// ancestor, in order, walking outward. Specificity is the sum of all
+    /// compounds. The child combinator `>` is treated as descendant (a mild
+    /// over-match, but far closer than ignoring ancestors entirely).
     fn selector_matches(
         selector: &str,
         tag: &str,
         classes: &[&str],
         id: Option<&str>,
+        ancestors: &[ElementCtx],
     ) -> Option<u32> {
         let mut best: Option<u32> = None;
         for group in selector.split(',') {
@@ -1119,9 +1165,43 @@ impl Engine {
             if group.is_empty() {
                 continue;
             }
-            // Subject = rightmost compound selector.
-            let subject = group.split_whitespace().last().unwrap_or(group);
-            if let Some(spec) = Self::simple_selector_match(subject, tag, classes, id) {
+            // Split into compound selectors, dropping `>` combinator tokens.
+            let compounds: Vec<&str> = group
+                .split_whitespace()
+                .filter(|t| *t != ">")
+                .collect();
+            let Some((subject, ancestor_sels)) = compounds.split_last() else {
+                continue;
+            };
+            // Subject must match the element itself.
+            let Some(subject_spec) = Self::simple_selector_match(subject, tag, classes, id) else {
+                continue;
+            };
+            // Each ancestor compound (right-to-left) must match some ancestor,
+            // searching from nearest to farthest and consuming as we go.
+            let mut spec = subject_spec;
+            let mut idx = ancestors.len();
+            let mut matched_all = true;
+            for sel in ancestor_sels.iter().rev() {
+                let mut found = false;
+                while idx > 0 {
+                    idx -= 1;
+                    let a = &ancestors[idx];
+                    let a_classes: Vec<&str> = a.classes.iter().map(|s| s.as_str()).collect();
+                    if let Some(s) =
+                        Self::simple_selector_match(sel, &a.tag, &a_classes, a.id.as_deref())
+                    {
+                        spec += s;
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    matched_all = false;
+                    break;
+                }
+            }
+            if matched_all {
                 best = Some(best.map_or(spec, |b| b.max(spec)));
             }
         }
@@ -2398,5 +2478,80 @@ mod tests {
         assert_eq!(parse_length("1.5em"), Some(rustkit_css::Length::Em(1.5)));
         assert_eq!(parse_length("2rem"), Some(rustkit_css::Length::Rem(2.0)));
         assert_eq!(parse_length("50%"), Some(rustkit_css::Length::Percent(50.0)));
+    }
+
+    fn ctx(tag: &str, class: &str) -> ElementCtx {
+        ElementCtx {
+            tag: tag.to_string(),
+            classes: if class.is_empty() {
+                vec![]
+            } else {
+                vec![class.to_string()]
+            },
+            id: None,
+        }
+    }
+
+    #[test]
+    fn test_descendant_selector_requires_ancestor() {
+        // `.hero p` matches a <p> inside .hero, but must NOT match a bare <p>
+        // elsewhere (the over-match that leaked text-align:center onto cards).
+        let inside = [ctx("div", "hero")];
+        let outside: [ElementCtx; 0] = [];
+        assert!(Engine::selector_matches(".hero p", "p", &[], None, &inside).is_some());
+        assert!(Engine::selector_matches(".hero p", "p", &[], None, &outside).is_none());
+        // Subject still has to match the element itself.
+        assert!(Engine::selector_matches(".hero p", "span", &[], None, &inside).is_none());
+    }
+
+    #[test]
+    fn test_descendant_selector_specificity_sums_compounds() {
+        // `.hero p` = .hero (10) + p (1) = 11, proving ancestor compounds are
+        // counted (a bare `p` subject alone would be 1).
+        let inside = [ctx("div", "hero")];
+        assert_eq!(
+            Engine::selector_matches(".hero p", "p", &[], None, &inside),
+            Some(11)
+        );
+        assert_eq!(Engine::selector_matches("p", "p", &[], None, &inside), Some(1));
+    }
+
+    #[test]
+    fn test_descendant_matches_non_adjacent_ancestor() {
+        // Descendant (not child) — the .hero ancestor may be any depth up.
+        let chain = [ctx("div", "hero"), ctx("section", "")];
+        assert!(Engine::selector_matches(".hero p", "p", &[], None, &chain).is_some());
+    }
+
+    #[test]
+    fn test_whitespace_between_siblings_makes_no_boxes() {
+        // Newlines/indentation between sibling elements must not become boxes
+        // (else a flex container counts them as phantom items).
+        let html = "<body><div id=\"row\"><div>a</div>\n  <div>b</div>\n  </div></body>";
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("compositor"),
+            renderer: None,
+            loader: Arc::new(
+                ResourceLoader::new(LoaderConfig::default()).expect("loader"),
+            ),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+        let layout = engine.build_layout_from_document(&document);
+        // root -> body -> #row -> [div a, div b]  (no whitespace phantoms)
+        let body = &layout.children[0];
+        let row = &body.children[0];
+        assert_eq!(
+            row.children.len(),
+            2,
+            "row should have exactly two element children, got {}",
+            row.children.len()
+        );
     }
 }
