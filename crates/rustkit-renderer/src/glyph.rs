@@ -303,7 +303,7 @@ impl GlyphCache {
                 Ok(f) => f,
                 Err(_) => return self.rasterize_glyph_fallback(queue, key),
             };
-            
+
             // Create font face
             let face = match font.CreateFontFace() {
                 Ok(f) => f,
@@ -400,28 +400,37 @@ impl GlyphCache {
             ) {
                 Ok(a) => a,
                 Err(e) => {
-                    tracing::trace!("CreateGlyphRunAnalysis failed: {:?}", e);
                     // Clean up manually dropped face
                     std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
                     return self.rasterize_glyph_fallback(queue, key);
                 }
             };
             
-            // Get texture bounds
-            let bounds = match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1) {
-                Ok(b) => b,
-                Err(_) => match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) {
-                    Ok(b) => b,
-                    Err(_) => {
+            // Get texture bounds. In NATURAL (ClearType) rendering mode the
+            // ALIASED_1x1 bounds come back EMPTY (0,0,0,0) rather than as an
+            // error, so an Ok-but-empty result must also fall through to the
+            // CLEARTYPE_3x1 bounds — otherwise every glyph is treated as a
+            // zero-size (whitespace) box and drops to the placeholder fallback.
+            let non_empty = |b: &windows::Win32::Foundation::RECT| {
+                b.right > b.left && b.bottom > b.top
+            };
+            // `use_cleartype` tracks which texture mode produced the bounds so
+            // the alpha-texture read below matches it. In NATURAL rendering mode
+            // the ALIASED_1x1 bounds are empty, so we fall through to CLEARTYPE.
+            let (bounds, use_cleartype) = match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1) {
+                Ok(b) if non_empty(&b) => (b, false),
+                _ => match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) {
+                    Ok(b) if non_empty(&b) => (b, true),
+                    _ => {
                         std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
                         return self.rasterize_glyph_fallback(queue, key);
                     }
                 },
             };
-            
+
             let tex_width = (bounds.right - bounds.left) as u32;
             let tex_height = (bounds.bottom - bounds.top) as u32;
-            
+
             if tex_width == 0 || tex_height == 0 {
                 // Empty glyph (whitespace)
                 std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
@@ -437,31 +446,38 @@ impl GlyphCache {
                 }
             };
             
-            // Get alpha texture (grayscale bitmap)
+            // Get alpha texture (grayscale coverage), matching the mode that
+            // produced the bounds. CLEARTYPE is 3 bytes/pixel (averaged to one
+            // coverage byte); ALIASED is already 1 byte/pixel. Reading ALIASED
+            // from a ClearType analysis returns success-but-zeros, which is why
+            // the mode must match — mismatched, every glyph was invisible.
             let mut alpha_values = vec![0u8; (tex_width * tex_height) as usize];
-            if analysis.CreateAlphaTexture(
-                DWRITE_TEXTURE_ALIASED_1x1,
-                &bounds,
-                alpha_values.as_mut_slice(),
-            ).is_err() {
-                // Try cleartype and convert
+            let tex_ok = if use_cleartype {
                 let mut ct_values = vec![0u8; (tex_width * tex_height * 3) as usize];
-                if analysis.CreateAlphaTexture(
+                let ok = analysis.CreateAlphaTexture(
                     DWRITE_TEXTURE_CLEARTYPE_3x1,
                     &bounds,
                     ct_values.as_mut_slice(),
-                ).is_ok() {
-                    // Convert ClearType (3 bytes per pixel) to grayscale
+                ).is_ok();
+                if ok {
                     for i in 0..(tex_width * tex_height) as usize {
                         let r = ct_values[i * 3] as u32;
                         let g = ct_values[i * 3 + 1] as u32;
                         let b = ct_values[i * 3 + 2] as u32;
                         alpha_values[i] = ((r + g + b) / 3) as u8;
                     }
-                } else {
-                    std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
-                    return self.rasterize_glyph_fallback(queue, key);
                 }
+                ok
+            } else {
+                analysis.CreateAlphaTexture(
+                    DWRITE_TEXTURE_ALIASED_1x1,
+                    &bounds,
+                    alpha_values.as_mut_slice(),
+                ).is_ok()
+            };
+            if !tex_ok {
+                std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
+                return self.rasterize_glyph_fallback(queue, key);
             }
 
             // Debug dump + CPU atlas mirror before upload.
@@ -536,7 +552,7 @@ impl GlyphCache {
         key: &GlyphKey,
     ) -> Option<GlyphEntry> {
         let font_size = key.font_size as f32 / 10.0;
-        
+
         #[cfg(windows)]
         {
             // Silence unused import warnings
