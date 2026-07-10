@@ -2526,6 +2526,7 @@ dependencies = [
  "hiwave-shell",
  "hiwave-shield",
  "hiwave-vault",
+ "http",
  "log",
  "muda",
  "rfd",
