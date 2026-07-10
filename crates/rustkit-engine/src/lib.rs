@@ -916,6 +916,18 @@ impl Engine {
                     layout_box.children.push(child_box);
                 }
 
+                // Basic list marker: prepend a disc bullet to the first text run
+                // of an <li> so lists render with markers (the <ul>/<ol> UA
+                // padding-left already provides the indent).
+                if tag_name.eq_ignore_ascii_case("li") {
+                    for child in layout_box.children.iter_mut() {
+                        if let BoxType::Text(ref mut t) = child.box_type {
+                            *t = format!("\u{2022}  {t}");
+                            break;
+                        }
+                    }
+                }
+
                 layout_box
             }
             NodeType::Text(text) => {
