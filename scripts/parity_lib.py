@@ -36,38 +36,32 @@ DEFAULT_RESULTS_ROOT = REPO_ROOT / "parity-results"
 # Platform-specific binary suffix
 BINARY_SUFFIX = ".exe" if platform.system() == "Windows" else ""
 
-# Case definitions
-BUILTINS = [
-    ("new_tab", "crates/hiwave-app/src/ui/new_tab.html", 1280, 800),
-    ("about", "crates/hiwave-app/src/ui/about.html", 800, 600),
-    ("settings", "crates/hiwave-app/src/ui/settings.html", 1024, 768),
-    ("chrome_rustkit", "crates/hiwave-app/src/ui/chrome.html", 1280, 100),  # Windows uses chrome.html
-    ("shelf", "crates/hiwave-app/src/ui/shelf.html", 1280, 120),
-]
+# Case definitions come from cases/registry.json — the single source of truth
+# (mirrors the macOS schema). Do NOT hardcode cases here; edit the registry so
+# parity_lib, the baseline audit, and any future generator stay in lockstep
+# (divergent case lists were a fidelity hole).
+REGISTRY_PATH = REPO_ROOT / "cases" / "registry.json"
 
-WEBSUITE = [
-    ("article-typography", "websuite/cases/article-typography/index.html", 1280, 800),
-    ("card-grid", "websuite/cases/card-grid/index.html", 1280, 800),
-    ("css-selectors", "websuite/cases/css-selectors/index.html", 800, 1200),
-    ("flex-positioning", "websuite/cases/flex-positioning/index.html", 800, 1000),
-    ("form-elements", "websuite/cases/form-elements/index.html", 800, 600),
-    ("gradient-backgrounds", "websuite/cases/gradient-backgrounds/index.html", 800, 600),
-    ("image-gallery", "websuite/cases/image-gallery/index.html", 1280, 800),
-    ("sticky-scroll", "websuite/cases/sticky-scroll/index.html", 1280, 800),
-]
 
-MICRO_TESTS = [
-    ("backgrounds", "websuite/micro/backgrounds/index.html", 900, 1000),
-    ("bg-solid", "websuite/micro/bg-solid/index.html", 800, 600),
-    ("bg-pure", "websuite/micro/bg-pure/index.html", 800, 600),
-    ("combinators", "websuite/micro/combinators/index.html", 800, 800),
-    ("form-controls", "websuite/micro/form-controls/index.html", 800, 1200),
-    ("gradients", "websuite/micro/gradients/index.html", 900, 1000),
-    ("images-intrinsic", "websuite/micro/images-intrinsic/index.html", 800, 1400),
-    ("pseudo-classes", "websuite/micro/pseudo-classes/index.html", 800, 800),
-    ("rounded-corners", "websuite/micro/rounded-corners/index.html", 900, 1000),
-    ("specificity", "websuite/micro/specificity/index.html", 800, 600),
-]
+def load_registry() -> Dict[str, Any]:
+    with open(REGISTRY_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+REGISTRY = load_registry()
+
+
+def _cases_for_scope(scope: str) -> List[Tuple[str, str, int, int]]:
+    return [
+        (cid, c["html"], c["width"], c["height"])
+        for cid, c in REGISTRY["cases"].items()
+        if c["scope"] == scope
+    ]
+
+
+BUILTINS = _cases_for_scope("builtins")
+WEBSUITE = _cases_for_scope("websuite")
+MICRO_TESTS = _cases_for_scope("micro")
 
 # Standard viewports for multi-viewport testing
 VIEWPORTS = [
@@ -185,27 +179,18 @@ class AggregatedResult:
 # ============================================================================
 
 def get_threshold(case_id: str) -> float:
-    """Get appropriate threshold for a case."""
-    if "form" in case_id:
-        return THRESHOLDS["form_controls"]
-    if "image" in case_id or "gallery" in case_id:
-        return THRESHOLDS["images_replaced"]
-    if "gradient" in case_id:
-        return THRESHOLDS["gradients_effects"]
-    if "sticky" in case_id or "scroll" in case_id:
-        return THRESHOLDS["sticky_scroll"]
-    if "typography" in case_id or "text" in case_id:
-        return THRESHOLDS["text_rendering"]
-    return THRESHOLDS["default"]
+    """Per-case threshold from the registry (T6: uniform t15, no per-type
+    softening that absorbs wrongness). Falls back to the policy default."""
+    c = REGISTRY["cases"].get(case_id)
+    if c is not None:
+        return c.get("threshold", REGISTRY["policy"]["default_threshold"])
+    return REGISTRY["policy"]["default_threshold"]
 
 
 def get_case_type(case_id: str) -> str:
-    """Determine case type from case_id."""
-    if any(c[0] == case_id for c in BUILTINS):
-        return "builtins"
-    if any(c[0] == case_id for c in MICRO_TESTS):
-        return "micro"
-    return "websuite"
+    """Case scope (builtins/websuite/micro) from the registry."""
+    c = REGISTRY["cases"].get(case_id)
+    return c["scope"] if c is not None else "websuite"
 
 
 def get_all_cases() -> Dict[str, Tuple[str, str, int, int, str]]:
