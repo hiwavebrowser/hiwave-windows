@@ -738,6 +738,17 @@ impl Engine {
         // Layout
         root_box.layout(&containing_block);
 
+        // The canvas fills the viewport: stretch the root box so its propagated
+        // background (CSS §14.2) paints the whole viewport, not just the content
+        // height. Grow-only, so tall pages keep their full scroll height.
+        let (vw, vh) = (bounds.width as f32, bounds.height as f32);
+        if root_box.dimensions.content.width < vw {
+            root_box.dimensions.content.width = vw;
+        }
+        if root_box.dimensions.content.height < vh {
+            root_box.dimensions.content.height = vh;
+        }
+
         // Generate display list
         let display_list = DisplayList::build(&root_box);
 
@@ -857,11 +868,24 @@ impl Engine {
                 }
             }
             
-            let body_box = self.build_layout_from_node(&body, &sheet, &root_inherited, &[]);
+            let mut body_box = self.build_layout_from_node(&body, &sheet, &root_inherited, &[]);
             info!(
                 layout_children = body_box.children.len(),
                 "Layout: body box built"
             );
+            // CSS §14.2 canvas background: the body's background propagates to the
+            // canvas (the whole viewport), not just the body box. Without this a
+            // short page paints its background only behind its content and leaves
+            // the rest of the viewport the canvas default (white). Move it onto
+            // the root/canvas box and clear it from the body so it paints once.
+            if body_box.style.background_color.a > 0.0
+                || body_box.style.background_gradient.is_some()
+            {
+                root_box.style.background_color = body_box.style.background_color;
+                root_box.style.background_gradient = body_box.style.background_gradient.clone();
+                body_box.style.background_color = rustkit_css::Color::TRANSPARENT;
+                body_box.style.background_gradient = None;
+            }
             root_box.children.push(body_box);
         } else if let Some(html) = document.document_element() {
             // Fallback: use html element if no body
@@ -2836,6 +2860,40 @@ mod tests {
         assert!(
             find_gradient_text(&layout),
             "the HIWAVE text run should carry background-clip:text and the gradient"
+        );
+    }
+
+    #[test]
+    fn test_body_background_propagates_to_canvas() {
+        // CSS §14.2: the body's background becomes the canvas (viewport)
+        // background — it must move onto the root box and be cleared from the
+        // body, so a short page doesn't leave the viewport the canvas default.
+        let html = "<html><head><style>body{background:#1a1a2e}</style></head>\
+                    <body><p>x</p></body></html>";
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("compositor"),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+        let root = engine.build_layout_from_document(&document);
+        assert_eq!(
+            root.style.background_color,
+            rustkit_css::Color::from_rgb(0x1a, 0x1a, 0x2e),
+            "canvas (root) should carry the body background"
+        );
+        let body = &root.children[0];
+        assert_eq!(
+            body.style.background_color,
+            rustkit_css::Color::TRANSPARENT,
+            "body background should be cleared after propagating to the canvas"
         );
     }
 
