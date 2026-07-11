@@ -828,33 +828,35 @@ impl Renderer {
         let horizontal = (a - 90.0).abs() < EPS || (a - 270.0).abs() < EPS;
 
         if vertical || horizontal {
-            // t runs along the axis in the gradient's direction. For `to bottom`
-            // (180) / `to right` (90), t=0 is at the top/left edge.
+            // `f` runs 0..1 across the box; for `to bottom`(180)/`to right`(90)
+            // t=0 is the top/left edge. Subdivide the axis into fine segments and
+            // colour each boundary from the stops in gamma sRGB
+            // (eval_gradient_stops). The GPU interpolates the linear-light vertex
+            // colours *within* a segment, but because the boundaries follow the
+            // gamma curve, the whole run approximates Chrome's gamma-space
+            // interpolation — a single strip per stop pair would interpolate in
+            // linear light and read too bright at the midpoint (188 vs 127 for
+            // red->blue). 64 segments keeps the midpoint within ~1 level.
             let reversed = (a - 0.0).abs() < EPS || (a - 360.0).abs() < EPS || (a - 270.0).abs() < EPS;
-            for pair in stops.windows(2) {
-                let (mut p0, mut c0) = (pair[0].position, pair[0].color);
-                let (mut p1, mut c1) = (pair[1].position, pair[1].color);
-                if reversed {
-                    p0 = 1.0 - p0;
-                    p1 = 1.0 - p1;
-                    std::mem::swap(&mut p0, &mut p1);
-                    std::mem::swap(&mut c0, &mut c1);
-                }
-                let (lo, hi) = (p0.min(p1).clamp(0.0, 1.0), p0.max(p1).clamp(0.0, 1.0));
-                if hi <= lo {
-                    continue;
-                }
+            const SEG: usize = 64;
+            for i in 0..SEG {
+                let f0 = i as f32 / SEG as f32;
+                let f1 = (i + 1) as f32 / SEG as f32;
+                let t0 = if reversed { 1.0 - f0 } else { f0 };
+                let t1 = if reversed { 1.0 - f1 } else { f1 };
+                let c0 = eval_gradient_stops(stops, t0);
+                let c1 = eval_gradient_stops(stops, t1);
                 if vertical {
-                    let y0 = rect.y + rect.height * lo;
-                    let y1 = rect.y + rect.height * hi;
+                    let y0 = rect.y + rect.height * f0;
+                    let y1 = rect.y + rect.height * f1;
                     self.push_gradient_quad(
                         [rect.x, y0], [rect.x + rect.width, y0],
                         [rect.x + rect.width, y1], [rect.x, y1],
                         c0, c0, c1, c1,
                     );
                 } else {
-                    let x0 = rect.x + rect.width * lo;
-                    let x1 = rect.x + rect.width * hi;
+                    let x0 = rect.x + rect.width * f0;
+                    let x1 = rect.x + rect.width * f1;
                     self.push_gradient_quad(
                         [x0, rect.y], [x1, rect.y],
                         [x1, rect.y + rect.height], [x0, rect.y + rect.height],
@@ -1298,6 +1300,42 @@ mod tests {
     #[test]
     fn test_texture_vertex_size() {
         assert_eq!(std::mem::size_of::<TextureVertex>(), 32);
+    }
+
+    #[test]
+    fn test_gradient_interp_is_gamma_space() {
+        // Chrome interpolates legacy gradients in gamma sRGB: the midpoint of
+        // red and blue is the raw-channel average (127,0,127), NOT a linear
+        // blend (~188). eval_gradient_stops must lerp the raw 0-255 channels.
+        let stops = [
+            rustkit_css::GradientStop { color: Color::from_rgb(255, 0, 0), position: 0.0 },
+            rustkit_css::GradientStop { color: Color::from_rgb(0, 0, 255), position: 1.0 },
+        ];
+        let mid = eval_gradient_stops(&stops, 0.5);
+        assert!((mid.r as i32 - 127).abs() <= 1, "r={}", mid.r);
+        assert_eq!(mid.g, 0);
+        assert!((mid.b as i32 - 128).abs() <= 1, "b={}", mid.b);
+        // Endpoints are exact.
+        assert_eq!(eval_gradient_stops(&stops, 0.0), Color::from_rgb(255, 0, 0));
+        assert_eq!(eval_gradient_stops(&stops, 1.0), Color::from_rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn test_srgb_linear_roundtrip_dark() {
+        // The gamma double-encode guard as a unit: a dark sRGB channel converted
+        // to linear then back to sRGB must return itself (the #1a1a2e = 26 case
+        // that rendered as 90 before color_to_linear).
+        for u in [0u8, 26, 46, 128, 200, 255] {
+            let lin = srgb_channel_to_linear(u);
+            // sRGB encode of the linear value (inverse EOTF).
+            let enc = if lin <= 0.0031308 {
+                lin * 12.92
+            } else {
+                1.055 * lin.powf(1.0 / 2.4) - 0.055
+            };
+            let back = (enc * 255.0).round() as u8;
+            assert!((back as i32 - u as i32).abs() <= 1, "u={u} back={back}");
+        }
     }
 
     #[test]
