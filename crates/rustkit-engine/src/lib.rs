@@ -1555,6 +1555,32 @@ impl Engine {
                     _ => rustkit_css::FlexDirection::Row,
                 };
             }
+            "flex-wrap" => {
+                style.flex_wrap = match value.trim() {
+                    "wrap" => rustkit_css::FlexWrap::Wrap,
+                    "wrap-reverse" => rustkit_css::FlexWrap::WrapReverse,
+                    _ => rustkit_css::FlexWrap::NoWrap,
+                };
+            }
+            "flex-flow" => {
+                // Shorthand for flex-direction + flex-wrap.
+                for part in value.split_whitespace() {
+                    match part {
+                        "row" => style.flex_direction = rustkit_css::FlexDirection::Row,
+                        "column" => style.flex_direction = rustkit_css::FlexDirection::Column,
+                        "row-reverse" => {
+                            style.flex_direction = rustkit_css::FlexDirection::RowReverse
+                        }
+                        "column-reverse" => {
+                            style.flex_direction = rustkit_css::FlexDirection::ColumnReverse
+                        }
+                        "wrap" => style.flex_wrap = rustkit_css::FlexWrap::Wrap,
+                        "wrap-reverse" => style.flex_wrap = rustkit_css::FlexWrap::WrapReverse,
+                        "nowrap" => style.flex_wrap = rustkit_css::FlexWrap::NoWrap,
+                        _ => {}
+                    }
+                }
+            }
             "justify-content" => {
                 style.justify_content = match value {
                     "center" => rustkit_css::JustifyContent::Center,
