@@ -137,12 +137,44 @@ export async function comparePixels(chromePath, rustkitPath, outputDir, options 
     rustkit = await loadPng(rustkitPath);
   }
 
-  // Handle dimension mismatch
+  // Dimension mismatch is a hard failure, not a silent crop (lie #8). Comparing
+  // a rustkit capture against a wrong-sized baseline cropped to the overlap
+  // produces a meaningless diff number that reads as partial success. Return the
+  // worst score with a dimension_mismatch taxonomy so it can never masquerade as
+  // parity. RK_ALLOW_CROP=1 restores the old crop path for local debugging only.
+  if (
+    (chrome.width !== rustkit.width || chrome.height !== rustkit.height) &&
+    process.env.RK_ALLOW_CROP !== '1'
+  ) {
+    const totalPixels = chrome.width * chrome.height;
+    return {
+      diffPixels: totalPixels,
+      totalPixels,
+      diffPercent: 100,
+      width: chrome.width,
+      height: chrome.height,
+      diffPath: null,
+      heatmapPath: null,
+      overlayPath: null,
+      attribution: null,
+      taxonomy: { instrument: 'dimension_mismatch' },
+      dimensionMismatch: {
+        chrome: [chrome.width, chrome.height],
+        rustkit: [rustkit.width, rustkit.height],
+      },
+      error:
+        `dimension_mismatch: chrome ${chrome.width}x${chrome.height} vs ` +
+        `rustkit ${rustkit.width}x${rustkit.height} ` +
+        `(regenerate the baseline; RK_ALLOW_CROP=1 to force-crop for debugging)`,
+    };
+  }
+
+  // Same size (or RK_ALLOW_CROP debug path): crop to the overlap.
   const width = Math.min(chrome.width, rustkit.width);
   const height = Math.min(chrome.height, rustkit.height);
 
   if (chrome.width !== rustkit.width || chrome.height !== rustkit.height) {
-    console.warn(`  Dimension mismatch: Chrome ${chrome.width}x${chrome.height}, RustKit ${rustkit.width}x${rustkit.height}`);
+    console.warn(`  RK_ALLOW_CROP: cropping Chrome ${chrome.width}x${chrome.height} / RustKit ${rustkit.width}x${rustkit.height}`);
   }
 
   // Crop to same size
