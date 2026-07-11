@@ -594,6 +594,8 @@ impl Renderer {
                 font_family,
                 font_weight,
                 font_style,
+                gradient,
+                gradient_rect,
             } => {
                 self.draw_text(
                     text,
@@ -604,6 +606,8 @@ impl Renderer {
                     font_family,
                     *font_weight,
                     *font_style,
+                    gradient.as_deref(),
+                    *gradient_rect,
                 );
             }
 
@@ -943,6 +947,7 @@ impl Renderer {
     }
 
     /// Draw text.
+    #[allow(clippy::too_many_arguments)]
     fn draw_text(
         &mut self,
         text: &str,
@@ -953,9 +958,11 @@ impl Renderer {
         font_family: &str,
         font_weight: u16,
         font_style: u8,
+        gradient: Option<&[rustkit_css::GradientStop]>,
+        gradient_rect: Rect,
     ) {
         let mut cursor_x = x;
-        let c = color_to_linear(color);
+        let c_solid = color_to_linear(color);
 
         // Get atlas size before the loop to avoid borrow issues
         let atlas_size = self.glyph_cache.atlas_size() as f32;
@@ -975,6 +982,16 @@ impl Renderer {
                 let glyph_y = y + entry.offset[1];
                 let glyph_w = (entry.tex_coords[2] - entry.tex_coords[0]) * atlas_size;
                 let glyph_h = (entry.tex_coords[3] - entry.tex_coords[1]) * atlas_size;
+
+                // background-clip:text — tint this glyph by the gradient sampled
+                // at the glyph's horizontal centre within the text box.
+                let c = match gradient {
+                    Some(stops) if gradient_rect.width > 0.0 => {
+                        let t = (glyph_x + glyph_w * 0.5 - gradient_rect.x) / gradient_rect.width;
+                        color_to_linear(eval_gradient_stops(stops, t))
+                    }
+                    _ => c_solid,
+                };
 
                 let base = self.texture_vertices.len() as u32;
 

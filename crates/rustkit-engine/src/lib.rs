@@ -1015,7 +1015,15 @@ impl Engine {
                 if trimmed.is_empty() {
                     LayoutBox::new(BoxType::Block, ComputedStyle::inherit_from(parent))
                 } else {
-                    let style = ComputedStyle::inherit_from(parent);
+                    let mut style = ComputedStyle::inherit_from(parent);
+                    // background-clip:text fills the glyphs with the element's
+                    // background instead of the box. Neither clip nor gradient
+                    // inherits, so carry them onto this text run explicitly (the
+                    // gradient-text effect, e.g. the HIWAVE logo).
+                    if parent.background_clip == rustkit_css::BackgroundClip::Text {
+                        style.background_clip = rustkit_css::BackgroundClip::Text;
+                        style.background_gradient = parent.background_gradient.clone();
+                    }
                     LayoutBox::new(BoxType::Text(trimmed.to_string()), style)
                 }
             }
@@ -1393,6 +1401,14 @@ impl Engine {
                 if value.contains("linear-gradient(") {
                     style.background_gradient = parse_linear_gradient(value);
                 }
+            }
+            "background-clip" | "-webkit-background-clip" => {
+                style.background_clip = match value.trim().to_lowercase().as_str() {
+                    "text" => rustkit_css::BackgroundClip::Text,
+                    "padding-box" => rustkit_css::BackgroundClip::PaddingBox,
+                    "content-box" => rustkit_css::BackgroundClip::ContentBox,
+                    _ => rustkit_css::BackgroundClip::BorderBox,
+                };
             }
             "font-size" => {
                 if let Some(l) = parse_length(value) {
@@ -2761,6 +2777,39 @@ mod tests {
         assert_eq!(
             background_base_color("radial-gradient(circle, #fff, #000), #1a1a2e"),
             Some(rustkit_css::Color::from_rgb(0x1a, 0x1a, 0x2e))
+        );
+    }
+
+    #[test]
+    fn test_background_clip_text_propagates_to_text_run() {
+        // background-clip:text + a gradient on an element must reach the child
+        // text run (neither property inherits) so the glyphs get the gradient.
+        let html = "<html><head><style>.logo{background:linear-gradient(90deg,#ff0000,#0000ff);\
+                    -webkit-background-clip:text;background-clip:text;color:transparent}</style></head>\
+                    <body><h1 class=\"logo\">HIWAVE</h1></body></html>";
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("compositor"),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+        let layout = engine.build_layout_from_document(&document);
+        fn find_gradient_text(b: &rustkit_layout::LayoutBox) -> bool {
+            let is_grad_text = matches!(b.box_type, rustkit_layout::BoxType::Text(_))
+                && b.style.background_clip == rustkit_css::BackgroundClip::Text
+                && b.style.background_gradient.is_some();
+            is_grad_text || b.children.iter().any(find_gradient_text)
+        }
+        assert!(
+            find_gradient_text(&layout),
+            "the HIWAVE text run should carry background-clip:text and the gradient"
         );
     }
 
