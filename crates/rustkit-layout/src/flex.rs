@@ -261,7 +261,11 @@ pub fn layout_flex_container(
         + cross_gap * (lines.len().saturating_sub(1)) as f32;
 
     // 7. Apply align-content for multi-line containers
-    distribute_lines(&mut lines, container_cross_size, total_cross_size, cross_gap, style.align_content);
+    // Use the definite cross size, not the stale pre-flex stacked height —
+    // otherwise align-content stretches multi-line rows across a phantom height
+    // and later lines land far below the container (card grids lost their second
+    // row off-screen).
+    distribute_lines(&mut lines, definite_cross, total_cross_size, cross_gap, style.align_content);
 
     // 8. Main axis alignment (justify-content) and positioning
     for line in &mut lines {
@@ -801,7 +805,10 @@ fn distribute_lines(
 
     let total_line_size: f32 = lines.iter().map(|l| l.cross_size).sum();
     let total_gaps = cross_gap * (lines.len().saturating_sub(1)) as f32;
-    let free_space = container_cross - total_line_size - total_gaps;
+    // `container_cross` is the container's *definite* cross size (0 when auto).
+    // An auto-height container is exactly its content, so there is no free space
+    // to distribute — clamp at 0 so lines pack tightly instead of spreading.
+    let free_space = (container_cross - total_line_size - total_gaps).max(0.0);
 
     let (initial_offset, spacing) = match align_content {
         AlignContent::FlexStart => (0.0, cross_gap),
@@ -1334,6 +1341,44 @@ mod tests {
             child2_y,
             child1_y
         );
+    }
+
+    #[test]
+    fn test_wrap_lines_pack_tightly_in_auto_container() {
+        // In an auto-height wrap container, wrapped lines must pack directly
+        // under each other (align-content has no free space to distribute) — not
+        // spread across the stale pre-flex stacked height, which pushed the
+        // second row far below the container (card grid lost its 2nd row).
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Row;
+        style.flex_wrap = FlexWrap::Wrap;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        // Four 300×100 items in a 650-wide row → two lines of two.
+        for _ in 0..4 {
+            let mut item_style = ComputedStyle::new();
+            item_style.width = Length::Px(300.0);
+            item_style.height = Length::Px(100.0);
+            item_style.flex_basis = rustkit_css::FlexBasis::Length(300.0);
+            let mut item = LayoutBox::new(BoxType::Block, item_style);
+            item.dimensions.content = Rect::new(0.0, 0.0, 300.0, 100.0);
+            container.children.push(item);
+        }
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 650.0, 800.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        let y0 = container.children[0].dimensions.content.y;
+        let y2 = container.children[2].dimensions.content.y; // first item of line 2
+        assert!(
+            y2 - y0 < 160.0,
+            "second wrap line should pack under the first (~100px), not be spread: dy={}",
+            y2 - y0
+        );
+        assert!(y2 > y0, "second line must be below the first: y0={y0} y2={y2}");
     }
 
     #[test]
