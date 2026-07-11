@@ -77,6 +77,21 @@ impl Default for Color {
     }
 }
 
+/// A single color stop in a gradient (`position` is 0.0–1.0 along the axis).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradientStop {
+    pub color: Color,
+    pub position: f32,
+}
+
+/// A CSS `linear-gradient(...)`. `angle_deg` follows CSS convention: 0deg
+/// points to the top, 90deg to the right, 180deg to the bottom (the default).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearGradient {
+    pub angle_deg: f32,
+    pub stops: Vec<GradientStop>,
+}
+
 /// A CSS length value.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Length {
@@ -936,6 +951,10 @@ pub struct ComputedStyle {
     /// `inherit_from`); only an element that defines its own `--x` pays a
     /// copy-on-write. Referenced by `var(--name)` at declaration time.
     pub custom_properties: std::sync::Arc<std::collections::HashMap<String, String>>,
+
+    /// `background: linear-gradient(...)`, if any. Painted over
+    /// `background_color`. Not inherited (background is per-element).
+    pub background_gradient: Option<LinearGradient>,
 }
 
 impl ComputedStyle {
