@@ -1,0 +1,260 @@
+{
+  "$schema_note": "Single source of truth for parity cases. Mirrors the macOS cases/registry.json schema (Atlas R0); reconcile field names on the first shared-crate touch. parity_lib imports this; do not add cases to the Python lists.",
+  "pin": {
+    "browser": "chrome-for-testing",
+    "version": "148.0.7778.216",
+    "baseline_set": "chrome-148"
+  },
+  "policy": {
+    "default_threshold": 15,
+    "gate_scope_caps": {
+      "builtins": 8,
+      "micro": 8
+    },
+    "holdout_no_edit": true
+  },
+  "cases": {
+    "new_tab": {
+      "html": "crates/hiwave-app/src/ui/new_tab.html",
+      "width": 1280,
+      "height": 800,
+      "scope": "builtins",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "about": {
+      "html": "crates/hiwave-app/src/ui/about.html",
+      "width": 800,
+      "height": 600,
+      "scope": "builtins",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "settings": {
+      "html": "crates/hiwave-app/src/ui/settings.html",
+      "width": 1024,
+      "height": 768,
+      "scope": "builtins",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "dim_mismatch",
+      "known_fail": true,
+      "baseline_dims": [
+        800,
+        600
+      ]
+    },
+    "chrome_rustkit": {
+      "html": "crates/hiwave-app/src/ui/chrome.html",
+      "width": 1280,
+      "height": 100,
+      "scope": "builtins",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "missing",
+      "known_fail": true
+    },
+    "shelf": {
+      "html": "crates/hiwave-app/src/ui/shelf.html",
+      "width": 1280,
+      "height": 120,
+      "scope": "builtins",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "article-typography": {
+      "html": "websuite/cases/article-typography/index.html",
+      "width": 1280,
+      "height": 800,
+      "scope": "websuite",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "card-grid": {
+      "html": "websuite/cases/card-grid/index.html",
+      "width": 1280,
+      "height": 800,
+      "scope": "websuite",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "css-selectors": {
+      "html": "websuite/cases/css-selectors/index.html",
+      "width": 800,
+      "height": 1200,
+      "scope": "websuite",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "flex-positioning": {
+      "html": "websuite/cases/flex-positioning/index.html",
+      "width": 800,
+      "height": 1000,
+      "scope": "websuite",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "form-elements": {
+      "html": "websuite/cases/form-elements/index.html",
+      "width": 800,
+      "height": 600,
+      "scope": "websuite",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "gradient-backgrounds": {
+      "html": "websuite/cases/gradient-backgrounds/index.html",
+      "width": 800,
+      "height": 600,
+      "scope": "websuite",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "image-gallery": {
+      "html": "websuite/cases/image-gallery/index.html",
+      "width": 1280,
+      "height": 800,
+      "scope": "websuite",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "sticky-scroll": {
+      "html": "websuite/cases/sticky-scroll/index.html",
+      "width": 1280,
+      "height": 800,
+      "scope": "websuite",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "backgrounds": {
+      "html": "websuite/micro/backgrounds/index.html",
+      "width": 900,
+      "height": 1000,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "bg-solid": {
+      "html": "websuite/micro/bg-solid/index.html",
+      "width": 800,
+      "height": 600,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "dim_mismatch",
+      "known_fail": true,
+      "baseline_dims": [
+        600,
+        500
+      ]
+    },
+    "bg-pure": {
+      "html": "websuite/micro/bg-pure/index.html",
+      "width": 800,
+      "height": 600,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "missing",
+      "known_fail": true
+    },
+    "combinators": {
+      "html": "websuite/micro/combinators/index.html",
+      "width": 800,
+      "height": 800,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "form-controls": {
+      "html": "websuite/micro/form-controls/index.html",
+      "width": 800,
+      "height": 1200,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "gradients": {
+      "html": "websuite/micro/gradients/index.html",
+      "width": 900,
+      "height": 1000,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "images-intrinsic": {
+      "html": "websuite/micro/images-intrinsic/index.html",
+      "width": 800,
+      "height": 1400,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "pseudo-classes": {
+      "html": "websuite/micro/pseudo-classes/index.html",
+      "width": 800,
+      "height": 800,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "dim_mismatch",
+      "known_fail": true,
+      "baseline_dims": [
+        800,
+        1200
+      ]
+    },
+    "rounded-corners": {
+      "html": "websuite/micro/rounded-corners/index.html",
+      "width": 900,
+      "height": 1000,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    },
+    "specificity": {
+      "html": "websuite/micro/specificity/index.html",
+      "width": 800,
+      "height": 600,
+      "scope": "micro",
+      "dpr": 1,
+      "threshold": 15,
+      "baseline_status": "ok",
+      "known_fail": false
+    }
+  }
+}
