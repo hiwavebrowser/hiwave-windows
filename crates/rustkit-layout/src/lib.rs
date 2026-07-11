@@ -1288,6 +1288,10 @@ pub enum DisplayCommand {
         font_family: String,
         font_weight: u16,
         font_style: u8,
+        /// background-clip:text fill: when set, glyphs are tinted by this
+        /// gradient (sampled across `gradient_rect`) instead of `color`.
+        gradient: Option<Vec<GradientStop>>,
+        gradient_rect: Rect,
     },
     /// Draw text decoration line (underline, strikethrough, overline).
     TextDecoration {
@@ -1748,6 +1752,11 @@ impl DisplayList {
 
     /// Render background.
     fn render_background(&mut self, layout_box: &LayoutBox) {
+        // background-clip:text paints the background into the glyphs, not the
+        // box — the box fill is suppressed (render_text does the gradient fill).
+        if layout_box.style.background_clip == rustkit_css::BackgroundClip::Text {
+            return;
+        }
         let border_box = layout_box.dimensions.border_box();
         let color = layout_box.style.background_color;
         if color.a > 0.0 {
@@ -1847,6 +1856,15 @@ impl DisplayList {
                     1.2
                 };
 
+            // background-clip:text: fill the glyphs with the gradient (sampled
+            // across the text's border box) instead of the solid color.
+            let text_gradient = if style.background_clip == rustkit_css::BackgroundClip::Text {
+                style.background_gradient.as_ref().map(|g| g.stops.clone())
+            } else {
+                None
+            };
+            let gradient_rect = layout_box.dimensions.border_box();
+
             // Wrap to the box width (real shaped widths, matching layout) and
             // emit one text command per line, stacked by line-height.
             // Single-line text yields exactly one command.
@@ -1870,6 +1888,8 @@ impl DisplayList {
                     font_family: style.font_family.clone(),
                     font_weight: style.font_weight.0,
                     font_style: font_style_code,
+                    gradient: text_gradient.clone(),
+                    gradient_rect,
                 });
             }
 

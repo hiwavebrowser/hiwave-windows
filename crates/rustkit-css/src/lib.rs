@@ -92,6 +92,18 @@ pub struct LinearGradient {
     pub stops: Vec<GradientStop>,
 }
 
+/// `background-clip` — how far the background paints. `Text` clips it to the
+/// glyphs (the gradient-text effect), so the box fill is suppressed and the
+/// text is filled with the background instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundClip {
+    #[default]
+    BorderBox,
+    PaddingBox,
+    ContentBox,
+    Text,
+}
+
 /// A CSS length value.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Length {
@@ -955,6 +967,10 @@ pub struct ComputedStyle {
     /// `background: linear-gradient(...)`, if any. Painted over
     /// `background_color`. Not inherited (background is per-element).
     pub background_gradient: Option<LinearGradient>,
+
+    /// `background-clip`. When `Text`, the background is clipped to the glyphs
+    /// and the box fill is suppressed. Not inherited.
+    pub background_clip: BackgroundClip,
 }
 
 impl ComputedStyle {

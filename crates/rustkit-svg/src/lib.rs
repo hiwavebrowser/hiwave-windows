@@ -1420,6 +1420,8 @@ impl SvgText {
                 color: text_color,
                 font_weight: 400, // Normal
                 font_style: 0, // Normal
+                gradient: None,
+                gradient_rect: Rect::default(),
             });
         }
     }
