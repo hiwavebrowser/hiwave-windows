@@ -123,6 +123,68 @@ pub struct ColorVertex {
     pub color: [f32; 4],
 }
 
+/// Convert one 8-bit sRGB channel to linear-light [0,1]. CSS colors are sRGB,
+/// but the render targets are sRGB-encoded (`*UnormSrgb`), so the GPU re-encodes
+/// whatever the shader outputs on write. Uploading raw sRGB values therefore
+/// double-encodes them (0.102 → 0.352 = a dark navy #1a1a2e showing as #5a5a76).
+/// Converting to linear here means the target's sRGB encode reproduces the
+/// original color exactly. Darks are shifted most, which is why dark UIs looked
+/// washed out while near-white pages seemed fine.
+fn srgb_channel_to_linear(u: u8) -> f32 {
+    let s = u as f32 / 255.0;
+    if s <= 0.04045 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// A color as linear-light RGBA for upload to an sRGB render target.
+fn color_to_linear(c: Color) -> [f32; 4] {
+    [
+        srgb_channel_to_linear(c.r),
+        srgb_channel_to_linear(c.g),
+        srgb_channel_to_linear(c.b),
+        c.a,
+    ]
+}
+
+/// Linearly interpolate two colors in gamma sRGB space (the raw 0–255 channels)
+/// — matching Chrome's default gradient interpolation, so parity holds.
+fn lerp_color(a: Color, b: Color, f: f32) -> Color {
+    let f = f.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * f).round() as u8;
+    Color {
+        r: mix(a.r, b.r),
+        g: mix(a.g, b.g),
+        b: mix(a.b, b.b),
+        a: a.a + (b.a - a.a) * f,
+    }
+}
+
+/// Evaluate a gradient's color at position `t` (0.0–1.0) across its stops.
+fn eval_gradient_stops(stops: &[rustkit_css::GradientStop], t: f32) -> Color {
+    if stops.is_empty() {
+        return Color::TRANSPARENT;
+    }
+    let t = t.clamp(0.0, 1.0);
+    let first = &stops[0];
+    let last = &stops[stops.len() - 1];
+    if t <= first.position {
+        return first.color;
+    }
+    if t >= last.position {
+        return last.color;
+    }
+    for pair in stops.windows(2) {
+        if t >= pair[0].position && t <= pair[1].position {
+            let span = (pair[1].position - pair[0].position).max(f32::EPSILON);
+            return lerp_color(pair[0].color, pair[1].color, (t - pair[0].position) / span);
+        }
+    }
+    last.color
+}
+
 impl ColorVertex {
     pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<ColorVertex>() as wgpu::BufferAddress,
@@ -504,6 +566,14 @@ impl Renderer {
                 self.draw_solid_rect(*rect, *color);
             }
 
+            DisplayCommand::LinearGradient {
+                rect,
+                angle_deg,
+                stops,
+            } => {
+                self.draw_linear_gradient(*rect, *angle_deg, stops);
+            }
+
             DisplayCommand::Border {
                 color,
                 rect,
@@ -631,12 +701,7 @@ impl Renderer {
                     let nx = -dy / len * width * 0.5;
                     let ny = dx / len * width * 0.5;
                     
-                    let c = [
-                        color.r as f32 / 255.0,
-                        color.g as f32 / 255.0,
-                        color.b as f32 / 255.0,
-                        color.a,
-                    ];
+                    let c = color_to_linear(*color);
                     
                     let base = self.color_vertices.len() as u32;
                     self.color_vertices.extend_from_slice(&[
@@ -668,12 +733,7 @@ impl Renderer {
             DisplayCommand::FillPolygon { points, color } => {
                 // Simple triangle fan for convex polygons
                 if points.len() >= 3 {
-                    let c = [
-                        color.r as f32 / 255.0,
-                        color.g as f32 / 255.0,
-                        color.b as f32 / 255.0,
-                        color.a,
-                    ];
+                    let c = color_to_linear(*color);
                     
                     let base = self.color_vertices.len() as u32;
                     for (x, y) in points {
@@ -718,12 +778,7 @@ impl Renderer {
             rect
         };
 
-        let c = [
-            color.r as f32 / 255.0,
-            color.g as f32 / 255.0,
-            color.b as f32 / 255.0,
-            color.a,
-        ];
+        let c = color_to_linear(color);
 
         let base = self.color_vertices.len() as u32;
 
@@ -734,6 +789,118 @@ impl Renderer {
             ColorVertex { position: [rect.x, rect.y + rect.height], color: c },
         ]);
 
+        self.color_indices.extend_from_slice(&[
+            base, base + 1, base + 2,
+            base, base + 2, base + 3,
+        ]);
+    }
+
+    /// Draw a linear gradient by emitting per-vertex-colored quads that the GPU
+    /// interpolates. Axis-aligned gradients (to top/bottom/left/right) are drawn
+    /// as one exact strip per adjacent stop pair — correct for any number of
+    /// stops. Angled gradients fall back to a single quad whose four corners are
+    /// evaluated along the gradient axis (exact for two stops; a smooth
+    /// approximation for more).
+    fn draw_linear_gradient(
+        &mut self,
+        rect: Rect,
+        angle_deg: f32,
+        stops: &[rustkit_css::GradientStop],
+    ) {
+        let rect = if let Some(clip) = self.current_clip() {
+            match rect.intersect(&clip) {
+                Some(r) => r,
+                None => return,
+            }
+        } else {
+            rect
+        };
+        if stops.len() < 2 {
+            return;
+        }
+        let a = ((angle_deg % 360.0) + 360.0) % 360.0;
+        const EPS: f32 = 1.0;
+        let vertical = (a - 0.0).abs() < EPS || (a - 180.0).abs() < EPS || (a - 360.0).abs() < EPS;
+        let horizontal = (a - 90.0).abs() < EPS || (a - 270.0).abs() < EPS;
+
+        if vertical || horizontal {
+            // t runs along the axis in the gradient's direction. For `to bottom`
+            // (180) / `to right` (90), t=0 is at the top/left edge.
+            let reversed = (a - 0.0).abs() < EPS || (a - 360.0).abs() < EPS || (a - 270.0).abs() < EPS;
+            for pair in stops.windows(2) {
+                let (mut p0, mut c0) = (pair[0].position, pair[0].color);
+                let (mut p1, mut c1) = (pair[1].position, pair[1].color);
+                if reversed {
+                    p0 = 1.0 - p0;
+                    p1 = 1.0 - p1;
+                    std::mem::swap(&mut p0, &mut p1);
+                    std::mem::swap(&mut c0, &mut c1);
+                }
+                let (lo, hi) = (p0.min(p1).clamp(0.0, 1.0), p0.max(p1).clamp(0.0, 1.0));
+                if hi <= lo {
+                    continue;
+                }
+                if vertical {
+                    let y0 = rect.y + rect.height * lo;
+                    let y1 = rect.y + rect.height * hi;
+                    self.push_gradient_quad(
+                        [rect.x, y0], [rect.x + rect.width, y0],
+                        [rect.x + rect.width, y1], [rect.x, y1],
+                        c0, c0, c1, c1,
+                    );
+                } else {
+                    let x0 = rect.x + rect.width * lo;
+                    let x1 = rect.x + rect.width * hi;
+                    self.push_gradient_quad(
+                        [x0, rect.y], [x1, rect.y],
+                        [x1, rect.y + rect.height], [x0, rect.y + rect.height],
+                        c0, c1, c1, c0,
+                    );
+                }
+            }
+        } else {
+            // Angled: project the four corners onto the gradient axis and colour
+            // each by its normalised position. 0deg points up in CSS.
+            let rad = a.to_radians();
+            let (dx, dy) = (rad.sin(), -rad.cos());
+            let corners = [
+                [rect.x, rect.y],
+                [rect.x + rect.width, rect.y],
+                [rect.x + rect.width, rect.y + rect.height],
+                [rect.x, rect.y + rect.height],
+            ];
+            let proj: Vec<f32> = corners.iter().map(|c| c[0] * dx + c[1] * dy).collect();
+            let (mut tmin, mut tmax) = (f32::INFINITY, f32::NEG_INFINITY);
+            for &p in &proj {
+                tmin = tmin.min(p);
+                tmax = tmax.max(p);
+            }
+            let span = (tmax - tmin).max(f32::EPSILON);
+            let cols: Vec<Color> = proj
+                .iter()
+                .map(|p| eval_gradient_stops(stops, (p - tmin) / span))
+                .collect();
+            self.push_gradient_quad(
+                corners[0], corners[1], corners[2], corners[3],
+                cols[0], cols[1], cols[2], cols[3],
+            );
+        }
+    }
+
+    /// Emit a quad (two triangles) with a colour at each corner.
+    fn push_gradient_quad(
+        &mut self,
+        p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2],
+        c0: Color, c1: Color, c2: Color, c3: Color,
+    ) {
+        let cv = color_to_linear;
+        let base = self.color_vertices.len() as u32;
+        self.color_vertices.extend_from_slice(&[
+            ColorVertex { position: p0, color: cv(c0) },
+            ColorVertex { position: p1, color: cv(c1) },
+            ColorVertex { position: p2, color: cv(c2) },
+            ColorVertex { position: p3, color: cv(c3) },
+        ]);
         self.color_indices.extend_from_slice(&[
             base, base + 1, base + 2,
             base, base + 2, base + 3,
@@ -788,12 +955,7 @@ impl Renderer {
         font_style: u8,
     ) {
         let mut cursor_x = x;
-        let c = [
-            color.r as f32 / 255.0,
-            color.g as f32 / 255.0,
-            color.b as f32 / 255.0,
-            color.a,
-        ];
+        let c = color_to_linear(color);
 
         // Get atlas size before the loop to avoid borrow issues
         let atlas_size = self.glyph_cache.atlas_size() as f32;

@@ -77,6 +77,21 @@ impl Default for Color {
     }
 }
 
+/// A single color stop in a gradient (`position` is 0.0–1.0 along the axis).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradientStop {
+    pub color: Color,
+    pub position: f32,
+}
+
+/// A CSS `linear-gradient(...)`. `angle_deg` follows CSS convention: 0deg
+/// points to the top, 90deg to the right, 180deg to the bottom (the default).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearGradient {
+    pub angle_deg: f32,
+    pub stops: Vec<GradientStop>,
+}
+
 /// A CSS length value.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Length {
@@ -929,6 +944,17 @@ pub struct ComputedStyle {
     // Grid Alignment (also used by Flexbox)
     pub justify_items: JustifyItems,
     pub justify_self: JustifySelf,
+
+    /// CSS custom properties (`--name: value`) in scope for this element.
+    /// Custom properties inherit, so this is shared via `Arc` — every
+    /// descendant of `:root` points at the same map (cheap refcount clone in
+    /// `inherit_from`); only an element that defines its own `--x` pays a
+    /// copy-on-write. Referenced by `var(--name)` at declaration time.
+    pub custom_properties: std::sync::Arc<std::collections::HashMap<String, String>>,
+
+    /// `background: linear-gradient(...)`, if any. Painted over
+    /// `background_color`. Not inherited (background is per-element).
+    pub background_gradient: Option<LinearGradient>,
 }
 
 impl ComputedStyle {
@@ -998,6 +1024,9 @@ impl ComputedStyle {
             // inheriting element painted a black box and could vanish.
             background_color: Color::TRANSPARENT,
             opacity: 1.0,
+
+            // Custom properties inherit (cheap Arc clone).
+            custom_properties: parent.custom_properties.clone(),
 
             // Remaining non-inherited get defaults
             ..Default::default()

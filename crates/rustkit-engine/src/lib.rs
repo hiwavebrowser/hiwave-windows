@@ -808,7 +808,15 @@ impl Engine {
         self.collect_style_text(&document.root(), &mut css_text);
         let sheet = Stylesheet::parse(&css_text).unwrap_or_else(|_| Stylesheet::new());
         info!(rule_count = sheet.rules.len(), css_len = css_text.len(), "CSS: author stylesheet parsed");
-        let root_inherited = ComputedStyle::new();
+        let mut root_inherited = ComputedStyle::new();
+        // Seed custom properties defined at the document root. The layout tree
+        // is built from <body>, so a `:root { --x: ... }` block (the design-token
+        // pattern every builtin UI uses) would otherwise never be computed and
+        // every `var(--x)` would resolve to nothing — a blank page.
+        let root_vars = Self::collect_root_custom_properties(&sheet);
+        if !root_vars.is_empty() {
+            root_inherited.custom_properties = Arc::new(root_vars);
+        }
 
         // Debug: print root children to understand DOM structure
         let root_children = document.root().children();
@@ -1018,6 +1026,32 @@ impl Engine {
         }
     }
 
+    /// Gather custom properties (`--x: value`) defined by selectors that apply
+    /// to the document root — `:root`, `html`, or `*` — into a base map that
+    /// seeds inheritance for the whole tree. Element-scoped custom properties
+    /// are layered on later, per element, in `compute_style_for_element`.
+    fn collect_root_custom_properties(sheet: &Stylesheet) -> HashMap<String, String> {
+        let mut map: HashMap<String, String> = HashMap::new();
+        for rule in &sheet.rules {
+            let applies = rule.selector.split(',').any(|s| {
+                let s = s.trim();
+                s == ":root" || s == "html" || s == "*"
+            });
+            if !applies {
+                continue;
+            }
+            for decl in &rule.declarations {
+                if decl.property.starts_with("--") {
+                    if let PropertyValue::Specified(v) = &decl.value {
+                        let resolved = resolve_var_refs(v, &map);
+                        map.insert(decl.property.clone(), resolved);
+                    }
+                }
+            }
+        }
+        map
+    }
+
     /// Compute a basic style for an element based on its tag and attributes.
     fn compute_style_for_element(
         &self,
@@ -1128,10 +1162,35 @@ impl Engine {
             }
         }
         matched.sort_by_key(|&(spec, i)| (spec, i));
+
+        // 3a. Collect this element's own custom properties (`--x`) first, in
+        //     cascade order over the inherited set, so var() lookups in this
+        //     element's other declarations (and in descendants) see them.
+        for &(_, i) in &matched {
+            for decl in &sheet.rules[i].declarations {
+                if decl.property.starts_with("--") {
+                    if let PropertyValue::Specified(v) = &decl.value {
+                        let resolved = resolve_var_refs(v, &style.custom_properties);
+                        Arc::make_mut(&mut style.custom_properties)
+                            .insert(decl.property.clone(), resolved);
+                    }
+                }
+            }
+        }
+
+        // 3b. Apply normal declarations, resolving any var(--x) references.
         for (_, i) in matched {
             for decl in &sheet.rules[i].declarations {
+                if decl.property.starts_with("--") {
+                    continue;
+                }
                 if let PropertyValue::Specified(v) = &decl.value {
-                    self.apply_declaration(&mut style, &decl.property, v);
+                    if v.contains("var(") {
+                        let resolved = resolve_var_refs(v, &style.custom_properties);
+                        self.apply_declaration(&mut style, &decl.property, &resolved);
+                    } else {
+                        self.apply_declaration(&mut style, &decl.property, v);
+                    }
                 }
             }
         }
@@ -1286,7 +1345,20 @@ impl Engine {
                 continue;
             }
             if let Some((property, value)) = declaration.split_once(':') {
-                self.apply_declaration(style, property.trim(), value.trim());
+                let property = property.trim();
+                let value = value.trim();
+                if property.starts_with("--") {
+                    let resolved = resolve_var_refs(value, &style.custom_properties);
+                    Arc::make_mut(&mut style.custom_properties)
+                        .insert(property.to_string(), resolved);
+                    continue;
+                }
+                if value.contains("var(") {
+                    let resolved = resolve_var_refs(value, &style.custom_properties);
+                    self.apply_declaration(style, property, &resolved);
+                } else {
+                    self.apply_declaration(style, property, value);
+                }
             }
         }
     }
@@ -1303,14 +1375,23 @@ impl Engine {
                 }
             }
             "background-color" | "background" => {
-                // `background` shorthand: use the first token that parses as a color.
-                let color = if property == "background" {
-                    value.split_whitespace().find_map(parse_color)
-                } else {
-                    parse_color(value)
-                };
-                if let Some(c) = color {
+                if property == "background" {
+                    // Shorthand: capture a linear-gradient layer (painted over
+                    // the base) and the solid base color separately, so a
+                    // gradient's first stop no longer masquerades as the base.
+                    if value.contains("linear-gradient(") {
+                        style.background_gradient = parse_linear_gradient(value);
+                    }
+                    if let Some(c) = background_base_color(value) {
+                        style.background_color = c;
+                    }
+                } else if let Some(c) = parse_color(value) {
                     style.background_color = c;
+                }
+            }
+            "background-image" => {
+                if value.contains("linear-gradient(") {
+                    style.background_gradient = parse_linear_gradient(value);
                 }
             }
             "font-size" => {
@@ -2224,6 +2305,170 @@ impl Default for EngineBuilder {
     }
 }
 
+/// Resolve `var(--name)` / `var(--name, fallback)` references in a CSS value
+/// against the in-scope custom properties. Handles nested parens inside the
+/// fallback and resolves recursively (a variable whose value is itself a
+/// `var()`). Unknown variables with no fallback resolve to empty (matching CSS,
+/// which then treats the declaration as invalid — good enough here).
+fn resolve_var_refs(value: &str, vars: &HashMap<String, String>) -> String {
+    if !value.contains("var(") {
+        return value.to_string();
+    }
+    let mut out = String::new();
+    let mut rest = value;
+    while let Some(pos) = rest.find("var(") {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + 4..];
+        // Find the matching close paren, tracking one level of nested parens
+        // (e.g. a fallback that contains rgb(...)).
+        let bytes = after.as_bytes();
+        let mut depth = 1usize;
+        let mut i = 0usize;
+        while i < bytes.len() && depth > 0 {
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        let inner = &after[..i.saturating_sub(1)];
+        rest = &after[i..];
+        let (name, fallback) = match inner.find(',') {
+            Some(c) => (inner[..c].trim(), Some(inner[c + 1..].trim())),
+            None => (inner.trim(), None),
+        };
+        let resolved = match vars.get(name) {
+            Some(v) => resolve_var_refs(v, vars),
+            None => fallback.map(|f| resolve_var_refs(f, vars)).unwrap_or_default(),
+        };
+        out.push_str(&resolved);
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Split a CSS value on top-level commas, ignoring commas inside parentheses
+/// (so `rgb(1, 2, 3)` and nested gradients survive as one segment).
+fn split_top_level_commas(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for ch in s.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth == 0 => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+/// The solid base color of a `background` shorthand: the last comma-separated
+/// layer that is a plain color (gradient/image layers are skipped). This is the
+/// color painted under any gradient — e.g. `radial-gradient(...), #0f172a`
+/// yields `#0f172a`, not the gradient's first stop.
+fn background_base_color(value: &str) -> Option<rustkit_css::Color> {
+    let mut base = None;
+    for layer in split_top_level_commas(value) {
+        if layer.contains("gradient(") || layer.contains("url(") {
+            continue;
+        }
+        if let Some(c) = layer.split_whitespace().find_map(parse_color) {
+            base = Some(c);
+        }
+    }
+    base
+}
+
+/// Parse a `linear-gradient(...)` into an angle and color stops. Supports an
+/// optional leading angle (`135deg`) or direction keyword (`to right`), then a
+/// list of `color [position%]` stops. Positions default to an even spread.
+fn parse_linear_gradient(value: &str) -> Option<rustkit_css::LinearGradient> {
+    let start = value.find("linear-gradient(")?;
+    let after = &value[start + "linear-gradient(".len()..];
+    // Find the matching close paren.
+    let mut depth = 1i32;
+    let mut end = after.len();
+    for (i, ch) in after.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let parts = split_top_level_commas(&after[..end]);
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut idx = 0;
+    let mut angle_deg = 180.0f32; // default: to bottom
+    let first = parts[0].to_lowercase();
+    if let Some(deg) = first.strip_suffix("deg") {
+        if let Ok(a) = deg.trim().parse::<f32>() {
+            angle_deg = a;
+            idx = 1;
+        }
+    } else if first.starts_with("to ") {
+        angle_deg = match first.as_str() {
+            "to top" => 0.0,
+            "to right" => 90.0,
+            "to bottom" => 180.0,
+            "to left" => 270.0,
+            "to top right" | "to right top" => 45.0,
+            "to bottom right" | "to right bottom" => 135.0,
+            "to bottom left" | "to left bottom" => 225.0,
+            "to top left" | "to left top" => 315.0,
+            _ => 180.0,
+        };
+        idx = 1;
+    }
+
+    let stop_parts = &parts[idx..];
+    let n = stop_parts.len();
+    if n < 2 {
+        return None;
+    }
+    let denom = (n - 1).max(1) as f32;
+    let mut stops = Vec::with_capacity(n);
+    for (i, seg) in stop_parts.iter().enumerate() {
+        let seg = seg.trim();
+        // A trailing `N%` token is the position; the rest is the color (which
+        // may itself contain spaces/commas, e.g. rgb(1, 2, 3)).
+        let (color_str, pos) = match seg.rfind(char::is_whitespace) {
+            Some(sp) if seg[sp + 1..].trim().ends_with('%') => {
+                let p = seg[sp + 1..].trim().trim_end_matches('%').parse::<f32>().ok();
+                (seg[..sp].trim(), p.map(|p| p / 100.0))
+            }
+            _ => (seg, None),
+        };
+        let color = parse_color(color_str)?;
+        let position = pos.unwrap_or(i as f32 / denom);
+        stops.push(rustkit_css::GradientStop { color, position });
+    }
+    Some(rustkit_css::LinearGradient { angle_deg, stops })
+}
+
 /// Parse a color value from CSS.
 fn parse_color(value: &str) -> Option<rustkit_css::Color> {
     let value = value.trim().to_lowercase();
@@ -2468,6 +2713,85 @@ mod tests {
         
         // Test rgb colors
         assert_eq!(parse_color("rgb(255, 0, 0)"), Some(rustkit_css::Color::new(255, 0, 0, 1.0)));
+    }
+
+    #[test]
+    fn test_resolve_var_refs() {
+        let mut vars = HashMap::new();
+        vars.insert("--bg".to_string(), "#0f172a".to_string());
+        vars.insert("--accent".to_string(), "#06b6d4".to_string());
+        vars.insert("--alias".to_string(), "var(--accent)".to_string());
+
+        assert_eq!(resolve_var_refs("var(--bg)", &vars), "#0f172a");
+        assert_eq!(
+            resolve_var_refs("1px solid var(--accent)", &vars),
+            "1px solid #06b6d4"
+        );
+        assert_eq!(resolve_var_refs("var(--missing, red)", &vars), "red");
+        assert_eq!(resolve_var_refs("var(--bg, red)", &vars), "#0f172a");
+        assert_eq!(resolve_var_refs("var(--alias)", &vars), "#06b6d4");
+        assert_eq!(
+            resolve_var_refs("var(--missing, rgb(1, 2, 3))", &vars),
+            "rgb(1, 2, 3)"
+        );
+        assert_eq!(resolve_var_refs("#fff", &vars), "#fff");
+    }
+
+    #[test]
+    fn test_parse_linear_gradient() {
+        // Direction keyword + two stops.
+        let g = parse_linear_gradient("linear-gradient(to right, #ff0000, #0000ff)").unwrap();
+        assert_eq!(g.angle_deg, 90.0);
+        assert_eq!(g.stops.len(), 2);
+        assert_eq!(g.stops[0].color, rustkit_css::Color::from_rgb(255, 0, 0));
+        assert_eq!(g.stops[0].position, 0.0);
+        assert_eq!(g.stops[1].position, 1.0);
+
+        // Explicit angle + explicit stop positions, including an rgb() stop with
+        // internal commas (must not be split).
+        let g = parse_linear_gradient(
+            "linear-gradient(135deg, #667eea 0%, rgb(118, 75, 162) 100%)",
+        )
+        .unwrap();
+        assert_eq!(g.angle_deg, 135.0);
+        assert_eq!(g.stops.len(), 2);
+        assert_eq!(g.stops[1].color, rustkit_css::Color::from_rgb(118, 75, 162));
+
+        // A layered background's base color is the solid layer, not a gradient stop.
+        assert_eq!(
+            background_base_color("radial-gradient(circle, #fff, #000), #1a1a2e"),
+            Some(rustkit_css::Color::from_rgb(0x1a, 0x1a, 0x2e))
+        );
+    }
+
+    #[test]
+    fn test_root_custom_properties_reach_body() {
+        // `:root { --x }` must flow to a <body> descendant via inheritance even
+        // though the tree is built from <body> (the html element is not walked).
+        let html = "<html><head><style>:root{--brand:#123456}</style></head>\
+                    <body><p style=\"color: var(--brand)\">hi</p></body></html>";
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("compositor"),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+        let layout = engine.build_layout_from_document(&document);
+        fn find_colored(b: &rustkit_layout::LayoutBox) -> bool {
+            b.style.color == rustkit_css::Color::from_rgb(0x12, 0x34, 0x56)
+                || b.children.iter().any(find_colored)
+        }
+        assert!(
+            find_colored(&layout),
+            "var(--brand) from :root should resolve on a body descendant"
+        );
     }
 
     #[test]

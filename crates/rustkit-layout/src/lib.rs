@@ -42,7 +42,7 @@ pub use text::{
     TextMetrics, TextShaper,
 };
 
-use rustkit_css::{Color, ComputedStyle, Length};
+use rustkit_css::{Color, ComputedStyle, GradientStop, Length};
 use std::cmp::Ordering;
 use thiserror::Error;
 
@@ -1261,6 +1261,14 @@ pub struct HitTestAncestor {
 pub enum DisplayCommand {
     /// Fill a rectangle with a solid color.
     SolidColor(Color, Rect),
+    /// Fill a rectangle with a linear gradient. `angle_deg` follows CSS
+    /// convention (0 = up, 90 = right, 180 = down); `stops` positions are
+    /// 0.0–1.0 along the gradient axis.
+    LinearGradient {
+        rect: Rect,
+        angle_deg: f32,
+        stops: Vec<GradientStop>,
+    },
     /// Draw a border.
     Border {
         color: Color,
@@ -1740,12 +1748,22 @@ impl DisplayList {
 
     /// Render background.
     fn render_background(&mut self, layout_box: &LayoutBox) {
+        let border_box = layout_box.dimensions.border_box();
         let color = layout_box.style.background_color;
         if color.a > 0.0 {
-            self.commands.push(DisplayCommand::SolidColor(
-                color,
-                layout_box.dimensions.border_box(),
-            ));
+            self.commands
+                .push(DisplayCommand::SolidColor(color, border_box));
+        }
+        // A gradient paints over the solid base color (CSS layers background
+        // images above background-color).
+        if let Some(g) = &layout_box.style.background_gradient {
+            if g.stops.len() >= 2 {
+                self.commands.push(DisplayCommand::LinearGradient {
+                    rect: border_box,
+                    angle_deg: g.angle_deg,
+                    stops: g.stops.clone(),
+                });
+            }
         }
     }
 
