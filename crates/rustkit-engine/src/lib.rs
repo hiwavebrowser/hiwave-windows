@@ -1175,6 +1175,18 @@ impl Engine {
                 style.flex_grow = 1.0;
                 style.flex_basis = rustkit_css::FlexBasis::Length(0.0);
             }
+            // Form controls do NOT inherit the document font in Chrome's UA
+            // sheet — they reset to the system control font (~13.333px, normal
+            // weight/style). Inheriting the page font makes every unstyled
+            // control the wrong size, sliding whole sections off (Atlas macOS
+            // #42: this was the real css-selectors residual, not box-model
+            // compose alone).
+            "button" | "input" | "select" | "textarea" => {
+                style.font_size = rustkit_css::Length::Px(13.333);
+                style.font_family = "sans-serif".to_string();
+                style.font_weight = rustkit_css::FontWeight::NORMAL;
+                style.font_style = rustkit_css::FontStyle::Normal;
+            }
             _ => {}
         }
 
