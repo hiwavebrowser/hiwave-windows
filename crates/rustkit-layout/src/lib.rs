@@ -1269,6 +1269,16 @@ pub enum DisplayCommand {
         angle_deg: f32,
         stops: Vec<GradientStop>,
     },
+    /// Fill a rectangle with a radial gradient. `cx`/`cy` are the center as a
+    /// fraction of `rect` (0.0–1.0); `circle` keeps the axes equal, `ellipse`
+    /// scales them to the box. Size is farthest-corner. `stops` run center→edge.
+    RadialGradient {
+        rect: Rect,
+        cx: f32,
+        cy: f32,
+        circle: bool,
+        stops: Vec<GradientStop>,
+    },
     /// Draw a border.
     Border {
         color: Color,
@@ -1770,6 +1780,17 @@ impl DisplayList {
                 self.commands.push(DisplayCommand::LinearGradient {
                     rect: border_box,
                     angle_deg: g.angle_deg,
+                    stops: g.stops.clone(),
+                });
+            }
+        }
+        if let Some(g) = &layout_box.style.background_radial_gradient {
+            if g.stops.len() >= 2 {
+                self.commands.push(DisplayCommand::RadialGradient {
+                    rect: border_box,
+                    cx: g.cx,
+                    cy: g.cy,
+                    circle: matches!(g.shape, rustkit_css::RadialShape::Circle),
                     stops: g.stops.clone(),
                 });
             }

@@ -92,6 +92,26 @@ pub struct LinearGradient {
     pub stops: Vec<GradientStop>,
 }
 
+/// Radial gradient shape (`circle` | `ellipse`). Ellipse is the CSS default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RadialShape {
+    #[default]
+    Ellipse,
+    Circle,
+}
+
+/// A CSS `radial-gradient(...)`. `cx`/`cy` are the center as a fraction of the
+/// box (0.0–1.0; 0.5,0.5 = center, the default). Size is treated as
+/// farthest-corner (the CSS default) — the gradient axis runs from the center
+/// to the farthest box corner. `stops` are ordered center→edge.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RadialGradient {
+    pub shape: RadialShape,
+    pub cx: f32,
+    pub cy: f32,
+    pub stops: Vec<GradientStop>,
+}
+
 /// `background-clip` — how far the background paints. `Text` clips it to the
 /// glyphs (the gradient-text effect), so the box fill is suppressed and the
 /// text is filled with the background instead.
@@ -967,6 +987,10 @@ pub struct ComputedStyle {
     /// `background: linear-gradient(...)`, if any. Painted over
     /// `background_color`. Not inherited (background is per-element).
     pub background_gradient: Option<LinearGradient>,
+
+    /// `background: radial-gradient(...)`, if any. Painted over
+    /// `background_color`. Not inherited (background is per-element).
+    pub background_radial_gradient: Option<RadialGradient>,
 
     /// `background-clip`. When `Text`, the background is clipped to the glyphs
     /// and the box fill is suppressed. Not inherited.
