@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="../../common/parity-reset.css">
+  <title>GPU Gradient Debug Test</title>
+  <style>
+    /* Reset */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; padding: 20px; background: #fff; }
+
+    h2 { margin: 20px 0 10px; font-size: 14px; color: #333; }
+    h3 { margin: 15px 0 5px; font-size: 12px; color: #666; }
+
+    .row { margin-bottom: 20px; }
+
+    .test-box {
+      width: 100px;
+      height: 100px;
+      margin: 5px;
+      display: inline-block;
+    }
+
+    .test-box-sm {
+      width: 50px;
+      height: 50px;
+      margin: 5px;
+      display: inline-block;
+    }
+
+    .label {
+      display: inline-block;
+      width: 100px;
+      font-size: 10px;
+      text-align: center;
+      vertical-align: top;
+      margin: 5px;
+    }
+
+    /* ============================================
+       SECTION 1: Axis-Aligned Linear Gradients
+       These should be the easiest to get right.
+       ============================================ */
+    .axis-0deg   { background: linear-gradient(0deg, red, blue); }
+    .axis-90deg  { background: linear-gradient(90deg, red, blue); }
+    .axis-180deg { background: linear-gradient(180deg, red, blue); }
+    .axis-270deg { background: linear-gradient(270deg, red, blue); }
+
+    /* ============================================
+       SECTION 2: Diagonal Linear Gradients
+       More complex due to corner-to-corner math.
+       ============================================ */
+    .diag-45deg  { background: linear-gradient(45deg, red, blue); }
+    .diag-135deg { background: linear-gradient(135deg, red, blue); }
+    .diag-225deg { background: linear-gradient(225deg, red, blue); }
+    .diag-315deg { background: linear-gradient(315deg, red, blue); }
+
+    /* ============================================
+       SECTION 3: Multi-Stop Gradients
+       Tests color interpolation accuracy.
+       ============================================ */
+    .multi-3stop { background: linear-gradient(90deg, red, yellow, blue); }
+    .multi-rainbow { background: linear-gradient(90deg, red, orange, yellow, green, blue, purple); }
+    .multi-hard { background: linear-gradient(90deg, red 50%, blue 50%); }
+    .multi-spaced { background: linear-gradient(90deg, red 20%, yellow 40%, green 60%, blue 80%); }
+
+    /* ============================================
+       SECTION 4: Repeating Gradients
+       Tests repeat logic in shader.
+       ============================================ */
+    .repeat-linear { background: repeating-linear-gradient(45deg, red, blue 20px); }
+    .repeat-stripes { background: repeating-linear-gradient(45deg, red, red 10px, blue 10px, blue 20px); }
+    .repeat-horz { background: repeating-linear-gradient(90deg, red, blue 30px); }
+    .repeat-vert { background: repeating-linear-gradient(0deg, red, blue 30px); }
+
+    /* ============================================
+       SECTION 5: Gradients with Border-Radius
+       Tests SDF clipping in shader.
+       ============================================ */
+    .radius-small { background: linear-gradient(45deg, red, blue); border-radius: 8px; }
+    .radius-large { background: linear-gradient(45deg, red, blue); border-radius: 16px; }
+    .radius-circle { background: linear-gradient(45deg, red, blue); border-radius: 50%; }
+    .radius-asymm { background: linear-gradient(45deg, red, blue); border-radius: 10px 20px 30px 40px; }
+
+    /* ============================================
+       SECTION 6: Radial Gradients
+       ============================================ */
+    .radial-circle { background: radial-gradient(circle, red, blue); }
+    .radial-ellipse { background: radial-gradient(ellipse, red, blue); }
+    .radial-off-center { background: radial-gradient(circle at top left, red, blue); }
+    .radial-closest { background: radial-gradient(closest-side, red, blue); }
+
+    /* ============================================
+       SECTION 7: Conic Gradients
+       ============================================ */
+    .conic-basic { background: conic-gradient(red, blue); }
+    .conic-rotated { background: conic-gradient(from 90deg, red, blue); }
+    .conic-rainbow { background: conic-gradient(red, yellow, green, blue, red); }
+    .conic-off-center { background: conic-gradient(at top left, red, yellow, green, blue); }
+
+    /* ============================================
+       SECTION 8: Non-Square Rectangles
+       Tests gradient line length calculation.
+       ============================================ */
+    .rect-wide {
+      width: 200px;
+      height: 50px;
+    }
+    .rect-tall {
+      width: 50px;
+      height: 200px;
+    }
+
+    /* ============================================
+       SECTION 9: Edge Cases
+       ============================================ */
+    .edge-tiny { width: 10px; height: 10px; background: linear-gradient(45deg, red, blue); }
+    .edge-single-stop { background: linear-gradient(90deg, red, red); }
+    .edge-transparent { background: linear-gradient(90deg, rgba(255,0,0,0.5), rgba(0,0,255,0.5)); }
+  </style>
+</head>
+<body>
+  <h1>GPU Gradient Debug Test</h1>
+  <p>Test fixture for systematic GPU vs CPU gradient comparison.</p>
+  <p>Enable GPU gradients: <code>RUSTKIT_GPU_GRADIENTS=1</code></p>
+
+  <h2>1. Axis-Aligned Linear Gradients (Easiest)</h2>
+  <div class="row">
+    <div class="test-box axis-0deg"></div>
+    <div class="test-box axis-90deg"></div>
+    <div class="test-box axis-180deg"></div>
+    <div class="test-box axis-270deg"></div>
+  </div>
+  <div class="row">
+    <div class="label">0deg (to top)</div>
+    <div class="label">90deg (to right)</div>
+    <div class="label">180deg (to bottom)</div>
+    <div class="label">270deg (to left)</div>
+  </div>
+
+  <h2>2. Diagonal Linear Gradients</h2>
+  <div class="row">
+    <div class="test-box diag-45deg"></div>
+    <div class="test-box diag-135deg"></div>
+    <div class="test-box diag-225deg"></div>
+    <div class="test-box diag-315deg"></div>
+  </div>
+  <div class="row">
+    <div class="label">45deg</div>
+    <div class="label">135deg</div>
+    <div class="label">225deg</div>
+    <div class="label">315deg</div>
+  </div>
+
+  <h2>3. Multi-Stop Gradients</h2>
+  <div class="row">
+    <div class="test-box multi-3stop"></div>
+    <div class="test-box multi-rainbow"></div>
+    <div class="test-box multi-hard"></div>
+    <div class="test-box multi-spaced"></div>
+  </div>
+  <div class="row">
+    <div class="label">3 stops</div>
+    <div class="label">rainbow</div>
+    <div class="label">hard stop</div>
+    <div class="label">spaced</div>
+  </div>
+
+  <h2>4. Repeating Gradients</h2>
+  <div class="row">
+    <div class="test-box repeat-linear"></div>
+    <div class="test-box repeat-stripes"></div>
+    <div class="test-box repeat-horz"></div>
+    <div class="test-box repeat-vert"></div>
+  </div>
+  <div class="row">
+    <div class="label">45deg repeat</div>
+    <div class="label">stripes</div>
+    <div class="label">horizontal</div>
+    <div class="label">vertical</div>
+  </div>
+
+  <h2>5. Border-Radius Clipping</h2>
+  <div class="row">
+    <div class="test-box radius-small"></div>
+    <div class="test-box radius-large"></div>
+    <div class="test-box radius-circle"></div>
+    <div class="test-box radius-asymm"></div>
+  </div>
+  <div class="row">
+    <div class="label">8px radius</div>
+    <div class="label">16px radius</div>
+    <div class="label">50% (circle)</div>
+    <div class="label">asymmetric</div>
+  </div>
+
+  <h2>6. Radial Gradients</h2>
+  <div class="row">
+    <div class="test-box radial-circle"></div>
+    <div class="test-box radial-ellipse"></div>
+    <div class="test-box radial-off-center"></div>
+    <div class="test-box radial-closest"></div>
+  </div>
+  <div class="row">
+    <div class="label">circle</div>
+    <div class="label">ellipse</div>
+    <div class="label">off-center</div>
+    <div class="label">closest-side</div>
+  </div>
+
+  <h2>7. Conic Gradients</h2>
+  <div class="row">
+    <div class="test-box conic-basic"></div>
+    <div class="test-box conic-rotated"></div>
+    <div class="test-box conic-rainbow"></div>
+    <div class="test-box conic-off-center"></div>
+  </div>
+  <div class="row">
+    <div class="label">basic</div>
+    <div class="label">from 90deg</div>
+    <div class="label">rainbow</div>
+    <div class="label">off-center</div>
+  </div>
+
+  <h2>8. Non-Square Rectangles</h2>
+  <h3>Tests gradient line length calculation for different aspect ratios</h3>
+  <div class="row">
+    <div class="test-box rect-wide diag-45deg"></div>
+    <div class="test-box rect-tall diag-45deg"></div>
+  </div>
+  <div class="row">
+    <div class="label">Wide (200x50)</div>
+    <div class="label">Tall (50x200)</div>
+  </div>
+
+  <h2>9. Edge Cases</h2>
+  <div class="row">
+    <div class="test-box-sm edge-tiny"></div>
+    <div class="test-box edge-single-stop"></div>
+    <div class="test-box edge-transparent"></div>
+  </div>
+  <div class="row">
+    <div class="label">10x10 tiny</div>
+    <div class="label">single color</div>
+    <div class="label">semi-transparent</div>
+  </div>
+</body>
+</html>

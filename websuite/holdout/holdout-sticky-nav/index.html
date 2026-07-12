@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Holdout: sticky nav variant</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #eef2ee; line-height: 1.5; }
+  .topbar { position: sticky; top: 0; background: #123524; color: #e8f5e9; z-index: 40; }
+  .topbar-inner { max-width: 1100px; margin: 0 auto; height: 52px; padding: 0 16px;
+    display: flex; align-items: center; justify-content: space-between; }
+  ul.menu { display: flex; gap: 22px; list-style: none; }
+  ul.menu a { color: #a5d6a7; text-decoration: none; font-weight: 600; font-size: 14px; }
+  .brand { font-size: 1.3em; font-weight: 800; letter-spacing: 0.04em; }
+  .shell { max-width: 1100px; margin: 0 auto; padding: 24px 16px;
+    display: grid; grid-template-columns: 1fr 220px; gap: 24px; }
+  .feed article { background: #fff; border-radius: 10px; margin-bottom: 18px; overflow: hidden; }
+  .feed .banner { height: 140px; background: linear-gradient(120deg, #2e7d32, #81c784); }
+  .feed .body { padding: 18px; }
+  .feed h2 { font-size: 1.25em; color: #1b3a2b; margin-bottom: 8px; }
+  .feed p { color: #4a5f52; }
+  aside.rail { position: sticky; top: 76px; height: fit-content; }
+  .rail section { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .rail h4 { font-size: 0.8em; text-transform: uppercase; color: #7d8f83; margin-bottom: 8px; }
+  .rail li { list-style: none; padding: 5px 0; border-bottom: 1px solid #edf1ee; font-size: 0.9em; }
+  main { min-height: 1400px; }
+</style></head>
+<body>
+  <header class="topbar"><div class="topbar-inner">
+    <nav><ul class="menu">
+      <li><a href="#">Feed</a></li><li><a href="#">Topics</a></li>
+      <li><a href="#">Saved</a></li><li><a href="#">Digest</a></li>
+    </ul></nav>
+    <div class="brand">Verdant</div>
+  </div></header>
+  <div class="shell">
+    <main class="feed">
+      <article><div class="banner"></div><div class="body">
+        <h2>Rewilding the city block</h2>
+        <p>Native planting turns curb strips into corridors that carry pollinators across neighborhoods.</p>
+      </div></article>
+      <article><div class="banner" style="background: linear-gradient(120deg, #1565c0, #64b5f6);"></div><div class="body">
+        <h2>Rain gardens that actually drain</h2>
+        <p>Grading and soil mix decide whether a basin becomes a garden or a mosquito farm.</p>
+      </div></article>
+      <article><div class="banner" style="background: linear-gradient(120deg, #ef6c00, #ffb74d);"></div><div class="body">
+        <h2>The alley canopy experiment</h2>
+        <p>Twelve blocks, two hundred saplings, and a decade of shade accounting.</p>
+      </div></article>
+    </main>
+    <aside class="rail">
+      <section><h4>Trending</h4><ul>
+        <li>Soil sensors</li><li>Greywater loops</li><li>Balcony orchards</li><li>Seed libraries</li>
+      </ul></section>
+      <section><h4>Follow</h4><ul><li>City Canopy Lab</li><li>Verge Gardeners</li></ul></section>
+    </aside>
+  </div>
+</body></html>

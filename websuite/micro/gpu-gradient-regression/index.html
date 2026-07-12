@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="../../common/parity-reset.css">
+  <title>GPU Gradient Regression Tests</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; padding: 20px; background: #f5f5f5; }
+    h2 { margin: 20px 0 10px; font-size: 14px; color: #333; }
+    h3 { margin: 15px 0 5px; font-size: 12px; color: #666; }
+    .row { margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 10px; }
+    .test-box { width: 150px; height: 100px; display: inline-block; }
+    .test-box-wide { width: 300px; height: 100px; }
+    .label { font-size: 10px; text-align: center; margin-top: 4px; }
+
+    /* ========================================
+       SECTION A: RADIAL POSITION VARIATIONS
+       Tests "at <position>" handling
+       ======================================== */
+    .radial-center    { background: radial-gradient(ellipse at center, cyan, blue); }
+    .radial-top       { background: radial-gradient(ellipse at top, cyan, blue); }
+    .radial-bottom    { background: radial-gradient(ellipse at bottom, cyan, blue); }
+    .radial-left      { background: radial-gradient(ellipse at left, cyan, blue); }
+    .radial-right     { background: radial-gradient(ellipse at right, cyan, blue); }
+    .radial-top-left  { background: radial-gradient(ellipse at top left, cyan, blue); }
+    .radial-25-75     { background: radial-gradient(ellipse at 25% 75%, cyan, blue); }
+
+    /* ========================================
+       SECTION B: TRANSPARENT INTERPOLATION
+       Tests interpolation to/from transparent
+       ======================================== */
+    .trans-cyan-50    { background: radial-gradient(ellipse at top, rgba(6,182,212,0.15), transparent 50%); }
+    .trans-red-50     { background: radial-gradient(circle, rgba(255,0,0,0.5), transparent 50%); }
+    .trans-linear     { background: linear-gradient(90deg, rgba(255,0,0,0.8), transparent); }
+    .trans-multi      { background: linear-gradient(90deg, red, transparent 50%, blue); }
+
+    /* ========================================
+       SECTION C: SEMI-TRANSPARENT COLORS
+       Tests rgba interpolation
+       ======================================== */
+    .semi-trans-1     { background: linear-gradient(90deg, rgba(255,0,0,0.5), rgba(0,0,255,0.5)); }
+    .semi-trans-2     { background: radial-gradient(circle, rgba(255,255,255,0.3), rgba(0,0,0,0.1)); }
+    .semi-trans-3     { background: linear-gradient(135deg, rgba(6,182,212,0.15), rgba(255,255,255,0)); }
+
+    /* ========================================
+       SECTION D: ELLIPSE SIZING AT NON-CENTER
+       ======================================== */
+    .ellipse-fc-top   { background: radial-gradient(ellipse farthest-corner at top, cyan, blue); }
+    .ellipse-fc-25-25 { background: radial-gradient(ellipse farthest-corner at 25% 25%, cyan, blue); }
+    .ellipse-cs-top   { background: radial-gradient(ellipse closest-side at top, cyan, blue); }
+    .ellipse-fs-top   { background: radial-gradient(ellipse farthest-side at top, cyan, blue); }
+
+    /* ========================================
+       SECTION E: MULTI-STOP LINEAR
+       ======================================== */
+    .multi-5-stop     { background: linear-gradient(135deg, #0891b2 0%, #06b6d4 25%, #22d3ee 50%, #06b6d4 75%, #0891b2 100%); }
+    .multi-3-stop     { background: linear-gradient(135deg, #0891b2, #22d3ee, #0891b2); }
+    .multi-rainbow    { background: linear-gradient(90deg, red, orange, yellow, green, blue, purple); }
+
+    /* ========================================
+       SECTION F: DIAGONAL + BORDER-RADIUS
+       ======================================== */
+    .diag-45-r8       { background: linear-gradient(45deg, red, blue); border-radius: 8px; }
+    .diag-135-r8      { background: linear-gradient(135deg, red, blue); border-radius: 8px; }
+    .diag-135-r16     { background: linear-gradient(135deg, red, blue); border-radius: 16px; }
+    .diag-135-r50     { background: linear-gradient(135deg, red, blue); border-radius: 50%; }
+
+    /* ========================================
+       SECTION G: ABOUT PAGE REPRODUCTIONS
+       ======================================== */
+    .about-body       {
+      background: radial-gradient(ellipse at top, rgba(6,182,212,0.15), transparent 50%),
+                  #1a1a2e;
+    }
+    .about-logo       {
+      background: linear-gradient(135deg, #0891b2 0%, #06b6d4 25%, #22d3ee 50%, #06b6d4 75%, #0891b2 100%);
+    }
+    .about-btn        {
+      background: linear-gradient(135deg, #0891b2, #06b6d4);
+      border-radius: 8px;
+    }
+
+    /* ========================================
+       SECTION H: LAYERED GRADIENTS
+       ======================================== */
+    .layered-1        {
+      background: radial-gradient(circle at 20% 20%, rgba(255,255,255,0.3), transparent 50%),
+                  linear-gradient(135deg, #667eea, #764ba2);
+    }
+    .layered-2        {
+      background: radial-gradient(ellipse at top, rgba(6,182,212,0.2), transparent 70%),
+                  linear-gradient(180deg, #1a1a2e, #2d3a4a);
+    }
+  </style>
+</head>
+<body>
+  <h1>GPU Gradient Regression Tests</h1>
+
+  <h2>A. Radial Position Variations</h2>
+  <div class="row">
+    <div><div class="test-box radial-center"></div><div class="label">at center</div></div>
+    <div><div class="test-box radial-top"></div><div class="label">at top</div></div>
+    <div><div class="test-box radial-bottom"></div><div class="label">at bottom</div></div>
+    <div><div class="test-box radial-left"></div><div class="label">at left</div></div>
+    <div><div class="test-box radial-right"></div><div class="label">at right</div></div>
+    <div><div class="test-box radial-top-left"></div><div class="label">at top left</div></div>
+    <div><div class="test-box radial-25-75"></div><div class="label">at 25% 75%</div></div>
+  </div>
+
+  <h2>B. Transparent Interpolation</h2>
+  <div class="row">
+    <div><div class="test-box trans-cyan-50"></div><div class="label">cyan to trans 50%</div></div>
+    <div><div class="test-box trans-red-50"></div><div class="label">red to trans 50%</div></div>
+    <div><div class="test-box trans-linear"></div><div class="label">linear red to trans</div></div>
+    <div><div class="test-box trans-multi"></div><div class="label">red-trans-blue</div></div>
+  </div>
+
+  <h2>C. Semi-Transparent Colors</h2>
+  <div class="row">
+    <div><div class="test-box semi-trans-1"></div><div class="label">rgba red to blue</div></div>
+    <div><div class="test-box semi-trans-2"></div><div class="label">rgba white to black</div></div>
+    <div><div class="test-box semi-trans-3"></div><div class="label">rgba cyan to trans</div></div>
+  </div>
+
+  <h2>D. Ellipse Sizing at Non-Center</h2>
+  <div class="row">
+    <div><div class="test-box ellipse-fc-top"></div><div class="label">farthest-corner at top</div></div>
+    <div><div class="test-box ellipse-fc-25-25"></div><div class="label">farthest-corner 25%</div></div>
+    <div><div class="test-box ellipse-cs-top"></div><div class="label">closest-side at top</div></div>
+    <div><div class="test-box ellipse-fs-top"></div><div class="label">farthest-side at top</div></div>
+  </div>
+
+  <h2>E. Multi-Stop Linear</h2>
+  <div class="row">
+    <div><div class="test-box-wide multi-5-stop"></div><div class="label">5-stop 135deg</div></div>
+    <div><div class="test-box multi-3-stop"></div><div class="label">3-stop 135deg</div></div>
+    <div><div class="test-box-wide multi-rainbow"></div><div class="label">6-stop rainbow</div></div>
+  </div>
+
+  <h2>F. Diagonal + Border-Radius</h2>
+  <div class="row">
+    <div><div class="test-box diag-45-r8"></div><div class="label">45deg r8</div></div>
+    <div><div class="test-box diag-135-r8"></div><div class="label">135deg r8</div></div>
+    <div><div class="test-box diag-135-r16"></div><div class="label">135deg r16</div></div>
+    <div><div class="test-box diag-135-r50"></div><div class="label">135deg r50%</div></div>
+  </div>
+
+  <h2>G. About Page Reproductions</h2>
+  <div class="row">
+    <div><div class="test-box-wide about-body"></div><div class="label">body bg (36% diff)</div></div>
+    <div><div class="test-box-wide about-logo"></div><div class="label">logo (11% diff)</div></div>
+    <div><div class="test-box about-btn"></div><div class="label">button (3% diff)</div></div>
+  </div>
+
+  <h2>H. Layered Gradients</h2>
+  <div class="row">
+    <div><div class="test-box layered-1"></div><div class="label">spotlight + linear</div></div>
+    <div><div class="test-box layered-2"></div><div class="label">ellipse + linear</div></div>
+  </div>
+</body>
+</html>

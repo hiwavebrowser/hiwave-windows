@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Pure Background Test (No Text)</title>
+  <style>
+    /* Minimal reset - no text rendering */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #fff; }
+    
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      padding: 10px;
+    }
+    
+    .box {
+      width: 100px;
+      height: 100px;
+      margin: 5px;
+    }
+    
+    /* Solid colors */
+    .red { background-color: red; }
+    .green { background-color: green; }
+    .blue { background-color: blue; }
+    .black { background-color: black; }
+    .white { background-color: white; border: 1px solid #ccc; }
+    
+    /* Hex colors */
+    .hex1 { background-color: #3498db; }
+    .hex2 { background-color: #e74c3c; }
+    .hex3 { background-color: #2ecc71; }
+    .hex4 { background-color: #9b59b6; }
+    .hex5 { background-color: #f39c12; }
+    
+    /* RGB colors */
+    .rgb1 { background-color: rgb(52, 73, 94); }
+    .rgb2 { background-color: rgb(241, 196, 15); }
+    .rgb3 { background-color: rgb(26, 188, 156); }
+    
+    /* RGBA colors (semi-transparent) */
+    .rgba1 { background-color: rgba(231, 76, 60, 0.5); }
+    .rgba2 { background-color: rgba(52, 152, 219, 0.7); }
+    .rgba3 { background-color: rgba(46, 204, 113, 0.3); }
+    
+    /* HSL colors */
+    .hsl1 { background-color: hsl(0, 100%, 50%); }
+    .hsl2 { background-color: hsl(120, 100%, 50%); }
+    .hsl3 { background-color: hsl(240, 100%, 50%); }
+    
+    /* Gradients */
+    .grad1 { background: linear-gradient(to right, red, blue); }
+    .grad2 { background: linear-gradient(45deg, #3498db, #9b59b6); }
+    .grad3 { background: radial-gradient(circle, yellow, orange); }
+    
+    /* Border radius */
+    .rounded { border-radius: 10px; background-color: #e74c3c; }
+    .circle { border-radius: 50%; background-color: #3498db; }
+  </style>
+</head>
+<body>
+  <!-- Row 1: Basic named colors -->
+  <div class="row">
+    <div class="box red"></div>
+    <div class="box green"></div>
+    <div class="box blue"></div>
+    <div class="box black"></div>
+    <div class="box white"></div>
+  </div>
+  
+  <!-- Row 2: Hex colors -->
+  <div class="row">
+    <div class="box hex1"></div>
+    <div class="box hex2"></div>
+    <div class="box hex3"></div>
+    <div class="box hex4"></div>
+    <div class="box hex5"></div>
+  </div>
+  
+  <!-- Row 3: RGB colors -->
+  <div class="row">
+    <div class="box rgb1"></div>
+    <div class="box rgb2"></div>
+    <div class="box rgb3"></div>
+  </div>
+  
+  <!-- Row 4: RGBA colors -->
+  <div class="row">
+    <div class="box rgba1"></div>
+    <div class="box rgba2"></div>
+    <div class="box rgba3"></div>
+  </div>
+  
+  <!-- Row 5: HSL colors -->
+  <div class="row">
+    <div class="box hsl1"></div>
+    <div class="box hsl2"></div>
+    <div class="box hsl3"></div>
+  </div>
+  
+  <!-- Row 6: Gradients -->
+  <div class="row">
+    <div class="box grad1"></div>
+    <div class="box grad2"></div>
+    <div class="box grad3"></div>
+  </div>
+  
+  <!-- Row 7: Rounded corners -->
+  <div class="row">
+    <div class="box rounded"></div>
+    <div class="box circle"></div>
+  </div>
+</body>
+</html>
+

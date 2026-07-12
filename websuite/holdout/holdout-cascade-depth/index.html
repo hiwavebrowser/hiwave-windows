@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Holdout: cascade depth</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: Georgia, serif; font-size: 15px; background: #f4f6fb; color: #23324a; padding: 24px; line-height: 1.55; }
+  .doc { max-width: 640px; margin: 0 auto; background: #fff; padding: 26px; border-radius: 6px; }
+  .doc section blockquote p { color: #5d4a8a; font-style: italic; }
+  .doc > h1 { font-size: 1.7em; border-bottom: 2px solid #d7dcea; padding-bottom: 8px; }
+  .callout { border-left: 4px solid #3f51b5; background: #eef0fa; padding: 10px 14px; margin: 14px 0; }
+  .callout.warn { border-left-color: #e65100; background: #fdf1e4; }
+  .steps li + li { margin-top: 9px; }
+  .steps li:first-child { font-weight: 700; }
+  .steps li:nth-child(odd) { background: #f7f8fd; }
+  code, .mono { font-family: Menlo, monospace; font-size: 0.85em; background: #eff1f5; padding: 1px 5px; border-radius: 3px; }
+  .meta span ~ span { color: #8b96ab; }
+</style></head>
+<body>
+  <article class="doc">
+    <h1>Field guide to nested styles</h1>
+    <p class="meta"><span>Reviewed</span> <span>Yesterday</span> <span>by the cascade</span></p>
+    <section>
+      <p>Body text inherits the fifteen-pixel serif base through every unruled wrapper below.</p>
+      <div><div><div><p>Three wrappers deep, still fifteen pixels, still serif.</p></div></div></div>
+      <blockquote><p>Quotes recolor through a four-level descendant selector.</p></blockquote>
+      <div class="callout"><p>Callouts tint their own box without leaking to siblings.</p></div>
+      <div class="callout warn"><p>The warning variant overrides by class stacking.</p></div>
+      <ol class="steps">
+        <li>First step is bold via first-child.</li>
+        <li>Second sits on plain ground.</li>
+        <li>Third stripes via nth-child(odd).</li>
+        <li>Fourth spaces itself with an adjacent-sibling margin.</li>
+      </ol>
+      <p>Inline <code>code spans</code> shrink relative to their <span class="mono">inherited size</span>.</p>
+    </section>
+  </article>
+</body></html>

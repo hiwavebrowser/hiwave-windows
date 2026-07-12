@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Holdout: flex toolbar</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #14151a; }
+  .bar { height: 56px; background: #1f2128; display: flex; align-items: center;
+    justify-content: space-between; padding: 0 14px; border-bottom: 1px solid #2c2f3a; }
+  .cluster { display: flex; gap: 10px; align-items: center; }
+  .chip { background: #2c2f3a; color: #c7cbe0; font-size: 13px; font-weight: 600;
+    padding: 7px 14px; border-radius: 16px; }
+  .chip.hot { background: #4527a0; color: #d1c4e9; }
+  .search { width: 260px; height: 34px; background: #14151a; border: 1px solid #3a3e4d;
+    border-radius: 17px; color: #7d8399; font-size: 13px; display: flex; align-items: center; padding: 0 12px; }
+  .second { height: 44px; background: #191b21; display: flex; align-items: center; gap: 26px; padding: 0 14px; }
+  .second a { color: #8f96ad; font-size: 13px; text-decoration: none; }
+  .second a.now { color: #ede7f6; border-bottom: 2px solid #7e57c2; padding-bottom: 12px; }
+</style></head>
+<body>
+  <div class="bar">
+    <div class="cluster">
+      <div class="chip hot">Compose</div>
+      <div class="chip">Inbox</div>
+      <div class="chip">Later</div>
+    </div>
+    <div class="search">Search everything…</div>
+    <div class="cluster">
+      <div class="chip">Sync</div>
+      <div class="chip hot">Profile</div>
+    </div>
+  </div>
+  <nav class="second">
+    <a class="now" href="#">Overview</a><a href="#">Threads</a><a href="#">Files</a><a href="#">Calendar</a><a href="#">Metrics</a>
+  </nav>
+</body></html>
