@@ -104,6 +104,15 @@ pub enum BackgroundClip {
     Text,
 }
 
+/// `box-sizing` — whether `width`/`height` include padding+border. Grid reads
+/// this to resolve item content boxes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoxSizing {
+    #[default]
+    ContentBox,
+    BorderBox,
+}
+
 /// A CSS length value.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Length {
@@ -159,6 +168,14 @@ impl Display {
     /// Check if this is a grid container.
     pub fn is_grid(self) -> bool {
         matches!(self, Display::Grid | Display::InlineGrid)
+    }
+
+    /// Check if this generates an inline-level box.
+    pub fn is_inline_level(self) -> bool {
+        matches!(
+            self,
+            Display::Inline | Display::InlineBlock | Display::InlineFlex | Display::InlineGrid
+        )
     }
 }
 
@@ -394,6 +411,54 @@ impl GridTemplate {
     /// Get the number of explicit tracks.
     pub fn track_count(&self) -> usize {
         self.tracks.len()
+    }
+
+    /// Expand `repeat(N, ...)` patterns into a flat track list. Auto-fill/-fit
+    /// need the container size, so they are returned separately for layout-time
+    /// handling rather than expanded here.
+    pub fn expand_tracks(&self) -> (Vec<TrackDefinition>, Option<&TrackRepeat>) {
+        if self.repeats.is_empty() {
+            return (self.tracks.clone(), None);
+        }
+
+        let mut result = Vec::new();
+        let mut auto_repeat = None;
+        let mut track_idx = 0;
+
+        let mut sorted_repeats: Vec<_> = self.repeats.iter().collect();
+        sorted_repeats.sort_by_key(|(pos, _)| *pos);
+
+        for (insert_pos, repeat) in &sorted_repeats {
+            while track_idx < *insert_pos && track_idx < self.tracks.len() {
+                result.push(self.tracks[track_idx].clone());
+                track_idx += 1;
+            }
+
+            match repeat {
+                TrackRepeat::Count(count, tracks) => {
+                    for _ in 0..*count {
+                        for track in tracks {
+                            result.push(track.clone());
+                        }
+                    }
+                }
+                TrackRepeat::AutoFill(_) | TrackRepeat::AutoFit(_) => {
+                    auto_repeat = Some(repeat);
+                }
+            }
+        }
+
+        while track_idx < self.tracks.len() {
+            result.push(self.tracks[track_idx].clone());
+            track_idx += 1;
+        }
+
+        (result, auto_repeat)
+    }
+
+    /// Number of tracks after repeat expansion (auto-fill/-fit left unexpanded).
+    pub fn expanded_track_count(&self) -> usize {
+        self.expand_tracks().0.len()
     }
 }
 
@@ -971,6 +1036,10 @@ pub struct ComputedStyle {
     /// `background-clip`. When `Text`, the background is clipped to the glyphs
     /// and the box fill is suppressed. Not inherited.
     pub background_clip: BackgroundClip,
+
+    /// `box-sizing`. `ContentBox` (default) = width/height are the content box;
+    /// `BorderBox` = they include padding+border. Not inherited.
+    pub box_sizing: BoxSizing,
 }
 
 impl ComputedStyle {
@@ -1231,6 +1300,9 @@ pub fn parse_display(value: &str) -> Option<Display> {
         "inline" => Some(Display::Inline),
         "inline-block" => Some(Display::InlineBlock),
         "flex" => Some(Display::Flex),
+        "inline-flex" => Some(Display::InlineFlex),
+        "grid" => Some(Display::Grid),
+        "inline-grid" => Some(Display::InlineGrid),
         "none" => Some(Display::None),
         _ => None,
     }

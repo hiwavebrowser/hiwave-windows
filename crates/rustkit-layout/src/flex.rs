@@ -1015,6 +1015,16 @@ fn resolve_max_length(length: &Length, container_size: f32) -> f32 {
     }
 }
 
+/// Translate a layout box and its whole subtree by (dx, dy). Used by grid/flex
+/// to move a laid-out item (and its descendants) into its final cell position.
+pub(crate) fn translate_subtree(b: &mut crate::LayoutBox, dx: f32, dy: f32) {
+    b.dimensions.content.x += dx;
+    b.dimensions.content.y += dy;
+    for child in &mut b.children {
+        translate_subtree(child, dx, dy);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

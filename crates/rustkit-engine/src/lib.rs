@@ -1657,6 +1657,83 @@ impl Engine {
                     style.column_gap = l;
                 }
             }
+            "row-gap" => {
+                if let Some(l) = parse_length(value) {
+                    style.row_gap = l;
+                }
+            }
+            "column-gap" => {
+                if let Some(l) = parse_length(value) {
+                    style.column_gap = l;
+                }
+            }
+            "box-sizing" => {
+                style.box_sizing = match value.trim() {
+                    "border-box" => rustkit_css::BoxSizing::BorderBox,
+                    _ => rustkit_css::BoxSizing::ContentBox,
+                };
+            }
+            "grid-template-columns" => {
+                if let Some(t) = parse_grid_template(value) {
+                    style.grid_template_columns = t;
+                }
+            }
+            "grid-template-rows" => {
+                if let Some(t) = parse_grid_template(value) {
+                    style.grid_template_rows = t;
+                }
+            }
+            "grid-auto-columns" => {
+                if let Some(s) = parse_track_size(value) {
+                    style.grid_auto_columns = s;
+                }
+            }
+            "grid-auto-rows" => {
+                if let Some(s) = parse_track_size(value) {
+                    style.grid_auto_rows = s;
+                }
+            }
+            "grid-auto-flow" => {
+                style.grid_auto_flow = match value.trim() {
+                    "column" => rustkit_css::GridAutoFlow::Column,
+                    "row dense" | "dense row" => rustkit_css::GridAutoFlow::RowDense,
+                    "column dense" | "dense column" => rustkit_css::GridAutoFlow::ColumnDense,
+                    "dense" => rustkit_css::GridAutoFlow::RowDense,
+                    _ => rustkit_css::GridAutoFlow::Row,
+                };
+            }
+            "grid-column" => {
+                if let Some((start, end)) = parse_grid_line_shorthand(value) {
+                    style.grid_column_start = start;
+                    style.grid_column_end = end;
+                }
+            }
+            "grid-column-start" => {
+                if let Some(line) = parse_grid_line(value) {
+                    style.grid_column_start = line;
+                }
+            }
+            "grid-column-end" => {
+                if let Some(line) = parse_grid_line(value) {
+                    style.grid_column_end = line;
+                }
+            }
+            "grid-row" => {
+                if let Some((start, end)) = parse_grid_line_shorthand(value) {
+                    style.grid_row_start = start;
+                    style.grid_row_end = end;
+                }
+            }
+            "grid-row-start" => {
+                if let Some(line) = parse_grid_line(value) {
+                    style.grid_row_start = line;
+                }
+            }
+            "grid-row-end" => {
+                if let Some(line) = parse_grid_line(value) {
+                    style.grid_row_end = line;
+                }
+            }
             _ => {}
         }
     }
@@ -2607,6 +2684,154 @@ fn parse_color(value: &str) -> Option<rustkit_css::Color> {
     }
 
     None
+}
+
+/// Find the position of the matching closing parenthesis (depth starts at 1,
+/// i.e. `s` is the text after an opening paren).
+fn find_matching_paren(s: &str) -> Option<usize> {
+    let mut depth = 1;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse a single grid track size (`1fr`, `100px`, `auto`, `min-content`,
+/// `max-content`, `minmax(...)`, `fit-content(...)`, `N%`).
+fn parse_track_size(value: &str) -> Option<rustkit_css::TrackSize> {
+    let value = value.trim();
+    if value == "auto" {
+        return Some(rustkit_css::TrackSize::Auto);
+    }
+    if value == "min-content" {
+        return Some(rustkit_css::TrackSize::MinContent);
+    }
+    if value == "max-content" {
+        return Some(rustkit_css::TrackSize::MaxContent);
+    }
+    if let Some(fr_str) = value.strip_suffix("fr") {
+        if let Ok(fr) = fr_str.trim().parse::<f32>() {
+            return Some(rustkit_css::TrackSize::Fr(fr));
+        }
+    }
+    if let Some(px_str) = value.strip_suffix("px") {
+        if let Ok(px) = px_str.trim().parse::<f32>() {
+            return Some(rustkit_css::TrackSize::Px(px));
+        }
+    }
+    if let Some(pct_str) = value.strip_suffix('%') {
+        if let Ok(pct) = pct_str.trim().parse::<f32>() {
+            return Some(rustkit_css::TrackSize::Percent(pct));
+        }
+    }
+    if value.starts_with("minmax(") {
+        if let Some(close) = find_matching_paren(&value[7..]) {
+            let content = &value[7..7 + close];
+            if let Some(comma) = content.find(',') {
+                let min_str = content[..comma].trim();
+                let max_str = content[comma + 1..].trim();
+                if let (Some(min), Some(max)) =
+                    (parse_track_size(min_str), parse_track_size(max_str))
+                {
+                    return Some(rustkit_css::TrackSize::MinMax(Box::new(min), Box::new(max)));
+                }
+            }
+        }
+    }
+    if value.starts_with("fit-content(") {
+        if let Some(close) = find_matching_paren(&value[12..]) {
+            let content = &value[12..12 + close];
+            if let Some(length) = parse_length(content) {
+                return Some(rustkit_css::TrackSize::FitContent(length.to_px(16.0, 16.0, 0.0)));
+            }
+        }
+    }
+    None
+}
+
+/// Parse `grid-template-columns`/`-rows` into a GridTemplate, expanding
+/// `repeat(N, <track>)` into explicit tracks (auto-fill/-fit default to 4).
+fn parse_grid_template(value: &str) -> Option<rustkit_css::GridTemplate> {
+    let value = value.trim();
+    if value == "none" || value.is_empty() {
+        return Some(rustkit_css::GridTemplate::none());
+    }
+    let mut tracks = Vec::new();
+    if let Some(repeat_start) = value.find("repeat(") {
+        let after_repeat = &value[repeat_start + 7..];
+        if let Some(close_paren) = find_matching_paren(after_repeat) {
+            let repeat_content = &after_repeat[..close_paren];
+            if let Some(comma_pos) = repeat_content.find(',') {
+                let count_str = repeat_content[..comma_pos].trim();
+                let track_str = repeat_content[comma_pos + 1..].trim();
+                let count: Option<u32> = if count_str == "auto-fill" || count_str == "auto-fit" {
+                    Some(4)
+                } else {
+                    count_str.parse().ok()
+                };
+                if let (Some(count), Some(track_size)) = (count, parse_track_size(track_str)) {
+                    for _ in 0..count {
+                        tracks.push(rustkit_css::TrackDefinition::simple(track_size.clone()));
+                    }
+                }
+            }
+        }
+    } else {
+        for part in value.split_whitespace() {
+            if let Some(track_size) = parse_track_size(part) {
+                tracks.push(rustkit_css::TrackDefinition::simple(track_size));
+            }
+        }
+    }
+    if tracks.is_empty() {
+        return None;
+    }
+    Some(rustkit_css::GridTemplate {
+        tracks,
+        repeats: Vec::new(),
+        final_line_names: Vec::new(),
+    })
+}
+
+/// Parse a single grid line (`auto`, `span N`, a number, or a named line
+/// treated as auto).
+fn parse_grid_line(value: &str) -> Option<rustkit_css::GridLine> {
+    let value = value.trim();
+    if value == "auto" {
+        return Some(rustkit_css::GridLine::Auto);
+    }
+    if let Some(span_str) = value.strip_prefix("span") {
+        if let Ok(span) = span_str.trim().parse::<u32>() {
+            return Some(rustkit_css::GridLine::Span(span));
+        }
+    }
+    if let Ok(num) = value.parse::<i32>() {
+        return Some(rustkit_css::GridLine::Number(num));
+    }
+    Some(rustkit_css::GridLine::Auto)
+}
+
+/// Parse a `grid-column`/`grid-row` shorthand (`1 / 3`, `span 2`).
+fn parse_grid_line_shorthand(
+    value: &str,
+) -> Option<(rustkit_css::GridLine, rustkit_css::GridLine)> {
+    let value = value.trim();
+    if let Some(slash_pos) = value.find('/') {
+        let start = parse_grid_line(value[..slash_pos].trim())?;
+        let end = parse_grid_line(value[slash_pos + 1..].trim())?;
+        return Some((start, end));
+    }
+    let start = parse_grid_line(value)?;
+    Some((start, rustkit_css::GridLine::Auto))
 }
 
 /// Parse a length value from CSS.
