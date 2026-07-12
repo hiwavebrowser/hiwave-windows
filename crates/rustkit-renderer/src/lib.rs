@@ -574,6 +574,16 @@ impl Renderer {
                 self.draw_linear_gradient(*rect, *angle_deg, stops);
             }
 
+            DisplayCommand::RadialGradient {
+                rect,
+                cx,
+                cy,
+                circle,
+                stops,
+            } => {
+                self.draw_radial_gradient(*rect, *cx, *cy, *circle, stops);
+            }
+
             DisplayCommand::Border {
                 color,
                 rect,
@@ -890,6 +900,76 @@ impl Renderer {
                 corners[0], corners[1], corners[2], corners[3],
                 cols[0], cols[1], cols[2], cols[3],
             );
+        }
+    }
+
+    /// Draw a radial gradient by tessellating the rect into a fine grid and
+    /// colouring each vertex by its normalised distance from the center
+    /// (farthest-corner size). `circle` keeps the radius equal on both axes;
+    /// `ellipse` (default) scales per-axis so the ellipse passes through the
+    /// farthest corner (radii = sqrt(2) x extent). The GPU interpolates within
+    /// each cell; a 64x64 grid keeps the interpolation close to CSS's, matching
+    /// the density draw_linear_gradient uses along its axis.
+    fn draw_radial_gradient(
+        &mut self,
+        rect: Rect,
+        cx: f32,
+        cy: f32,
+        circle: bool,
+        stops: &[rustkit_css::GradientStop],
+    ) {
+        let rect = if let Some(clip) = self.current_clip() {
+            match rect.intersect(&clip) {
+                Some(r) => r,
+                None => return,
+            }
+        } else {
+            rect
+        };
+        if stops.len() < 2 {
+            return;
+        }
+
+        let center = [rect.x + cx * rect.width, rect.y + cy * rect.height];
+        // Farthest-corner extents from the center along each axis.
+        let ext_x = cx.max(1.0 - cx) * rect.width;
+        let ext_y = cy.max(1.0 - cy) * rect.height;
+        let (rx, ry) = if circle {
+            let r = (ext_x * ext_x + ext_y * ext_y).sqrt().max(f32::EPSILON);
+            (r, r)
+        } else {
+            // farthest-corner ellipse: radii scaled so it passes through the
+            // farthest corner while keeping the ext_x:ext_y aspect ratio.
+            let s = std::f32::consts::SQRT_2;
+            ((ext_x * s).max(f32::EPSILON), (ext_y * s).max(f32::EPSILON))
+        };
+
+        let t_at = |px: f32, py: f32| -> f32 {
+            let dx = (px - center[0]) / rx;
+            let dy = (py - center[1]) / ry;
+            (dx * dx + dy * dy).sqrt().min(1.0)
+        };
+
+        const GRID: usize = 64;
+        for gy in 0..GRID {
+            let fy0 = gy as f32 / GRID as f32;
+            let fy1 = (gy + 1) as f32 / GRID as f32;
+            let y0 = rect.y + rect.height * fy0;
+            let y1 = rect.y + rect.height * fy1;
+            for gx in 0..GRID {
+                let fx0 = gx as f32 / GRID as f32;
+                let fx1 = (gx + 1) as f32 / GRID as f32;
+                let x0 = rect.x + rect.width * fx0;
+                let x1 = rect.x + rect.width * fx1;
+                let c00 = eval_gradient_stops(stops, t_at(x0, y0));
+                let c10 = eval_gradient_stops(stops, t_at(x1, y0));
+                let c11 = eval_gradient_stops(stops, t_at(x1, y1));
+                let c01 = eval_gradient_stops(stops, t_at(x0, y1));
+                self.push_gradient_quad(
+                    [x0, y0], [x1, y0], [x1, y1], [x0, y1],
+                    c00, c10, c11, c01,
+                );
+            }
         }
     }
 

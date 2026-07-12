@@ -880,11 +880,15 @@ impl Engine {
             // the root/canvas box and clear it from the body so it paints once.
             if body_box.style.background_color.a > 0.0
                 || body_box.style.background_gradient.is_some()
+                || body_box.style.background_radial_gradient.is_some()
             {
                 root_box.style.background_color = body_box.style.background_color;
                 root_box.style.background_gradient = body_box.style.background_gradient.clone();
+                root_box.style.background_radial_gradient =
+                    body_box.style.background_radial_gradient.clone();
                 body_box.style.background_color = rustkit_css::Color::TRANSPARENT;
                 body_box.style.background_gradient = None;
+                body_box.style.background_radial_gradient = None;
             }
             root_box.children.push(body_box);
         } else if let Some(html) = document.document_element() {
@@ -1426,6 +1430,9 @@ impl Engine {
                     if value.contains("linear-gradient(") {
                         style.background_gradient = parse_linear_gradient(value);
                     }
+                    if value.contains("radial-gradient(") {
+                        style.background_radial_gradient = parse_radial_gradient(value);
+                    }
                     if let Some(c) = background_base_color(value) {
                         style.background_color = c;
                     }
@@ -1436,6 +1443,9 @@ impl Engine {
             "background-image" => {
                 if value.contains("linear-gradient(") {
                     style.background_gradient = parse_linear_gradient(value);
+                }
+                if value.contains("radial-gradient(") {
+                    style.background_radial_gradient = parse_radial_gradient(value);
                 }
             }
             "background-clip" | "-webkit-background-clip" => {
@@ -2547,6 +2557,126 @@ fn parse_linear_gradient(value: &str) -> Option<rustkit_css::LinearGradient> {
     Some(rustkit_css::LinearGradient { angle_deg, stops })
 }
 
+/// Parse a `radial-gradient(...)` into shape, center, and color stops. Handles
+/// an optional leading config (`circle`|`ellipse` and/or `at <position>`), then
+/// a `color [position%]` stop list. Size is treated as farthest-corner (the CSS
+/// default); center defaults to 50% 50%. When the value carries several
+/// comma-separated radial layers, the first is captured (MVP).
+fn parse_radial_gradient(value: &str) -> Option<rustkit_css::RadialGradient> {
+    let start = value.find("radial-gradient(")?;
+    let after = &value[start + "radial-gradient(".len()..];
+    let mut depth = 1i32;
+    let mut end = after.len();
+    for (i, ch) in after.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let parts = split_top_level_commas(&after[..end]);
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut idx = 0;
+    let mut shape = rustkit_css::RadialShape::Ellipse;
+    let (mut cx, mut cy) = (0.5f32, 0.5f32);
+    // The first segment is config (not a stop) when it names a shape or an
+    // `at <position>` clause — i.e. it is not itself a color.
+    let first = parts[0].trim().to_lowercase();
+    let is_config = first.starts_with("circle")
+        || first.starts_with("ellipse")
+        || first.starts_with("at ")
+        || first.contains(" at ");
+    if is_config {
+        if first.contains("circle") {
+            shape = rustkit_css::RadialShape::Circle;
+        }
+        if let Some(at) = first.find("at ") {
+            let (x, y) = parse_radial_position(first[at + 3..].trim());
+            cx = x;
+            cy = y;
+        }
+        idx = 1;
+    }
+
+    let stop_parts = &parts[idx..];
+    let n = stop_parts.len();
+    if n < 2 {
+        return None;
+    }
+    let denom = (n - 1).max(1) as f32;
+    let mut stops = Vec::with_capacity(n);
+    for (i, seg) in stop_parts.iter().enumerate() {
+        let seg = seg.trim();
+        let (color_str, pos) = match seg.rfind(char::is_whitespace) {
+            Some(sp) if seg[sp + 1..].trim().ends_with('%') => {
+                let p = seg[sp + 1..].trim().trim_end_matches('%').parse::<f32>().ok();
+                (seg[..sp].trim(), p.map(|p| p / 100.0))
+            }
+            _ => (seg, None),
+        };
+        let color = parse_color(color_str)?;
+        let position = pos.unwrap_or(i as f32 / denom);
+        stops.push(rustkit_css::GradientStop { color, position });
+    }
+    Some(rustkit_css::RadialGradient { shape, cx, cy, stops })
+}
+
+/// Parse a radial-gradient `<position>` (the tokens after `at`) into (x, y)
+/// center fractions 0..1. Keywords are axis-specific and order-independent
+/// (`top left` == `left top`); `center` and percentages are positional
+/// (first→x, second→y). A single value sets the horizontal axis (vertical
+/// stays centered), matching CSS.
+fn parse_radial_position(pos: &str) -> (f32, f32) {
+    let pct = |t: &str| t.strip_suffix('%').and_then(|p| p.parse::<f32>().ok()).map(|p| p / 100.0);
+    let toks: Vec<&str> = pos.split_whitespace().collect();
+    let (mut cx, mut cy) = (0.5f32, 0.5f32);
+    match toks.as_slice() {
+        [a] => match *a {
+            "left" => cx = 0.0,
+            "right" => cx = 1.0,
+            "top" => cy = 0.0,
+            "bottom" => cy = 1.0,
+            "center" => {}
+            other => {
+                if let Some(p) = pct(other) {
+                    cx = p;
+                }
+            }
+        },
+        [a, b] => {
+            for (i, t) in [*a, *b].iter().enumerate() {
+                match *t {
+                    "left" => cx = 0.0,
+                    "right" => cx = 1.0,
+                    "top" => cy = 0.0,
+                    "bottom" => cy = 1.0,
+                    "center" => {}
+                    other => {
+                        if let Some(p) = pct(other) {
+                            if i == 0 {
+                                cx = p;
+                            } else {
+                                cy = p;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    (cx, cy)
+}
+
 /// Parse a color value from CSS.
 fn parse_color(value: &str) -> Option<rustkit_css::Color> {
     let value = value.trim().to_lowercase();
@@ -2840,6 +2970,60 @@ mod tests {
             background_base_color("radial-gradient(circle, #fff, #000), #1a1a2e"),
             Some(rustkit_css::Color::from_rgb(0x1a, 0x1a, 0x2e))
         );
+    }
+
+    #[test]
+    fn test_parse_radial_gradient() {
+        use rustkit_css::RadialShape;
+
+        // circle + `at center` + explicit stop positions.
+        let g = parse_radial_gradient(
+            "radial-gradient(circle at center, #667eea 0%, #764ba2 100%)",
+        )
+        .unwrap();
+        assert_eq!(g.shape, RadialShape::Circle);
+        assert_eq!((g.cx, g.cy), (0.5, 0.5));
+        assert_eq!(g.stops.len(), 2);
+        assert_eq!(g.stops[0].color, rustkit_css::Color::from_rgb(0x66, 0x7e, 0xea));
+        assert_eq!(g.stops[0].position, 0.0);
+        assert_eq!(g.stops[1].position, 1.0);
+
+        // ellipse (default kept) + corner keyword position (order-independent).
+        let g = parse_radial_gradient(
+            "radial-gradient(ellipse at bottom right, #f093fb 0%, #f5576c 100%)",
+        )
+        .unwrap();
+        assert_eq!(g.shape, RadialShape::Ellipse);
+        assert_eq!((g.cx, g.cy), (1.0, 1.0));
+
+        // No config prefix → defaults (ellipse, center); stops start immediately.
+        let g = parse_radial_gradient("radial-gradient(#fff, #000)").unwrap();
+        assert_eq!(g.shape, RadialShape::Ellipse);
+        assert_eq!((g.cx, g.cy), (0.5, 0.5));
+        assert_eq!(g.stops.len(), 2);
+
+        // Percentage position + an rgba() stop with internal commas (not split).
+        let g = parse_radial_gradient(
+            "radial-gradient(circle at 20% 80%, rgba(255,255,255,0.3) 0%, transparent 50%)",
+        )
+        .unwrap();
+        assert_eq!((g.cx, g.cy), (0.2, 0.8));
+        assert_eq!(g.stops.len(), 2);
+        assert_eq!(g.stops[1].position, 0.5);
+    }
+
+    #[test]
+    fn test_parse_radial_position() {
+        // Keyword pairs are order-independent; single keyword sets its own axis.
+        assert_eq!(parse_radial_position("center"), (0.5, 0.5));
+        assert_eq!(parse_radial_position("top left"), (0.0, 0.0));
+        assert_eq!(parse_radial_position("left top"), (0.0, 0.0));
+        assert_eq!(parse_radial_position("bottom right"), (1.0, 1.0));
+        assert_eq!(parse_radial_position("top"), (0.5, 0.0));
+        assert_eq!(parse_radial_position("right"), (1.0, 0.5));
+        // Percentages are positional (first→x, second→y).
+        assert_eq!(parse_radial_position("20% 80%"), (0.2, 0.8));
+        assert_eq!(parse_radial_position("30%"), (0.3, 0.5));
     }
 
     #[test]
