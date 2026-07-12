@@ -42,7 +42,7 @@ pub use text::{
     TextMetrics, TextShaper,
 };
 
-use rustkit_css::{Color, ComputedStyle, GradientStop, Length};
+use rustkit_css::{Color, ComputedStyle, GradientStop, Length, WhiteSpace};
 use std::cmp::Ordering;
 use thiserror::Error;
 
@@ -1970,6 +1970,14 @@ pub fn wrap_text(text: &str, max_width: f32, style: &ComputedStyle) -> Vec<Strin
     if words.is_empty() {
         return vec![String::new()];
     }
+    // `white-space: nowrap | pre` suppress soft-wrapping — the run stays on a
+    // single line regardless of `max_width` (css-text-3 §3). `pre-wrap` and
+    // `pre-line` still wrap, so they fall through to the greedy path below.
+    // (Whitespace *preservation* for `pre` is a separate concern; this function
+    // already collapses runs via `split_whitespace`.)
+    if matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre) {
+        return vec![words.join(" ")];
+    }
     if max_width <= 0.0 {
         return vec![words.join(" ")];
     }
@@ -2331,5 +2339,25 @@ mod tests {
         // (word-break: normal) — it overflows on its own line.
         let lines = wrap_text("antidisestablishmentarianism", 40.0, &wrap_style(20.0));
         assert_eq!(lines, vec!["antidisestablishmentarianism".to_string()]);
+    }
+
+    #[test]
+    fn test_wrap_text_nowrap_and_pre_suppress_wrapping() {
+        // white-space: nowrap keeps the whole run on one line even when it is
+        // far wider than max_width (css-text-3 §3).
+        let mut s = wrap_style(20.0);
+        s.white_space = rustkit_css::WhiteSpace::Nowrap;
+        let lines = wrap_text("the quick brown fox jumps over", 100.0, &s);
+        assert_eq!(lines, vec!["the quick brown fox jumps over".to_string()]);
+
+        // pre likewise suppresses soft-wrapping.
+        s.white_space = rustkit_css::WhiteSpace::Pre;
+        let lines = wrap_text("the quick brown fox jumps over", 100.0, &s);
+        assert_eq!(lines, vec!["the quick brown fox jumps over".to_string()]);
+
+        // Control: pre-wrap still soft-wraps, so the same run breaks into lines.
+        s.white_space = rustkit_css::WhiteSpace::PreWrap;
+        let lines = wrap_text("the quick brown fox jumps over", 100.0, &s);
+        assert!(lines.len() > 1, "pre-wrap should still wrap, got {:?}", lines);
     }
 }
