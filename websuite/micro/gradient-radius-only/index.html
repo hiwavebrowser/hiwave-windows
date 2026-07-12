@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Border-Radius Only (No Gradients)</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #1a1a2e;
+            padding: 40px;
+            color: white;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 2em;
+            margin-bottom: 40px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        .box {
+            height: 180px;
+            border-radius: 16px;
+            display: flex;
+            align-items: flex-end;
+            padding: 16px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .box span {
+            background: rgba(0,0,0,0.5);
+            padding: 6px 12px;
+            font-size: 0.85em;
+        }
+
+        /* Solid colors matching gradient endpoints */
+        .color-1 { background: #667eea; }
+        .color-2 { background: #764ba2; }
+        .color-3 { background: #fc466b; }
+        .color-4 { background: #3f5efb; }
+        .color-5 { background: #00c6ff; }
+        .color-6 { background: #0072ff; }
+        .color-7 { background: #f093fb; }
+        .color-8 { background: #f5576c; }
+        .color-9 { background: #13547a; }
+        .color-10 { background: #80d0c7; }
+        .color-11 { background: #ee7752; }
+        .color-12 { background: #e73c7e; }
+
+        /* Different radius sizes */
+        .radius-4 { border-radius: 4px; }
+        .radius-8 { border-radius: 8px; }
+        .radius-16 { border-radius: 16px; }
+        .radius-24 { border-radius: 24px; }
+        .radius-32 { border-radius: 32px; }
+
+        /* Section headers */
+        .section-header {
+            grid-column: 1 / -1;
+            padding: 20px 0 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 10px;
+            font-size: 1.1em;
+            color: #888;
+        }
+
+        /* Full-width showcase */
+        .full-width {
+            grid-column: 1 / -1;
+            height: 120px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Border-Radius WITHOUT Gradients</h1>
+
+    <div class="grid">
+        <h3 class="section-header">Standard Radius (16px)</h3>
+
+        <div class="box color-1">
+            <span>Purple 1</span>
+        </div>
+        <div class="box color-2">
+            <span>Purple 2</span>
+        </div>
+        <div class="box color-3">
+            <span>Pink</span>
+        </div>
+        <div class="box color-4">
+            <span>Blue 1</span>
+        </div>
+        <div class="box color-5">
+            <span>Cyan</span>
+        </div>
+        <div class="box color-6">
+            <span>Blue 2</span>
+        </div>
+
+        <h3 class="section-header">Various Radius Sizes</h3>
+
+        <div class="box color-7 radius-4">
+            <span>4px radius</span>
+        </div>
+        <div class="box color-8 radius-8">
+            <span>8px radius</span>
+        </div>
+        <div class="box color-9 radius-16">
+            <span>16px radius</span>
+        </div>
+        <div class="box color-10 radius-24">
+            <span>24px radius</span>
+        </div>
+        <div class="box color-11 radius-32">
+            <span>32px radius</span>
+        </div>
+        <div class="box color-12">
+            <span>Default 16px</span>
+        </div>
+
+        <h3 class="section-header">Full-Width Boxes</h3>
+
+        <div class="box full-width color-1">
+            <span>Full-width with 16px radius</span>
+        </div>
+        <div class="box full-width color-4 radius-32">
+            <span>Full-width with 32px radius</span>
+        </div>
+    </div>
+</body>
+</html>

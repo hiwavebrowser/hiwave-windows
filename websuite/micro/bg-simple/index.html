@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Simple Background Test</title>
+  <style>
+    :root {
+      --red: red;
+      --green: green;
+      --blue: blue;
+      --hex: #3498db;
+    }
+    
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #fff; }
+    
+    .box {
+      width: 100px;
+      height: 100px;
+      margin: 10px;
+      display: block;
+    }
+    
+    .red { background: var(--red); }
+    .green { background: var(--green); }
+    .blue { background: var(--blue); }
+    .hex { background: var(--hex); }
+    
+    /* Also test direct colors */
+    .direct-red { background-color: red; }
+  </style>
+</head>
+<body>
+  <div class="box red"></div>
+  <div class="box green"></div>
+  <div class="box blue"></div>
+  <div class="box hex"></div>
+  <div class="box direct-red"></div>
+</body>
+</html>

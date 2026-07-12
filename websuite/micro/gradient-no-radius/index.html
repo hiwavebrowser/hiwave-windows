@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gradient Backgrounds (No Border-Radius)</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #1a1a2e;
+            padding: 40px;
+            color: white;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 2em;
+            margin-bottom: 40px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        .gradient-box {
+            height: 180px;
+            /* NO border-radius - testing gradient isolation */
+            display: flex;
+            align-items: flex-end;
+            padding: 16px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .gradient-box span {
+            background: rgba(0,0,0,0.5);
+            padding: 6px 12px;
+            font-size: 0.85em;
+        }
+
+        /* Linear Gradients */
+        .linear-1 {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .linear-2 {
+            background: linear-gradient(to right, #fc466b 0%, #3f5efb 100%);
+        }
+
+        .linear-3 {
+            background: linear-gradient(to bottom, #00c6ff 0%, #0072ff 100%);
+        }
+
+        .linear-4 {
+            background: linear-gradient(45deg, #f093fb 0%, #f5576c 100%);
+        }
+
+        .linear-5 {
+            background: linear-gradient(180deg, #13547a 0%, #80d0c7 100%);
+        }
+
+        .linear-6 {
+            background: linear-gradient(-45deg, #ee7752, #e73c7e, #23a6d5, #23d5ab);
+            background-size: 400% 400%;
+        }
+
+        /* Multi-stop gradients */
+        .multi-1 {
+            background: linear-gradient(90deg,
+                #ff0000 0%,
+                #ff7f00 16.67%,
+                #ffff00 33.33%,
+                #00ff00 50%,
+                #0000ff 66.67%,
+                #4b0082 83.33%,
+                #9400d3 100%
+            );
+        }
+
+        .multi-2 {
+            background: linear-gradient(to right,
+                #1a1a2e 0%,
+                #16213e 25%,
+                #0f3460 50%,
+                #e94560 100%
+            );
+        }
+
+        .multi-3 {
+            background: linear-gradient(135deg,
+                #ff6b6b 0%,
+                #feca57 25%,
+                #48dbfb 50%,
+                #ff9ff3 75%,
+                #54a0ff 100%
+            );
+        }
+
+        /* Radial Gradients */
+        .radial-1 {
+            background: radial-gradient(circle at center, #667eea 0%, #764ba2 100%);
+        }
+
+        .radial-2 {
+            background: radial-gradient(circle at top left, #00c6ff 0%, #0072ff 100%);
+        }
+
+        .radial-3 {
+            background: radial-gradient(ellipse at bottom right, #f093fb 0%, #f5576c 100%);
+        }
+
+        /* Section headers */
+        .section-header {
+            grid-column: 1 / -1;
+            padding: 20px 0 10px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 10px;
+            font-size: 1.1em;
+            color: #888;
+        }
+
+        /* Full-width showcase */
+        .full-width {
+            grid-column: 1 / -1;
+            height: 120px;
+        }
+
+        .sunset {
+            background: linear-gradient(to bottom,
+                #1a1a2e 0%,
+                #16213e 20%,
+                #0f3460 40%,
+                #e94560 60%,
+                #ff9a3c 80%,
+                #ffd93d 100%
+            );
+        }
+
+        .ocean {
+            background: linear-gradient(to bottom,
+                #87ceeb 0%,
+                #6bb3d4 20%,
+                #4a9dc4 40%,
+                #0077b6 60%,
+                #023e8a 80%,
+                #03045e 100%
+            );
+        }
+    </style>
+</head>
+<body>
+    <h1>Gradients WITHOUT Border-Radius</h1>
+
+    <div class="grid">
+        <h3 class="section-header">Linear Gradients</h3>
+
+        <div class="gradient-box linear-1">
+            <span>135deg Purple</span>
+        </div>
+        <div class="gradient-box linear-2">
+            <span>to right Pink-Blue</span>
+        </div>
+        <div class="gradient-box linear-3">
+            <span>to bottom Cyan</span>
+        </div>
+        <div class="gradient-box linear-4">
+            <span>45deg Pink-Red</span>
+        </div>
+        <div class="gradient-box linear-5">
+            <span>180deg Teal</span>
+        </div>
+        <div class="gradient-box linear-6">
+            <span>-45deg Rainbow</span>
+        </div>
+
+        <h3 class="section-header">Multi-Stop Gradients</h3>
+
+        <div class="gradient-box multi-1">
+            <span>Rainbow Spectrum</span>
+        </div>
+        <div class="gradient-box multi-2">
+            <span>Night to Dawn</span>
+        </div>
+        <div class="gradient-box multi-3">
+            <span>Candy Colors</span>
+        </div>
+
+        <h3 class="section-header">Radial Gradients</h3>
+
+        <div class="gradient-box radial-1">
+            <span>Circle Center</span>
+        </div>
+        <div class="gradient-box radial-2">
+            <span>Circle Top-Left</span>
+        </div>
+        <div class="gradient-box radial-3">
+            <span>Ellipse Bottom-Right</span>
+        </div>
+
+        <h3 class="section-header">Full-Width Scenes</h3>
+
+        <div class="gradient-box full-width sunset">
+            <span>Sunset Scene</span>
+        </div>
+        <div class="gradient-box full-width ocean">
+            <span>Ocean Depths</span>
+        </div>
+    </div>
+</body>
+</html>

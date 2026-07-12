@@ -1,0 +1,32 @@
+/* websuite/common/parity-reset.css
+ *
+ * Shared parity reset for websuite micro-tests.
+ * Keep in sync with baselines/common/parity-reset.css.
+ */
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  transition: none !important;
+  animation: none !important;
+  animation-play-state: paused !important;
+  caret-color: transparent !important;
+  text-rendering: geometricPrecision;
+}
+
+html {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #000;
+  background: #fff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100vh;
+}
+
+

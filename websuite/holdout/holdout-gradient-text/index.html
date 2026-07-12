@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Holdout: gradient text</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #10121a; padding: 40px 0; }
+  .hero { text-align: center; }
+  .hero h1 { display: inline-block; font-size: 58px; font-weight: 800;
+    background: linear-gradient(90deg, #ff8a65 0%, #ffd54f 50%, #aed581 100%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; }
+  .hero p { color: #9aa3b8; margin-top: 10px; }
+  .panel { width: 560px; margin: 34px auto 0; height: 90px; border-radius: 10px;
+    background: linear-gradient(90deg, #263238 0%, #4dd0e1 100%); }
+</style></head>
+<body>
+  <div class="hero">
+    <h1>EMBERLIGHT</h1>
+    <p>A warm-to-green sweep clipped inside heavy letterforms.</p>
+  </div>
+  <div class="panel"></div>
+</body></html>

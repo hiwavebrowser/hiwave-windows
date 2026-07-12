@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Holdout: grid mosaic</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #f2eee9; padding: 22px; }
+  .mosaic { max-width: 940px; margin: 0 auto; display: grid;
+    grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .tile { background: #fff; border-radius: 12px; overflow: hidden; }
+  .tile .art { height: 110px; background: linear-gradient(160deg, #6d4c41, #d7ccc8); }
+  .tile .inner { padding: 14px; }
+  .tile .inner h3 { font-size: 1.02em; color: #3b2f28; margin-bottom: 6px; }
+  .tile .inner p { font-size: 0.88em; color: #7a6c62; }
+  .tile .inner .row { display: flex; justify-content: space-between; margin-top: 10px;
+    font-size: 0.78em; color: #a5978c; }
+</style></head>
+<body>
+  <div class="mosaic">
+    <div class="tile"><div class="art"></div><div class="inner">
+      <h3>Walnut and wax</h3><p>Finishing boards without film builds.</p>
+      <div class="row"><span>9 min</span><span>Craft</span></div></div></div>
+    <div class="tile"><div class="art" style="background: linear-gradient(160deg, #00695c, #80cbc4);"></div><div class="inner">
+      <h3>Kumiko starters</h3><p>Three jigs that make the lattice honest.</p>
+      <div class="row"><span>14 min</span><span>Joinery</span></div></div></div>
+    <div class="tile"><div class="art" style="background: linear-gradient(160deg, #283593, #9fa8da);"></div><div class="inner">
+      <h3>Sharpening ladders</h3><p>Grit progressions that stop at enough.</p>
+      <div class="row"><span>6 min</span><span>Tools</span></div></div></div>
+    <div class="tile"><div class="art" style="background: linear-gradient(160deg, #ad1457, #f48fb1);"></div><div class="inner">
+      <h3>Dye before oil</h3><p>Color depth from the order of operations.</p>
+      <div class="row"><span>11 min</span><span>Finish</span></div></div></div>
+    <div class="tile"><div class="art" style="background: linear-gradient(160deg, #ef6c00, #ffcc80);"></div><div class="inner">
+      <h3>Resawing on a small saw</h3><p>Feather boards, patience, and blade drift.</p>
+      <div class="row"><span>18 min</span><span>Milling</span></div></div></div>
+    <div class="tile"><div class="art" style="background: linear-gradient(160deg, #37474f, #b0bec5);"></div><div class="inner">
+      <h3>Shop math you keep</h3><p>Golden fractions for drawer stacks.</p>
+      <div class="row"><span>7 min</span><span>Design</span></div></div></div>
+  </div>
+</body></html>

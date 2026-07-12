@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Holdout: mixed inline runs</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #fffdf7; color: #2c2a24; padding: 28px; line-height: 1.6; }
+  .note { width: 520px; margin: 0 auto 20px; background: #fff; border: 1px solid #e8e2d0; border-radius: 8px; padding: 18px; }
+  .c { text-align: center; }
+  .r { text-align: right; }
+  h3 { font-size: 1.1em; margin-bottom: 8px; }
+  .tag { background: #fdeaa8; padding: 1px 6px; border-radius: 4px; }
+  a { color: #9c5700; }
+</style></head>
+<body>
+  <div class="note c">
+    <h3>Centered <em>mixed</em> heading</h3>
+    <p>Short <strong>bold</strong> run with a <a href="#">link</a> inside.</p>
+    <p>A longer centered paragraph that wraps across several lines to prove that every visual line centers independently, with <strong>heavy words</strong> and a <span class="tag">tag chip</span> keeping their places inside the flow.</p>
+  </div>
+  <div class="note r">
+    <h3>Right-aligned <strong>mixed</strong> heading</h3>
+    <p>Trailing <em>emphasis</em> and <a href="#">anchors</a> hug the right edge.</p>
+  </div>
+  <div class="note">
+    <p>Left default: <strong>bold</strong>, <em>italic</em>, <span class="tag">chip</span>, and a <a href="#">link</a> share one line when they fit, wrapping mid-run when they do not, like this deliberately long sentence designed to cross the box edge.</p>
+  </div>
+</body></html>
