@@ -33,6 +33,7 @@ const SOURCE_BY_TYPE = {
   builtins: (c) => join(REPO_ROOT, 'crates', 'hiwave-app', 'src', 'ui', `${c}.html`),
   micro: (c) => join(REPO_ROOT, 'websuite', 'micro', c, 'index.html'),
   websuite: (c) => join(REPO_ROOT, 'websuite', 'cases', c, 'index.html'),
+  holdout: (c) => join(REPO_ROOT, 'websuite', 'holdout', c, 'index.html'),
 };
 
 // Enumerate cases from the reference tree.

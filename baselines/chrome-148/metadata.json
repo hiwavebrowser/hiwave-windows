@@ -1,13 +1,10 @@
 {
   "browserVersion": "148.0.7778.216",
   "executable": "Chrome for Testing (pinned via PARITY_CHROME_PATH)",
-  "capturedAt": "2026-07-07T23:57:47.494Z",
+  "capturedAt": "2026-07-12T01:59:41.736Z",
   "platform": "win32",
   "glBackend": "angle-swiftshader",
-  "cases": 21,
+  "cases": 19,
   "failures": [],
-  "sourceMissing": [
-    "builtins/chrome_rustkit: source missing (P:\\petes_code\\ClaudeCode\\hiwave-windows\\crates\\hiwave-app\\src\\ui\\chrome_rustkit.html)",
-    "micro/bg-pure: source missing (P:\\petes_code\\ClaudeCode\\hiwave-windows\\websuite\\micro\\bg-pure\\index.html)"
-  ]
+  "sourceMissing": []
 }

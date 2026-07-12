@@ -1,0 +1,130 @@
+{
+  "timestamp": "2026-07-12T01:59:38.854Z",
+  "viewport": {
+    "width": 800,
+    "height": 400
+  },
+  "elementCount": 5,
+  "elements": [
+    {
+      "selector": "html > body",
+      "tag": "body",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 800,
+        "height": 313,
+        "top": 0,
+        "right": 800,
+        "bottom": 313,
+        "left": 0
+      },
+      "client": {
+        "width": 800,
+        "height": 313
+      },
+      "scroll": {
+        "width": 800,
+        "height": 313,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.hero:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 0,
+        "y": 40,
+        "width": 800,
+        "height": 109,
+        "top": 40,
+        "right": 800,
+        "bottom": 149,
+        "left": 0
+      },
+      "client": {
+        "width": 800,
+        "height": 109
+      },
+      "scroll": {
+        "width": 800,
+        "height": 109,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.hero:nth-of-type(1) > h1",
+      "tag": "h1",
+      "rect": {
+        "x": 210.953125,
+        "y": 40,
+        "width": 378.078125,
+        "height": 78,
+        "top": 40,
+        "right": 589.03125,
+        "bottom": 118,
+        "left": 210.953125
+      },
+      "client": {
+        "width": 378,
+        "height": 78
+      },
+      "scroll": {
+        "width": 378,
+        "height": 78,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.hero:nth-of-type(1) > p",
+      "tag": "p",
+      "rect": {
+        "x": 0,
+        "y": 128,
+        "width": 800,
+        "height": 21,
+        "top": 128,
+        "right": 800,
+        "bottom": 149,
+        "left": 0
+      },
+      "client": {
+        "width": 800,
+        "height": 21
+      },
+      "scroll": {
+        "width": 800,
+        "height": 21,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.panel:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 120,
+        "y": 183,
+        "width": 560,
+        "height": 90,
+        "top": 183,
+        "right": 680,
+        "bottom": 273,
+        "left": 120
+      },
+      "client": {
+        "width": 560,
+        "height": 90
+      },
+      "scroll": {
+        "width": 560,
+        "height": 90,
+        "top": 0,
+        "left": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,394 @@
+{
+  "timestamp": "2026-07-12T01:59:37.954Z",
+  "viewport": {
+    "width": 1280,
+    "height": 200
+  },
+  "elementCount": 16,
+  "elements": [
+    {
+      "selector": "html > body",
+      "tag": "body",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 100,
+        "top": 0,
+        "right": 1280,
+        "bottom": 100,
+        "left": 0
+      },
+      "client": {
+        "width": 1280,
+        "height": 100
+      },
+      "scroll": {
+        "width": 1280,
+        "height": 100,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.bar",
+      "tag": "div",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 56,
+        "top": 0,
+        "right": 1280,
+        "bottom": 56,
+        "left": 0
+      },
+      "client": {
+        "width": 1280,
+        "height": 55
+      },
+      "scroll": {
+        "width": 1280,
+        "height": 55,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.bar > div.cluster:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 14,
+        "y": 12,
+        "width": 222.234375,
+        "height": 31,
+        "top": 12,
+        "right": 236.234375,
+        "bottom": 43,
+        "left": 14
+      },
+      "client": {
+        "width": 222,
+        "height": 31
+      },
+      "scroll": {
+        "width": 222,
+        "height": 31,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.bar > div.cluster:nth-of-type(1) > div.chip hot:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 14,
+        "y": 12,
+        "width": 83.46875,
+        "height": 31,
+        "top": 12,
+        "right": 97.46875,
+        "bottom": 43,
+        "left": 14
+      },
+      "client": {
+        "width": 83,
+        "height": 31
+      },
+      "scroll": {
+        "width": 83,
+        "height": 31,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.bar > div.cluster:nth-of-type(1) > div.chip:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 107.46875,
+        "y": 12,
+        "width": 61.28125,
+        "height": 31,
+        "top": 12,
+        "right": 168.75,
+        "bottom": 43,
+        "left": 107.46875
+      },
+      "client": {
+        "width": 61,
+        "height": 31
+      },
+      "scroll": {
+        "width": 61,
+        "height": 31,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.bar > div.cluster:nth-of-type(1) > div.chip:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 178.75,
+        "y": 12,
+        "width": 57.484375,
+        "height": 31,
+        "top": 12,
+        "right": 236.234375,
+        "bottom": 43,
+        "left": 178.75
+      },
+      "client": {
+        "width": 57,
+        "height": 31
+      },
+      "scroll": {
+        "width": 57,
+        "height": 31,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.bar > div.search:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 555.5625,
+        "y": 10.5,
+        "width": 260,
+        "height": 34,
+        "top": 10.5,
+        "right": 815.5625,
+        "bottom": 44.5,
+        "left": 555.5625
+      },
+      "client": {
+        "width": 258,
+        "height": 32
+      },
+      "scroll": {
+        "width": 258,
+        "height": 32,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.bar > div.cluster:nth-of-type(3)",
+      "tag": "div",
+      "rect": {
+        "x": 1134.890625,
+        "y": 12,
+        "width": 131.109375,
+        "height": 31,
+        "top": 12,
+        "right": 1266,
+        "bottom": 43,
+        "left": 1134.890625
+      },
+      "client": {
+        "width": 131,
+        "height": 31
+      },
+      "scroll": {
+        "width": 131,
+        "height": 31,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.bar > div.cluster:nth-of-type(3) > div.chip:nth-of-type(1)",
+      "tag": "div",
+      "rect": {
+        "x": 1134.890625,
+        "y": 12,
+        "width": 55.078125,
+        "height": 31,
+        "top": 12,
+        "right": 1189.96875,
+        "bottom": 43,
+        "left": 1134.890625
+      },
+      "client": {
+        "width": 55,
+        "height": 31
+      },
+      "scroll": {
+        "width": 55,
+        "height": 31,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > div.bar > div.cluster:nth-of-type(3) > div.chip hot:nth-of-type(2)",
+      "tag": "div",
+      "rect": {
+        "x": 1199.96875,
+        "y": 12,
+        "width": 66.03125,
+        "height": 31,
+        "top": 12,
+        "right": 1266,
+        "bottom": 43,
+        "left": 1199.96875
+      },
+      "client": {
+        "width": 66,
+        "height": 31
+      },
+      "scroll": {
+        "width": 66,
+        "height": 31,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > nav.second",
+      "tag": "nav",
+      "rect": {
+        "x": 0,
+        "y": 56,
+        "width": 1280,
+        "height": 44,
+        "top": 56,
+        "right": 1280,
+        "bottom": 100,
+        "left": 0
+      },
+      "client": {
+        "width": 1280,
+        "height": 44
+      },
+      "scroll": {
+        "width": 1280,
+        "height": 44,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > nav.second > a.now:nth-of-type(1)",
+      "tag": "a",
+      "rect": {
+        "x": 14,
+        "y": 62.5,
+        "width": 52.921875,
+        "height": 31,
+        "top": 62.5,
+        "right": 66.921875,
+        "bottom": 93.5,
+        "left": 14
+      },
+      "client": {
+        "width": 53,
+        "height": 29
+      },
+      "scroll": {
+        "width": 53,
+        "height": 29,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > nav.second > a:nth-of-type(2)",
+      "tag": "a",
+      "rect": {
+        "x": 92.921875,
+        "y": 69.5,
+        "width": 45.28125,
+        "height": 17,
+        "top": 69.5,
+        "right": 138.203125,
+        "bottom": 86.5,
+        "left": 92.921875
+      },
+      "client": {
+        "width": 45,
+        "height": 17
+      },
+      "scroll": {
+        "width": 45,
+        "height": 17,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > nav.second > a:nth-of-type(3)",
+      "tag": "a",
+      "rect": {
+        "x": 164.203125,
+        "y": 69.5,
+        "width": 24.96875,
+        "height": 17,
+        "top": 69.5,
+        "right": 189.171875,
+        "bottom": 86.5,
+        "left": 164.203125
+      },
+      "client": {
+        "width": 25,
+        "height": 17
+      },
+      "scroll": {
+        "width": 25,
+        "height": 17,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > nav.second > a:nth-of-type(4)",
+      "tag": "a",
+      "rect": {
+        "x": 215.171875,
+        "y": 69.5,
+        "width": 50.765625,
+        "height": 17,
+        "top": 69.5,
+        "right": 265.9375,
+        "bottom": 86.5,
+        "left": 215.171875
+      },
+      "client": {
+        "width": 51,
+        "height": 17
+      },
+      "scroll": {
+        "width": 51,
+        "height": 17,
+        "top": 0,
+        "left": 0
+      }
+    },
+    {
+      "selector": "body > nav.second > a:nth-of-type(5)",
+      "tag": "a",
+      "rect": {
+        "x": 291.9375,
+        "y": 69.5,
+        "width": 42.078125,
+        "height": 17,
+        "top": 69.5,
+        "right": 334.015625,
+        "bottom": 86.5,
+        "left": 291.9375
+      },
+      "client": {
+        "width": 42,
+        "height": 17
+      },
+      "scroll": {
+        "width": 42,
+        "height": 17,
+        "top": 0,
+        "left": 0
+      }
+    }
+  ]
+}
