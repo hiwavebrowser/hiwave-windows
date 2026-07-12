@@ -2940,6 +2940,49 @@ mod tests {
     }
 
     #[test]
+    fn test_text_align_inherits_to_block_child() {
+        // A block child inherits its containing block's text-align unless it
+        // sets its own (CSS cascade). Windows inherits uniformly via
+        // ComputedStyle::inherit_from, so `<div style=text-align:center><h1>`
+        // must center the h1. Portable contract from hiwave-macos #47; Windows
+        // already satisfies it (inherit_from carries text_align, and h1's UA
+        // defaults do not reset it) — this locks the contract against regression.
+        let html = "<html><body><div style=\"text-align:center\"><h1>Hi</h1></div></body></html>";
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("compositor"),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+        let layout = engine.build_layout_from_document(&document);
+        // Identify the h1 block by its UA default font-size (32px) and assert it
+        // inherited text-align:center from the containing div.
+        fn find_h1_align(b: &rustkit_layout::LayoutBox) -> Option<rustkit_css::TextAlign> {
+            if b.style.font_size == rustkit_css::Length::Px(32.0) {
+                return Some(b.style.text_align);
+            }
+            for c in &b.children {
+                if let Some(a) = find_h1_align(c) {
+                    return Some(a);
+                }
+            }
+            None
+        }
+        assert_eq!(
+            find_h1_align(&layout),
+            Some(rustkit_css::TextAlign::Center),
+            "h1 should inherit text-align:center from its containing div"
+        );
+    }
+
+    #[test]
     fn test_parse_length() {
         assert_eq!(parse_length("0"), Some(rustkit_css::Length::Zero));
         assert_eq!(parse_length("auto"), Some(rustkit_css::Length::Auto));
