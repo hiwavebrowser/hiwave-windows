@@ -1628,10 +1628,18 @@ pub fn layout_grid_container(
                 let start = sizing.row_start;
                 let end = (start + span).min(grid.rows.len());
 
-                // Calculate current space provided by spanned tracks
+                // Calculate current space provided by spanned tracks. A span-N
+                // item already owns the N-1 row gutters BETWEEN the tracks it
+                // covers (css-grid-1 §12.5), so credit them here — otherwise
+                // the item over-reports its need by gap*(span-1) and inflates
+                // the tracks (e.g. two 200px rows + 16px gap wrongly grow to
+                // 208 each for a 416px span-2 item that already fits).
+                let spanned_gaps =
+                    grid.row_gap * end.saturating_sub(start).saturating_sub(1) as f32;
                 let current_space: f32 = (start..end)
                     .map(|i| grid.rows[i].base_size)
-                    .sum();
+                    .sum::<f32>()
+                    + spanned_gaps;
 
                 // Calculate extra space needed
                 let extra_needed = sizing.height_contribution - current_space;
@@ -1671,10 +1679,16 @@ pub fn layout_grid_container(
                 let start = sizing.col_start;
                 let end = (start + span).min(grid.columns.len());
 
-                // Calculate current space provided by spanned tracks
+                // Calculate current space provided by spanned tracks. A span-N
+                // item already owns the N-1 column gutters BETWEEN the tracks
+                // it covers (css-grid-1 §12.5) — credit them so the item does
+                // not over-report its need by gap*(span-1) and inflate tracks.
+                let spanned_gaps =
+                    grid.column_gap * end.saturating_sub(start).saturating_sub(1) as f32;
                 let current_space: f32 = (start..end)
                     .map(|i| grid.columns[i].base_size)
-                    .sum();
+                    .sum::<f32>()
+                    + spanned_gaps;
 
                 // Calculate extra space needed
                 let extra_needed = sizing.width_contribution - current_space;
@@ -4786,6 +4800,59 @@ mod tests {
         // Verify: fixed track unchanged, auto track grew
         assert_eq!(tracks[0].base_size, 100.0, "Fixed track should not grow");
         assert_eq!(tracks[1].base_size, 100.0, "Auto track should absorb all extra space");
+    }
+
+    #[test]
+    fn test_row_span_credits_the_spanned_gutters() {
+        // css-grid-1 §12.5: an item spanning N tracks already owns the N-1
+        // gutters between them. Two 200px auto rows with a 16px row-gap
+        // already provide 200 + 16 + 200 = 416 to a row 1 / 3 item asking for
+        // min-height 416 — the tracks must NOT grow. Before the gutter credit
+        // the span-2 item saw only the 400 of summed base sizes, invented 16px
+        // of "extra", and inflated both rows to 208 (RED: 208+16+208 = 432).
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_rows =
+            GridTemplate::from_sizes(vec![TrackSize::Auto, TrackSize::Auto]);
+        container_style.row_gap = Length::Px(16.0);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+
+        // Tall item spans both rows: min-height 416 == 200 + 16 gap + 200.
+        let mut tall_style = ComputedStyle::new();
+        tall_style.grid_row_start = GridLine::Number(1);
+        tall_style.grid_row_end = GridLine::Number(3);
+        tall_style.min_height = Length::Px(416.0);
+        container
+            .children
+            .push(LayoutBox::new(BoxType::Block, tall_style));
+
+        // Two single-row items, min-height 200 each — they pin the tracks.
+        for row in 1..=2 {
+            let mut s = ComputedStyle::new();
+            s.grid_row_start = GridLine::Number(row);
+            s.grid_row_end = GridLine::Number(row + 1);
+            s.min_height = Length::Px(200.0);
+            container.children.push(LayoutBox::new(BoxType::Block, s));
+        }
+
+        layout_grid_container(&mut container, 400.0, 800.0);
+
+        let tall = container.children[0].dimensions.content.height;
+        let single_a = container.children[1].dimensions.content.height;
+        let single_b = container.children[2].dimensions.content.height;
+
+        assert!(
+            (single_a - 200.0).abs() < 0.5,
+            "row 1 track should stay 200 (gutter credited), got {single_a}"
+        );
+        assert!(
+            (single_b - 200.0).abs() < 0.5,
+            "row 2 track should stay 200 (gutter credited), got {single_b}"
+        );
+        assert!(
+            (tall - 416.0).abs() < 0.5,
+            "span-2 item should be exactly 200 + 16 + 200 = 416, got {tall}"
+        );
     }
 
     #[test]
