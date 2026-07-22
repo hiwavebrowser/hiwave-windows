@@ -497,6 +497,18 @@ impl LayoutBox {
         
         self.dimensions.content.width = cursor_x;
         self.dimensions.content.height = max_height.max(self.get_line_height());
+
+        // W55-B: an inline-block box (a form control) uses its UA/author
+        // intrinsic size rather than hugging content — a bare control has no
+        // children to size from. Plain inline boxes ignore width/height.
+        if self.style.display == rustkit_css::Display::InlineBlock {
+            if let Length::Px(w) = self.style.width {
+                self.dimensions.content.width = w;
+            }
+            if let Length::Px(h) = self.style.height {
+                self.dimensions.content.height = h;
+            }
+        }
     }
 
     /// Layout a text box.
