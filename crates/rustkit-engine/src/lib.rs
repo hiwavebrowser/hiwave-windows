@@ -1186,6 +1186,11 @@ impl Engine {
             // #42: this was the real css-selectors residual, not box-model
             // compose alone).
             "button" | "input" | "select" | "textarea" => {
+                // Form controls are replaced-ish: they lay out as one atomic
+                // inline-block, so siblings share a line instead of stacking
+                // (css-selectors §6; macOS #55). Author `display` still wins in
+                // the cascade below.
+                style.display = rustkit_css::Display::InlineBlock;
                 style.font_size = rustkit_css::Length::Px(13.333);
                 style.font_family = "sans-serif".to_string();
                 style.font_weight = rustkit_css::FontWeight::NORMAL;
@@ -3131,6 +3136,65 @@ mod tests {
         
         // Display list should have commands (at least background colors)
         assert!(!display_list.commands.is_empty(), "Display list should have commands, got {:?}", display_list.commands);
+    }
+
+    // W55-A (port of macOS #55): bare form controls compute a UA
+    // `display: inline-block`, so three sibling <button>s share ONE line.
+    // Pre-fix they inherit the Block default and stack vertically, making the
+    // body ~3 button-rows tall; inline-block collapses them to a single row.
+    #[test]
+    fn test_button_ua_display_inline_block_one_line() {
+        let html = r#"<!DOCTYPE html><html><body><button>A</button><button>B</button><button>C</button></body></html>"#;
+        let document = Document::parse_html(html).expect("Failed to parse HTML");
+        let document = Rc::new(document);
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("Failed to create compositor"),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+
+        let mut layout = engine.build_layout_from_document(&document);
+        let containing_block = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        layout.layout(&containing_block);
+
+        let body = &layout.children[0];
+        let body_h = body.dimensions.content.height;
+
+        // Every button must carry the UA inline-block display (the arm fired).
+        fn buttons_are_inline_block(b: &LayoutBox, ib: &mut usize, total: &mut usize) {
+            if matches!(b.box_type, BoxType::Inline | BoxType::Block) {
+                // A button box is one styled inline-block; count via display.
+            }
+            for c in &b.children {
+                buttons_are_inline_block(c, ib, total);
+            }
+            if b.style.display == rustkit_css::Display::InlineBlock {
+                *ib += 1;
+            }
+        }
+        let (mut ib, mut total) = (0usize, 0usize);
+        buttons_are_inline_block(body, &mut ib, &mut total);
+        assert!(ib >= 3, "expected >=3 inline-block form-control boxes, got {ib}");
+
+        // One line: the body hugs a single button row, not three stacked. A
+        // single bare button is well under 60px tall, so one line is < 60 and
+        // three stacked is comfortably over it.
+        assert!(
+            body_h < 60.0,
+            "three bare buttons should share one line (body height {body_h} \
+             indicates vertical stacking)"
+        );
     }
 
     #[test]
