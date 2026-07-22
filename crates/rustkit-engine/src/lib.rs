@@ -1556,7 +1556,10 @@ impl Engine {
                 }
             }
             "line-height" => {
-                if let Ok(n) = value.parse::<f32>() {
+                if value.trim().eq_ignore_ascii_case("normal") {
+                    // Normal sentinel: layout derives it from font metrics (W56).
+                    style.line_height = 0.0;
+                } else if let Ok(n) = value.parse::<f32>() {
                     style.line_height = n;
                 } else if let Some(Length::Px(px)) = parse_length(value) {
                     if let Length::Px(fs) = style.font_size {
@@ -3326,6 +3329,61 @@ mod tests {
         let (_tw1, th1) = first_form_control_dims(
             r#"<!DOCTYPE html><html><body><textarea rows="1"></textarea></body></html>"#);
         assert!((th1 - 17.0).abs() < 0.5, "rows=1 textarea height {th1}, expected ~17");
+    }
+
+    // W56 (port of macOS #56): `line-height: normal` derives from font metrics
+    // (Blink `ascent + descent + line_gap`; the Windows TextMetrics estimate is
+    // ~1.15*font_size), NOT a hardcoded 1.2 ratio. A single line of text is
+    // exactly one line-height tall.
+    fn first_text_box_height(html: &str) -> f32 {
+        let document = Document::parse_html(html).expect("Failed to parse HTML");
+        let document = Rc::new(document);
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("Failed to create compositor"),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+        let mut layout = engine.build_layout_from_document(&document);
+        let containing_block = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        layout.layout(&containing_block);
+        fn find(b: &LayoutBox) -> Option<f32> {
+            if matches!(b.box_type, BoxType::Text(_)) {
+                return Some(b.dimensions.content.height);
+            }
+            for c in &b.children {
+                if let Some(h) = find(c) {
+                    return Some(h);
+                }
+            }
+            None
+        }
+        find(&layout).expect("no text box found")
+    }
+
+    #[test]
+    fn test_line_height_normal_from_metrics() {
+        // Default font 16px, line-height:normal -> metrics 1.15*16 = 18.4,
+        // NOT the old flat 1.2*16 = 19.2.
+        let h = first_text_box_height(
+            r#"<!DOCTYPE html><html><body><p>one line of text</p></body></html>"#);
+        assert!((h - 18.4).abs() < 0.6,
+            "normal line-height {h}, expected ~18.4 (metrics-derived, not flat 19.2)");
+
+        // An explicit numeric line-height is still an exact ratio of font-size.
+        let h2 = first_text_box_height(
+            r#"<!DOCTYPE html><html><body><p style="line-height: 2">two</p></body></html>"#);
+        assert!((h2 - 32.0).abs() < 0.5,
+            "line-height:2 should be 2*16=32, got {h2}");
     }
 
     #[test]
