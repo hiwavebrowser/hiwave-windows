@@ -1186,10 +1186,85 @@ impl Engine {
             // #42: this was the real css-selectors residual, not box-model
             // compose alone).
             "button" | "input" | "select" | "textarea" => {
+                // Form controls are replaced-ish: they lay out as one atomic
+                // inline-block, so siblings share a line instead of stacking
+                // (css-selectors §6; macOS #55). Author `display` still wins in
+                // the cascade below.
+                style.display = rustkit_css::Display::InlineBlock;
                 style.font_size = rustkit_css::Length::Px(13.333);
                 style.font_family = "sans-serif".to_string();
                 style.font_weight = rustkit_css::FontWeight::NORMAL;
                 style.font_style = rustkit_css::FontStyle::Normal;
+
+                // W55-B: UA intrinsic border-box sizes calibrated to Chrome
+                // CfT-148 at the 13.333px control font (macOS #55). Windows
+                // lacks the macOS FormControlType/layout_form_control
+                // subsystem, so the oracle sizes are applied as UA
+                // width/height here; author width/height still win in the
+                // cascade below, and the inline layout honors these for
+                // inline-block boxes (a bare control has no content to size).
+                let tag = tag_name.to_lowercase();
+                let itype = attributes.get("type").map(|s| s.to_lowercase());
+                match tag.as_str() {
+                    "input" => match itype.as_deref() {
+                        Some("hidden") => {}
+                        Some("checkbox") | Some("radio") => {
+                            style.width = rustkit_css::Length::Px(13.0);
+                            style.height = rustkit_css::Length::Px(13.0);
+                        }
+                        Some("range") => {
+                            style.width = rustkit_css::Length::Px(129.0);
+                            style.height = rustkit_css::Length::Px(16.0);
+                        }
+                        Some("color") => {
+                            style.width = rustkit_css::Length::Px(50.0);
+                            style.height = rustkit_css::Length::Px(27.0);
+                        }
+                        _ => {
+                            style.width = rustkit_css::Length::Px(160.0);
+                            style.height = rustkit_css::Length::Px(19.0);
+                        }
+                    },
+                    "textarea" => {
+                        // Default rows=2 / cols=20 (HTML), but an author-set
+                        // rows=1 must stay one row — no min-floor above the
+                        // default (Prometheus review nit on #27).
+                        let rows = attributes
+                            .get("rows")
+                            .and_then(|r| r.trim().parse::<f32>().ok())
+                            .filter(|&r| r >= 1.0)
+                            .unwrap_or(2.0);
+                        let cols = attributes
+                            .get("cols")
+                            .and_then(|c| c.trim().parse::<f32>().ok())
+                            .filter(|&c| c >= 1.0)
+                            .unwrap_or(20.0);
+                        style.width = rustkit_css::Length::Px(13.333 * 0.6 * cols);
+                        style.height = rustkit_css::Length::Px(15.0 * rows + 2.0);
+                    }
+                    "select" => {
+                        let size = attributes
+                            .get("size")
+                            .and_then(|s| s.trim().parse::<u32>().ok())
+                            .unwrap_or(0);
+                        let size = if attributes.contains_key("multiple") && size == 0 {
+                            4
+                        } else {
+                            size
+                        };
+                        style.width = rustkit_css::Length::Px(133.0);
+                        style.height = if size > 1 {
+                            rustkit_css::Length::Px(16.0 * size as f32 + 2.0)
+                        } else {
+                            rustkit_css::Length::Px(19.0)
+                        };
+                    }
+                    "button" => {
+                        // Width hugs the label (content); pin the line height.
+                        style.height = rustkit_css::Length::Px(19.0);
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -3131,6 +3206,126 @@ mod tests {
         
         // Display list should have commands (at least background colors)
         assert!(!display_list.commands.is_empty(), "Display list should have commands, got {:?}", display_list.commands);
+    }
+
+    // W55-A (port of macOS #55): bare form controls compute a UA
+    // `display: inline-block`, so three sibling <button>s share ONE line.
+    // Pre-fix they inherit the Block default and stack vertically, making the
+    // body ~3 button-rows tall; inline-block collapses them to a single row.
+    #[test]
+    fn test_button_ua_display_inline_block_one_line() {
+        let html = r#"<!DOCTYPE html><html><body><button>A</button><button>B</button><button>C</button></body></html>"#;
+        let document = Document::parse_html(html).expect("Failed to parse HTML");
+        let document = Rc::new(document);
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("Failed to create compositor"),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+
+        let mut layout = engine.build_layout_from_document(&document);
+        let containing_block = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        layout.layout(&containing_block);
+
+        let body = &layout.children[0];
+        let body_h = body.dimensions.content.height;
+
+        // Every button must carry the UA inline-block display (the arm fired).
+        fn buttons_are_inline_block(b: &LayoutBox, ib: &mut usize, total: &mut usize) {
+            if matches!(b.box_type, BoxType::Inline | BoxType::Block) {
+                // A button box is one styled inline-block; count via display.
+            }
+            for c in &b.children {
+                buttons_are_inline_block(c, ib, total);
+            }
+            if b.style.display == rustkit_css::Display::InlineBlock {
+                *ib += 1;
+            }
+        }
+        let (mut ib, mut total) = (0usize, 0usize);
+        buttons_are_inline_block(body, &mut ib, &mut total);
+        assert!(ib >= 3, "expected >=3 inline-block form-control boxes, got {ib}");
+
+        // One line: the body hugs a single button row, not three stacked. A
+        // single bare button is well under 60px tall, so one line is < 60 and
+        // three stacked is comfortably over it.
+        assert!(
+            body_h < 60.0,
+            "three bare buttons should share one line (body height {body_h} \
+             indicates vertical stacking)"
+        );
+    }
+
+    // W55-B (port of macOS #55): bare form controls get Chrome-oracle
+    // intrinsic border-box sizes at the UA control font (13.333px):
+    // single-line input 19px tall, checkbox/radio 13x13, textarea 15*rows+2.
+    // Pre-fix a bare control hugs line-height (~16px) with no width.
+    fn first_form_control_dims(html: &str) -> (f32, f32) {
+        let document = Document::parse_html(html).expect("Failed to parse HTML");
+        let document = Rc::new(document);
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("Failed to create compositor"),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        };
+        let mut layout = engine.build_layout_from_document(&document);
+        let containing_block = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        layout.layout(&containing_block);
+        fn find(b: &LayoutBox) -> Option<(f32, f32)> {
+            if b.style.display == rustkit_css::Display::InlineBlock {
+                return Some((b.dimensions.content.width, b.dimensions.content.height));
+            }
+            for c in &b.children {
+                if let Some(d) = find(c) {
+                    return Some(d);
+                }
+            }
+            None
+        }
+        find(&layout).expect("no inline-block form control found")
+    }
+
+    #[test]
+    fn test_bare_form_control_heights_match_chrome() {
+        let (_iw, ih) = first_form_control_dims(
+            r#"<!DOCTYPE html><html><body><input></body></html>"#);
+        assert!((ih - 19.0).abs() < 0.5, "bare input height {ih}, expected ~19");
+
+        let (cw, ch) = first_form_control_dims(
+            r#"<!DOCTYPE html><html><body><input type="checkbox"></body></html>"#);
+        assert!((cw - 13.0).abs() < 0.5 && (ch - 13.0).abs() < 0.5,
+            "checkbox {cw}x{ch}, expected 13x13");
+
+        let (_tw, th) = first_form_control_dims(
+            r#"<!DOCTYPE html><html><body><textarea></textarea></body></html>"#);
+        // rows default 2 -> 15*2 + 2 = 32.
+        assert!((th - 32.0).abs() < 0.5, "bare textarea height {th}, expected ~32");
+
+        // Author rows=1 is honored (not floored to the default 2): 15*1+2=17.
+        let (_tw1, th1) = first_form_control_dims(
+            r#"<!DOCTYPE html><html><body><textarea rows="1"></textarea></body></html>"#);
+        assert!((th1 - 17.0).abs() < 0.5, "rows=1 textarea height {th1}, expected ~17");
     }
 
     #[test]
