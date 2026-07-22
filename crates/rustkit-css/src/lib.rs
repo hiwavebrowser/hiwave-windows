@@ -1071,7 +1071,10 @@ impl ComputedStyle {
     pub fn new() -> Self {
         Self {
             font_size: Length::Px(16.0),
-            line_height: 1.2,
+            // 0.0 is the `line-height: normal` sentinel (CSS initial value):
+            // the layout resolves it from font metrics, not a flat 1.2 ratio
+            // (W56, port of macOS #56). Author number/px set a positive ratio.
+            line_height: 0.0,
             opacity: 1.0,
             color: Color::BLACK,
             background_color: Color::TRANSPARENT,

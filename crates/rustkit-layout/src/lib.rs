@@ -371,6 +371,22 @@ pub struct LayoutBox {
     pub containing_block_index: Option<usize>,
 }
 
+/// Resolve a computed line-height to pixels (W56, port of macOS #56).
+///
+/// A non-positive stored ratio means `line-height: normal` (the CSS initial
+/// value): it derives from the font's metrics (Blink model
+/// `ascent + descent + line_gap`, via `TextMetrics`) rather than a hardcoded
+/// 1.2 ratio. A positive ratio is an author `<number>`/`<length>` expressed as
+/// a multiple of font-size. When real font shaping replaces the current metric
+/// estimate, `normal` improves for free without touching call sites.
+fn resolve_line_height_px(line_height: f32, font_size: f32) -> f32 {
+    if line_height > 0.0 {
+        font_size * line_height
+    } else {
+        TextMetrics::with_font_size(font_size).height
+    }
+}
+
 impl LayoutBox {
     /// Create a new layout box.
     pub fn new(box_type: BoxType, style: ComputedStyle) -> Self {
@@ -552,12 +568,7 @@ impl LayoutBox {
             Length::Px(px) => px,
             _ => 16.0,
         };
-        let mult = if self.style.line_height > 0.0 {
-            self.style.line_height
-        } else {
-            1.2
-        };
-        font_size * mult
+        resolve_line_height_px(self.style.line_height, font_size)
     }
 
     /// Perform layout with margin collapse context.
@@ -956,12 +967,7 @@ impl LayoutBox {
                 Length::Px(px) => px,
                 _ => 16.0,
             };
-            let lh = font_size
-                * if child.style.line_height > 0.0 {
-                    child.style.line_height
-                } else {
-                    1.2
-                };
+            let lh = resolve_line_height_px(child.style.line_height, font_size);
             // Real shaped width of the segment + a real space before the next
             // one (was a 0.5*font_size estimate, which oversized every run and
             // left loose gaps between inline pieces).
@@ -1882,12 +1888,7 @@ impl DisplayList {
                 rustkit_css::FontStyle::Italic => 1,
                 rustkit_css::FontStyle::Oblique => 2,
             };
-            let line_height = font_size
-                * if style.line_height > 0.0 {
-                    style.line_height
-                } else {
-                    1.2
-                };
+            let line_height = resolve_line_height_px(style.line_height, font_size);
 
             // background-clip:text: fill the glyphs with the gradient (sampled
             // across the text's border box) instead of the solid color.
