@@ -1226,16 +1226,19 @@ impl Engine {
                         }
                     },
                     "textarea" => {
+                        // Default rows=2 / cols=20 (HTML), but an author-set
+                        // rows=1 must stay one row — no min-floor above the
+                        // default (Prometheus review nit on #27).
                         let rows = attributes
                             .get("rows")
                             .and_then(|r| r.trim().parse::<f32>().ok())
-                            .unwrap_or(2.0)
-                            .max(2.0);
+                            .filter(|&r| r >= 1.0)
+                            .unwrap_or(2.0);
                         let cols = attributes
                             .get("cols")
                             .and_then(|c| c.trim().parse::<f32>().ok())
-                            .unwrap_or(20.0)
-                            .max(20.0);
+                            .filter(|&c| c >= 1.0)
+                            .unwrap_or(20.0);
                         style.width = rustkit_css::Length::Px(13.333 * 0.6 * cols);
                         style.height = rustkit_css::Length::Px(15.0 * rows + 2.0);
                     }
@@ -3318,6 +3321,11 @@ mod tests {
             r#"<!DOCTYPE html><html><body><textarea></textarea></body></html>"#);
         // rows default 2 -> 15*2 + 2 = 32.
         assert!((th - 32.0).abs() < 0.5, "bare textarea height {th}, expected ~32");
+
+        // Author rows=1 is honored (not floored to the default 2): 15*1+2=17.
+        let (_tw1, th1) = first_form_control_dims(
+            r#"<!DOCTYPE html><html><body><textarea rows="1"></textarea></body></html>"#);
+        assert!((th1 - 17.0).abs() < 0.5, "rows=1 textarea height {th1}, expected ~17");
     }
 
     #[test]
