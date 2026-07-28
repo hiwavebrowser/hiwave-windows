@@ -1,0 +1,128 @@
+name: Windows Metrics
+
+# hiwave-windows had NO workflows at all -- zero CI, zero collected metrics,
+# no metrics-history branch -- while hiwave-macos has collected parity metrics
+# on every push for months. This is the Windows counterpart.
+#
+# It deliberately does NOT port hiwave-macos's parity pixel-diff metric.
+# That harness needs a real GPU adapter, and when capture yields nothing it
+# defaults each case to 100.0 rather than erroring, so a hosted Windows runner
+# would publish a confident-looking "100% diff" that measures the runner, not
+# the renderer. Build and test results are what a headless Windows box can
+# honestly report, so those are what this collects.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: never
+
+jobs:
+  collect-metrics:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Collect metrics
+        shell: bash
+        run: |
+          python scripts/collect_metrics.py \
+            --output metrics.json \
+            --commit "${{ github.sha }}" \
+            --branch "${{ github.ref_name }}"
+
+      - name: Job summary
+        shell: bash
+        run: |
+          python scripts/collect_metrics.py \
+            --input metrics.json --format markdown >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-metrics-${{ github.sha }}
+          path: metrics.json
+          retention-days: 90
+
+      # Fail the job AFTER the metrics are recorded, so a red build still
+      # produces a data point instead of losing the run entirely.
+      - name: Enforce build and tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, sys
+          m = json.load(open("metrics.json", encoding="utf-8"))
+          bad = []
+          if not m["build"]["ok"]:
+              bad.append(f"build exit {m['build']['exit_code']}")
+          if m["tests"]["failed"]:
+              bad.append(f"{m['tests']['failed']} test(s) failed")
+          if bad:
+              print("FAIL: " + "; ".join(bad))
+              sys.exit(1)
+          print(f"OK: {m['tests']['passed']} tests passed")
+          PY
+
+      - name: Update metrics history
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Keep the metrics file across the branch switch, and drop any
+          # tracked modifications the run produced -- a dirty tree blocks the
+          # checkout and then cascades into the orphan fallback failing
+          # because the fetch already created the branch.
+          cp metrics.json "$RUNNER_TEMP/metrics.json"
+          git checkout -- .
+
+          git fetch origin metrics-history:metrics-history 2>/dev/null || true
+          git checkout metrics-history 2>/dev/null || git checkout --orphan metrics-history
+          # --orphan keeps the working tree staged; start the branch empty.
+          git rm -rf --cached . >/dev/null 2>&1 || true
+
+          mkdir -p metrics
+          cp "$RUNNER_TEMP/metrics.json" metrics.json
+          TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+          cp metrics.json "metrics/${TIMESTAMP}_${{ github.sha }}.json"
+
+          python - <<'PY'
+          import csv, json, os
+          m = json.load(open("metrics.json", encoding="utf-8"))
+          path = "metrics/history.csv"
+          exists = os.path.exists(path)
+          with open(path, "a", newline="", encoding="utf-8") as f:
+              w = csv.writer(f)
+              if not exists:
+                  w.writerow(["timestamp", "commit", "branch", "build_ok",
+                              "passed", "failed", "ignored", "warnings"])
+              w.writerow([
+                  m["timestamp"], m["commit"][:8], m["branch"],
+                  m["build"]["ok"], m["tests"]["passed"], m["tests"]["failed"],
+                  m["tests"]["ignored"], m["build"]["warnings"],
+              ])
+          PY
+
+          git add metrics/ metrics.json
+          git commit -m "Add Windows metrics for ${{ github.sha }}" \
+            || echo "No changes to commit"
+          git push origin metrics-history || echo "Push failed - may need rebase"
