@@ -17,6 +17,16 @@
 //! - Map Unicode codepoints -> glyph indices
 //! - Read design glyph metrics (advance widths)
 
+//! ## Unicode text algorithms (platform-independent)
+//!
+//! - [`bidi`]: Unicode Bidirectional Algorithm for mixed LTR/RTL text
+//! - [`line_break`]: Unicode Line Breaking Algorithm for text wrapping
+//! - [`segmentation`]: Grapheme cluster, word, and sentence boundaries
+
+pub mod bidi;
+pub mod line_break;
+pub mod segmentation;
+
 use thiserror::Error;
 
 /// Errors for rustkit-text operations.
