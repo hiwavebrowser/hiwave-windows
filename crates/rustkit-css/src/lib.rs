@@ -1248,6 +1248,80 @@ pub enum BackgroundOrigin {
     ContentBox,
 }
 
+/// A CSS box-shadow value.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BoxShadow {
+    /// Horizontal offset (positive = right).
+    pub offset_x: f32,
+    /// Vertical offset (positive = down).
+    pub offset_y: f32,
+    /// Blur radius (0 = sharp edge).
+    pub blur_radius: f32,
+    /// Spread radius (positive = larger shadow).
+    pub spread_radius: f32,
+    /// Shadow color.
+    pub color: Color,
+    /// Whether this is an inset shadow.
+    pub inset: bool,
+}
+
+impl BoxShadow {
+    /// Create a new box shadow with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    /// Create a simple drop shadow.
+    pub fn drop_shadow(offset_x: f32, offset_y: f32, blur: f32, color: Color) -> Self {
+        Self {
+            offset_x,
+            offset_y,
+            blur_radius: blur,
+            spread_radius: 0.0,
+            color,
+            inset: false,
+        }
+    }
+    
+    /// Check if this shadow is visible (non-zero offset, blur, or spread with non-transparent color).
+    pub fn is_visible(&self) -> bool {
+        self.color.a > 0.0 && 
+        (self.offset_x != 0.0 || self.offset_y != 0.0 || self.blur_radius > 0.0 || self.spread_radius != 0.0)
+    }
+}
+
+/// A filter function that can be applied to the backdrop.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum BackdropFilter {
+    /// No backdrop filter.
+    #[default]
+    None,
+    /// Gaussian blur with the specified radius in pixels.
+    Blur(f32),
+    /// Grayscale filter (0.0 = no effect, 1.0 = fully grayscale).
+    Grayscale(f32),
+    /// Brightness adjustment (1.0 = no change).
+    Brightness(f32),
+    /// Contrast adjustment (1.0 = no change).
+    Contrast(f32),
+    /// Saturate adjustment (1.0 = no change, 0.0 = grayscale, >1 = oversaturated).
+    Saturate(f32),
+    /// Sepia filter (0.0 = no effect, 1.0 = fully sepia).
+    Sepia(f32),
+}
+
+impl BackdropFilter {
+    /// Check if this filter has any effect.
+    pub fn is_none(&self) -> bool {
+        matches!(self, BackdropFilter::None)
+    }
+
+    /// Check if this filter requires blur (most expensive operation).
+    pub fn needs_blur(&self) -> bool {
+        matches!(self, BackdropFilter::Blur(r) if *r > 0.0)
+    }
+}
+
 // ==================== Transform Types ====================
 
 /// A single 2D transform operation.
@@ -1901,6 +1975,75 @@ mod background_partial_tests {
     fn origin_has_all_three_boxes() {
         assert_ne!(BackgroundOrigin::BorderBox, BackgroundOrigin::PaddingBox);
         assert_ne!(BackgroundOrigin::PaddingBox, BackgroundOrigin::ContentBox);
+    }
+}
+
+#[cfg(test)]
+mod shadow_filter_tests {
+    use super::*;
+
+    #[test]
+    fn drop_shadow_is_outset_with_no_spread() {
+        let s = BoxShadow::drop_shadow(2.0, 4.0, 6.0, Color::BLACK);
+        assert_eq!((s.offset_x, s.offset_y, s.blur_radius), (2.0, 4.0, 6.0));
+        assert_eq!(s.spread_radius, 0.0);
+        assert!(!s.inset, "drop_shadow must not produce an inset shadow");
+    }
+
+    #[test]
+    fn a_fully_transparent_shadow_is_not_visible() {
+        // Guards the alpha half of is_visible: geometry alone must not make
+        // a shadow visible, or the renderer draws invisible work.
+        let s = BoxShadow {
+            offset_x: 10.0,
+            offset_y: 10.0,
+            blur_radius: 5.0,
+            spread_radius: 2.0,
+            color: Color::TRANSPARENT,
+            inset: false,
+        };
+        assert!(!s.is_visible());
+    }
+
+    #[test]
+    fn a_zero_geometry_shadow_is_not_visible_even_when_opaque() {
+        // Guards the other half: an opaque colour with no offset, blur or
+        // spread paints nothing.
+        let s = BoxShadow { color: Color::BLACK, ..Default::default() };
+        assert!(!s.is_visible());
+    }
+
+    #[test]
+    fn spread_alone_makes_a_shadow_visible() {
+        // spread_radius uses != 0.0, not > 0.0 -- a NEGATIVE spread still
+        // changes rendering, so it must count as visible.
+        let s = BoxShadow {
+            spread_radius: -3.0,
+            color: Color::BLACK,
+            ..Default::default()
+        };
+        assert!(s.is_visible(), "negative spread is still a visible change");
+    }
+
+    #[test]
+    fn backdrop_filter_none_needs_no_blur() {
+        let f = BackdropFilter::None;
+        assert!(f.is_none());
+        assert!(!f.needs_blur());
+    }
+
+    #[test]
+    fn zero_radius_blur_needs_no_blur_pass() {
+        // Blur(0.0) is a filter that is set but has no effect. Scheduling
+        // the GPU blur pass for it would be pure cost.
+        let f = BackdropFilter::Blur(0.0);
+        assert!(!f.is_none(), "it is still a Blur variant");
+        assert!(!f.needs_blur(), "but it must not request a blur pass");
+    }
+
+    #[test]
+    fn positive_radius_blur_needs_the_blur_pass() {
+        assert!(BackdropFilter::Blur(4.0).needs_blur());
     }
 }
 
