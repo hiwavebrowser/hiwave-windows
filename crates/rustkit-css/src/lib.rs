@@ -144,6 +144,14 @@ pub enum Length {
     Rem(f32),
     /// Percentage.
     Percent(f32),
+    /// Viewport width (1vw = 1% of viewport width).
+    Vw(f32),
+    /// Viewport height (1vh = 1% of viewport height).
+    Vh(f32),
+    /// Viewport min (1vmin = 1% of smaller viewport dimension).
+    Vmin(f32),
+    /// Viewport max (1vmax = 1% of larger viewport dimension).
+    Vmax(f32),
     /// Auto.
     Auto,
     /// Zero.
@@ -153,12 +161,34 @@ pub enum Length {
 
 impl Length {
     /// Compute the absolute pixel value.
+    ///
+    /// Viewport units resolve against a zero viewport here and therefore
+    /// compute to 0.0 — matching the macOS tree, where `to_px` delegates to
+    /// `to_px_with_viewport(.., 0.0, 0.0)`. Callers that have viewport
+    /// dimensions should use `to_px_with_viewport` directly.
     pub fn to_px(&self, font_size: f32, root_font_size: f32, container_size: f32) -> f32 {
+        self.to_px_with_viewport(font_size, root_font_size, container_size, 0.0, 0.0)
+    }
+
+    /// Compute the absolute pixel value with viewport dimensions for
+    /// vw/vh/vmin/vmax units.
+    pub fn to_px_with_viewport(
+        &self,
+        font_size: f32,
+        root_font_size: f32,
+        container_size: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> f32 {
         match self {
             Length::Px(px) => *px,
             Length::Em(em) => em * font_size,
             Length::Rem(rem) => rem * root_font_size,
             Length::Percent(pct) => pct / 100.0 * container_size,
+            Length::Vw(vw) => vw / 100.0 * viewport_width,
+            Length::Vh(vh) => vh / 100.0 * viewport_height,
+            Length::Vmin(vmin) => vmin / 100.0 * viewport_width.min(viewport_height),
+            Length::Vmax(vmax) => vmax / 100.0 * viewport_width.max(viewport_height),
             Length::Auto => 0.0, // Context-dependent
             Length::Zero => 0.0,
         }
@@ -1389,5 +1419,65 @@ mod tests {
         assert_eq!(child.font_size, parent.font_size);
         // Non-inherited properties should be default
         assert_eq!(child.display, Display::Block);
+    }
+}
+
+#[cfg(test)]
+mod length_viewport_tests {
+    use super::*;
+
+    #[test]
+    fn viewport_units_resolve_against_the_viewport() {
+        let vp_w = 1000.0;
+        let vp_h = 600.0;
+        assert_eq!(Length::Vw(50.0).to_px_with_viewport(16.0, 16.0, 0.0, vp_w, vp_h), 500.0);
+        assert_eq!(Length::Vh(50.0).to_px_with_viewport(16.0, 16.0, 0.0, vp_w, vp_h), 300.0);
+    }
+
+    #[test]
+    fn vmin_and_vmax_pick_the_smaller_and_larger_axis() {
+        // Deliberately landscape, then portrait: a implementation that hard-codes
+        // width for vmin passes the first and fails the second.
+        let landscape = Length::Vmin(10.0).to_px_with_viewport(16.0, 16.0, 0.0, 1000.0, 600.0);
+        let portrait = Length::Vmin(10.0).to_px_with_viewport(16.0, 16.0, 0.0, 600.0, 1000.0);
+        assert_eq!(landscape, 60.0, "vmin must follow the SHORTER axis");
+        assert_eq!(portrait, 60.0, "vmin must follow the shorter axis in portrait too");
+
+        assert_eq!(
+            Length::Vmax(10.0).to_px_with_viewport(16.0, 16.0, 0.0, 1000.0, 600.0),
+            100.0,
+            "vmax must follow the LONGER axis"
+        );
+    }
+
+    #[test]
+    fn viewport_units_are_zero_without_viewport_context() {
+        // Matches the macOS tree, where to_px delegates with (0.0, 0.0).
+        // Documented rather than invented: a Windows-only fallback here would
+        // diverge the trees silently.
+        assert_eq!(Length::Vw(50.0).to_px(16.0, 16.0, 800.0), 0.0);
+        assert_eq!(Length::Vh(50.0).to_px(16.0, 16.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn existing_units_are_unchanged_by_the_new_resolver() {
+        // to_px now delegates to to_px_with_viewport; every pre-existing
+        // variant must compute exactly what it did before.
+        assert_eq!(Length::Px(12.0).to_px(16.0, 16.0, 800.0), 12.0);
+        assert_eq!(Length::Em(2.0).to_px(16.0, 16.0, 800.0), 32.0);
+        assert_eq!(Length::Rem(2.0).to_px(16.0, 20.0, 800.0), 40.0);
+        assert_eq!(Length::Percent(25.0).to_px(16.0, 16.0, 800.0), 200.0);
+        assert_eq!(Length::Auto.to_px(16.0, 16.0, 800.0), 0.0);
+        assert_eq!(Length::Zero.to_px(16.0, 16.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn viewport_units_are_not_yet_parseable() {
+        // Pins the INERT boundary of this PR: the variants exist, but the
+        // parser is deliberately untouched, so no stylesheet behaves
+        // differently yet. If a later PR wires the parser, this test SHOULD
+        // fail and be updated -- that is the signal that behaviour changed.
+        assert_eq!(parse_length("50vw"), None);
+        assert_eq!(parse_length("10vmin"), None);
     }
 }

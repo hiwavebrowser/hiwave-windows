@@ -998,6 +998,14 @@ fn resolve_length(length: &Length, container_size: f32) -> f32 {
         Length::Em(em) => em * 16.0, // Default font size
         Length::Rem(rem) => rem * 16.0,
         Length::Percent(pct) => pct / 100.0 * container_size,
+        // This resolver has no viewport in scope, so viewport units cannot be
+        // resolved here and compute to 0.0 — the same result `Length::to_px`
+        // gives without viewport dimensions, and the same as the macOS tree.
+        // DEFER: when flex layout is threaded with viewport dimensions, these
+        // four arms should delegate to `to_px_with_viewport` instead. Written
+        // as explicit arms rather than a catch-all so that adding a future
+        // Length variant still breaks this match loudly.
+        Length::Vw(_) | Length::Vh(_) | Length::Vmin(_) | Length::Vmax(_) => 0.0,
         Length::Auto => 0.0,
         Length::Zero => 0.0,
     }
