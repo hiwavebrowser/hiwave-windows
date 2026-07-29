@@ -18,9 +18,14 @@ pub mod flex;
 pub mod forms;
 pub mod grid;
 pub mod images;
+pub mod margin_collapse;
 pub mod scroll;
 pub mod text;
 
+pub use margin_collapse::{
+    collapse_margins, establishes_bfc, is_margin_collapsible_through,
+    should_collapse_with_first_child, should_collapse_with_last_child, CollapsibleMargin,
+};
 pub use grid::{layout_grid_container, GridItem, GridLayout, GridTrack};
 pub use forms::{
     calculate_caret_position, calculate_selection_rects, render_button, render_checkbox,
