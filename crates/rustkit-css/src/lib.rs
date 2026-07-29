@@ -1144,6 +1144,60 @@ pub enum Direction {
     Rtl,
 }
 
+// ==================== Animation/Transition Types ====================
+
+/// Animation timing function.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum TimingFunction {
+    #[default]
+    Ease,
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    StepStart,
+    StepEnd,
+    Steps(u32, bool), // (count, jump_start)
+    CubicBezier(f32, f32, f32, f32),
+}
+
+/// Animation fill mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimationFillMode {
+    #[default]
+    None,
+    Forwards,
+    Backwards,
+    Both,
+}
+
+/// Animation play state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimationPlayState {
+    #[default]
+    Running,
+    Paused,
+}
+
+/// Animation direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimationDirection {
+    #[default]
+    Normal,
+    Reverse,
+    Alternate,
+    AlternateReverse,
+}
+
+/// Animation iteration count.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AnimationIterationCount {
+    #[default]
+    One,
+    Infinite,
+    Count(f32),
+}
+
 /// A CSS box-shadow value.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct BoxShadow {
@@ -1805,6 +1859,67 @@ mod tests {
         assert_eq!(child.font_size, parent.font_size);
         // Non-inherited properties should be default
         assert_eq!(child.display, Display::Block);
+    }
+}
+
+#[cfg(test)]
+mod animation_family_tests {
+    use super::*;
+
+    #[test]
+    fn css_initial_values_are_the_derived_defaults() {
+        // These defaults are the CSS initial values, so a wrong #[default]
+        // would silently change every element that never sets the property.
+        assert_eq!(TimingFunction::default(), TimingFunction::Ease);
+        assert_eq!(AnimationFillMode::default(), AnimationFillMode::None);
+        assert_eq!(AnimationPlayState::default(), AnimationPlayState::Running);
+        assert_eq!(AnimationDirection::default(), AnimationDirection::Normal);
+        assert_eq!(AnimationIterationCount::default(), AnimationIterationCount::One);
+    }
+
+    #[test]
+    fn steps_carries_its_count_and_jump_flag_independently() {
+        // Steps(count, jump_start): the bool is not a formality -- steps(2,
+        // jump-start) and steps(2, jump-end) render differently, so a port
+        // that dropped or aliased the flag must fail here.
+        let jump_start = TimingFunction::Steps(2, true);
+        let jump_end = TimingFunction::Steps(2, false);
+        assert_ne!(jump_start, jump_end);
+        if let TimingFunction::Steps(n, jump) = jump_start {
+            assert_eq!(n, 2);
+            assert!(jump);
+        } else {
+            panic!("expected Steps");
+        }
+    }
+
+    #[test]
+    fn cubic_bezier_keeps_all_four_control_values_in_order() {
+        let b = TimingFunction::CubicBezier(0.25, 0.1, 0.25, 1.0);
+        // Reversing the pairs is the classic transcription error and would
+        // produce a visibly different easing curve.
+        assert_ne!(b, TimingFunction::CubicBezier(0.25, 1.0, 0.25, 0.1));
+        assert_eq!(b, TimingFunction::CubicBezier(0.25, 0.1, 0.25, 1.0));
+    }
+
+    #[test]
+    fn iteration_count_distinguishes_infinite_from_a_finite_count() {
+        assert_ne!(
+            AnimationIterationCount::Infinite,
+            AnimationIterationCount::Count(f32::INFINITY),
+            "Infinite is its own variant, not a sentinel float"
+        );
+        assert_ne!(AnimationIterationCount::One, AnimationIterationCount::Count(1.0));
+    }
+
+    #[test]
+    fn fractional_iteration_counts_are_representable() {
+        // animation-iteration-count: 0.5 is legal CSS and stops the
+        // animation halfway -- an integer-typed port would lose it.
+        assert_eq!(
+            AnimationIterationCount::Count(0.5),
+            AnimationIterationCount::Count(0.5)
+        );
     }
 }
 
