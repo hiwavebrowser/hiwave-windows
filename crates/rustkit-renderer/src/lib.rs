@@ -48,6 +48,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
+pub mod dither;
 mod glyph;
 mod pipeline;
 mod shaders;
