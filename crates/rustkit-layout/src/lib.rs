@@ -2005,6 +2005,34 @@ impl DisplayList {
 /// instead of a `0.5 * font_size` per-character estimate. Always returns at
 /// least one line.
 pub fn wrap_text(text: &str, max_width: f32, style: &ComputedStyle) -> Vec<String> {
+    // Mandatory breaks are honoured BEFORE any soft-wrapping decision, because
+    // `split_whitespace` below collapses '\n' along with spaces — which silently
+    // destroyed every hard break, including for `white-space: pre` and
+    // `pre-line`, whose entire job is to preserve them (css-text-3 §3).
+    //
+    // Segmentation comes from rustkit_text::line_break rather than a local
+    // `split('\n')` so that CRLF counts once and the full mandatory-break set
+    // (VT, FF, U+0085, U+2028, U+2029) is covered by the same table the text
+    // crate tests.
+    let segments = rustkit_text::line_break::break_into_lines(text);
+    if segments.len() > 1 {
+        let mut out = Vec::new();
+        for seg in &segments {
+            out.extend(wrap_segment(seg.text, max_width, style));
+        }
+        return out;
+    }
+
+    // Single segment (no mandatory breaks): identical path to before.
+    wrap_segment(text, max_width, style)
+}
+
+/// Soft-wrap a run that contains NO mandatory breaks.
+///
+/// This is the original `wrap_text` body, unchanged, so text without hard
+/// breaks measures and wraps exactly as it did before mandatory-break
+/// handling was introduced.
+fn wrap_segment(text: &str, max_width: f32, style: &ComputedStyle) -> Vec<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
         return vec![String::new()];
@@ -2398,5 +2426,53 @@ mod tests {
         s.white_space = rustkit_css::WhiteSpace::PreWrap;
         let lines = wrap_text("the quick brown fox jumps over", 100.0, &s);
         assert!(lines.len() > 1, "pre-wrap should still wrap, got {:?}", lines);
+    }
+}
+
+#[cfg(test)]
+mod c0_mandatory_break_tests {
+    use super::*;
+
+    fn style_with(ws: WhiteSpace) -> ComputedStyle {
+        ComputedStyle { white_space: ws, ..Default::default() }
+    }
+
+    #[test]
+    fn pre_line_preserves_mandatory_breaks() {
+        // REGRESSION: split_whitespace() collapses '\n' along with spaces, so
+        // white-space: pre-line lost every hard break. pre-line must COLLAPSE
+        // spaces but PRESERVE newlines (css-text-3 §3).
+        let out = wrap_text("alpha\nbeta", 10_000.0, &style_with(WhiteSpace::PreLine));
+        assert_eq!(out.len(), 2, "expected two lines, got {:?}", out);
+        assert_eq!(out[0].trim(), "alpha");
+        assert_eq!(out[1].trim(), "beta");
+    }
+
+    #[test]
+    fn pre_preserves_mandatory_breaks_and_does_not_soft_wrap() {
+        // `pre` never soft-wraps, but it MUST still break on newlines.
+        let out = wrap_text("one\ntwo\nthree", 1.0, &style_with(WhiteSpace::Pre));
+        assert_eq!(out.len(), 3, "expected three lines, got {:?}", out);
+    }
+
+    #[test]
+    fn crlf_counts_as_one_break_not_two() {
+        let out = wrap_text("a\r\nb", 10_000.0, &style_with(WhiteSpace::PreLine));
+        assert_eq!(out.len(), 2, "CRLF is a single break, got {:?}", out);
+    }
+
+    #[test]
+    fn nowrap_still_collapses_to_a_single_line_when_there_are_no_breaks() {
+        // Guards the pre-existing behaviour this change must not disturb.
+        let out = wrap_text("a b c d", 1.0, &style_with(WhiteSpace::Nowrap));
+        assert_eq!(out, vec!["a b c d".to_string()]);
+    }
+
+    #[test]
+    fn text_without_mandatory_breaks_is_unchanged() {
+        // The common case must take the identical path it did before.
+        let s = style_with(WhiteSpace::Normal);
+        assert_eq!(wrap_text("hello world", 10_000.0, &s), vec!["hello world".to_string()]);
+        assert_eq!(wrap_text("", 10_000.0, &s), vec![String::new()]);
     }
 }

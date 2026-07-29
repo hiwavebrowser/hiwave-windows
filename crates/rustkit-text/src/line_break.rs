@@ -300,10 +300,28 @@ impl<'a> LineSegment<'a> {
 
 /// Break text into lines at mandatory breaks, returning detailed segments.
 pub fn break_into_lines(text: &str) -> Vec<LineSegment<'_>> {
-    let mut segments = Vec::new();
+    let mut segments: Vec<LineSegment<'_>> = Vec::new();
     let mut start = 0;
 
+    // UAX #14 rule LB5: do NOT break between CR and LF — CRLF is ONE
+    // mandatory break. Without this, every CRLF document produces a spurious
+    // empty line per break, which is invisible on LF-only sources and hits
+    // essentially all Windows-authored content.
+    let mut prev_was_cr = false;
     for (i, c) in text.char_indices() {
+        if c == '\n' && prev_was_cr {
+            // The break was already emitted at the CR; extend that segment to
+            // cover the LF so the pair is consumed as a unit.
+            if let Some(last) = segments.last_mut() {
+                let end = i + c.len_utf8();
+                last.text = &text[last.start..end];
+                last.end = end;
+            }
+            start = i + c.len_utf8();
+            prev_was_cr = false;
+            continue;
+        }
+        prev_was_cr = c == '\r';
         if is_mandatory_break(c) {
             let end = i + c.len_utf8();
             segments.push(LineSegment {
@@ -531,5 +549,50 @@ mod tests {
     #[test]
     fn test_overflow_wrap_enum() {
         assert_eq!(OverflowWrap::default(), OverflowWrap::Normal);
+    }
+}
+
+#[cfg(test)]
+mod crlf_regression {
+    use super::*;
+
+    #[test]
+    fn crlf_is_one_mandatory_break_not_two() {
+        // UAX #14 LB5. Before the fix this returned THREE segments
+        // ("a\r", "\n", "b") and rendered a spurious blank line for every
+        // hard break in a CRLF document.
+        let segs = break_into_lines("a\r\nb");
+        assert_eq!(segs.len(), 2, "got {:?}", segs.iter().map(|s| s.text).collect::<Vec<_>>());
+        assert_eq!(segs[0].text, "a\r\n");
+        assert!(segs[0].ends_with_break);
+        assert_eq!(segs[1].text, "b");
+        assert!(!segs[1].ends_with_break);
+    }
+
+    #[test]
+    fn lone_cr_and_lone_lf_each_still_break() {
+        assert_eq!(break_into_lines("a\rb").len(), 2);
+        assert_eq!(break_into_lines("a\nb").len(), 2);
+    }
+
+    #[test]
+    fn lf_then_cr_is_two_breaks_not_one() {
+        // Reversed order is NOT a pair — "\n\r" is two separate breaks, so
+        // an over-eager fix that pairs any CR/LF adjacency would fail here.
+        assert_eq!(break_into_lines("a\n\rb").len(), 3);
+    }
+
+    #[test]
+    fn consecutive_crlf_pairs_produce_one_break_each() {
+        // "a\r\n\r\nb" is a blank line between two texts: 3 segments.
+        let segs = break_into_lines("a\r\n\r\nb");
+        assert_eq!(segs.len(), 3, "got {:?}", segs.iter().map(|s| s.text).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn byte_offsets_stay_consistent_across_a_crlf_pair() {
+        let segs = break_into_lines("ab\r\ncd");
+        assert_eq!((segs[0].start, segs[0].end), (0, 4));
+        assert_eq!((segs[1].start, segs[1].end), (4, 6));
     }
 }
