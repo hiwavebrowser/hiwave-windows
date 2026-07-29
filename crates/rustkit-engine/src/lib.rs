@@ -1608,9 +1608,9 @@ impl Engine {
                 }
             }
             "margin" => self.apply_box_shorthand(value, |s, l| {
-                s.margin_top = l;
-                s.margin_right = l;
-                s.margin_bottom = l;
+                s.margin_top = l.clone();
+                s.margin_right = l.clone();
+                s.margin_bottom = l.clone();
                 s.margin_left = l;
             }, style),
             "margin-top" => {
@@ -1626,9 +1626,9 @@ impl Engine {
                 if let Some(l) = parse_length(value) { style.margin_left = l; }
             }
             "padding" => self.apply_box_shorthand(value, |s, l| {
-                s.padding_top = l;
-                s.padding_right = l;
-                s.padding_bottom = l;
+                s.padding_top = l.clone();
+                s.padding_right = l.clone();
+                s.padding_bottom = l.clone();
                 s.padding_left = l;
             }, style),
             "padding-top" => {
@@ -1655,9 +1655,9 @@ impl Engine {
                     }
                 }
                 let w = w.unwrap_or(Length::Px(1.0));
-                style.border_top_width = w;
-                style.border_right_width = w;
-                style.border_bottom_width = w;
+                style.border_top_width = w.clone();
+                style.border_right_width = w.clone();
+                style.border_bottom_width = w.clone();
                 style.border_left_width = w;
                 if let Some(col) = c {
                     style.border_top_color = col;
@@ -1676,9 +1676,9 @@ impl Engine {
             }
             "border-width" => {
                 if let Some(l) = parse_length(value) {
-                    style.border_top_width = l;
-                    style.border_right_width = l;
-                    style.border_bottom_width = l;
+                    style.border_top_width = l.clone();
+                    style.border_right_width = l.clone();
+                    style.border_bottom_width = l.clone();
                     style.border_left_width = l;
                 }
             }
@@ -1741,7 +1741,7 @@ impl Engine {
             }
             "gap" => {
                 if let Some(l) = parse_length(value) {
-                    style.row_gap = l;
+                    style.row_gap = l.clone();
                     style.column_gap = l;
                 }
             }
