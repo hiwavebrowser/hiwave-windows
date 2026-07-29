@@ -190,6 +190,11 @@ impl Display {
         matches!(self, Display::Grid | Display::InlineGrid)
     }
 
+    /// Check if this is an inline-block box.
+    pub fn is_inline_block(self) -> bool {
+        matches!(self, Display::InlineBlock)
+    }
+
     /// Check if this generates an inline-level box.
     pub fn is_inline_level(self) -> bool {
         matches!(
