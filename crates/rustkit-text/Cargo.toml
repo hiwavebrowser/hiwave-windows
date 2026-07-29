@@ -10,6 +10,11 @@ license = "MIT"
 thiserror = "1.0"
 tracing = "0.1"
 
+# Unicode algorithms — platform-independent, shared with the macOS tree.
+unicode-bidi = "0.3"
+unicode-linebreak = "0.1"
+unicode-segmentation = "1.10"
+
 # Windows (DirectWrite)
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
