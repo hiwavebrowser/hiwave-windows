@@ -1299,13 +1299,17 @@ pub fn parse_length(value: &str) -> Option<Length> {
         let num = value.trim_end_matches("px").parse::<f32>().ok()?;
         return Some(Length::Px(num));
     }
-    if value.ends_with("em") {
-        let num = value.trim_end_matches("em").parse::<f32>().ok()?;
-        return Some(Length::Em(num));
-    }
+    // rem MUST be checked before em: "2rem".ends_with("em") is true, so the
+    // em branch would claim it, trim "em" to leave "2r", fail to parse that
+    // as f32, and the `?` would bail out of the whole function — silently
+    // dropping every rem value. Ordering is the fix, matching the macOS tree.
     if value.ends_with("rem") {
         let num = value.trim_end_matches("rem").parse::<f32>().ok()?;
         return Some(Length::Rem(num));
+    }
+    if value.ends_with("em") {
+        let num = value.trim_end_matches("em").parse::<f32>().ok()?;
+        return Some(Length::Em(num));
     }
     if value.ends_with('%') {
         let num = value.trim_end_matches('%').parse::<f32>().ok()?;
@@ -1389,5 +1393,27 @@ mod tests {
         assert_eq!(child.font_size, parent.font_size);
         // Non-inherited properties should be default
         assert_eq!(child.display, Display::Block);
+    }
+}
+
+#[cfg(test)]
+mod rem_parse_regression {
+    use super::*;
+
+    #[test]
+    fn rem_lengths_parse() {
+        // REGRESSION: `ends_with("em")` was checked before `ends_with("rem")`.
+        // "2rem".ends_with("em") is true, so the em branch claimed it, trimmed
+        // "em" to leave "2r", failed to parse that as f32, and the `?` bailed
+        // out of the whole function -- so EVERY rem value silently vanished.
+        assert_eq!(parse_length("2rem"), Some(Length::Rem(2.0)));
+        assert_eq!(parse_length("0.5rem"), Some(Length::Rem(0.5)));
+        assert_eq!(parse_length("-1rem"), Some(Length::Rem(-1.0)));
+    }
+
+    #[test]
+    fn em_still_parses_as_em_not_rem() {
+        // The obvious wrong fix is to reorder and let "rem" swallow "em".
+        assert_eq!(parse_length("2em"), Some(Length::Em(2.0)));
     }
 }
