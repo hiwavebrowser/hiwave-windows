@@ -1144,6 +1144,110 @@ pub enum Direction {
     Rtl,
 }
 
+// ============ Background Layer Types (partial: gradient-free) ============
+
+
+/// Background size specification.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundSize {
+    /// Stretch to cover the entire area.
+    Cover,
+    /// Scale to fit within the area.
+    Contain,
+    /// Explicit width and height (None = auto for that dimension).
+    Explicit { width: Option<f32>, height: Option<f32> },
+    /// Auto sizing (use intrinsic dimensions).
+    Auto,
+}
+
+impl Default for BackgroundSize {
+    fn default() -> Self {
+        BackgroundSize::Auto
+    }
+}
+
+/// Background repeat specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundRepeat {
+    /// Repeat in both directions.
+    Repeat,
+    /// Repeat horizontally only.
+    RepeatX,
+    /// Repeat vertically only.
+    RepeatY,
+    /// No repeat.
+    NoRepeat,
+    /// Space evenly to fill.
+    Space,
+    /// Round to fill without clipping.
+    Round,
+}
+
+impl Default for BackgroundRepeat {
+    fn default() -> Self {
+        BackgroundRepeat::Repeat
+    }
+}
+
+/// Background position specification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackgroundPosition {
+    /// Horizontal position (0.0 = left, 0.5 = center, 1.0 = right, or pixel offset).
+    pub x: BackgroundPositionValue,
+    /// Vertical position (0.0 = top, 0.5 = center, 1.0 = bottom, or pixel offset).
+    pub y: BackgroundPositionValue,
+}
+
+impl Default for BackgroundPosition {
+    fn default() -> Self {
+        BackgroundPosition {
+            x: BackgroundPositionValue::Percent(0.0),
+            y: BackgroundPositionValue::Percent(0.0),
+        }
+    }
+}
+
+/// A single dimension of background position.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundPositionValue {
+    /// Percentage (0.0 = start, 1.0 = end).
+    Percent(f32),
+    /// Pixel offset from the start.
+    Px(f32),
+}
+
+impl Default for BackgroundPositionValue {
+    fn default() -> Self {
+        BackgroundPositionValue::Percent(0.0)
+    }
+}
+
+impl BackgroundPositionValue {
+    /// Convert to a pixel offset given the container size and image size.
+    pub fn to_px(&self, container_size: f32, image_size: f32) -> f32 {
+        match self {
+            BackgroundPositionValue::Percent(pct) => {
+                // CSS background-position: percentage positions the image such that
+                // X% of the image aligns with X% of the container
+                (container_size - image_size) * pct
+            }
+            BackgroundPositionValue::Px(px) => *px,
+        }
+    }
+}
+
+/// Background origin - where the background positioning area starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundOrigin {
+    /// Position relative to the border box.
+    #[default]
+    PaddingBox,
+    /// Position relative to the border box.
+    BorderBox,
+    /// Position relative to the content box.
+    ContentBox,
+}
+
 // ==================== Animation/Transition Types ====================
 
 /// Animation timing function.
@@ -1859,6 +1963,72 @@ mod tests {
         assert_eq!(child.font_size, parent.font_size);
         // Non-inherited properties should be default
         assert_eq!(child.display, Display::Block);
+    }
+}
+
+#[cfg(test)]
+mod background_partial_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_the_css_initial_values() {
+        // background-size: auto, background-repeat: repeat,
+        // background-origin: padding-box, background-position: 0% 0%.
+        assert_eq!(BackgroundSize::default(), BackgroundSize::Auto);
+        assert_eq!(BackgroundRepeat::default(), BackgroundRepeat::Repeat);
+        assert_eq!(BackgroundOrigin::default(), BackgroundOrigin::PaddingBox);
+        let p = BackgroundPosition::default();
+        assert_eq!(p.x, BackgroundPositionValue::Percent(0.0));
+        assert_eq!(p.y, BackgroundPositionValue::Percent(0.0));
+    }
+
+    #[test]
+    fn explicit_size_distinguishes_auto_per_axis() {
+        // `background-size: 100px auto` is one axis explicit and one auto.
+        // Modelling that as Option per dimension is the whole point, so a
+        // port that collapsed it to a single Option would fail here.
+        let one_axis = BackgroundSize::Explicit { width: Some(100.0), height: None };
+        let both = BackgroundSize::Explicit { width: Some(100.0), height: Some(50.0) };
+        assert_ne!(one_axis, both);
+        if let BackgroundSize::Explicit { width, height } = one_axis {
+            assert_eq!(width, Some(100.0));
+            assert_eq!(height, None, "auto on one axis must stay None");
+        } else {
+            panic!("expected Explicit");
+        }
+    }
+
+    #[test]
+    fn cover_and_contain_are_distinct_from_auto_and_each_other() {
+        assert_ne!(BackgroundSize::Cover, BackgroundSize::Contain);
+        assert_ne!(BackgroundSize::Cover, BackgroundSize::Auto);
+    }
+
+    #[test]
+    fn position_percent_and_px_are_not_interchangeable() {
+        // 50% and 50px mean different things; a port that flattened both to
+        // f32 would lose the distinction silently.
+        assert_ne!(
+            BackgroundPositionValue::Percent(50.0),
+            BackgroundPositionValue::Px(50.0)
+        );
+    }
+
+    #[test]
+    fn all_six_repeat_modes_are_distinct() {
+        use BackgroundRepeat::*;
+        let all = [Repeat, RepeatX, RepeatY, NoRepeat, Space, Round];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "repeat modes must not alias: {:?} vs {:?}", a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn origin_has_all_three_boxes() {
+        assert_ne!(BackgroundOrigin::BorderBox, BackgroundOrigin::PaddingBox);
+        assert_ne!(BackgroundOrigin::PaddingBox, BackgroundOrigin::ContentBox);
     }
 }
 
