@@ -77,6 +77,213 @@ impl Default for Color {
     }
 }
 
+
+/// High-precision color for internal rendering calculations.
+/// RGB components are stored as f32 in 0.0-1.0 range.
+/// Use for gradient interpolation and internal processing.
+/// Convert to Color only at final display/storage.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorF32 {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+impl ColorF32 {
+    pub const TRANSPARENT: ColorF32 = ColorF32 { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+    pub const BLACK: ColorF32 = ColorF32 { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+    pub const WHITE: ColorF32 = ColorF32 { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+
+    #[inline]
+    pub fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
+        Self { r, g, b, a }
+    }
+
+    #[inline]
+    pub fn from_rgb(r: f32, g: f32, b: f32) -> Self {
+        Self { r, g, b, a: 1.0 }
+    }
+
+    /// Convert from 8-bit Color to high-precision ColorF32.
+    #[inline]
+    pub fn from_color(c: Color) -> Self {
+        Self {
+            r: c.r as f32 / 255.0,
+            g: c.g as f32 / 255.0,
+            b: c.b as f32 / 255.0,
+            a: c.a,
+        }
+    }
+
+    /// Convert to 8-bit Color for final display.
+    /// Uses rounding for best accuracy.
+    #[inline]
+    pub fn to_color(&self) -> Color {
+        Color {
+            r: (self.r * 255.0).round().clamp(0.0, 255.0) as u8,
+            g: (self.g * 255.0).round().clamp(0.0, 255.0) as u8,
+            b: (self.b * 255.0).round().clamp(0.0, 255.0) as u8,
+            a: self.a,
+        }
+    }
+
+    /// Convert to 8-bit Color with ordered dithering to reduce banding.
+    /// `pixel_x` and `pixel_y` are the screen coordinates for dither pattern.
+    #[inline]
+    pub fn to_color_dithered(&self, pixel_x: u32, pixel_y: u32) -> Color {
+        // 4x4 Bayer ordered dithering matrix (normalized to 0.0-1.0 range)
+        const BAYER_4X4: [[f32; 4]; 4] = [
+            [0.0/16.0, 8.0/16.0, 2.0/16.0, 10.0/16.0],
+            [12.0/16.0, 4.0/16.0, 14.0/16.0, 6.0/16.0],
+            [3.0/16.0, 11.0/16.0, 1.0/16.0, 9.0/16.0],
+            [15.0/16.0, 7.0/16.0, 13.0/16.0, 5.0/16.0],
+        ];
+
+        let dither = BAYER_4X4[(pixel_y & 3) as usize][(pixel_x & 3) as usize];
+        let dither_offset = (dither - 0.5) / 255.0;
+
+        Color {
+            r: ((self.r + dither_offset) * 255.0).round().clamp(0.0, 255.0) as u8,
+            g: ((self.g + dither_offset) * 255.0).round().clamp(0.0, 255.0) as u8,
+            b: ((self.b + dither_offset) * 255.0).round().clamp(0.0, 255.0) as u8,
+            a: self.a,
+        }
+    }
+
+    /// Linear interpolation between two colors using premultiplied alpha.
+    /// Chrome/Skia uses premultiplied alpha interpolation for gradients, which
+    /// prevents color bleeding from transparent color stops.
+    #[inline]
+    pub fn lerp(&self, other: &ColorF32, t: f32) -> ColorF32 {
+        // Convert to premultiplied alpha
+        let pre1_r = self.r * self.a;
+        let pre1_g = self.g * self.a;
+        let pre1_b = self.b * self.a;
+
+        let pre2_r = other.r * other.a;
+        let pre2_g = other.g * other.a;
+        let pre2_b = other.b * other.a;
+
+        // Interpolate in premultiplied space
+        let pre_r = pre1_r + (pre2_r - pre1_r) * t;
+        let pre_g = pre1_g + (pre2_g - pre1_g) * t;
+        let pre_b = pre1_b + (pre2_b - pre1_b) * t;
+        let a = self.a + (other.a - self.a) * t;
+
+        // Convert back from premultiplied (avoid division by zero)
+        if a > 0.0001 {
+            ColorF32 {
+                r: pre_r / a,
+                g: pre_g / a,
+                b: pre_b / a,
+                a,
+            }
+        } else {
+            // Fully transparent - color doesn't matter
+            ColorF32 { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }
+        }
+    }
+
+    /// Linear interpolation using straight (unpremultiplied) alpha.
+    /// Use this when premultiplied interpolation is not desired.
+    #[inline]
+    pub fn lerp_straight(&self, other: &ColorF32, t: f32) -> ColorF32 {
+        ColorF32 {
+            r: self.r + (other.r - self.r) * t,
+            g: self.g + (other.g - self.g) * t,
+            b: self.b + (other.b - self.b) * t,
+            a: self.a + (other.a - self.a) * t,
+        }
+    }
+
+    /// Gamma-correct interpolation for CSS gradients.
+    /// Converts sRGB to linear space, interpolates in premultiplied linear,
+    /// then converts back to sRGB. This matches Chrome's gradient rendering.
+    #[inline]
+    pub fn lerp_gamma_correct(&self, other: &ColorF32, t: f32) -> ColorF32 {
+        // Convert sRGB to linear
+        let l1_r = Self::srgb_to_linear(self.r);
+        let l1_g = Self::srgb_to_linear(self.g);
+        let l1_b = Self::srgb_to_linear(self.b);
+
+        let l2_r = Self::srgb_to_linear(other.r);
+        let l2_g = Self::srgb_to_linear(other.g);
+        let l2_b = Self::srgb_to_linear(other.b);
+
+        // Premultiply by alpha in linear space
+        let pre1_r = l1_r * self.a;
+        let pre1_g = l1_g * self.a;
+        let pre1_b = l1_b * self.a;
+
+        let pre2_r = l2_r * other.a;
+        let pre2_g = l2_g * other.a;
+        let pre2_b = l2_b * other.a;
+
+        // Interpolate in linear premultiplied space
+        let pre_r = pre1_r + (pre2_r - pre1_r) * t;
+        let pre_g = pre1_g + (pre2_g - pre1_g) * t;
+        let pre_b = pre1_b + (pre2_b - pre1_b) * t;
+        let a = self.a + (other.a - self.a) * t;
+
+        // Convert back from premultiplied and to sRGB
+        if a > 0.0001 {
+            ColorF32 {
+                r: Self::linear_to_srgb(pre_r / a),
+                g: Self::linear_to_srgb(pre_g / a),
+                b: Self::linear_to_srgb(pre_b / a),
+                a,
+            }
+        } else {
+            ColorF32 { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }
+        }
+    }
+
+    /// Convert sRGB to linear space.
+    #[inline]
+    fn srgb_to_linear(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// Convert linear to sRGB space.
+    #[inline]
+    fn linear_to_srgb(c: f32) -> f32 {
+        if c <= 0.0031308 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    /// Convert to array for GPU vertex buffers.
+    #[inline]
+    pub fn to_array(&self) -> [f32; 4] {
+        [self.r, self.g, self.b, self.a]
+    }
+}
+
+impl Default for ColorF32 {
+    fn default() -> Self {
+        Self::BLACK
+    }
+}
+
+impl From<Color> for ColorF32 {
+    fn from(c: Color) -> Self {
+        ColorF32::from_color(c)
+    }
+}
+
+impl From<ColorF32> for Color {
+    fn from(c: ColorF32) -> Self {
+        c.to_color()
+    }
+}
+
 /// A single color stop in a gradient (`position` is 0.0–1.0 along the axis).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GradientStop {
@@ -144,6 +351,14 @@ pub enum Length {
     Rem(f32),
     /// Percentage.
     Percent(f32),
+    /// Viewport width (1vw = 1% of viewport width).
+    Vw(f32),
+    /// Viewport height (1vh = 1% of viewport height).
+    Vh(f32),
+    /// Viewport min (1vmin = 1% of smaller viewport dimension).
+    Vmin(f32),
+    /// Viewport max (1vmax = 1% of larger viewport dimension).
+    Vmax(f32),
     /// Auto.
     Auto,
     /// Zero.
@@ -153,12 +368,34 @@ pub enum Length {
 
 impl Length {
     /// Compute the absolute pixel value.
+    ///
+    /// Viewport units resolve against a zero viewport here and therefore
+    /// compute to 0.0 — matching the macOS tree, where `to_px` delegates to
+    /// `to_px_with_viewport(.., 0.0, 0.0)`. Callers that have viewport
+    /// dimensions should use `to_px_with_viewport` directly.
     pub fn to_px(&self, font_size: f32, root_font_size: f32, container_size: f32) -> f32 {
+        self.to_px_with_viewport(font_size, root_font_size, container_size, 0.0, 0.0)
+    }
+
+    /// Compute the absolute pixel value with viewport dimensions for
+    /// vw/vh/vmin/vmax units.
+    pub fn to_px_with_viewport(
+        &self,
+        font_size: f32,
+        root_font_size: f32,
+        container_size: f32,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> f32 {
         match self {
             Length::Px(px) => *px,
             Length::Em(em) => em * font_size,
             Length::Rem(rem) => rem * root_font_size,
             Length::Percent(pct) => pct / 100.0 * container_size,
+            Length::Vw(vw) => vw / 100.0 * viewport_width,
+            Length::Vh(vh) => vh / 100.0 * viewport_height,
+            Length::Vmin(vmin) => vmin / 100.0 * viewport_width.min(viewport_height),
+            Length::Vmax(vmax) => vmax / 100.0 * viewport_width.max(viewport_height),
             Length::Auto => 0.0, // Context-dependent
             Length::Zero => 0.0,
         }
@@ -188,6 +425,11 @@ impl Display {
     /// Check if this is a grid container.
     pub fn is_grid(self) -> bool {
         matches!(self, Display::Grid | Display::InlineGrid)
+    }
+
+    /// Check if this is an inline-block box.
+    pub fn is_inline_block(self) -> bool {
+        matches!(self, Display::InlineBlock)
     }
 
     /// Check if this generates an inline-level box.
@@ -932,6 +1174,368 @@ pub enum Direction {
     Rtl,
 }
 
+// ============ Background Layer Types (partial: gradient-free) ============
+
+
+/// Background size specification.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundSize {
+    /// Stretch to cover the entire area.
+    Cover,
+    /// Scale to fit within the area.
+    Contain,
+    /// Explicit width and height (None = auto for that dimension).
+    Explicit { width: Option<f32>, height: Option<f32> },
+    /// Auto sizing (use intrinsic dimensions).
+    Auto,
+}
+
+impl Default for BackgroundSize {
+    fn default() -> Self {
+        BackgroundSize::Auto
+    }
+}
+
+/// Background repeat specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundRepeat {
+    /// Repeat in both directions.
+    Repeat,
+    /// Repeat horizontally only.
+    RepeatX,
+    /// Repeat vertically only.
+    RepeatY,
+    /// No repeat.
+    NoRepeat,
+    /// Space evenly to fill.
+    Space,
+    /// Round to fill without clipping.
+    Round,
+}
+
+impl Default for BackgroundRepeat {
+    fn default() -> Self {
+        BackgroundRepeat::Repeat
+    }
+}
+
+/// Background position specification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BackgroundPosition {
+    /// Horizontal position (0.0 = left, 0.5 = center, 1.0 = right, or pixel offset).
+    pub x: BackgroundPositionValue,
+    /// Vertical position (0.0 = top, 0.5 = center, 1.0 = bottom, or pixel offset).
+    pub y: BackgroundPositionValue,
+}
+
+impl Default for BackgroundPosition {
+    fn default() -> Self {
+        BackgroundPosition {
+            x: BackgroundPositionValue::Percent(0.0),
+            y: BackgroundPositionValue::Percent(0.0),
+        }
+    }
+}
+
+/// A single dimension of background position.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundPositionValue {
+    /// Percentage (0.0 = start, 1.0 = end).
+    Percent(f32),
+    /// Pixel offset from the start.
+    Px(f32),
+}
+
+impl Default for BackgroundPositionValue {
+    fn default() -> Self {
+        BackgroundPositionValue::Percent(0.0)
+    }
+}
+
+impl BackgroundPositionValue {
+    /// Convert to a pixel offset given the container size and image size.
+    pub fn to_px(&self, container_size: f32, image_size: f32) -> f32 {
+        match self {
+            BackgroundPositionValue::Percent(pct) => {
+                // CSS background-position: percentage positions the image such that
+                // X% of the image aligns with X% of the container
+                (container_size - image_size) * pct
+            }
+            BackgroundPositionValue::Px(px) => *px,
+        }
+    }
+}
+
+/// Background origin - where the background positioning area starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundOrigin {
+    /// Position relative to the border box.
+    #[default]
+    PaddingBox,
+    /// Position relative to the border box.
+    BorderBox,
+    /// Position relative to the content box.
+    ContentBox,
+}
+
+// ==================== Animation/Transition Types ====================
+
+/// Animation timing function.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum TimingFunction {
+    #[default]
+    Ease,
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    StepStart,
+    StepEnd,
+    Steps(u32, bool), // (count, jump_start)
+    CubicBezier(f32, f32, f32, f32),
+}
+
+/// Animation fill mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimationFillMode {
+    #[default]
+    None,
+    Forwards,
+    Backwards,
+    Both,
+}
+
+/// Animation play state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimationPlayState {
+    #[default]
+    Running,
+    Paused,
+}
+
+/// Animation direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnimationDirection {
+    #[default]
+    Normal,
+    Reverse,
+    Alternate,
+    AlternateReverse,
+}
+
+/// Animation iteration count.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum AnimationIterationCount {
+    #[default]
+    One,
+    Infinite,
+    Count(f32),
+}
+
+/// A CSS box-shadow value.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BoxShadow {
+    /// Horizontal offset (positive = right).
+    pub offset_x: f32,
+    /// Vertical offset (positive = down).
+    pub offset_y: f32,
+    /// Blur radius (0 = sharp edge).
+    pub blur_radius: f32,
+    /// Spread radius (positive = larger shadow).
+    pub spread_radius: f32,
+    /// Shadow color.
+    pub color: Color,
+    /// Whether this is an inset shadow.
+    pub inset: bool,
+}
+
+impl BoxShadow {
+    /// Create a new box shadow with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    /// Create a simple drop shadow.
+    pub fn drop_shadow(offset_x: f32, offset_y: f32, blur: f32, color: Color) -> Self {
+        Self {
+            offset_x,
+            offset_y,
+            blur_radius: blur,
+            spread_radius: 0.0,
+            color,
+            inset: false,
+        }
+    }
+    
+    /// Check if this shadow is visible (non-zero offset, blur, or spread with non-transparent color).
+    pub fn is_visible(&self) -> bool {
+        self.color.a > 0.0 && 
+        (self.offset_x != 0.0 || self.offset_y != 0.0 || self.blur_radius > 0.0 || self.spread_radius != 0.0)
+    }
+}
+
+/// A filter function that can be applied to the backdrop.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum BackdropFilter {
+    /// No backdrop filter.
+    #[default]
+    None,
+    /// Gaussian blur with the specified radius in pixels.
+    Blur(f32),
+    /// Grayscale filter (0.0 = no effect, 1.0 = fully grayscale).
+    Grayscale(f32),
+    /// Brightness adjustment (1.0 = no change).
+    Brightness(f32),
+    /// Contrast adjustment (1.0 = no change).
+    Contrast(f32),
+    /// Saturate adjustment (1.0 = no change, 0.0 = grayscale, >1 = oversaturated).
+    Saturate(f32),
+    /// Sepia filter (0.0 = no effect, 1.0 = fully sepia).
+    Sepia(f32),
+}
+
+impl BackdropFilter {
+    /// Check if this filter has any effect.
+    pub fn is_none(&self) -> bool {
+        matches!(self, BackdropFilter::None)
+    }
+
+    /// Check if this filter requires blur (most expensive operation).
+    pub fn needs_blur(&self) -> bool {
+        matches!(self, BackdropFilter::Blur(r) if *r > 0.0)
+    }
+}
+
+// ==================== Transform Types ====================
+
+/// A single 2D transform operation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransformOp {
+    /// translate(x, y)
+    Translate(Length, Length),
+    /// translateX(x)
+    TranslateX(Length),
+    /// translateY(y)
+    TranslateY(Length),
+    /// scale(x, y) or scale(s)
+    Scale(f32, f32),
+    /// scaleX(s)
+    ScaleX(f32),
+    /// scaleY(s)
+    ScaleY(f32),
+    /// rotate(angle) - angle in degrees
+    Rotate(f32),
+    /// skewX(angle) - angle in degrees
+    SkewX(f32),
+    /// skewY(angle) - angle in degrees
+    SkewY(f32),
+    /// skew(x, y) - angles in degrees
+    Skew(f32, f32),
+    /// matrix(a, b, c, d, e, f) - 2D affine transform
+    Matrix(f32, f32, f32, f32, f32, f32),
+}
+
+/// A list of transform operations (applied in order).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TransformList {
+    pub ops: Vec<TransformOp>,
+}
+
+impl TransformList {
+    /// Create an empty (identity) transform list.
+    pub fn none() -> Self {
+        Self { ops: Vec::new() }
+    }
+
+    /// Check if this is the identity transform.
+    pub fn is_identity(&self) -> bool {
+        self.ops.is_empty()
+    }
+
+    /// Compute the 3x3 affine transform matrix.
+    /// Returns [a, b, c, d, e, f] where the matrix is:
+    /// | a c e |
+    /// | b d f |
+    /// | 0 0 1 |
+    pub fn to_matrix(&self, container_width: f32, container_height: f32) -> [f32; 6] {
+        let mut result = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]; // Identity
+
+        for op in &self.ops {
+            let m = match op {
+                TransformOp::Translate(x, y) => {
+                    let tx = x.to_px(16.0, 16.0, container_width);
+                    let ty = y.to_px(16.0, 16.0, container_height);
+                    [1.0, 0.0, 0.0, 1.0, tx, ty]
+                }
+                TransformOp::TranslateX(x) => {
+                    let tx = x.to_px(16.0, 16.0, container_width);
+                    [1.0, 0.0, 0.0, 1.0, tx, 0.0]
+                }
+                TransformOp::TranslateY(y) => {
+                    let ty = y.to_px(16.0, 16.0, container_height);
+                    [1.0, 0.0, 0.0, 1.0, 0.0, ty]
+                }
+                TransformOp::Scale(sx, sy) => [*sx, 0.0, 0.0, *sy, 0.0, 0.0],
+                TransformOp::ScaleX(s) => [*s, 0.0, 0.0, 1.0, 0.0, 0.0],
+                TransformOp::ScaleY(s) => [1.0, 0.0, 0.0, *s, 0.0, 0.0],
+                TransformOp::Rotate(deg) => {
+                    let rad = deg.to_radians();
+                    let cos = rad.cos();
+                    let sin = rad.sin();
+                    [cos, sin, -sin, cos, 0.0, 0.0]
+                }
+                TransformOp::SkewX(deg) => {
+                    let tan = deg.to_radians().tan();
+                    [1.0, 0.0, tan, 1.0, 0.0, 0.0]
+                }
+                TransformOp::SkewY(deg) => {
+                    let tan = deg.to_radians().tan();
+                    [1.0, tan, 0.0, 1.0, 0.0, 0.0]
+                }
+                TransformOp::Skew(dx, dy) => {
+                    let tan_x = dx.to_radians().tan();
+                    let tan_y = dy.to_radians().tan();
+                    [1.0, tan_y, tan_x, 1.0, 0.0, 0.0]
+                }
+                TransformOp::Matrix(a, b, c, d, e, f) => [*a, *b, *c, *d, *e, *f],
+            };
+
+            // Multiply: result = result * m
+            result = multiply_matrices(result, m);
+        }
+
+        result
+    }
+}
+
+/// Multiply two 2D affine matrices.
+fn multiply_matrices(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
+    [
+        a[0] * b[0] + a[2] * b[1],
+        a[1] * b[0] + a[3] * b[1],
+        a[0] * b[2] + a[2] * b[3],
+        a[1] * b[2] + a[3] * b[3],
+        a[0] * b[4] + a[2] * b[5] + a[4],
+        a[1] * b[4] + a[3] * b[5] + a[5],
+    ]
+}
+
+/// Transform origin (default: 50% 50%).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransformOrigin {
+    pub x: Length,
+    pub y: Length,
+}
+
+impl Default for TransformOrigin {
+    fn default() -> Self {
+        Self {
+            x: Length::Percent(50.0),
+            y: Length::Percent(50.0),
+        }
+    }
+}
+
 /// Computed style for an element.
 #[derive(Debug, Clone, Default)]
 pub struct ComputedStyle {
@@ -1299,13 +1903,17 @@ pub fn parse_length(value: &str) -> Option<Length> {
         let num = value.trim_end_matches("px").parse::<f32>().ok()?;
         return Some(Length::Px(num));
     }
-    if value.ends_with("em") {
-        let num = value.trim_end_matches("em").parse::<f32>().ok()?;
-        return Some(Length::Em(num));
-    }
+    // rem MUST be checked before em: "2rem".ends_with("em") is true, so the
+    // em branch would claim it, trim "em" to leave "2r", fail to parse that
+    // as f32, and the `?` would bail out of the whole function — silently
+    // dropping every rem value. Ordering is the fix, matching the macOS tree.
     if value.ends_with("rem") {
         let num = value.trim_end_matches("rem").parse::<f32>().ok()?;
         return Some(Length::Rem(num));
+    }
+    if value.ends_with("em") {
+        let num = value.trim_end_matches("em").parse::<f32>().ok()?;
+        return Some(Length::Em(num));
     }
     if value.ends_with('%') {
         let num = value.trim_end_matches('%').parse::<f32>().ok()?;
@@ -1389,5 +1997,469 @@ mod tests {
         assert_eq!(child.font_size, parent.font_size);
         // Non-inherited properties should be default
         assert_eq!(child.display, Display::Block);
+    }
+}
+
+#[cfg(test)]
+mod length_viewport_tests {
+    use super::*;
+
+    #[test]
+    fn viewport_units_resolve_against_the_viewport() {
+        let vp_w = 1000.0;
+        let vp_h = 600.0;
+        assert_eq!(Length::Vw(50.0).to_px_with_viewport(16.0, 16.0, 0.0, vp_w, vp_h), 500.0);
+        assert_eq!(Length::Vh(50.0).to_px_with_viewport(16.0, 16.0, 0.0, vp_w, vp_h), 300.0);
+    }
+
+    #[test]
+    fn vmin_and_vmax_pick_the_smaller_and_larger_axis() {
+        // Deliberately landscape, then portrait: a implementation that hard-codes
+        // width for vmin passes the first and fails the second.
+        let landscape = Length::Vmin(10.0).to_px_with_viewport(16.0, 16.0, 0.0, 1000.0, 600.0);
+        let portrait = Length::Vmin(10.0).to_px_with_viewport(16.0, 16.0, 0.0, 600.0, 1000.0);
+        assert_eq!(landscape, 60.0, "vmin must follow the SHORTER axis");
+        assert_eq!(portrait, 60.0, "vmin must follow the shorter axis in portrait too");
+
+        assert_eq!(
+            Length::Vmax(10.0).to_px_with_viewport(16.0, 16.0, 0.0, 1000.0, 600.0),
+            100.0,
+            "vmax must follow the LONGER axis"
+        );
+    }
+
+    #[test]
+    fn viewport_units_are_zero_without_viewport_context() {
+        // Matches the macOS tree, where to_px delegates with (0.0, 0.0).
+        // Documented rather than invented: a Windows-only fallback here would
+        // diverge the trees silently.
+        assert_eq!(Length::Vw(50.0).to_px(16.0, 16.0, 800.0), 0.0);
+        assert_eq!(Length::Vh(50.0).to_px(16.0, 16.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn existing_units_are_unchanged_by_the_new_resolver() {
+        // to_px now delegates to to_px_with_viewport; every pre-existing
+        // variant must compute exactly what it did before.
+        assert_eq!(Length::Px(12.0).to_px(16.0, 16.0, 800.0), 12.0);
+        assert_eq!(Length::Em(2.0).to_px(16.0, 16.0, 800.0), 32.0);
+        assert_eq!(Length::Rem(2.0).to_px(16.0, 20.0, 800.0), 40.0);
+        assert_eq!(Length::Percent(25.0).to_px(16.0, 16.0, 800.0), 200.0);
+        assert_eq!(Length::Auto.to_px(16.0, 16.0, 800.0), 0.0);
+        assert_eq!(Length::Zero.to_px(16.0, 16.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn viewport_units_are_not_yet_parseable() {
+        // Pins the INERT boundary of this PR: the variants exist, but the
+        // parser is deliberately untouched, so no stylesheet behaves
+        // differently yet. If a later PR wires the parser, this test SHOULD
+        // fail and be updated -- that is the signal that behaviour changed.
+        assert_eq!(parse_length("50vw"), None);
+        assert_eq!(parse_length("10vmin"), None);
+    }
+}
+
+#[cfg(test)]
+mod rem_parse_regression {
+    use super::*;
+
+    #[test]
+    fn rem_lengths_parse() {
+        // REGRESSION: `ends_with("em")` was checked before `ends_with("rem")`.
+        // "2rem".ends_with("em") is true, so the em branch claimed it, trimmed
+        // "em" to leave "2r", failed to parse that as f32, and the `?` bailed
+        // out of the whole function -- so EVERY rem value silently vanished.
+        assert_eq!(parse_length("2rem"), Some(Length::Rem(2.0)));
+        assert_eq!(parse_length("0.5rem"), Some(Length::Rem(0.5)));
+        assert_eq!(parse_length("-1rem"), Some(Length::Rem(-1.0)));
+    }
+
+    #[test]
+    fn em_still_parses_as_em_not_rem() {
+        // The obvious wrong fix is to reorder and let "rem" swallow "em".
+        assert_eq!(parse_length("2em"), Some(Length::Em(2.0)));
+    }
+}
+
+mod background_partial_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_the_css_initial_values() {
+        // background-size: auto, background-repeat: repeat,
+        // background-origin: padding-box, background-position: 0% 0%.
+        assert_eq!(BackgroundSize::default(), BackgroundSize::Auto);
+        assert_eq!(BackgroundRepeat::default(), BackgroundRepeat::Repeat);
+        assert_eq!(BackgroundOrigin::default(), BackgroundOrigin::PaddingBox);
+        let p = BackgroundPosition::default();
+        assert_eq!(p.x, BackgroundPositionValue::Percent(0.0));
+        assert_eq!(p.y, BackgroundPositionValue::Percent(0.0));
+    }
+
+    #[test]
+    fn explicit_size_distinguishes_auto_per_axis() {
+        // `background-size: 100px auto` is one axis explicit and one auto.
+        // Modelling that as Option per dimension is the whole point, so a
+        // port that collapsed it to a single Option would fail here.
+        let one_axis = BackgroundSize::Explicit { width: Some(100.0), height: None };
+        let both = BackgroundSize::Explicit { width: Some(100.0), height: Some(50.0) };
+        assert_ne!(one_axis, both);
+        if let BackgroundSize::Explicit { width, height } = one_axis {
+            assert_eq!(width, Some(100.0));
+            assert_eq!(height, None, "auto on one axis must stay None");
+        } else {
+            panic!("expected Explicit");
+        }
+    }
+
+    #[test]
+    fn cover_and_contain_are_distinct_from_auto_and_each_other() {
+        assert_ne!(BackgroundSize::Cover, BackgroundSize::Contain);
+        assert_ne!(BackgroundSize::Cover, BackgroundSize::Auto);
+    }
+
+    #[test]
+    fn position_percent_and_px_are_not_interchangeable() {
+        // 50% and 50px mean different things; a port that flattened both to
+        // f32 would lose the distinction silently.
+        assert_ne!(
+            BackgroundPositionValue::Percent(50.0),
+            BackgroundPositionValue::Px(50.0)
+        );
+    }
+
+    #[test]
+    fn all_six_repeat_modes_are_distinct() {
+        use BackgroundRepeat::*;
+        let all = [Repeat, RepeatX, RepeatY, NoRepeat, Space, Round];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "repeat modes must not alias: {:?} vs {:?}", a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn origin_has_all_three_boxes() {
+        assert_ne!(BackgroundOrigin::BorderBox, BackgroundOrigin::PaddingBox);
+        assert_ne!(BackgroundOrigin::PaddingBox, BackgroundOrigin::ContentBox);
+    }
+}
+
+#[cfg(test)]
+mod animation_family_tests {
+    use super::*;
+
+    #[test]
+    fn css_initial_values_are_the_derived_defaults() {
+        // These defaults are the CSS initial values, so a wrong #[default]
+        // would silently change every element that never sets the property.
+        assert_eq!(TimingFunction::default(), TimingFunction::Ease);
+        assert_eq!(AnimationFillMode::default(), AnimationFillMode::None);
+        assert_eq!(AnimationPlayState::default(), AnimationPlayState::Running);
+        assert_eq!(AnimationDirection::default(), AnimationDirection::Normal);
+        assert_eq!(AnimationIterationCount::default(), AnimationIterationCount::One);
+    }
+
+    #[test]
+    fn steps_carries_its_count_and_jump_flag_independently() {
+        // Steps(count, jump_start): the bool is not a formality -- steps(2,
+        // jump-start) and steps(2, jump-end) render differently, so a port
+        // that dropped or aliased the flag must fail here.
+        let jump_start = TimingFunction::Steps(2, true);
+        let jump_end = TimingFunction::Steps(2, false);
+        assert_ne!(jump_start, jump_end);
+        if let TimingFunction::Steps(n, jump) = jump_start {
+            assert_eq!(n, 2);
+            assert!(jump);
+        } else {
+            panic!("expected Steps");
+        }
+    }
+
+    #[test]
+    fn cubic_bezier_keeps_all_four_control_values_in_order() {
+        let b = TimingFunction::CubicBezier(0.25, 0.1, 0.25, 1.0);
+        // Reversing the pairs is the classic transcription error and would
+        // produce a visibly different easing curve.
+        assert_ne!(b, TimingFunction::CubicBezier(0.25, 1.0, 0.25, 0.1));
+        assert_eq!(b, TimingFunction::CubicBezier(0.25, 0.1, 0.25, 1.0));
+    }
+
+    #[test]
+    fn iteration_count_distinguishes_infinite_from_a_finite_count() {
+        assert_ne!(
+            AnimationIterationCount::Infinite,
+            AnimationIterationCount::Count(f32::INFINITY),
+            "Infinite is its own variant, not a sentinel float"
+        );
+        assert_ne!(AnimationIterationCount::One, AnimationIterationCount::Count(1.0));
+    }
+
+    #[test]
+    fn fractional_iteration_counts_are_representable() {
+        // animation-iteration-count: 0.5 is legal CSS and stops the
+        // animation halfway -- an integer-typed port would lose it.
+        assert_eq!(
+            AnimationIterationCount::Count(0.5),
+            AnimationIterationCount::Count(0.5)
+        );
+    }
+}
+
+#[cfg(test)]
+mod shadow_filter_tests {
+    use super::*;
+
+    #[test]
+    fn drop_shadow_is_outset_with_no_spread() {
+        let s = BoxShadow::drop_shadow(2.0, 4.0, 6.0, Color::BLACK);
+        assert_eq!((s.offset_x, s.offset_y, s.blur_radius), (2.0, 4.0, 6.0));
+        assert_eq!(s.spread_radius, 0.0);
+        assert!(!s.inset, "drop_shadow must not produce an inset shadow");
+    }
+
+    #[test]
+    fn a_fully_transparent_shadow_is_not_visible() {
+        // Guards the alpha half of is_visible: geometry alone must not make
+        // a shadow visible, or the renderer draws invisible work.
+        let s = BoxShadow {
+            offset_x: 10.0,
+            offset_y: 10.0,
+            blur_radius: 5.0,
+            spread_radius: 2.0,
+            color: Color::TRANSPARENT,
+            inset: false,
+        };
+        assert!(!s.is_visible());
+    }
+
+    #[test]
+    fn a_zero_geometry_shadow_is_not_visible_even_when_opaque() {
+        // Guards the other half: an opaque colour with no offset, blur or
+        // spread paints nothing.
+        let s = BoxShadow { color: Color::BLACK, ..Default::default() };
+        assert!(!s.is_visible());
+    }
+
+    #[test]
+    fn spread_alone_makes_a_shadow_visible() {
+        // spread_radius uses != 0.0, not > 0.0 -- a NEGATIVE spread still
+        // changes rendering, so it must count as visible.
+        let s = BoxShadow {
+            spread_radius: -3.0,
+            color: Color::BLACK,
+            ..Default::default()
+        };
+        assert!(s.is_visible(), "negative spread is still a visible change");
+    }
+
+    #[test]
+    fn backdrop_filter_none_needs_no_blur() {
+        let f = BackdropFilter::None;
+        assert!(f.is_none());
+        assert!(!f.needs_blur());
+    }
+
+    #[test]
+    fn zero_radius_blur_needs_no_blur_pass() {
+        // Blur(0.0) is a filter that is set but has no effect. Scheduling
+        // the GPU blur pass for it would be pure cost.
+        let f = BackdropFilter::Blur(0.0);
+        assert!(!f.is_none(), "it is still a Blur variant");
+        assert!(!f.needs_blur(), "but it must not request a blur pass");
+    }
+
+    #[test]
+    fn positive_radius_blur_needs_the_blur_pass() {
+        assert!(BackdropFilter::Blur(4.0).needs_blur());
+    }
+}
+
+#[cfg(test)]
+mod transform_family_tests {
+    use super::*;
+
+    const IDENTITY: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+    #[test]
+    fn empty_list_is_identity() {
+        let t = TransformList::none();
+        assert!(t.is_identity());
+        assert_eq!(t.to_matrix(100.0, 100.0), IDENTITY);
+    }
+
+    #[test]
+    fn translate_lands_in_the_e_f_slots() {
+        let t = TransformList {
+            ops: vec![TransformOp::Translate(Length::Px(10.0), Length::Px(20.0))],
+        };
+        assert!(!t.is_identity());
+        let m = t.to_matrix(0.0, 0.0);
+        assert_eq!((m[4], m[5]), (10.0, 20.0));
+    }
+
+    #[test]
+    fn scale_lands_in_the_a_d_slots() {
+        let t = TransformList {
+            ops: vec![TransformOp::Scale(2.0, 3.0)],
+        };
+        let m = t.to_matrix(0.0, 0.0);
+        assert_eq!((m[0], m[3]), (2.0, 3.0));
+    }
+
+    #[test]
+    fn percentage_translate_resolves_x_against_width_and_y_against_height() {
+        // Guards an axis swap, which is silent: a square container would
+        // hide it entirely, so the container is deliberately non-square.
+        let t = TransformList {
+            ops: vec![TransformOp::Translate(
+                Length::Percent(50.0),
+                Length::Percent(50.0),
+            )],
+        };
+        let m = t.to_matrix(200.0, 80.0);
+        assert_eq!(m[4], 100.0, "x% must resolve against container WIDTH");
+        assert_eq!(m[5], 40.0, "y% must resolve against container HEIGHT");
+    }
+
+    #[test]
+    fn composition_order_matters() {
+        // The defining property of matrix composition, and the thing a
+        // multiply-order bug silently breaks. Asserted as a property rather
+        // than against hand-computed numbers so it cannot pass by accident.
+        let translate_then_scale = TransformList {
+            ops: vec![
+                TransformOp::Translate(Length::Px(10.0), Length::Px(0.0)),
+                TransformOp::Scale(2.0, 2.0),
+            ],
+        };
+        let scale_then_translate = TransformList {
+            ops: vec![
+                TransformOp::Scale(2.0, 2.0),
+                TransformOp::Translate(Length::Px(10.0), Length::Px(0.0)),
+            ],
+        };
+        assert_ne!(
+            translate_then_scale.to_matrix(0.0, 0.0),
+            scale_then_translate.to_matrix(0.0, 0.0),
+            "composing in the opposite order must not yield the same matrix"
+        );
+    }
+
+    #[test]
+    fn rotate_90_degrees_is_a_quarter_turn() {
+        let t = TransformList {
+            ops: vec![TransformOp::Rotate(90.0)],
+        };
+        let m = t.to_matrix(0.0, 0.0);
+        // cos(90) == 0, sin(90) == 1 within f32 tolerance.
+        assert!(m[0].abs() < 1e-6, "a should be ~0, got {}", m[0]);
+        assert!((m[1].abs() - 1.0).abs() < 1e-6, "b should be ~±1, got {}", m[1]);
+        assert!(!t.is_identity());
+    }
+
+    #[test]
+    fn matrix_variant_passes_its_components_through() {
+        let t = TransformList {
+            ops: vec![TransformOp::Matrix(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)],
+        };
+        assert_eq!(t.to_matrix(0.0, 0.0), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn transform_origin_defaults_to_the_centre() {
+        let o = TransformOrigin::default();
+        assert_eq!(o.x, Length::Percent(50.0));
+        assert_eq!(o.y, Length::Percent(50.0));
+    }
+}
+
+#[cfg(test)]
+mod colorf32_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_through_color() {
+        let c = Color::new(64, 128, 255, 1.0);
+        assert_eq!(ColorF32::from_color(c).to_color(), c);
+    }
+
+    #[test]
+    fn lerp_premultiplies_and_lerp_straight_does_not() {
+        // The whole reason both exist. Interpolating a transparent red with an
+        // opaque blue: straight lerp drags the transparent color's RGB into
+        // the result even though it contributes no visible ink; premultiplied
+        // lerp weights by alpha, so the midpoint stays much closer to blue.
+        let transparent_red = ColorF32::new(1.0, 0.0, 0.0, 0.0);
+        let opaque_blue = ColorF32::new(0.0, 0.0, 1.0, 1.0);
+
+        let pre = transparent_red.lerp(&opaque_blue, 0.5);
+        let straight = transparent_red.lerp_straight(&opaque_blue, 0.5);
+
+        assert_eq!(straight.r, 0.5, "straight lerp carries the invisible red");
+        assert!(pre.r < 0.01, "premultiplied lerp must not, got {}", pre.r);
+        assert_eq!(pre.a, straight.a, "alpha interpolates the same either way");
+    }
+
+    #[test]
+    fn lerp_of_fully_transparent_endpoints_is_transparent() {
+        // Guards the a <= 0.0001 branch that avoids dividing by zero.
+        let a = ColorF32::new(1.0, 0.0, 0.0, 0.0);
+        let b = ColorF32::new(0.0, 1.0, 0.0, 0.0);
+        let mid = a.lerp(&b, 0.5);
+        assert_eq!(mid.a, 0.0);
+        assert!(mid.r.is_finite() && mid.g.is_finite() && mid.b.is_finite());
+    }
+
+    #[test]
+    fn gamma_correct_midpoint_is_brighter_than_naive_midpoint() {
+        // Black to white at t=0.5. Interpolating in linear light and
+        // converting back lands well above the naive 0.5, which is the
+        // entire point of lerp_gamma_correct.
+        let black = ColorF32::BLACK;
+        let white = ColorF32::WHITE;
+
+        let naive = black.lerp_straight(&white, 0.5);
+        let gamma = black.lerp_gamma_correct(&white, 0.5);
+
+        assert_eq!(naive.r, 0.5);
+        assert!(
+            gamma.r > 0.70 && gamma.r < 0.76,
+            "expected the sRGB encoding of linear 0.5 (~0.735), got {}",
+            gamma.r
+        );
+    }
+
+    #[test]
+    fn dithering_varies_with_pixel_position() {
+        // 0.5 is exactly 127.5 in 8-bit, i.e. sitting ON a rounding
+        // boundary. The dither offset spans +/-0.5/255, so roughly half the
+        // matrix cells push it below 127.5 and half at or above -- the byte
+        // must therefore differ across positions. (Picking a value that is
+        // NOT near a boundary, e.g. 0.5 + 0.5/255 = exactly 128.0, makes
+        // every cell round the same way and says nothing about the dither.)
+        let c = ColorF32::new(0.5, 0.0, 0.0, 1.0);
+        let seen: std::collections::HashSet<u8> = (0..4)
+            .flat_map(|y| (0..4).map(move |x| (x, y)))
+            .map(|(x, y)| c.to_color_dithered(x, y).r)
+            .collect();
+        assert!(seen.len() > 1, "dither produced one value: {:?}", seen);
+    }
+
+    #[test]
+    fn to_array_is_rgba_ordered() {
+        let c = ColorF32::new(0.1, 0.2, 0.3, 0.4);
+        assert_eq!(c.to_array(), [0.1, 0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn from_impls_match_the_explicit_conversions() {
+        let c = Color::new(10, 20, 30, 0.5);
+        let via_trait: ColorF32 = c.into();
+        assert_eq!(via_trait, ColorF32::from_color(c));
+        let back: Color = via_trait.into();
+        assert_eq!(back, via_trait.to_color());
     }
 }
