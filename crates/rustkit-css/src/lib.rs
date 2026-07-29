@@ -1248,6 +1248,136 @@ pub enum BackgroundOrigin {
     ContentBox,
 }
 
+// ==================== Transform Types ====================
+
+/// A single 2D transform operation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransformOp {
+    /// translate(x, y)
+    Translate(Length, Length),
+    /// translateX(x)
+    TranslateX(Length),
+    /// translateY(y)
+    TranslateY(Length),
+    /// scale(x, y) or scale(s)
+    Scale(f32, f32),
+    /// scaleX(s)
+    ScaleX(f32),
+    /// scaleY(s)
+    ScaleY(f32),
+    /// rotate(angle) - angle in degrees
+    Rotate(f32),
+    /// skewX(angle) - angle in degrees
+    SkewX(f32),
+    /// skewY(angle) - angle in degrees
+    SkewY(f32),
+    /// skew(x, y) - angles in degrees
+    Skew(f32, f32),
+    /// matrix(a, b, c, d, e, f) - 2D affine transform
+    Matrix(f32, f32, f32, f32, f32, f32),
+}
+
+/// A list of transform operations (applied in order).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TransformList {
+    pub ops: Vec<TransformOp>,
+}
+
+impl TransformList {
+    /// Create an empty (identity) transform list.
+    pub fn none() -> Self {
+        Self { ops: Vec::new() }
+    }
+
+    /// Check if this is the identity transform.
+    pub fn is_identity(&self) -> bool {
+        self.ops.is_empty()
+    }
+
+    /// Compute the 3x3 affine transform matrix.
+    /// Returns [a, b, c, d, e, f] where the matrix is:
+    /// | a c e |
+    /// | b d f |
+    /// | 0 0 1 |
+    pub fn to_matrix(&self, container_width: f32, container_height: f32) -> [f32; 6] {
+        let mut result = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]; // Identity
+
+        for op in &self.ops {
+            let m = match op {
+                TransformOp::Translate(x, y) => {
+                    let tx = x.to_px(16.0, 16.0, container_width);
+                    let ty = y.to_px(16.0, 16.0, container_height);
+                    [1.0, 0.0, 0.0, 1.0, tx, ty]
+                }
+                TransformOp::TranslateX(x) => {
+                    let tx = x.to_px(16.0, 16.0, container_width);
+                    [1.0, 0.0, 0.0, 1.0, tx, 0.0]
+                }
+                TransformOp::TranslateY(y) => {
+                    let ty = y.to_px(16.0, 16.0, container_height);
+                    [1.0, 0.0, 0.0, 1.0, 0.0, ty]
+                }
+                TransformOp::Scale(sx, sy) => [*sx, 0.0, 0.0, *sy, 0.0, 0.0],
+                TransformOp::ScaleX(s) => [*s, 0.0, 0.0, 1.0, 0.0, 0.0],
+                TransformOp::ScaleY(s) => [1.0, 0.0, 0.0, *s, 0.0, 0.0],
+                TransformOp::Rotate(deg) => {
+                    let rad = deg.to_radians();
+                    let cos = rad.cos();
+                    let sin = rad.sin();
+                    [cos, sin, -sin, cos, 0.0, 0.0]
+                }
+                TransformOp::SkewX(deg) => {
+                    let tan = deg.to_radians().tan();
+                    [1.0, 0.0, tan, 1.0, 0.0, 0.0]
+                }
+                TransformOp::SkewY(deg) => {
+                    let tan = deg.to_radians().tan();
+                    [1.0, tan, 0.0, 1.0, 0.0, 0.0]
+                }
+                TransformOp::Skew(dx, dy) => {
+                    let tan_x = dx.to_radians().tan();
+                    let tan_y = dy.to_radians().tan();
+                    [1.0, tan_y, tan_x, 1.0, 0.0, 0.0]
+                }
+                TransformOp::Matrix(a, b, c, d, e, f) => [*a, *b, *c, *d, *e, *f],
+            };
+
+            // Multiply: result = result * m
+            result = multiply_matrices(result, m);
+        }
+
+        result
+    }
+}
+
+/// Multiply two 2D affine matrices.
+fn multiply_matrices(a: [f32; 6], b: [f32; 6]) -> [f32; 6] {
+    [
+        a[0] * b[0] + a[2] * b[1],
+        a[1] * b[0] + a[3] * b[1],
+        a[0] * b[2] + a[2] * b[3],
+        a[1] * b[2] + a[3] * b[3],
+        a[0] * b[4] + a[2] * b[5] + a[4],
+        a[1] * b[4] + a[3] * b[5] + a[5],
+    ]
+}
+
+/// Transform origin (default: 50% 50%).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransformOrigin {
+    pub x: Length,
+    pub y: Length,
+}
+
+impl Default for TransformOrigin {
+    fn default() -> Self {
+        Self {
+            x: Length::Percent(50.0),
+            y: Length::Percent(50.0),
+        }
+    }
+}
+
 /// Computed style for an element.
 #[derive(Debug, Clone, Default)]
 pub struct ComputedStyle {
@@ -1771,6 +1901,105 @@ mod background_partial_tests {
     fn origin_has_all_three_boxes() {
         assert_ne!(BackgroundOrigin::BorderBox, BackgroundOrigin::PaddingBox);
         assert_ne!(BackgroundOrigin::PaddingBox, BackgroundOrigin::ContentBox);
+    }
+}
+
+#[cfg(test)]
+mod transform_family_tests {
+    use super::*;
+
+    const IDENTITY: [f32; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+
+    #[test]
+    fn empty_list_is_identity() {
+        let t = TransformList::none();
+        assert!(t.is_identity());
+        assert_eq!(t.to_matrix(100.0, 100.0), IDENTITY);
+    }
+
+    #[test]
+    fn translate_lands_in_the_e_f_slots() {
+        let t = TransformList {
+            ops: vec![TransformOp::Translate(Length::Px(10.0), Length::Px(20.0))],
+        };
+        assert!(!t.is_identity());
+        let m = t.to_matrix(0.0, 0.0);
+        assert_eq!((m[4], m[5]), (10.0, 20.0));
+    }
+
+    #[test]
+    fn scale_lands_in_the_a_d_slots() {
+        let t = TransformList {
+            ops: vec![TransformOp::Scale(2.0, 3.0)],
+        };
+        let m = t.to_matrix(0.0, 0.0);
+        assert_eq!((m[0], m[3]), (2.0, 3.0));
+    }
+
+    #[test]
+    fn percentage_translate_resolves_x_against_width_and_y_against_height() {
+        // Guards an axis swap, which is silent: a square container would
+        // hide it entirely, so the container is deliberately non-square.
+        let t = TransformList {
+            ops: vec![TransformOp::Translate(
+                Length::Percent(50.0),
+                Length::Percent(50.0),
+            )],
+        };
+        let m = t.to_matrix(200.0, 80.0);
+        assert_eq!(m[4], 100.0, "x% must resolve against container WIDTH");
+        assert_eq!(m[5], 40.0, "y% must resolve against container HEIGHT");
+    }
+
+    #[test]
+    fn composition_order_matters() {
+        // The defining property of matrix composition, and the thing a
+        // multiply-order bug silently breaks. Asserted as a property rather
+        // than against hand-computed numbers so it cannot pass by accident.
+        let translate_then_scale = TransformList {
+            ops: vec![
+                TransformOp::Translate(Length::Px(10.0), Length::Px(0.0)),
+                TransformOp::Scale(2.0, 2.0),
+            ],
+        };
+        let scale_then_translate = TransformList {
+            ops: vec![
+                TransformOp::Scale(2.0, 2.0),
+                TransformOp::Translate(Length::Px(10.0), Length::Px(0.0)),
+            ],
+        };
+        assert_ne!(
+            translate_then_scale.to_matrix(0.0, 0.0),
+            scale_then_translate.to_matrix(0.0, 0.0),
+            "composing in the opposite order must not yield the same matrix"
+        );
+    }
+
+    #[test]
+    fn rotate_90_degrees_is_a_quarter_turn() {
+        let t = TransformList {
+            ops: vec![TransformOp::Rotate(90.0)],
+        };
+        let m = t.to_matrix(0.0, 0.0);
+        // cos(90) == 0, sin(90) == 1 within f32 tolerance.
+        assert!(m[0].abs() < 1e-6, "a should be ~0, got {}", m[0]);
+        assert!((m[1].abs() - 1.0).abs() < 1e-6, "b should be ~±1, got {}", m[1]);
+        assert!(!t.is_identity());
+    }
+
+    #[test]
+    fn matrix_variant_passes_its_components_through() {
+        let t = TransformList {
+            ops: vec![TransformOp::Matrix(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)],
+        };
+        assert_eq!(t.to_matrix(0.0, 0.0), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn transform_origin_defaults_to_the_centre() {
+        let o = TransformOrigin::default();
+        assert_eq!(o.x, Length::Percent(50.0));
+        assert_eq!(o.y, Length::Percent(50.0));
     }
 }
 
