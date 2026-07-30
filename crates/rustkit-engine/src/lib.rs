@@ -1310,9 +1310,9 @@ impl Engine {
                 if let PropertyValue::Specified(v) = &decl.value {
                     if v.contains("var(") {
                         let resolved = resolve_var_refs(v, &style.custom_properties);
-                        self.apply_declaration(&mut style, &decl.property, &resolved);
+                        Self::apply_declaration(&mut style, &decl.property, &resolved);
                     } else {
-                        self.apply_declaration(&mut style, &decl.property, v);
+                        Self::apply_declaration(&mut style, &decl.property, v);
                     }
                 }
             }
@@ -1320,7 +1320,7 @@ impl Engine {
 
         // 4. Inline style attribute (highest priority).
         if let Some(style_attr) = attributes.get("style") {
-            self.apply_inline_style(&mut style, style_attr);
+            Self::apply_inline_style(&mut style, style_attr);
         }
 
         style
@@ -1461,7 +1461,11 @@ impl Engine {
     }
 
     /// Apply inline style attribute to computed style.
-    fn apply_inline_style(&self, style: &mut ComputedStyle, style_attr: &str) {
+    ///
+    /// Takes no `self`: the cascade never needed the Engine, so tests can
+    /// exercise the real path without constructing one (and therefore without
+    /// initialising a GPU adapter). See `apply_declaration` below.
+    fn apply_inline_style(style: &mut ComputedStyle, style_attr: &str) {
         for declaration in style_attr.split(';') {
             let declaration = declaration.trim();
             if declaration.is_empty() {
@@ -1478,9 +1482,9 @@ impl Engine {
                 }
                 if value.contains("var(") {
                     let resolved = resolve_var_refs(value, &style.custom_properties);
-                    self.apply_declaration(style, property, &resolved);
+                    Self::apply_declaration(style, property, &resolved);
                 } else {
-                    self.apply_declaration(style, property, value);
+                    Self::apply_declaration(style, property, value);
                 }
             }
         }
@@ -1488,7 +1492,14 @@ impl Engine {
 
     /// Apply a single `property: value` declaration to a computed style.
     /// Shared by the inline-style and author-stylesheet paths.
-    fn apply_declaration(&self, style: &mut ComputedStyle, property: &str, value: &str) {
+    ///
+    /// Takes no `self`. The body never read a field - the only `self` uses
+    /// were calls to `apply_box_shorthand`, which itself took `&self` and
+    /// never touched it. Dropping the receiver lets the cascade wire tests
+    /// call the REAL production path directly instead of building an Engine
+    /// (and with it a `Compositor`, i.e. a wgpu adapter) per test. That
+    /// concurrent adapter init is what SIGSEGVd on Linux (hiwave-linux #21).
+    fn apply_declaration(style: &mut ComputedStyle, property: &str, value: &str) {
         let property = property.to_lowercase();
         let value = value.trim();
         match property.as_str() {
@@ -1703,7 +1714,7 @@ impl Engine {
                     style.max_height = l;
                 }
             }
-            "margin" => self.apply_box_shorthand(value, |s, l| {
+            "margin" => Self::apply_box_shorthand(value, |s, l| {
                 s.margin_top = l.clone();
                 s.margin_right = l.clone();
                 s.margin_bottom = l.clone();
@@ -1721,7 +1732,7 @@ impl Engine {
             "margin-left" => {
                 if let Some(l) = parse_length(value) { style.margin_left = l; }
             }
-            "padding" => self.apply_box_shorthand(value, |s, l| {
+            "padding" => Self::apply_box_shorthand(value, |s, l| {
                 s.padding_top = l.clone();
                 s.padding_right = l.clone();
                 s.padding_bottom = l.clone();
@@ -1925,8 +1936,8 @@ impl Engine {
     /// Apply a 1-value box shorthand (margin/padding). Only the common
     /// single-value form is handled; multi-value forms fall back to the
     /// first value on all sides.
+    /// Takes no `self` - the receiver was never used in the body.
     fn apply_box_shorthand(
-        &self,
         value: &str,
         set: impl Fn(&mut ComputedStyle, Length),
         style: &mut ComputedStyle,
@@ -3500,6 +3511,25 @@ fn parse_length(value: &str) -> Option<rustkit_css::Length> {
     None
 }
 
+/// Construct a `Compositor` for tests with **initialisation serialised**.
+///
+/// `Compositor::new()` performs wgpu adapter init. cargo runs tests in
+/// parallel, so many of these can execute concurrently - which SIGSEGVs on
+/// Linux (hiwave-linux #21, found by Argos) and is merely tolerated on
+/// Windows. The lock is held across the init ONLY and released when this
+/// function returns, so the tests themselves still run in parallel.
+/// Poison-tolerant: one panicking test must not brick every later one.
+///
+/// The cascade wire suites no longer need this at all - they call
+/// `Engine::apply_declaration` directly and allocate no GPU. This exists for
+/// the tests that genuinely need a real Engine.
+#[cfg(test)]
+fn test_compositor() -> Compositor {
+    static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+    Compositor::new().expect("failed to create compositor for test")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3552,7 +3582,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("Failed to create compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
             image_manager: Arc::new(ImageManager::new()),
@@ -3604,7 +3634,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("Failed to create compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
             image_manager: Arc::new(ImageManager::new()),
@@ -3643,7 +3673,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("Failed to create compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
             image_manager: Arc::new(ImageManager::new()),
@@ -3699,7 +3729,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("Failed to create compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
             image_manager: Arc::new(ImageManager::new()),
@@ -3760,7 +3790,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("Failed to create compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
             image_manager: Arc::new(ImageManager::new()),
@@ -3934,7 +3964,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
             image_manager: Arc::new(ImageManager::new()),
@@ -3967,7 +3997,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
             image_manager: Arc::new(ImageManager::new()),
@@ -4000,7 +4030,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
             image_manager: Arc::new(ImageManager::new()),
@@ -4033,7 +4063,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
             image_manager: Arc::new(ImageManager::new()),
@@ -4125,7 +4155,7 @@ mod tests {
             config: EngineConfig::default(),
             views: HashMap::new(),
             viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("compositor"),
+            compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(
                 ResourceLoader::new(LoaderConfig::default()).expect("loader"),
@@ -4152,37 +4182,6 @@ mod transform_wire_tests {
     use super::*;
     use rustkit_css::{Length, TransformOp};
 
-    /// Build a headless Engine the way the existing layout tests in this file
-    /// do - struct literal, real Compositor (works headless on this box).
-    /// There is no lighter constructor: apply_declaration needs `self` because
-    /// it delegates shorthands to self.apply_box_shorthand.
-    fn headless_engine() -> Engine {
-        // Compositor::new() performs wgpu adapter init. cargo runs tests in
-        // parallel, so several of these can execute concurrently - which
-        // SIGSEGVs on Linux (hiwave-linux #21, Argos R1 HOLD) and is merely
-        // tolerated on Windows (measured stable at --test-threads=1/4/8/16).
-        // Serialising CONSTRUCTION removes the race without serialising the
-        // tests themselves: only the init is exclusive, the assertions still
-        // run in parallel. Poison-tolerant so one panicking test cannot
-        // cascade into every other engine test.
-        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
-
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-        Engine {
-            config: EngineConfig::default(),
-            views: HashMap::new(),
-            viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("Failed to create compositor"),
-            renderer: None,
-            loader: Arc::new(
-                ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader"),
-            ),
-            image_manager: Arc::new(ImageManager::new()),
-            event_tx,
-            event_rx: Some(event_rx),
-        }
-    }
 
     // ---- parser correctness -------------------------------------------------
 
@@ -4254,11 +4253,10 @@ mod transform_wire_tests {
         // THIS is the wire receipt. Before this PR the declaration was dropped
         // on the floor: apply_declaration had no "transform" arm and
         // ComputedStyle had no field to hold it.
-        let engine = headless_engine();
         let mut style = ComputedStyle::default();
         assert!(style.transform.is_identity(), "default must be identity");
 
-        engine.apply_declaration(&mut style, "transform", "scale(2)");
+        Engine::apply_declaration(&mut style, "transform", "scale(2)");
         assert!(
             !style.transform.is_identity(),
             "transform: scale(2) must compute into ComputedStyle"
@@ -4268,9 +4266,8 @@ mod transform_wire_tests {
 
     #[test]
     fn transform_origin_declaration_computes_into_style() {
-        let engine = headless_engine();
         let mut style = ComputedStyle::default();
-        engine.apply_declaration(&mut style, "transform-origin", "left top");
+        Engine::apply_declaration(&mut style, "transform-origin", "left top");
         assert_eq!(style.transform_origin.x, Length::Percent(0.0));
         assert_eq!(style.transform_origin.y, Length::Percent(0.0));
     }
@@ -4278,11 +4275,10 @@ mod transform_wire_tests {
     #[test]
     fn an_invalid_transform_leaves_the_previous_value_untouched() {
         // CSS: an invalid declaration is ignored, not reset to initial.
-        let engine = headless_engine();
         let mut style = ComputedStyle::default();
-        engine.apply_declaration(&mut style, "transform", "scale(2)");
+        Engine::apply_declaration(&mut style, "transform", "scale(2)");
         let before = style.transform.ops.len();
-        engine.apply_declaration(&mut style, "transform", "!!!garbage!!!");
+        Engine::apply_declaration(&mut style, "transform", "!!!garbage!!!");
         assert_eq!(
             style.transform.ops.len(), before,
             "invalid value must not clobber the computed transform"
@@ -4295,33 +4291,6 @@ mod shadow_wire_tests {
     use super::*;
     use rustkit_css::Color;
 
-    fn engine() -> Engine {
-        // Compositor::new() performs wgpu adapter init. cargo runs tests in
-        // parallel, so several of these can execute concurrently - which
-        // SIGSEGVs on Linux (hiwave-linux #21, Argos R1 HOLD) and is merely
-        // tolerated on Windows (measured stable at --test-threads=1/4/8/16).
-        // Serialising CONSTRUCTION removes the race without serialising the
-        // tests themselves: only the init is exclusive, the assertions still
-        // run in parallel. Poison-tolerant so one panicking test cannot
-        // cascade into every other engine test.
-        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
-
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-        Engine {
-            config: EngineConfig::default(),
-            views: HashMap::new(),
-            viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("Failed to create compositor"),
-            renderer: None,
-            loader: Arc::new(
-                ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader"),
-            ),
-            image_manager: Arc::new(ImageManager::new()),
-            event_tx,
-            event_rx: Some(event_rx),
-        }
-    }
 
     #[test]
     fn parses_offsets_blur_and_colour() {
@@ -4357,10 +4326,9 @@ mod shadow_wire_tests {
 
     #[test]
     fn box_shadow_declaration_computes_into_style() {
-        let e = engine();
         let mut style = ComputedStyle::default();
         assert!(style.box_shadows.is_empty(), "default has no shadows");
-        e.apply_declaration(&mut style, "box-shadow", "2px 4px 6px #000");
+        Engine::apply_declaration(&mut style, "box-shadow", "2px 4px 6px #000");
         assert_eq!(style.box_shadows.len(), 1, "box-shadow must compute");
         assert_eq!(style.box_shadows[0].offset_x, 2.0);
     }
@@ -4370,25 +4338,23 @@ mod shadow_wire_tests {
         // A later rule must be able to cancel an earlier one. If `none` were
         // simply "parse fails, push nothing", the earlier shadow would
         // survive and the element would keep a shadow the author removed.
-        let e = engine();
         let mut style = ComputedStyle::default();
-        e.apply_declaration(&mut style, "box-shadow", "2px 4px 6px #000");
+        Engine::apply_declaration(&mut style, "box-shadow", "2px 4px 6px #000");
         assert_eq!(style.box_shadows.len(), 1);
-        e.apply_declaration(&mut style, "box-shadow", "none");
+        Engine::apply_declaration(&mut style, "box-shadow", "none");
         assert!(style.box_shadows.is_empty(), "none must clear the list");
     }
 
     #[test]
     fn shadow_is_visible_predicate_agrees_with_the_parsed_value() {
         // Ties the wire back to the INERT type's own logic from #37.
-        let e = engine();
         let mut style = ComputedStyle::default();
-        e.apply_declaration(&mut style, "box-shadow", "0 0 0 rgba(0,0,0,0)");
+        Engine::apply_declaration(&mut style, "box-shadow", "0 0 0 rgba(0,0,0,0)");
         if let Some(s) = style.box_shadows.first() {
             assert!(!s.is_visible(), "fully transparent, zero geometry: not visible");
         }
         let mut style2 = ComputedStyle::default();
-        e.apply_declaration(&mut style2, "box-shadow", "3px 3px 5px #000");
+        Engine::apply_declaration(&mut style2, "box-shadow", "3px 3px 5px #000");
         assert!(style2.box_shadows[0].is_visible());
     }
 }
@@ -4399,33 +4365,6 @@ mod animation_wire_tests {
     use rustkit_css::{AnimationDirection, AnimationFillMode, AnimationIterationCount,
                       AnimationPlayState, TimingFunction};
 
-    fn engine() -> Engine {
-        // Compositor::new() performs wgpu adapter init. cargo runs tests in
-        // parallel, so several of these can execute concurrently - which
-        // SIGSEGVs on Linux (hiwave-linux #21, Argos R1 HOLD) and is merely
-        // tolerated on Windows (measured stable at --test-threads=1/4/8/16).
-        // Serialising CONSTRUCTION removes the race without serialising the
-        // tests themselves: only the init is exclusive, the assertions still
-        // run in parallel. Poison-tolerant so one panicking test cannot
-        // cascade into every other engine test.
-        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
-
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-        Engine {
-            config: EngineConfig::default(),
-            views: HashMap::new(),
-            viewhost: ViewHost::new(),
-            compositor: Compositor::new().expect("Failed to create compositor"),
-            renderer: None,
-            loader: Arc::new(
-                ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader"),
-            ),
-            image_manager: Arc::new(ImageManager::new()),
-            event_tx,
-            event_rx: Some(event_rx),
-        }
-    }
 
     #[test]
     fn ms_and_s_both_convert_to_seconds() {
@@ -4458,12 +4397,11 @@ mod animation_wire_tests {
 
     #[test]
     fn animation_shorthand_longhands_compute() {
-        let e = engine();
         let mut s = ComputedStyle::default();
-        e.apply_declaration(&mut s, "animation-name", "slide");
-        e.apply_declaration(&mut s, "animation-duration", "250ms");
-        e.apply_declaration(&mut s, "animation-timing-function", "ease-in");
-        e.apply_declaration(&mut s, "animation-delay", "1s");
+        Engine::apply_declaration(&mut s, "animation-name", "slide");
+        Engine::apply_declaration(&mut s, "animation-duration", "250ms");
+        Engine::apply_declaration(&mut s, "animation-timing-function", "ease-in");
+        Engine::apply_declaration(&mut s, "animation-delay", "1s");
         assert_eq!(s.animation_name, "slide");
         assert_eq!(s.animation_duration, 0.25, "ms must convert to seconds");
         assert_eq!(s.animation_timing_function, TimingFunction::EaseIn);
@@ -4472,24 +4410,22 @@ mod animation_wire_tests {
 
     #[test]
     fn iteration_count_infinite_is_not_a_number() {
-        let e = engine();
         let mut s = ComputedStyle::default();
-        e.apply_declaration(&mut s, "animation-iteration-count", "infinite");
+        Engine::apply_declaration(&mut s, "animation-iteration-count", "infinite");
         assert_eq!(s.animation_iteration_count, AnimationIterationCount::Infinite);
 
         let mut s2 = ComputedStyle::default();
-        e.apply_declaration(&mut s2, "animation-iteration-count", "2.5");
+        Engine::apply_declaration(&mut s2, "animation-iteration-count", "2.5");
         assert_eq!(s2.animation_iteration_count, AnimationIterationCount::Count(2.5),
                    "fractional counts are legal CSS and must survive");
     }
 
     #[test]
     fn direction_fill_mode_and_play_state_compute() {
-        let e = engine();
         let mut s = ComputedStyle::default();
-        e.apply_declaration(&mut s, "animation-direction", "alternate-reverse");
-        e.apply_declaration(&mut s, "animation-fill-mode", "both");
-        e.apply_declaration(&mut s, "animation-play-state", "paused");
+        Engine::apply_declaration(&mut s, "animation-direction", "alternate-reverse");
+        Engine::apply_declaration(&mut s, "animation-fill-mode", "both");
+        Engine::apply_declaration(&mut s, "animation-play-state", "paused");
         assert_eq!(s.animation_direction, AnimationDirection::AlternateReverse);
         assert_eq!(s.animation_fill_mode, AnimationFillMode::Both);
         assert_eq!(s.animation_play_state, AnimationPlayState::Paused);
@@ -4499,11 +4435,10 @@ mod animation_wire_tests {
     fn transition_longhands_compute_independently_of_animation() {
         // The two families share TimingFunction; a wire that crossed them
         // would be invisible unless both are asserted in one test.
-        let e = engine();
         let mut s = ComputedStyle::default();
-        e.apply_declaration(&mut s, "transition-property", "opacity");
-        e.apply_declaration(&mut s, "transition-duration", "300ms");
-        e.apply_declaration(&mut s, "transition-timing-function", "linear");
+        Engine::apply_declaration(&mut s, "transition-property", "opacity");
+        Engine::apply_declaration(&mut s, "transition-duration", "300ms");
+        Engine::apply_declaration(&mut s, "transition-timing-function", "linear");
         assert_eq!(s.transition_property, "opacity");
         assert_eq!(s.transition_duration, 0.3);
         assert_eq!(s.transition_timing_function, TimingFunction::Linear);
