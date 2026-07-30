@@ -1576,6 +1576,9 @@ pub struct ComputedStyle {
     // INERT in #36; these fields are what make the properties COMPUTE).
     pub transform: TransformList,
     pub transform_origin: TransformOrigin,
+    // Shadow/Filter wire: BoxShadow landed INERT in #37; this field is what
+    // makes box-shadow compute. Vec because box-shadow takes a comma list.
+    pub box_shadows: Vec<BoxShadow>,
     // Box model
     pub display: Display,
     pub position: Position,

@@ -1506,6 +1506,18 @@ impl Engine {
                     style.transform_origin = origin;
                 }
             }
+            // Shadow/Filter family WIRE (Cluster A2). BoxShadow landed INERT
+            // in #37. `none` clears the list rather than pushing nothing, so a
+            // later rule can cancel an earlier shadow - otherwise
+            // `box-shadow: none` would silently leave the inherited-cascade
+            // value in place.
+            "box-shadow" => {
+                if value.trim() == "none" {
+                    style.box_shadows.clear();
+                } else if let Some(shadow) = parse_box_shadow(value) {
+                    style.box_shadows.push(shadow);
+                }
+            }
             "color" => {
                 if let Some(c) = parse_color(value) {
                     style.color = c;
@@ -3234,6 +3246,91 @@ fn parse_transform_origin(value: &str) -> Option<rustkit_css::TransformOrigin> {
     }
 }
 
+/// Supports: offset-x offset-y [blur [spread]] color [inset]
+fn parse_box_shadow(value: &str) -> Option<rustkit_css::BoxShadow> {
+    let value = value.trim();
+    if value.is_empty() || value == "none" {
+        return None;
+    }
+
+    let mut shadow = rustkit_css::BoxShadow::new();
+
+    // Check for "inset" keyword
+    let (value, inset) = if value.starts_with("inset") {
+        // SAFETY: strip_prefix will succeed because we just checked starts_with("inset")
+        (value.strip_prefix("inset").unwrap().trim(), true)
+    } else if value.ends_with("inset") {
+        // SAFETY: strip_suffix will succeed because we just checked ends_with("inset")
+        (value.strip_suffix("inset").unwrap().trim(), true)
+    } else {
+        (value, false)
+    };
+    shadow.inset = inset;
+
+    // Split into tokens, being careful about rgba() which contains commas
+    let mut parts: Vec<&str> = Vec::new();
+    let mut current_start = 0;
+    let mut paren_depth = 0;
+
+    for (i, ch) in value.char_indices() {
+        match ch {
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            ' ' if paren_depth == 0 => {
+                let part = value[current_start..i].trim();
+                if !part.is_empty() {
+                    parts.push(part);
+                }
+                current_start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    // Don't forget the last part
+    let last_part = value[current_start..].trim();
+    if !last_part.is_empty() {
+        parts.push(last_part);
+    }
+
+    // Parse parts: expect at least 2 lengths + 1 color
+    // Format: offset-x offset-y [blur [spread]] color
+    let mut lengths: Vec<f32> = Vec::new();
+    let mut color_value = None;
+
+    for part in parts {
+        // Try as length first
+        if let Some(length) = parse_length(part) {
+            lengths.push(length.to_px(16.0, 16.0, 0.0));
+        } else {
+            // Must be a color
+            if let Some(c) = parse_color(part) {
+                color_value = Some(c);
+            }
+        }
+    }
+
+    // Assign lengths
+    if lengths.len() >= 2 {
+        shadow.offset_x = lengths[0];
+        shadow.offset_y = lengths[1];
+    } else {
+        return None; // Need at least offset-x and offset-y
+    }
+
+    if lengths.len() >= 3 {
+        shadow.blur_radius = lengths[2].max(0.0);
+    }
+
+    if lengths.len() >= 4 {
+        shadow.spread_radius = lengths[3];
+    }
+
+    // Set color
+    shadow.color = color_value.unwrap_or(rustkit_css::Color::new(0, 0, 0, 0.5));
+
+    Some(shadow)
+}
+
 fn parse_length(value: &str) -> Option<rustkit_css::Length> {
     let value = value.trim();
 
@@ -4050,5 +4147,97 @@ mod transform_wire_tests {
             style.transform.ops.len(), before,
             "invalid value must not clobber the computed transform"
         );
+    }
+}
+
+#[cfg(test)]
+mod shadow_wire_tests {
+    use super::*;
+    use rustkit_css::Color;
+
+    fn engine() -> Engine {
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("Failed to create compositor"),
+            renderer: None,
+            loader: Arc::new(
+                ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader"),
+            ),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        }
+    }
+
+    #[test]
+    fn parses_offsets_blur_and_colour() {
+        let s = parse_box_shadow("2px 4px 6px rgb(255, 0, 0)").expect("must parse");
+        assert_eq!((s.offset_x, s.offset_y, s.blur_radius), (2.0, 4.0, 6.0));
+        assert_eq!(s.color.r, 255);
+        assert!(!s.inset);
+    }
+
+    #[test]
+    fn rgba_commas_do_not_split_the_token_list() {
+        // The parser tracks paren depth precisely because rgba() contains
+        // commas and spaces; a naive split would shred the colour into
+        // fragments and lose it.
+        let s = parse_box_shadow("1px 2px 3px rgba(0, 0, 0, 0.5)").expect("must parse");
+        assert_eq!((s.offset_x, s.offset_y, s.blur_radius), (1.0, 2.0, 3.0));
+        assert!(s.color.a < 1.0, "alpha must survive, got {}", s.color.a);
+    }
+
+    #[test]
+    fn inset_keyword_is_recognised() {
+        let s = parse_box_shadow("0 0 4px #000 inset").expect("must parse");
+        assert!(s.inset);
+    }
+
+    #[test]
+    fn none_and_empty_yield_no_shadow() {
+        assert!(parse_box_shadow("none").is_none());
+        assert!(parse_box_shadow("").is_none());
+    }
+
+    // ---- the WIRE ----------------------------------------------------------
+
+    #[test]
+    fn box_shadow_declaration_computes_into_style() {
+        let e = engine();
+        let mut style = ComputedStyle::default();
+        assert!(style.box_shadows.is_empty(), "default has no shadows");
+        e.apply_declaration(&mut style, "box-shadow", "2px 4px 6px #000");
+        assert_eq!(style.box_shadows.len(), 1, "box-shadow must compute");
+        assert_eq!(style.box_shadows[0].offset_x, 2.0);
+    }
+
+    #[test]
+    fn box_shadow_none_clears_a_previously_computed_shadow() {
+        // A later rule must be able to cancel an earlier one. If `none` were
+        // simply "parse fails, push nothing", the earlier shadow would
+        // survive and the element would keep a shadow the author removed.
+        let e = engine();
+        let mut style = ComputedStyle::default();
+        e.apply_declaration(&mut style, "box-shadow", "2px 4px 6px #000");
+        assert_eq!(style.box_shadows.len(), 1);
+        e.apply_declaration(&mut style, "box-shadow", "none");
+        assert!(style.box_shadows.is_empty(), "none must clear the list");
+    }
+
+    #[test]
+    fn shadow_is_visible_predicate_agrees_with_the_parsed_value() {
+        // Ties the wire back to the INERT type's own logic from #37.
+        let e = engine();
+        let mut style = ComputedStyle::default();
+        e.apply_declaration(&mut style, "box-shadow", "0 0 0 rgba(0,0,0,0)");
+        if let Some(s) = style.box_shadows.first() {
+            assert!(!s.is_visible(), "fully transparent, zero geometry: not visible");
+        }
+        let mut style2 = ComputedStyle::default();
+        e.apply_declaration(&mut style2, "box-shadow", "3px 3px 5px #000");
+        assert!(style2.box_shadows[0].is_visible());
     }
 }
