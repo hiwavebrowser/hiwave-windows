@@ -237,23 +237,10 @@ pub fn has_mandatory_breaks(text: &str) -> bool {
 /// Returns an iterator over line segments, preserving the break characters
 /// at the end of each segment (except the last).
 pub fn split_at_mandatory_breaks(text: &str) -> impl Iterator<Item = &str> {
-    // Split on various line endings, keeping track of positions
-    let mut last_end = 0;
-    let mut segments = Vec::new();
-
-    for (i, c) in text.char_indices() {
-        if is_mandatory_break(c) {
-            // Include the break character in the segment
-            let end = i + c.len_utf8();
-            segments.push(&text[last_end..end]);
-            last_end = end;
-        }
-    }
-
-    // Add remaining text if any
-    if last_end < text.len() {
-        segments.push(&text[last_end..]);
-    }
+    let mut segments: Vec<&str> = mandatory_break_bounds(text)
+        .into_iter()
+        .map(|(s, e, _)| &text[s..e])
+        .collect();
 
     // Handle empty text
     if segments.is_empty() && !text.is_empty() {
@@ -298,35 +285,59 @@ impl<'a> LineSegment<'a> {
     }
 }
 
-/// Break text into lines at mandatory breaks, returning detailed segments.
-pub fn break_into_lines(text: &str) -> Vec<LineSegment<'_>> {
-    let mut segments = Vec::new();
+/// Segment `text` on mandatory breaks, returning `(start, end, ends_with_break)`
+/// byte bounds. Single source of truth for mandatory-break segmentation.
+///
+/// UAX #14 rule LB5: do NOT break between CR and LF — CRLF is ONE mandatory
+/// break. Without that pairing, every CRLF document gains a spurious empty
+/// line per break; invisible on LF-only sources, and it hits essentially all
+/// Windows-authored content.
+///
+/// This exists as ONE helper because the bug it fixes was caused by having
+/// two hand-rolled copies of this loop (`break_into_lines` and
+/// `split_at_mandatory_breaks`) — fixing only the copy in front of you leaves
+/// the other one wrong. Both now call this.
+fn mandatory_break_bounds(text: &str) -> Vec<(usize, usize, bool)> {
+    let mut out: Vec<(usize, usize, bool)> = Vec::new();
     let mut start = 0;
+    let mut prev_was_cr = false;
 
     for (i, c) in text.char_indices() {
+        if c == '\n' && prev_was_cr {
+            // The break was already emitted at the CR; extend it over the LF
+            // so the pair is consumed as a single break.
+            if let Some(last) = out.last_mut() {
+                last.1 = i + c.len_utf8();
+            }
+            start = i + c.len_utf8();
+            prev_was_cr = false;
+            continue;
+        }
+        prev_was_cr = c == '\r';
         if is_mandatory_break(c) {
             let end = i + c.len_utf8();
-            segments.push(LineSegment {
-                text: &text[start..end],
-                start,
-                end,
-                ends_with_break: true,
-            });
+            out.push((start, end, true));
             start = end;
         }
     }
 
-    // Add remaining text if any
     if start < text.len() {
-        segments.push(LineSegment {
-            text: &text[start..],
-            start,
-            end: text.len(),
-            ends_with_break: false,
-        });
+        out.push((start, text.len(), false));
     }
+    out
+}
 
-    segments
+/// Break text into lines at mandatory breaks, returning detailed segments.
+pub fn break_into_lines(text: &str) -> Vec<LineSegment<'_>> {
+    mandatory_break_bounds(text)
+        .into_iter()
+        .map(|(start, end, ends_with_break)| LineSegment {
+            text: &text[start..end],
+            start,
+            end,
+            ends_with_break,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -531,5 +542,79 @@ mod tests {
     #[test]
     fn test_overflow_wrap_enum() {
         assert_eq!(OverflowWrap::default(), OverflowWrap::Normal);
+    }
+}
+
+#[cfg(test)]
+mod crlf_regression {
+    use super::*;
+
+    #[test]
+    fn crlf_is_one_mandatory_break_not_two() {
+        // UAX #14 LB5. Before the fix this returned THREE segments
+        // ("a\r", "\n", "b") and rendered a spurious blank line for every
+        // hard break in a CRLF document.
+        let segs = break_into_lines("a\r\nb");
+        assert_eq!(segs.len(), 2, "got {:?}", segs.iter().map(|s| s.text).collect::<Vec<_>>());
+        assert_eq!(segs[0].text, "a\r\n");
+        assert!(segs[0].ends_with_break);
+        assert_eq!(segs[1].text, "b");
+        assert!(!segs[1].ends_with_break);
+    }
+
+    #[test]
+    fn lone_cr_and_lone_lf_each_still_break() {
+        assert_eq!(break_into_lines("a\rb").len(), 2);
+        assert_eq!(break_into_lines("a\nb").len(), 2);
+    }
+
+    #[test]
+    fn lf_then_cr_is_two_breaks_not_one() {
+        // Reversed order is NOT a pair — "\n\r" is two separate breaks, so
+        // an over-eager fix that pairs any CR/LF adjacency would fail here.
+        assert_eq!(break_into_lines("a\n\rb").len(), 3);
+    }
+
+    #[test]
+    fn consecutive_crlf_pairs_produce_one_break_each() {
+        // "a\r\n\r\nb" is a blank line between two texts: 3 segments.
+        let segs = break_into_lines("a\r\n\r\nb");
+        assert_eq!(segs.len(), 3, "got {:?}", segs.iter().map(|s| s.text).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn byte_offsets_stay_consistent_across_a_crlf_pair() {
+        let segs = break_into_lines("ab\r\ncd");
+        assert_eq!((segs[0].start, segs[0].end), (0, 4));
+        assert_eq!((segs[1].start, segs[1].end), (4, 6));
+    }
+}
+
+#[cfg(test)]
+mod split_at_mandatory_breaks_crlf {
+    use super::*;
+
+    #[test]
+    fn split_at_mandatory_breaks_pairs_crlf() {
+        // The SECOND copy of the loop. Prometheus caught that Athena's first
+        // CRLF fix touched break_into_lines only and left this one wrong -
+        // which is why both now share mandatory_break_bounds.
+        let v: Vec<&str> = split_at_mandatory_breaks("a\r\nb").collect();
+        assert_eq!(v, vec!["a\r\n", "b"], "CRLF must be one break here too");
+    }
+
+    #[test]
+    fn both_entry_points_agree_on_segmentation() {
+        // The property that makes the duplication safe: the two public
+        // functions must never disagree about where the breaks are.
+        for s in ["a\r\nb", "a\nb", "a\rb", "a\n\rb", "a\r\n\r\nb", "plain", ""] {
+            let via_split: Vec<&str> = split_at_mandatory_breaks(s).collect();
+            let via_lines: Vec<&str> = break_into_lines(s).iter().map(|x| x.text).collect();
+            // split_at_mandatory_breaks yields the whole string for empty-segment
+            // input; compare only when break_into_lines produced segments.
+            if !via_lines.is_empty() {
+                assert_eq!(via_split, via_lines, "entry points disagree on {:?}", s);
+            }
+        }
     }
 }
