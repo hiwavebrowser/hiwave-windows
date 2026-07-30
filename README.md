@@ -18,6 +18,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/hiwavebrowser/hiwave-windows/actions/workflows/metrics.yml"><img src="https://github.com/hiwavebrowser/hiwave-windows/actions/workflows/metrics.yml/badge.svg?branch=master" alt="Windows CI" /></a>
   <img src="https://img.shields.io/badge/engine-RustKit_(original)-orange" alt="Engine: RustKit" />
   <img src="https://img.shields.io/badge/status-alpha-blueviolet" alt="Status: Alpha" />
   <img src="https://img.shields.io/badge/license-MPL--2.0-blue" alt="License: MPL-2.0" />
@@ -41,13 +42,75 @@ Modern browsers are designed to keep you browsing. More tabs, more tracking, mor
 
 ## The Engine
 
-Unlike browsers that wrap Chromium or WebKit, **HiWave runs on RustKit** — our own browser engine written from scratch in Rust. No Blink, no WebKit, no Gecko. Just ~50,000 lines of original Rust code handling everything from HTML parsing to GPU compositing.
+Unlike browsers that wrap Chromium or WebKit, **HiWave runs on RustKit** — our own browser engine written from scratch in Rust. No Blink, no WebKit, no Gecko. Just under **83,000 lines** of original Rust code across **38 crates**, handling everything from HTML parsing to GPU compositing.
 
 Why build our own engine?
 - **Full control** — We can innovate on features other browsers can't touch
 - **Memory safety** — Rust prevents entire classes of security vulnerabilities
 - **Minimal footprint** — No legacy code, no compatibility cruft
 - **True independence** — We don't inherit another engine's priorities or limitations
+
+---
+
+## Engine Status — Windows
+
+*Measured on `master`, 2026-07-30. Numbers come from CI, not from hand-editing
+this file — see [How these numbers are produced](#how-these-numbers-are-produced).*
+
+| | |
+|---|---|
+| Build | **passing** (`cargo build --workspace`, 0 errors) |
+| Tests | **869 passing**, 0 failing, 5 ignored |
+| Rust source | ~82,900 lines across 38 crates |
+| Visual parity vs Chrome | **not measured on Windows** — see below |
+
+### What landed recently
+
+The Windows engine gained a substantial amount of layout and CSS capability in
+late July 2026, ported from the macOS tree as contract ports rather than
+line-diff copies:
+
+- **Unicode text algorithms** — bidi (UAX #9), line breaking (UAX #14), grapheme
+  and word segmentation. Mandatory line breaks (LF, CRLF, VT, FF, U+0085,
+  U+2028, U+2029) are now honoured, so `white-space: pre` and `pre-line` preserve hard breaks.
+- **CSS type coverage** — transforms (`TransformList`/`TransformOp`, 2D affine
+  matrices), box-shadow and backdrop-filter, animation timing functions,
+  background layer properties, and high-precision `ColorF32` with
+  premultiplied and gamma-correct interpolation.
+- **Length units** — viewport units (`vw`/`vh`/`vmin`/`vmax`) and the CSS math
+  functions `min()`, `max()`, `clamp()`.
+- **Layout** — CSS 2.1 §8.3.1 margin collapsing, an epoch-based intrinsic-size
+  cache, and grid track sizing that credits spanned gutters.
+- **A `rem` parsing bug** that silently dropped *every* `rem` length is fixed.
+
+### Known gaps — stated, not hidden
+
+- **No visual-parity number for Windows.** The parity harness needs a real GPU
+  adapter; run headless on a machine without one it reports a confident-looking
+  100% diff that measures the runner rather than the renderer. Rather than
+  publish that, this row stays empty until a GPU-capable runner exists.
+- **Gradients** use a Windows-local representation that differs from the macOS
+  tree; unifying them is deferred until the renderer work so representation and
+  consumer move together.
+- **Last-child margin collapsing** over-includes in one case, documented in
+  [`docs/LEDGER_MARGIN_COLLAPSE_DIVERGENCE.md`](docs/LEDGER_MARGIN_COLLAPSE_DIVERGENCE.md)
+  with the condition required to fix it safely.
+- Ported modules are registered and tested but **not all are wired into the
+  render path yet** — a passing test count is not a claim about what you see
+  on screen.
+
+### How these numbers are produced
+
+Every push runs [`.github/workflows/metrics.yml`](.github/workflows/metrics.yml),
+which builds the workspace, runs the full test suite, attributes results
+per crate, and flags any crate compiling green while executing **zero** tests.
+Each run on `master` appends a row to `metrics/history.csv` on the
+[`metrics-history`](https://github.com/hiwavebrowser/hiwave-windows/tree/metrics-history)
+branch, so the figures above are auditable rather than asserted.
+
+Deliberately **not** collected: the visual-parity diff, for the reason above. The
+metrics JSON records that omission explicitly instead of defaulting it to a
+number.
 
 ---
 
