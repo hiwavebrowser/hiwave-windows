@@ -18,10 +18,12 @@ pub mod flex;
 pub mod forms;
 pub mod grid;
 pub mod images;
+pub mod intrinsic_cache;
 pub mod margin_collapse;
 pub mod scroll;
 pub mod text;
 
+pub use intrinsic_cache::IntrinsicSizingMode;
 pub use margin_collapse::{
     collapse_margins, establishes_bfc, is_margin_collapsible_through,
     should_collapse_with_first_child, should_collapse_with_last_child, CollapsibleMargin,
