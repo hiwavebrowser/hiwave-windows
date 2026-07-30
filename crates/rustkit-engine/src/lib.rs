@@ -1518,6 +1518,76 @@ impl Engine {
                     style.box_shadows.push(shadow);
                 }
             }
+            // Animation/transition family WIRE (Cluster A3). Enums landed
+            // INERT in #40. PARSED, NOT EXECUTED - nothing animates as a
+            // result; the values simply survive the cascade.
+            "transition-property" => {
+                style.transition_property = value.trim().to_string();
+            }
+            "transition-duration" => {
+                if let Some(dur) = parse_time(value) {
+                    style.transition_duration = dur;
+                }
+            }
+            "transition-timing-function" => {
+                style.transition_timing_function = parse_timing_function(value);
+            }
+            "transition-delay" => {
+                if let Some(delay) = parse_time(value) {
+                    style.transition_delay = delay;
+                }
+            }
+            "animation-name" => {
+                style.animation_name = value.trim().to_string();
+            }
+            "animation-duration" => {
+                if let Some(dur) = parse_time(value) {
+                    style.animation_duration = dur;
+                }
+            }
+            "animation-timing-function" => {
+                style.animation_timing_function = parse_timing_function(value);
+            }
+            "animation-delay" => {
+                if let Some(delay) = parse_time(value) {
+                    style.animation_delay = delay;
+                }
+            }
+            "animation-iteration-count" => {
+                let v = value.trim();
+                if v == "infinite" {
+                    style.animation_iteration_count =
+                        rustkit_css::AnimationIterationCount::Infinite;
+                } else if let Ok(n) = v.parse::<f32>() {
+                    style.animation_iteration_count =
+                        rustkit_css::AnimationIterationCount::Count(n);
+                }
+            }
+            "animation-direction" => {
+                style.animation_direction = match value.trim() {
+                    "normal" => rustkit_css::AnimationDirection::Normal,
+                    "reverse" => rustkit_css::AnimationDirection::Reverse,
+                    "alternate" => rustkit_css::AnimationDirection::Alternate,
+                    "alternate-reverse" => rustkit_css::AnimationDirection::AlternateReverse,
+                    _ => rustkit_css::AnimationDirection::Normal,
+                };
+            }
+            "animation-fill-mode" => {
+                style.animation_fill_mode = match value.trim() {
+                    "none" => rustkit_css::AnimationFillMode::None,
+                    "forwards" => rustkit_css::AnimationFillMode::Forwards,
+                    "backwards" => rustkit_css::AnimationFillMode::Backwards,
+                    "both" => rustkit_css::AnimationFillMode::Both,
+                    _ => rustkit_css::AnimationFillMode::None,
+                };
+            }
+            "animation-play-state" => {
+                style.animation_play_state = match value.trim() {
+                    "running" => rustkit_css::AnimationPlayState::Running,
+                    "paused" => rustkit_css::AnimationPlayState::Paused,
+                    _ => rustkit_css::AnimationPlayState::Running,
+                };
+            }
             "color" => {
                 if let Some(c) = parse_color(value) {
                     style.color = c;
@@ -3331,6 +3401,65 @@ fn parse_box_shadow(value: &str) -> Option<rustkit_css::BoxShadow> {
     Some(shadow)
 }
 
+/// Parse a CSS time value (e.g., "0.3s", "300ms") into seconds.
+fn parse_time(value: &str) -> Option<f32> {
+    let value = value.trim();
+    if value.ends_with("ms") {
+        value[..value.len() - 2]
+            .parse::<f32>()
+            .ok()
+            .map(|v| v / 1000.0)
+    } else if value.ends_with('s') {
+        value[..value.len() - 1].parse::<f32>().ok()
+    } else {
+        None
+    }
+}
+
+/// Parse a CSS timing function.
+fn parse_timing_function(value: &str) -> rustkit_css::TimingFunction {
+    let value = value.trim();
+    match value {
+        "ease" => rustkit_css::TimingFunction::Ease,
+        "linear" => rustkit_css::TimingFunction::Linear,
+        "ease-in" => rustkit_css::TimingFunction::EaseIn,
+        "ease-out" => rustkit_css::TimingFunction::EaseOut,
+        "ease-in-out" => rustkit_css::TimingFunction::EaseInOut,
+        "step-start" => rustkit_css::TimingFunction::StepStart,
+        "step-end" => rustkit_css::TimingFunction::StepEnd,
+        _ if value.starts_with("cubic-bezier(") => {
+            // Parse cubic-bezier(x1, y1, x2, y2)
+            let inner = value
+                .trim_start_matches("cubic-bezier(")
+                .trim_end_matches(')');
+            let parts: Vec<f32> = inner
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if parts.len() == 4 {
+                rustkit_css::TimingFunction::CubicBezier(parts[0], parts[1], parts[2], parts[3])
+            } else {
+                rustkit_css::TimingFunction::Ease
+            }
+        }
+        _ if value.starts_with("steps(") => {
+            // Parse steps(count, jump-start|jump-end)
+            let inner = value.trim_start_matches("steps(").trim_end_matches(')');
+            let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+            if let Some(count) = parts.first().and_then(|s| s.parse::<u32>().ok()) {
+                let jump_start = parts
+                    .get(1)
+                    .map(|s| *s == "jump-start" || *s == "start")
+                    .unwrap_or(false);
+                rustkit_css::TimingFunction::Steps(count, jump_start)
+            } else {
+                rustkit_css::TimingFunction::StepEnd
+            }
+        }
+        _ => rustkit_css::TimingFunction::Ease,
+    }
+}
+
 fn parse_length(value: &str) -> Option<rustkit_css::Length> {
     let value = value.trim();
 
@@ -4239,5 +4368,122 @@ mod shadow_wire_tests {
         let mut style2 = ComputedStyle::default();
         e.apply_declaration(&mut style2, "box-shadow", "3px 3px 5px #000");
         assert!(style2.box_shadows[0].is_visible());
+    }
+}
+
+#[cfg(test)]
+mod animation_wire_tests {
+    use super::*;
+    use rustkit_css::{AnimationDirection, AnimationFillMode, AnimationIterationCount,
+                      AnimationPlayState, TimingFunction};
+
+    fn engine() -> Engine {
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("Failed to create compositor"),
+            renderer: None,
+            loader: Arc::new(
+                ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader"),
+            ),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        }
+    }
+
+    #[test]
+    fn ms_and_s_both_convert_to_seconds() {
+        // "500ms" ends with "s" too - parse_time must test the LONGER suffix
+        // first. Verified correct on arrival (see #146 sweep), pinned here so
+        // a future edit cannot reintroduce the grad/rad class of bug.
+        assert_eq!(parse_time("500ms"), Some(0.5));
+        assert_eq!(parse_time("2s"), Some(2.0));
+        assert_eq!(parse_time("0.25s"), Some(0.25));
+    }
+
+    #[test]
+    fn timing_function_keywords_and_cubic_bezier_parse() {
+        assert_eq!(parse_timing_function("linear"), TimingFunction::Linear);
+        assert_eq!(parse_timing_function("ease-in-out"), TimingFunction::EaseInOut);
+        match parse_timing_function("cubic-bezier(0.25, 0.1, 0.25, 1)") {
+            TimingFunction::CubicBezier(a, b, c, d) => {
+                assert_eq!((a, b, c, d), (0.25, 0.1, 0.25, 1.0));
+            }
+            other => panic!("expected CubicBezier, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn an_unknown_timing_function_falls_back_to_the_css_initial() {
+        assert_eq!(parse_timing_function("not-a-function"), TimingFunction::Ease);
+    }
+
+    // ---- the WIRE ----------------------------------------------------------
+
+    #[test]
+    fn animation_shorthand_longhands_compute() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_declaration(&mut s, "animation-name", "slide");
+        e.apply_declaration(&mut s, "animation-duration", "250ms");
+        e.apply_declaration(&mut s, "animation-timing-function", "ease-in");
+        e.apply_declaration(&mut s, "animation-delay", "1s");
+        assert_eq!(s.animation_name, "slide");
+        assert_eq!(s.animation_duration, 0.25, "ms must convert to seconds");
+        assert_eq!(s.animation_timing_function, TimingFunction::EaseIn);
+        assert_eq!(s.animation_delay, 1.0);
+    }
+
+    #[test]
+    fn iteration_count_infinite_is_not_a_number() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_declaration(&mut s, "animation-iteration-count", "infinite");
+        assert_eq!(s.animation_iteration_count, AnimationIterationCount::Infinite);
+
+        let mut s2 = ComputedStyle::default();
+        e.apply_declaration(&mut s2, "animation-iteration-count", "2.5");
+        assert_eq!(s2.animation_iteration_count, AnimationIterationCount::Count(2.5),
+                   "fractional counts are legal CSS and must survive");
+    }
+
+    #[test]
+    fn direction_fill_mode_and_play_state_compute() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_declaration(&mut s, "animation-direction", "alternate-reverse");
+        e.apply_declaration(&mut s, "animation-fill-mode", "both");
+        e.apply_declaration(&mut s, "animation-play-state", "paused");
+        assert_eq!(s.animation_direction, AnimationDirection::AlternateReverse);
+        assert_eq!(s.animation_fill_mode, AnimationFillMode::Both);
+        assert_eq!(s.animation_play_state, AnimationPlayState::Paused);
+    }
+
+    #[test]
+    fn transition_longhands_compute_independently_of_animation() {
+        // The two families share TimingFunction; a wire that crossed them
+        // would be invisible unless both are asserted in one test.
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_declaration(&mut s, "transition-property", "opacity");
+        e.apply_declaration(&mut s, "transition-duration", "300ms");
+        e.apply_declaration(&mut s, "transition-timing-function", "linear");
+        assert_eq!(s.transition_property, "opacity");
+        assert_eq!(s.transition_duration, 0.3);
+        assert_eq!(s.transition_timing_function, TimingFunction::Linear);
+        assert_eq!(s.animation_duration, 0.0, "animation must be untouched");
+        assert_eq!(s.animation_timing_function, TimingFunction::Ease);
+    }
+
+    #[test]
+    fn defaults_are_the_css_initial_values() {
+        let s = ComputedStyle::default();
+        assert_eq!(s.animation_duration, 0.0);
+        assert_eq!(s.animation_iteration_count, AnimationIterationCount::One);
+        assert_eq!(s.animation_play_state, AnimationPlayState::Running);
+        assert_eq!(s.animation_fill_mode, AnimationFillMode::None);
     }
 }
