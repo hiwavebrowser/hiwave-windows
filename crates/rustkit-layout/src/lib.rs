@@ -571,8 +571,8 @@ impl LayoutBox {
 
     /// Get line height for text layout (honours the `line-height` multiplier).
     fn get_line_height(&self) -> f32 {
-        let font_size = match self.style.font_size {
-            Length::Px(px) => px,
+        let font_size = match &self.style.font_size {
+            Length::Px(px) => *px,
             _ => 16.0,
         };
         resolve_line_height_px(self.style.line_height, font_size)
@@ -683,17 +683,17 @@ impl LayoutBox {
         let style = &self.style;
 
         self.dimensions.margin.top =
-            self.length_to_px(style.margin_top, containing_block.content.width);
+            self.length_to_px(&style.margin_top, containing_block.content.width);
         self.dimensions.margin.bottom =
-            self.length_to_px(style.margin_bottom, containing_block.content.width);
+            self.length_to_px(&style.margin_bottom, containing_block.content.width);
         self.dimensions.border.top =
-            self.length_to_px(style.border_top_width, containing_block.content.width);
+            self.length_to_px(&style.border_top_width, containing_block.content.width);
         self.dimensions.border.bottom =
-            self.length_to_px(style.border_bottom_width, containing_block.content.width);
+            self.length_to_px(&style.border_bottom_width, containing_block.content.width);
         self.dimensions.padding.top =
-            self.length_to_px(style.padding_top, containing_block.content.width);
+            self.length_to_px(&style.padding_top, containing_block.content.width);
         self.dimensions.padding.bottom =
-            self.length_to_px(style.padding_bottom, containing_block.content.width);
+            self.length_to_px(&style.padding_bottom, containing_block.content.width);
     }
 
     /// Layout a floated box.
@@ -850,14 +850,14 @@ impl LayoutBox {
         let style = &self.style;
 
         // Get values from style
-        let margin_left = self.length_to_px(style.margin_left, containing_block.content.width);
-        let margin_right = self.length_to_px(style.margin_right, containing_block.content.width);
+        let margin_left = self.length_to_px(&style.margin_left, containing_block.content.width);
+        let margin_right = self.length_to_px(&style.margin_right, containing_block.content.width);
         let border_left =
-            self.length_to_px(style.border_left_width, containing_block.content.width);
+            self.length_to_px(&style.border_left_width, containing_block.content.width);
         let border_right =
-            self.length_to_px(style.border_right_width, containing_block.content.width);
-        let padding_left = self.length_to_px(style.padding_left, containing_block.content.width);
-        let padding_right = self.length_to_px(style.padding_right, containing_block.content.width);
+            self.length_to_px(&style.border_right_width, containing_block.content.width);
+        let padding_left = self.length_to_px(&style.padding_left, containing_block.content.width);
+        let padding_right = self.length_to_px(&style.padding_right, containing_block.content.width);
 
         let total_margin_border_padding =
             margin_left + margin_right + border_left + border_right + padding_left + padding_right;
@@ -868,7 +868,7 @@ impl LayoutBox {
                 // Fill available space
                 (containing_block.content.width - total_margin_border_padding).max(0.0)
             }
-            _ => self.length_to_px(style.width, containing_block.content.width),
+            _ => self.length_to_px(&style.width, containing_block.content.width),
         };
 
         self.dimensions.content.width = content_width;
@@ -885,17 +885,17 @@ impl LayoutBox {
         let style = &self.style;
 
         self.dimensions.margin.top =
-            self.length_to_px(style.margin_top, containing_block.content.width);
+            self.length_to_px(&style.margin_top, containing_block.content.width);
         self.dimensions.margin.bottom =
-            self.length_to_px(style.margin_bottom, containing_block.content.width);
+            self.length_to_px(&style.margin_bottom, containing_block.content.width);
         self.dimensions.border.top =
-            self.length_to_px(style.border_top_width, containing_block.content.width);
+            self.length_to_px(&style.border_top_width, containing_block.content.width);
         self.dimensions.border.bottom =
-            self.length_to_px(style.border_bottom_width, containing_block.content.width);
+            self.length_to_px(&style.border_bottom_width, containing_block.content.width);
         self.dimensions.padding.top =
-            self.length_to_px(style.padding_top, containing_block.content.width);
+            self.length_to_px(&style.padding_top, containing_block.content.width);
         self.dimensions.padding.bottom =
-            self.length_to_px(style.padding_bottom, containing_block.content.width);
+            self.length_to_px(&style.padding_bottom, containing_block.content.width);
 
         // Position below the containing block's content
         self.dimensions.content.x = containing_block.content.x
@@ -1078,7 +1078,7 @@ impl LayoutBox {
     }
 
     /// Convert a Length to pixels.
-    fn length_to_px(&self, length: Length, container_size: f32) -> f32 {
+    fn length_to_px(&self, length: &Length, container_size: f32) -> f32 {
         let font_size = match self.style.font_size {
             Length::Px(px) => px,
             _ => 16.0,

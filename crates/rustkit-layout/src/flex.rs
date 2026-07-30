@@ -992,23 +992,24 @@ fn apply_positions(
 }
 
 /// Resolve a Length to pixels.
+///
+/// Delegates to `Length::to_px` rather than re-implementing the match. This
+/// was a hand-written duplicate that had already drifted — it hardcoded a
+/// 16px font size and could not see a viewport — and the `Min`/`Max`/`Clamp`
+/// variants made keeping it untenable, since resolving those requires
+/// recursively resolving their operands with the same context.
+///
+/// Behaviour is IDENTICAL for every variant that existed before, which is
+/// why this is a consolidation and not a change:
+///   Px -> px | Em -> em*16 | Rem -> rem*16 | Percent -> pct/100*container
+///   Vw/Vh/Vmin/Vmax -> 0.0 (to_px resolves against a zero viewport)
+///   Auto -> 0.0 | Zero -> 0.0
+/// Pinned by `resolve_length_matches_the_previous_hand_written_arms` below.
+///
+/// DEFER unchanged: when flex layout is threaded with viewport dimensions,
+/// this should call `to_px_with_viewport` and pass them through.
 fn resolve_length(length: &Length, container_size: f32) -> f32 {
-    match length {
-        Length::Px(px) => *px,
-        Length::Em(em) => em * 16.0, // Default font size
-        Length::Rem(rem) => rem * 16.0,
-        Length::Percent(pct) => pct / 100.0 * container_size,
-        // This resolver has no viewport in scope, so viewport units cannot be
-        // resolved here and compute to 0.0 — the same result `Length::to_px`
-        // gives without viewport dimensions, and the same as the macOS tree.
-        // DEFER: when flex layout is threaded with viewport dimensions, these
-        // four arms should delegate to `to_px_with_viewport` instead. Written
-        // as explicit arms rather than a catch-all so that adding a future
-        // Length variant still breaks this match loudly.
-        Length::Vw(_) | Length::Vh(_) | Length::Vmin(_) | Length::Vmax(_) => 0.0,
-        Length::Auto => 0.0,
-        Length::Zero => 0.0,
-    }
+    length.to_px(16.0, 16.0, container_size)
 }
 
 /// Resolve a max Length (returns f32::INFINITY when unconstrained).
@@ -1500,3 +1501,59 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod resolve_length_consolidation_tests {
+    use super::*;
+
+    /// The exact arms `resolve_length` had before it was consolidated into
+    /// `Length::to_px`. Kept verbatim so the equivalence claim in that
+    /// function's doc comment is PROVEN rather than asserted.
+    fn previous_hand_written_arms(length: &Length, container_size: f32) -> f32 {
+        match length {
+            Length::Px(px) => *px,
+            Length::Em(em) => em * 16.0,
+            Length::Rem(rem) => rem * 16.0,
+            Length::Percent(pct) => pct / 100.0 * container_size,
+            Length::Vw(_) | Length::Vh(_) | Length::Vmin(_) | Length::Vmax(_) => 0.0,
+            Length::Auto => 0.0,
+            Length::Zero => 0.0,
+            // Min/Max/Clamp did not exist then; excluded from the comparison.
+            _ => f32::NAN,
+        }
+    }
+
+    #[test]
+    fn resolve_length_matches_the_previous_hand_written_arms() {
+        let container = 250.0;
+        let cases = [
+            Length::Px(12.5),
+            Length::Em(2.0),
+            Length::Rem(1.5),
+            Length::Percent(40.0),
+            Length::Vw(50.0),
+            Length::Vh(50.0),
+            Length::Vmin(10.0),
+            Length::Vmax(10.0),
+            Length::Auto,
+            Length::Zero,
+        ];
+        for c in &cases {
+            assert_eq!(
+                resolve_length(c, container),
+                previous_hand_written_arms(c, container),
+                "consolidation changed behaviour for {:?}",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn consolidation_also_resolves_the_math_variants_the_old_arms_could_not() {
+        // The reason the duplicate became untenable: these need their
+        // operands resolved with the same context, which a flat match cannot
+        // do without re-implementing the whole resolver.
+        let l = Length::Min(Box::new((Length::Px(80.0), Length::Percent(10.0))));
+        assert_eq!(resolve_length(&l, 250.0), 25.0);
+    }
+}
