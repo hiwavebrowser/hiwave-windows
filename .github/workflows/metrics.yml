@@ -81,24 +81,45 @@ jobs:
           print(f"OK: {m['tests']['passed']} tests passed")
           PY
 
+      # Runs on EVERY branch so the logic is actually exercised in review; only
+      # the final push is master-gated. The previous version gated the whole
+      # step on master, which meant no PR could ever execute it — so it shipped
+      # broken and went red on its first real run. A step that cannot run in
+      # review is unreviewable by construction.
       - name: Update metrics history
-        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Keep the metrics file across the branch switch, and drop any
-          # tracked modifications the run produced -- a dirty tree blocks the
-          # checkout and then cascades into the orphan fallback failing
-          # because the fetch already created the branch.
+          # Keep the metrics file across the branch switch, then REMOVE it from
+          # the working tree. It is untracked here but TRACKED on
+          # metrics-history, so leaving it in place makes `git checkout
+          # metrics-history` refuse ("untracked working tree files would be
+          # overwritten"). `git checkout -- .` does not help: it only discards
+          # modifications to TRACKED files.
+          #
+          # That refusal was previously swallowed by 2>/dev/null and fell
+          # through to `--orphan`, which then died with "a branch named
+          # 'metrics-history' already exists" because the fetch had just
+          # created it. The old comment here predicted that cascade and the
+          # code still hit it, because this step only runs on master and so
+          # never executed in PR review. First master run after the branch
+          # existed: red.
           cp metrics.json "$RUNNER_TEMP/metrics.json"
+          rm -f metrics.json
           git checkout -- .
 
-          git fetch origin metrics-history:metrics-history 2>/dev/null || true
-          git checkout metrics-history 2>/dev/null || git checkout --orphan metrics-history
-          # --orphan keeps the working tree staged; start the branch empty.
-          git rm -rf --cached . >/dev/null 2>&1 || true
+          # Point the local branch at the remote if it exists, else start an
+          # orphan. `checkout -B <b> origin/<b>` is idempotent and cannot trip
+          # the "already exists" error the previous fetch-then-checkout could.
+          if git fetch origin metrics-history 2>/dev/null; then
+            git checkout -B metrics-history origin/metrics-history
+          else
+            git checkout --orphan metrics-history
+            # --orphan keeps the working tree staged; start the branch empty.
+            git rm -rf --cached . >/dev/null 2>&1 || true
+          fi
 
           mkdir -p metrics
           cp "$RUNNER_TEMP/metrics.json" metrics.json
@@ -125,4 +146,13 @@ jobs:
           git add metrics/ metrics.json
           git commit -m "Add Windows metrics for ${{ github.sha }}" \
             || echo "No changes to commit"
-          git push origin metrics-history || echo "Push failed - may need rebase"
+
+          # Only master publishes. On a PR branch everything above has already
+          # run — checkout, history append, commit — so a breakage surfaces in
+          # review; the commit is simply discarded with the runner.
+          if [ "${{ github.ref }}" = "refs/heads/master" ] \
+            || [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            git push origin metrics-history || echo "Push failed - may need rebase"
+          else
+            echo "Not master — history logic exercised, push skipped."
+          fi
