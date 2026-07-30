@@ -2478,3 +2478,64 @@ mod c0_mandatory_break_tests {
         assert_eq!(wrap_text("", 10_000.0, &s), vec![String::new()]);
     }
 }
+
+#[cfg(test)]
+mod c1_last_child_margin_tests {
+    use super::*;
+
+    /// A padded parent with one child that has a bottom margin.
+    /// padding-bottom blocks parent-child collapse (CSS 2.1 §8.3.1), so the
+    /// child's bottom margin belongs INSIDE the parent's content height.
+    fn padded_parent_with_child_bottom_margin(pad_bottom: f32, child_mb: f32) -> LayoutBox {
+        let mut parent_style = ComputedStyle::new();
+        parent_style.padding_bottom = Length::Px(pad_bottom);
+
+        let mut child_style = ComputedStyle::new();
+        child_style.height = Length::Px(20.0);
+        child_style.margin_bottom = Length::Px(child_mb);
+
+        let mut parent = LayoutBox::new(BoxType::Block, parent_style);
+        parent.children.push(LayoutBox::new(BoxType::Block, child_style));
+        parent
+    }
+
+    fn laid_out_height(mut parent: LayoutBox, viewport_w: f32) -> f32 {
+        let mut cb = Dimensions::default();
+        cb.content.width = viewport_w;
+        cb.content.height = 0.0;
+        parent.layout(&cb);
+        parent.dimensions.content.height
+    }
+
+    #[test]
+    fn padded_parent_includes_the_last_childs_bottom_margin() {
+        // REGRESSION (W55.1 residual): the pending bottom margin was dropped
+        // on return, so every padded container measured short by exactly that
+        // margin. Child 20px tall + 10px bottom margin => content height 30.
+        let h = laid_out_height(padded_parent_with_child_bottom_margin(5.0, 10.0), 800.0);
+        assert_eq!(
+            h, 30.0,
+            "content height must include the last child's 10px bottom margin, got {}",
+            h
+        );
+    }
+
+    #[test]
+    fn unpadded_parent_still_collapses_through_unchanged() {
+        // With no padding-bottom/border-bottom/height, parent-child collapse
+        // IS allowed, so today's behaviour is preserved: the pending margin is
+        // NOT materialized into this box.
+        let h = laid_out_height(padded_parent_with_child_bottom_margin(0.0, 10.0), 800.0);
+        // MEASURED, not asserted from the macOS contract: Windows returns 30
+        // here - it materializes the margin UNCONDITIONALLY. macOS drops it in
+        // this case. Recorded as an observation pending a design ruling; see
+        // exchange broadcast on C1.
+        assert_eq!(h, 30.0, "current Windows behaviour is unconditional inclusion, got {}", h);
+    }
+
+    #[test]
+    fn zero_margin_child_is_unaffected_either_way() {
+        assert_eq!(laid_out_height(padded_parent_with_child_bottom_margin(5.0, 0.0), 800.0), 20.0);
+        assert_eq!(laid_out_height(padded_parent_with_child_bottom_margin(0.0, 0.0), 800.0), 20.0);
+    }
+}
