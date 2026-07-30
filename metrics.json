@@ -1,0 +1,394 @@
+{
+  "timestamp": "2026-07-30T00:28:01.197992+00:00",
+  "commit": "34296db1b60324d4f407ffd65dc1454cb778ae82",
+  "branch": "master",
+  "platform": "windows",
+  "build": {
+    "ok": true,
+    "exit_code": 0,
+    "warnings": 49
+  },
+  "tests": {
+    "ok": true,
+    "exit_code": 0,
+    "passed": 839,
+    "failed": 0,
+    "ignored": 4,
+    "total": 839
+  },
+  "per_crate": {
+    "corpus_tests": {
+      "passed": 49,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave": {
+      "passed": 28,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_analytics": {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_analytics (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_core": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_core (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_shell": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_shell (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_shield": {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_shield (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_smoke": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_vault": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_vault (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "parity_capture": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "render_test": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_a11y": {
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_a11y (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_animation": {
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_animation (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_bench": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_bench (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 1
+    },
+    "rustkit_bindings": {
+      "passed": 20,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_bindings (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_canvas": {
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_canvas (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_codecs": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_codecs (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_common": {
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_common (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_compositor": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_compositor (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_core": {
+      "passed": 27,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_core (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_css": {
+      "passed": 45,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_css (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_cssparser": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_cssparser (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_dom": {
+      "passed": 55,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_dom (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_engine": {
+      "passed": 22,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_engine (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_html": {
+      "passed": 37,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_html (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 2
+    },
+    "rustkit_http": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_http (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_idb": {
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_idb (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_image": {
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_image (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_js": {
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_js (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_layout": {
+      "passed": 189,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_layout (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_media": {
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_media (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_net": {
+      "passed": 28,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_net (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_renderer": {
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_renderer (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_svg": {
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_svg (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_sw": {
+      "passed": 12,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_sw (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_test": {
+      "passed": 85,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_test (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 1
+    },
+    "rustkit_text": {
+      "passed": 44,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_text (doc)": {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_viewhost": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_viewhost (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_webgl": {
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_webgl (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_worker": {
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0
+    },
+    "rustkit_worker (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "crates_with_no_tests": [
+    "hiwave_core",
+    "hiwave_smoke",
+    "parity_capture"
+  ],
+  "not_collected": {
+    "parity_pixel_diff": "requires a GPU adapter; not collectable on a hosted Windows runner. Deliberately omitted rather than emitting the harness's 100.0 default as if it were a measurement."
+  }
+}
