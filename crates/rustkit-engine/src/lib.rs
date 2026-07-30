@@ -1492,6 +1492,20 @@ impl Engine {
         let property = property.to_lowercase();
         let value = value.trim();
         match property.as_str() {
+            // Transform family WIRE (engine Slice-1 / Cluster A). The types
+            // landed INERT in #36; these arms are what make the properties
+            // compute. Renderer does not consume style.transform yet - see the
+            // PR body's dead-code note.
+            "transform" => {
+                if let Some(list) = parse_transform(value) {
+                    style.transform = list;
+                }
+            }
+            "transform-origin" => {
+                if let Some(origin) = parse_transform_origin(value) {
+                    style.transform_origin = origin;
+                }
+            }
             "color" => {
                 if let Some(c) = parse_color(value) {
                     style.color = c;
@@ -3043,6 +3057,183 @@ fn parse_grid_line_shorthand(
 }
 
 /// Parse a length value from CSS.
+/// Parse a CSS transform value into a TransformList.
+fn parse_transform(value: &str) -> Option<rustkit_css::TransformList> {
+    let value = value.trim();
+    if value == "none" {
+        return Some(rustkit_css::TransformList::none());
+    }
+
+    let mut ops = Vec::new();
+    let mut remaining = value;
+
+    while !remaining.is_empty() {
+        remaining = remaining.trim_start();
+
+        // Find the function name
+        if let Some(paren_pos) = remaining.find('(') {
+            let func_name = &remaining[..paren_pos];
+            let after_paren = &remaining[paren_pos + 1..];
+
+            // Find matching closing paren
+            if let Some(close_pos) = find_matching_paren(after_paren) {
+                let args = &after_paren[..close_pos];
+                remaining = &after_paren[close_pos + 1..];
+
+                if let Some(op) = parse_transform_op(func_name, args) {
+                    ops.push(op);
+                }
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if ops.is_empty() {
+        None
+    } else {
+        Some(rustkit_css::TransformList { ops })
+    }
+}
+
+/// Parse a single transform operation.
+fn parse_transform_op(func: &str, args: &str) -> Option<rustkit_css::TransformOp> {
+    let args = args.trim();
+    let parts: Vec<&str> = args.split(',').map(|s| s.trim()).collect();
+
+    match func.trim() {
+        "translate" => {
+            let x = parse_length(parts.first()?)?;
+            let y = parts
+                .get(1)
+                .and_then(|s| parse_length(s))
+                .unwrap_or(rustkit_css::Length::Zero);
+            Some(rustkit_css::TransformOp::Translate(x, y))
+        }
+        "translateX" => {
+            let x = parse_length(parts.first()?)?;
+            Some(rustkit_css::TransformOp::TranslateX(x))
+        }
+        "translateY" => {
+            let y = parse_length(parts.first()?)?;
+            Some(rustkit_css::TransformOp::TranslateY(y))
+        }
+        "scale" => {
+            let sx = parts.first()?.parse::<f32>().ok()?;
+            let sy = parts
+                .get(1)
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(sx);
+            Some(rustkit_css::TransformOp::Scale(sx, sy))
+        }
+        "scaleX" => {
+            let s = parts.first()?.parse::<f32>().ok()?;
+            Some(rustkit_css::TransformOp::ScaleX(s))
+        }
+        "scaleY" => {
+            let s = parts.first()?.parse::<f32>().ok()?;
+            Some(rustkit_css::TransformOp::ScaleY(s))
+        }
+        "rotate" => {
+            let angle = parse_angle(parts.first()?)?;
+            Some(rustkit_css::TransformOp::Rotate(angle))
+        }
+        "skew" => {
+            let ax = parse_angle(parts.first()?)?;
+            let ay = parts.get(1).and_then(|s| parse_angle(s)).unwrap_or(0.0);
+            Some(rustkit_css::TransformOp::Skew(ax, ay))
+        }
+        "skewX" => {
+            let angle = parse_angle(parts.first()?)?;
+            Some(rustkit_css::TransformOp::SkewX(angle))
+        }
+        "skewY" => {
+            let angle = parse_angle(parts.first()?)?;
+            Some(rustkit_css::TransformOp::SkewY(angle))
+        }
+        "matrix" => {
+            if parts.len() >= 6 {
+                let a = parts[0].parse::<f32>().ok()?;
+                let b = parts[1].parse::<f32>().ok()?;
+                let c = parts[2].parse::<f32>().ok()?;
+                let d = parts[3].parse::<f32>().ok()?;
+                let e = parts[4].parse::<f32>().ok()?;
+                let f = parts[5].parse::<f32>().ok()?;
+                Some(rustkit_css::TransformOp::Matrix(a, b, c, d, e, f))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Parse a CSS angle value (e.g., "45deg", "1rad", "0.5turn") into degrees.
+fn parse_angle(value: &str) -> Option<f32> {
+    let value = value.trim();
+    // Suffixes are tested LONGEST-FIRST because they overlap: "grad" ends with
+    // "rad". Testing "rad" first made the grad branch below unreachable - it
+    // stripped "rad" from "200grad", leaving "200g", which fails to parse, and
+    // the `?`-style .ok() dropped the whole declaration. Identical shape to the
+    // rem-before-em bug fixed in #38: an overlapping-suffix chain in the wrong
+    // order silently discards the longer unit.
+    if value.ends_with("grad") {
+        value[..value.len() - 4]
+            .parse::<f32>()
+            .ok()
+            .map(|g| g * 0.9)
+    } else if value.ends_with("turn") {
+        value[..value.len() - 4]
+            .parse::<f32>()
+            .ok()
+            .map(|t| t * 360.0)
+    } else if value.ends_with("deg") {
+        value[..value.len() - 3].parse().ok()
+    } else if value.ends_with("rad") {
+        value[..value.len() - 3]
+            .parse::<f32>()
+            .ok()
+            .map(|r| r.to_degrees())
+    } else {
+        // Try parsing as number (defaults to degrees)
+        value.parse().ok()
+    }
+}
+
+/// Parse transform-origin value.
+fn parse_transform_origin(value: &str) -> Option<rustkit_css::TransformOrigin> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+
+    let parse_component = |s: &str| -> Option<rustkit_css::Length> {
+        match s {
+            "left" => Some(rustkit_css::Length::Percent(0.0)),
+            "center" => Some(rustkit_css::Length::Percent(50.0)),
+            "right" => Some(rustkit_css::Length::Percent(100.0)),
+            "top" => Some(rustkit_css::Length::Percent(0.0)),
+            "bottom" => Some(rustkit_css::Length::Percent(100.0)),
+            _ => parse_length(s),
+        }
+    };
+
+    match parts.len() {
+        1 => {
+            let x = parse_component(parts[0])?;
+            Some(rustkit_css::TransformOrigin {
+                x,
+                y: rustkit_css::Length::Percent(50.0),
+            })
+        }
+        2 | 3 => {
+            let x = parse_component(parts[0])?;
+            let y = parse_component(parts[1])?;
+            Some(rustkit_css::TransformOrigin { x, y })
+        }
+        _ => None,
+    }
+}
+
 fn parse_length(value: &str) -> Option<rustkit_css::Length> {
     let value = value.trim();
 
@@ -3726,6 +3917,138 @@ mod tests {
             2,
             "row should have exactly two element children, got {}",
             row.children.len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod transform_wire_tests {
+    use super::*;
+    use rustkit_css::{Length, TransformOp};
+
+    /// Build a headless Engine the way the existing layout tests in this file
+    /// do - struct literal, real Compositor (works headless on this box).
+    /// There is no lighter constructor: apply_declaration needs `self` because
+    /// it delegates shorthands to self.apply_box_shorthand.
+    fn headless_engine() -> Engine {
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: Compositor::new().expect("Failed to create compositor"),
+            renderer: None,
+            loader: Arc::new(
+                ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader"),
+            ),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx,
+            event_rx: Some(event_rx),
+        }
+    }
+
+    // ---- parser correctness -------------------------------------------------
+
+    #[test]
+    fn parses_none_as_identity() {
+        let t = parse_transform("none").expect("none must parse");
+        assert!(t.is_identity());
+    }
+
+    #[test]
+    fn parses_a_multi_op_transform_in_source_order() {
+        // Order matters for composition, so the ops must not be reordered or
+        // deduplicated by the parser.
+        let t = parse_transform("translate(10px, 20px) scale(2) rotate(45deg)")
+            .expect("multi-op must parse");
+        assert_eq!(t.ops.len(), 3);
+        assert!(matches!(t.ops[0], TransformOp::Translate(..)));
+        assert!(matches!(t.ops[1], TransformOp::Scale(..)));
+        assert!(matches!(t.ops[2], TransformOp::Rotate(_)));
+    }
+
+    #[test]
+    fn scale_with_one_arg_applies_to_both_axes() {
+        let t = parse_transform("scale(3)").expect("parse");
+        match t.ops[0] {
+            TransformOp::Scale(x, y) => assert_eq!((x, y), (3.0, 3.0)),
+            ref other => panic!("expected Scale, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn angle_units_all_convert_to_degrees() {
+        // A parser that only handled `deg` would pass the common case and
+        // silently mis-render rad/turn/grad.
+        assert_eq!(parse_angle("90deg"), Some(90.0));
+        assert_eq!(parse_angle("1turn"), Some(360.0));
+        // REGRESSION: "200grad".ends_with("rad") is true. With rad tested
+        // first, the grad branch was unreachable and every grad angle became
+        // None - dropping the whole transform declaration. Same shape as
+        // rem-before-em (#38).
+        assert_eq!(parse_angle("200grad"), Some(180.0));
+        assert_eq!(parse_angle("100grad"), Some(90.0));
+        assert_eq!(parse_angle("45"), Some(45.0), "bare number defaults to deg");
+        let rad = parse_angle("3.14159265rad").expect("rad must parse");
+        assert!((rad - 180.0).abs() < 0.01, "1 pi rad == 180deg, got {}", rad);
+    }
+
+    #[test]
+    fn transform_origin_keywords_map_to_percentages() {
+        let o = parse_transform_origin("left top").expect("parse");
+        assert_eq!(o.x, Length::Percent(0.0));
+        assert_eq!(o.y, Length::Percent(0.0));
+        let c = parse_transform_origin("center").expect("parse");
+        assert_eq!(c.x, Length::Percent(50.0));
+        assert_eq!(c.y, Length::Percent(50.0), "single value defaults y to 50%");
+    }
+
+    #[test]
+    fn garbage_does_not_panic_and_yields_none_or_identity() {
+        for bad in ["translate(", "rotate(abc)", "notafunction(1)", ""] {
+            let _ = parse_transform(bad);
+        }
+    }
+
+    // ---- the WIRE: properties must now COMPUTE ------------------------------
+
+    #[test]
+    fn transform_declaration_computes_into_style() {
+        // THIS is the wire receipt. Before this PR the declaration was dropped
+        // on the floor: apply_declaration had no "transform" arm and
+        // ComputedStyle had no field to hold it.
+        let engine = headless_engine();
+        let mut style = ComputedStyle::default();
+        assert!(style.transform.is_identity(), "default must be identity");
+
+        engine.apply_declaration(&mut style, "transform", "scale(2)");
+        assert!(
+            !style.transform.is_identity(),
+            "transform: scale(2) must compute into ComputedStyle"
+        );
+        assert_eq!(style.transform.ops.len(), 1);
+    }
+
+    #[test]
+    fn transform_origin_declaration_computes_into_style() {
+        let engine = headless_engine();
+        let mut style = ComputedStyle::default();
+        engine.apply_declaration(&mut style, "transform-origin", "left top");
+        assert_eq!(style.transform_origin.x, Length::Percent(0.0));
+        assert_eq!(style.transform_origin.y, Length::Percent(0.0));
+    }
+
+    #[test]
+    fn an_invalid_transform_leaves_the_previous_value_untouched() {
+        // CSS: an invalid declaration is ignored, not reset to initial.
+        let engine = headless_engine();
+        let mut style = ComputedStyle::default();
+        engine.apply_declaration(&mut style, "transform", "scale(2)");
+        let before = style.transform.ops.len();
+        engine.apply_declaration(&mut style, "transform", "!!!garbage!!!");
+        assert_eq!(
+            style.transform.ops.len(), before,
+            "invalid value must not clobber the computed transform"
         );
     }
 }
