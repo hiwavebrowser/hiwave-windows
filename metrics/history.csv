@@ -1,5 +1,6 @@
-timestamp,commit,branch,build_ok,passed,failed,ignored,warnings
-2026-07-30T00:28:01.197992+00:00,34296db1,master,True,839,0,4,49
-2026-07-30T11:30:49.711460+00:00,30929cf1,master,True,869,0,5,49
-2026-07-30T13:43:20.905167+00:00,fda40abe,master,True,260,0,0,49
-2026-07-30T14:54:47.975855+00:00,69d648d0,master,True,872,0,5,49
+timestamp,commit,branch,build_ok,passed,failed,ignored,warnings,tests_ok,tests_exit_code
+2026-07-30T00:28:01.197992+00:00,34296db1,master,True,839,0,4,49,,
+2026-07-30T11:30:49.711460+00:00,30929cf1,master,True,869,0,5,49,,
+2026-07-30T13:43:20.905167+00:00,fda40abe,master,True,260,0,0,49,,
+2026-07-30T14:54:47.975855+00:00,69d648d0,master,True,872,0,5,49,,
+2026-07-30T15:41:24.188714+00:00,ed6767a3,master,True,872,0,5,49,True,0
