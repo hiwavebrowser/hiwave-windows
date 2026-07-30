@@ -1579,6 +1579,21 @@ pub struct ComputedStyle {
     // Shadow/Filter wire: BoxShadow landed INERT in #37; this field is what
     // makes box-shadow compute. Vec because box-shadow takes a comma list.
     pub box_shadows: Vec<BoxShadow>,
+    // Animation/transition wire (Cluster A3). The enums landed INERT in #40;
+    // these fields are what make the properties compute. Durations are in
+    // SECONDS, matching the macOS tree - parse_time converts ms for us.
+    pub transition_property: String,
+    pub transition_duration: f32,
+    pub transition_timing_function: TimingFunction,
+    pub transition_delay: f32,
+    pub animation_name: String,
+    pub animation_duration: f32,
+    pub animation_timing_function: TimingFunction,
+    pub animation_delay: f32,
+    pub animation_iteration_count: AnimationIterationCount,
+    pub animation_direction: AnimationDirection,
+    pub animation_fill_mode: AnimationFillMode,
+    pub animation_play_state: AnimationPlayState,
     // Box model
     pub display: Display,
     pub position: Position,
