@@ -75,10 +75,20 @@ jobs:
               bad.append(f"build exit {m['build']['exit_code']}")
           if m["tests"]["failed"]:
               bad.append(f"{m['tests']['failed']} test(s) failed")
+          # E1: a crashed suite reports failed == 0 because the counts only
+          # cover binaries that finished. On 2026-07-30 master run fda40ab
+          # died with 0xC0000005 at 260 tests and this step published it as a
+          # green row. tests.ok is cargo's own exit status - the only signal
+          # that the suite RAN TO COMPLETION.
+          if not m["tests"]["ok"]:
+              bad.append(
+                  f"test suite did not complete (cargo exit "
+                  f"{m['tests']['exit_code']}) - counts are partial"
+              )
           if bad:
               print("FAIL: " + "; ".join(bad))
               sys.exit(1)
-          print(f"OK: {m['tests']['passed']} tests passed")
+          print(f"OK: {m['tests']['passed']} tests passed, suite complete")
           PY
 
       # Runs on EVERY branch so the logic is actually exercised in review; only
@@ -130,17 +140,36 @@ jobs:
           import csv, json, os
           m = json.load(open("metrics.json", encoding="utf-8"))
           path = "metrics/history.csv"
-          exists = os.path.exists(path)
-          with open(path, "a", newline="", encoding="utf-8") as f:
-              w = csv.writer(f)
-              if not exists:
-                  w.writerow(["timestamp", "commit", "branch", "build_ok",
-                              "passed", "failed", "ignored", "warnings"])
-              w.writerow([
-                  m["timestamp"], m["commit"][:8], m["branch"],
-                  m["build"]["ok"], m["tests"]["passed"], m["tests"]["failed"],
-                  m["tests"]["ignored"], m["build"]["warnings"],
-              ])
+          # E2: tests_ok + tests_exit_code distinguish a COMPLETE suite from a
+          # crash-truncated one. Without them, run fda40ab's 0xC0000005 crash
+          # published passed=260 as an ordinary green row and any
+          # last-row-wins consumer would treat 260 as the suite size.
+          HEADER = ["timestamp", "commit", "branch", "build_ok",
+                    "passed", "failed", "ignored", "warnings",
+                    "tests_ok", "tests_exit_code"]
+          rows = []
+          if os.path.exists(path):
+              with open(path, newline="", encoding="utf-8") as f:
+                  rows = list(csv.reader(f))
+          # Schema migration: pad pre-E2 rows with EMPTY cells, never invented
+          # values. The consumer's rule (P1 amend) is to reject rows without a
+          # true tests_ok, so old rows - including the poisoned 260 crash row -
+          # fall out of last-row-wins naturally instead of being rewritten.
+          if rows and rows[0] != HEADER:
+              old_len = len(rows[0])
+              rows[0] = HEADER
+              for r in rows[1:]:
+                  r.extend([""] * (len(HEADER) - old_len))
+          if not rows:
+              rows = [HEADER]
+          rows.append([
+              m["timestamp"], m["commit"][:8], m["branch"],
+              m["build"]["ok"], m["tests"]["passed"], m["tests"]["failed"],
+              m["tests"]["ignored"], m["build"]["warnings"],
+              m["tests"]["ok"], m["tests"]["exit_code"],
+          ])
+          with open(path, "w", newline="", encoding="utf-8") as f:
+              csv.writer(f).writerows(rows)
           PY
 
           git add metrics/ metrics.json
