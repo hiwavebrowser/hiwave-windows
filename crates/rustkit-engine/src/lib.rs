@@ -4157,6 +4157,17 @@ mod transform_wire_tests {
     /// There is no lighter constructor: apply_declaration needs `self` because
     /// it delegates shorthands to self.apply_box_shorthand.
     fn headless_engine() -> Engine {
+        // Compositor::new() performs wgpu adapter init. cargo runs tests in
+        // parallel, so several of these can execute concurrently - which
+        // SIGSEGVs on Linux (hiwave-linux #21, Argos R1 HOLD) and is merely
+        // tolerated on Windows (measured stable at --test-threads=1/4/8/16).
+        // Serialising CONSTRUCTION removes the race without serialising the
+        // tests themselves: only the init is exclusive, the assertions still
+        // run in parallel. Poison-tolerant so one panicking test cannot
+        // cascade into every other engine test.
+        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         Engine {
             config: EngineConfig::default(),
@@ -4285,6 +4296,17 @@ mod shadow_wire_tests {
     use rustkit_css::Color;
 
     fn engine() -> Engine {
+        // Compositor::new() performs wgpu adapter init. cargo runs tests in
+        // parallel, so several of these can execute concurrently - which
+        // SIGSEGVs on Linux (hiwave-linux #21, Argos R1 HOLD) and is merely
+        // tolerated on Windows (measured stable at --test-threads=1/4/8/16).
+        // Serialising CONSTRUCTION removes the race without serialising the
+        // tests themselves: only the init is exclusive, the assertions still
+        // run in parallel. Poison-tolerant so one panicking test cannot
+        // cascade into every other engine test.
+        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         Engine {
             config: EngineConfig::default(),
@@ -4378,6 +4400,17 @@ mod animation_wire_tests {
                       AnimationPlayState, TimingFunction};
 
     fn engine() -> Engine {
+        // Compositor::new() performs wgpu adapter init. cargo runs tests in
+        // parallel, so several of these can execute concurrently - which
+        // SIGSEGVs on Linux (hiwave-linux #21, Argos R1 HOLD) and is merely
+        // tolerated on Windows (measured stable at --test-threads=1/4/8/16).
+        // Serialising CONSTRUCTION removes the race without serialising the
+        // tests themselves: only the init is exclusive, the assertions still
+        // run in parallel. Poison-tolerant so one panicking test cannot
+        // cascade into every other engine test.
+        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         Engine {
             config: EngineConfig::default(),
