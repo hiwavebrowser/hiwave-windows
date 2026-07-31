@@ -2260,6 +2260,94 @@ impl Engine {
                     style.text_decoration_thickness = length;
                 }
             }
+            // FLEX ITEM / ALIGNMENT FAMILY.
+            //
+            // Four of these came straight off the reachability list
+            // (align_content, align_self, flex_shrink, order). The other three
+            // - flex-grow, flex-basis and the `flex` shorthand - are a DECLARED
+            // EXPANSION: flex-shrink alone is not usable, and `flex: 1` is the
+            // form authors actually write. Shipping shrink without grow would
+            // close a metric entry while leaving the family unusable, which is
+            // the kind of win-on-paper this metric exists to prevent.
+            "align-content" => {
+                style.align_content = match value.trim() {
+                    "flex-start" | "start" => rustkit_css::AlignContent::FlexStart,
+                    "flex-end" | "end" => rustkit_css::AlignContent::FlexEnd,
+                    "center" => rustkit_css::AlignContent::Center,
+                    "space-between" => rustkit_css::AlignContent::SpaceBetween,
+                    "space-around" => rustkit_css::AlignContent::SpaceAround,
+                    "space-evenly" => rustkit_css::AlignContent::SpaceEvenly,
+                    _ => rustkit_css::AlignContent::Stretch,
+                };
+            }
+            "align-self" => {
+                style.align_self = match value.trim() {
+                    "flex-start" | "start" => rustkit_css::AlignSelf::FlexStart,
+                    "flex-end" | "end" => rustkit_css::AlignSelf::FlexEnd,
+                    "center" => rustkit_css::AlignSelf::Center,
+                    "baseline" => rustkit_css::AlignSelf::Baseline,
+                    "stretch" => rustkit_css::AlignSelf::Stretch,
+                    _ => rustkit_css::AlignSelf::Auto,
+                };
+            }
+            "order" => {
+                // A non-numeric value is IGNORED rather than reset to 0.
+                // Flattening to 0 would silently reorder a flex line.
+                if let Ok(order) = value.trim().parse::<i32>() {
+                    style.order = order;
+                }
+            }
+            "flex-grow" => {
+                if let Ok(grow) = value.trim().parse::<f32>() {
+                    style.flex_grow = grow;
+                }
+            }
+            "flex-shrink" => {
+                if let Ok(shrink) = value.trim().parse::<f32>() {
+                    style.flex_shrink = shrink;
+                }
+            }
+            "flex-basis" => {
+                style.flex_basis = parse_flex_basis(value);
+            }
+            "flex" => {
+                // Shorthand: flex: <grow> [<shrink>] [<basis>].
+                //
+                // CSS also allows `flex: <grow> <basis>` (two values where the
+                // second is a length). Treating position 2 as shrink
+                // unconditionally would read `flex: 1 200px` as shrink=200,
+                // which is silently wrong rather than merely unsupported - so
+                // a second value that does NOT parse as a bare number is
+                // treated as the basis.
+                let parts: Vec<&str> = value.split_whitespace().collect();
+                if let Some(first) = parts.first() {
+                    if let Ok(grow) = first.parse::<f32>() {
+                        style.flex_grow = grow;
+                        // `flex: <number>` sets basis to 0, not auto - that is
+                        // what makes `flex: 1` divide the container rather than
+                        // sizing to content.
+                        if parts.len() == 1 {
+                            style.flex_shrink = 1.0;
+                            style.flex_basis = rustkit_css::FlexBasis::Length(0.0);
+                        }
+                    }
+                }
+                if parts.len() >= 2 {
+                    match parts[1].parse::<f32>() {
+                        Ok(shrink) => {
+                            style.flex_shrink = shrink;
+                            style.flex_basis = rustkit_css::FlexBasis::Length(0.0);
+                        }
+                        Err(_) => {
+                            style.flex_shrink = 1.0;
+                            style.flex_basis = parse_flex_basis(parts[1]);
+                        }
+                    }
+                }
+                if parts.len() >= 3 {
+                    style.flex_basis = parse_flex_basis(parts[2]);
+                }
+            }
             "flex-direction" => {
                 style.flex_direction = match value {
                     "column" => rustkit_css::FlexDirection::Column,
@@ -3992,6 +4080,27 @@ fn parse_overflow(value: &str) -> rustkit_css::Overflow {
         "auto" => rustkit_css::Overflow::Auto,
         "clip" => rustkit_css::Overflow::Clip,
         _ => rustkit_css::Overflow::Visible,
+    }
+}
+
+/// Parse a `flex-basis` value.
+///
+/// `em` is REFUSED rather than approximated: `FlexBasis::Length` holds a bare
+/// f32 with no unit, so silently storing `2em` as `2px` would be a wrong number
+/// that looks like a measurement. Refusing leaves the previous value, which is
+/// visible as "the property did nothing" rather than as a subtly wrong layout.
+fn parse_flex_basis(value: &str) -> rustkit_css::FlexBasis {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case("auto") {
+        return rustkit_css::FlexBasis::Auto;
+    }
+    if v.eq_ignore_ascii_case("content") {
+        return rustkit_css::FlexBasis::Content;
+    }
+    match parse_length(v) {
+        Some(rustkit_css::Length::Px(px)) => rustkit_css::FlexBasis::Length(px),
+        Some(rustkit_css::Length::Percent(pct)) => rustkit_css::FlexBasis::Percent(pct),
+        _ => rustkit_css::FlexBasis::Auto,
     }
 }
 
@@ -6098,6 +6207,162 @@ mod overflow_whitespace_decoration_tests {
         assert_ne!(
             wrapped, nowrap,
             "white-space: nowrap must change how the text is laid out"
+        );
+    }
+}
+
+#[cfg(test)]
+mod flex_item_property_tests {
+    //! Two groups per the #62 shape: computed-value assertions, then a
+    //! GEOMETRIC reaching assertion. The reaching test is the one that matters
+    //! - on #64 the computed group passed while the property still painted
+    //! nothing, and only the reaching group caught it.
+    use super::*;
+    use rustkit_layout::{Dimensions, Rect};
+
+    fn eng() -> Engine {
+        Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        }
+    }
+
+    // ---------- GROUP 1: computed values ----------
+
+    #[test]
+    fn align_content_and_align_self_keywords_compute() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "align-content", "space-between");
+        Engine::apply_declaration(&mut s, "align-self", "center");
+        assert_eq!(s.align_content, rustkit_css::AlignContent::SpaceBetween);
+        assert_eq!(s.align_self, rustkit_css::AlignSelf::Center);
+    }
+
+    #[test]
+    fn order_accepts_negatives_and_ignores_garbage() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "order", "-2");
+        assert_eq!(s.order, -2, "negative order is legal CSS");
+        Engine::apply_declaration(&mut s, "order", "banana");
+        assert_eq!(
+            s.order, -2,
+            "a non-numeric value must be ignored, not flattened to 0 - \
+             flattening would silently reorder the line"
+        );
+    }
+
+    #[test]
+    fn flex_longhands_compute() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "flex-grow", "3");
+        Engine::apply_declaration(&mut s, "flex-shrink", "0");
+        Engine::apply_declaration(&mut s, "flex-basis", "120px");
+        assert_eq!(s.flex_grow, 3.0);
+        assert_eq!(s.flex_shrink, 0.0);
+        assert_eq!(s.flex_basis, rustkit_css::FlexBasis::Length(120.0));
+    }
+
+    #[test]
+    fn the_single_number_shorthand_zeroes_the_basis() {
+        // `flex: 1` must set basis to 0, not auto. With basis auto the item
+        // sizes to content and the container is NOT divided - which is the
+        // whole reason authors write `flex: 1`.
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "flex", "1");
+        assert_eq!(s.flex_grow, 1.0);
+        assert_eq!(s.flex_shrink, 1.0);
+        assert_eq!(
+            s.flex_basis,
+            rustkit_css::FlexBasis::Length(0.0),
+            "flex: 1 must zero the basis or the container is not divided"
+        );
+    }
+
+    #[test]
+    fn a_two_value_shorthand_distinguishes_shrink_from_basis() {
+        // `flex: 1 200px` means grow 1, BASIS 200px - not shrink 200.
+        // Reading position 2 as shrink unconditionally is silently wrong
+        // rather than merely unsupported.
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "flex", "1 200px");
+        assert_eq!(s.flex_grow, 1.0);
+        assert_eq!(
+            s.flex_basis,
+            rustkit_css::FlexBasis::Length(200.0),
+            "a length in position 2 is the BASIS"
+        );
+
+        let mut s2 = ComputedStyle::new();
+        Engine::apply_declaration(&mut s2, "flex", "2 3");
+        assert_eq!(s2.flex_grow, 2.0);
+        assert_eq!(s2.flex_shrink, 3.0, "a bare number in position 2 is the SHRINK");
+    }
+
+    #[test]
+    fn em_basis_is_refused_rather_than_stored_as_pixels() {
+        // FlexBasis::Length holds a bare f32 with no unit. Storing 2em as 2px
+        // would be a wrong number that looks like a measurement.
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "flex-basis", "2em");
+        assert_eq!(
+            s.flex_basis,
+            rustkit_css::FlexBasis::Auto,
+            "an em basis must not be silently stored as pixels"
+        );
+    }
+
+    // ---------- GROUP 2: does it reach the geometry? ----------
+
+    #[test]
+    fn flex_grow_actually_divides_the_container() {
+        // GEOMETRIC RECEIPT, the shape from Talos's Linux #30: two items with
+        // flex:1 and flex:3 must split the container 1:3. A computed-value
+        // assertion cannot tell whether the number reached layout at all.
+        let e = eng();
+        let html = "<html><body>\
+            <div style=\"display: flex; width: 400px\">\
+            <div style=\"flex: 1\">a</div>\
+            <div style=\"flex: 3\">b</div>\
+            </div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let mut root = e.build_layout_from_document(&d);
+        let mut cb = Dimensions::default();
+        cb.content = Rect::new(0.0, 0.0, 800.0, 600.0);
+        root.layout(&cb);
+
+        fn widths(b: &LayoutBox, out: &mut Vec<f32>) {
+            if b.style.flex_grow > 0.0 {
+                out.push(b.dimensions.content.width);
+            }
+            for c in &b.children {
+                widths(c, out);
+            }
+        }
+        let mut got = Vec::new();
+        widths(&root, &mut got);
+        assert_eq!(
+            got.len(),
+            2,
+            "expected two flex items to carry flex_grow; got {got:?}"
+        );
+        let (a, b) = (got[0], got[1]);
+        assert!(
+            a > 0.0 && b > 0.0,
+            "both flex items must have non-zero width; got {a} and {b}"
+        );
+        let ratio = b / a;
+        assert!(
+            (ratio - 3.0).abs() < 0.2,
+            "flex:1 and flex:3 must split the container 1:3 - got {a} and {b} \
+             (ratio {ratio:.2}). If the ratio is 1.0 the grow factor never \
+             reached layout."
         );
     }
 }
