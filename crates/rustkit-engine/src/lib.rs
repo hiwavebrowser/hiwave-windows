@@ -553,6 +553,12 @@ impl Engine {
         view.url = Some(url.clone());
         view.document = Some(document.clone());
         view.title = title.clone();
+        // A new document starts with NO external CSS. Without this, a view
+        // navigating from a styled page to one with no <link> (or to
+        // load_html, which fetches no subresources at all) keeps the previous
+        // document's stylesheet and renders the new page with the old page's
+        // styles.
+        view.external_css.clear();
 
         // Initialize JavaScript if enabled
         if self.config.javascript_enabled {
@@ -663,6 +669,12 @@ impl Engine {
         view.url = Some(url.clone());
         view.document = Some(document.clone());
         view.title = title.clone();
+        // A new document starts with NO external CSS. Without this, a view
+        // navigating from a styled page to one with no <link> (or to
+        // load_html, which fetches no subresources at all) keeps the previous
+        // document's stylesheet and renders the new page with the old page's
+        // styles.
+        view.external_css.clear();
 
         // Initialize JavaScript if enabled
         if self.config.javascript_enabled {
@@ -2544,10 +2556,11 @@ impl Engine {
         document: &Document,
         base_url: &Url,
     ) -> usize {
+        // NO early return on an empty list. A document with no <link> must
+        // ASSIGN an empty string, not skip the assignment - skipping leaves the
+        // PREVIOUS document's stylesheet on the view, so navigating from a
+        // styled page to an unstyled one silently keeps the old page's CSS.
         let urls = Self::discover_external_stylesheets(document, Some(base_url));
-        if urls.is_empty() {
-            return 0;
-        }
         let mut css = String::new();
         let mut loaded = 0usize;
         for url in urls {
@@ -4907,5 +4920,67 @@ mod image_subresource_tests {
         assert_eq!(images.len(), 1);
         assert!(sheets[0].as_str().ends_with("s.css"));
         assert!(images[0].1.as_str().ends_with("i.png"));
+    }
+}
+
+#[cfg(test)]
+mod external_css_lifetime_tests {
+    use super::*;
+
+    /// A view must NOT carry one document's external CSS into the next.
+    ///
+    /// The original #54 implementation early-returned from
+    /// `load_external_stylesheets` when a document had no `<link>`, BEFORE
+    /// assigning `view.external_css`. So navigating from a page with a
+    /// stylesheet to a page without one left the first page's CSS applied to
+    /// the second. `load_html` never fetches subresources at all, so it had
+    /// the same leak by a shorter route.
+    ///
+    /// The failure is invisible on a single page load, which is exactly why it
+    /// survived review: every #54 test loaded ONE document.
+    #[test]
+    fn a_new_document_does_not_inherit_the_previous_external_css() {
+        let mut engine = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(
+                ResourceLoader::new(LoaderConfig::default()).expect("loader"),
+            ),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        };
+        let id = engine
+            .create_headless_view(Bounds {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+            })
+            .expect("headless view");
+
+        // Simulate the state left behind by a previous navigation that DID
+        // fetch a stylesheet.
+        engine
+            .views
+            .get_mut(&id)
+            .unwrap()
+            .external_css
+            .push_str("p { width: 123px }");
+
+        // Load a new document into the same view.
+        engine
+            .load_html(id, "<html><body><p>next page</p></body></html>")
+            .expect("load_html");
+
+        assert_eq!(
+            engine.views.get(&id).unwrap().external_css,
+            "",
+            "a new document must start with no external CSS; the previous \
+             page's stylesheet leaked into it"
+        );
     }
 }
