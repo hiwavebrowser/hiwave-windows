@@ -1391,17 +1391,94 @@ impl Engine {
         id: Option<&str>,
         ancestors: &[ElementCtx],
     ) -> Option<u32> {
+        Self::selector_matches_inner(selector, tag, classes, id, ancestors)
+    }
+
+    /// Split one selector group into compound selectors, recording which
+    /// boundaries are `>` child combinators.
+    ///
+    /// Returns `(compounds, child_of_next)` where `child_of_next[i]` is true
+    /// when `compounds[i]` must be the IMMEDIATE PARENT of `compounds[i + 1]`.
+    /// `child_of_next` always has the same length as `compounds`; the entry for
+    /// the subject (the last compound) is meaningless and is always false.
+    ///
+    /// Splits on whitespace AND on `>`, so `.nav>li`, `.nav > li` and
+    /// `.nav >li` all tokenise identically - authors write all three.
+    ///
+    /// Returns `None` for a group with a leading or trailing `>`, which cannot
+    /// mean anything. Refusing beats guessing, but note the failure direction:
+    /// over-refusing silently drops rules that should have applied, so this
+    /// returns None ONLY for those two shapes and never for an ordinary
+    /// selector.
+    fn split_selector_group(group: &str) -> Option<(Vec<String>, Vec<bool>)> {
+        let mut compounds: Vec<String> = Vec::new();
+        let mut child_of_next: Vec<bool> = Vec::new();
+        let mut cur = String::new();
+
+        for ch in group.chars() {
+            if ch == '>' {
+                if !cur.is_empty() {
+                    compounds.push(std::mem::take(&mut cur));
+                    child_of_next.push(false);
+                }
+                // The compound to the LEFT of this `>` must be the immediate
+                // parent of the next one. A `>` with nothing to its left is
+                // malformed.
+                match child_of_next.last_mut() {
+                    Some(flag) => *flag = true,
+                    None => return None,
+                }
+            } else if ch.is_whitespace() {
+                if !cur.is_empty() {
+                    compounds.push(std::mem::take(&mut cur));
+                    child_of_next.push(false);
+                }
+            } else {
+                cur.push(ch);
+            }
+        }
+        if !cur.is_empty() {
+            compounds.push(cur);
+            child_of_next.push(false);
+        }
+
+        // A trailing `>` leaves the child flag set on the SUBJECT, which has
+        // nothing to its right.
+        if child_of_next.last().copied().unwrap_or(false) {
+            return None;
+        }
+        if compounds.is_empty() {
+            return None;
+        }
+        Some((compounds, child_of_next))
+    }
+
+    fn selector_matches_inner(
+        selector: &str,
+        tag: &str,
+        classes: &[&str],
+        id: Option<&str>,
+        ancestors: &[ElementCtx],
+    ) -> Option<u32> {
         let mut best: Option<u32> = None;
         for group in selector.split(',') {
             let group = group.trim();
             if group.is_empty() {
                 continue;
             }
-            // Split into compound selectors, dropping `>` combinator tokens.
-            let compounds: Vec<&str> = group
-                .split_whitespace()
-                .filter(|t| *t != ">")
-                .collect();
+            // Split into compound selectors, KEEPING the `>` child combinator.
+            //
+            // The previous version dropped `>` tokens, which was wrong in both
+            // directions: `.nav > li` silently became `.nav li` (over-match -
+            // one menu level's rule also styled every nested submenu item), and
+            // `.nav>li` never split at all, so the compound's type part was the
+            // literal string "nav>li", matched no tag, and the whole rule was
+            // silently DEAD. Both spellings are ordinary authoring style.
+            let Some((compounds, child_of_next)) = Self::split_selector_group(group) else {
+                // Malformed (leading or trailing `>`). Refuse the group rather
+                // than guessing at what the author meant.
+                continue;
+            };
             let Some((subject, ancestor_sels)) = compounds.split_last() else {
                 continue;
             };
@@ -1414,7 +1491,36 @@ impl Engine {
             let mut spec = subject_spec;
             let mut idx = ancestors.len();
             let mut matched_all = true;
-            for sel in ancestor_sels.iter().rev() {
+            for (k, sel) in ancestor_sels.iter().enumerate().rev() {
+                let a_classes_of = |a: &ElementCtx| -> Vec<String> { a.classes.clone() };
+                if child_of_next[k] {
+                    // `>`: this compound must be the IMMEDIATE PARENT of
+                    // whatever matched to its right. Consume exactly one
+                    // ancestor and require it to match - no searching upward.
+                    if idx == 0 {
+                        matched_all = false;
+                        break;
+                    }
+                    idx -= 1;
+                    let a = &ancestors[idx];
+                    let owned = a_classes_of(a);
+                    let a_classes: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+                    match Self::simple_selector_match(sel, &a.tag, &a_classes, a.id.as_deref()) {
+                        Some(s) => spec += s,
+                        None => {
+                            matched_all = false;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                // Descendant: search from nearest to farthest, consuming as we
+                // go. Greedy with no backtracking - `.a > .b .c` can
+                // false-NEGATIVE where an outer candidate would have matched.
+                // The macOS reference has the SAME cursor, so this is left
+                // alone deliberately: an out-of-band better matcher here would
+                // be a divergence and would make parity comparison meaningless.
+                // Talos raised it as a shared cross-tree item for Prometheus.
                 let mut found = false;
                 while idx > 0 {
                     idx -= 1;
@@ -4981,6 +5087,194 @@ mod external_css_lifetime_tests {
             "",
             "a new document must start with no external CSS; the previous \
              page's stylesheet leaked into it"
+        );
+    }
+}
+
+#[cfg(test)]
+mod child_combinator_tests {
+    use super::*;
+
+    fn ctx(tag: &str, classes: &[&str], id: Option<&str>) -> ElementCtx {
+        ElementCtx {
+            tag: tag.to_string(),
+            classes: classes.iter().map(|s| s.to_string()).collect(),
+            id: id.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn child_matches_an_immediate_child() {
+        let anc = [ctx("ul", &["nav"], None)];
+        assert!(Engine::selector_matches(".nav > li", "li", &[], None, &anc).is_some());
+    }
+
+    #[test]
+    fn child_does_not_match_a_deeper_descendant() {
+        // THE OVER-MATCH BUG. `.nav > li` must not match a submenu li nested
+        // under ul.nav > li > ul. Before the fix, `>` was discarded, so this
+        // read as `.nav li` and every submenu item took the top-level rule --
+        // the page renders wrong with no error anywhere.
+        let anc = [
+            ctx("ul", &["nav"], None),
+            ctx("li", &[], None),
+            ctx("ul", &["submenu"], None),
+        ];
+        assert!(
+            Engine::selector_matches(".nav > li", "li", &[], None, &anc).is_none(),
+            "child combinator must not match a descendant three levels down"
+        );
+    }
+
+    #[test]
+    fn unspaced_form_parses_identically() {
+        // THE SILENTLY-DEAD BUG. `.nav>li` never split on whitespace, so the
+        // compound type part was the literal "nav>li", matched no tag, and the
+        // whole rule was dead. Authors write all of these spellings.
+        let anc = [ctx("ul", &["nav"], None)];
+        for sel in [".nav>li", ".nav > li", ".nav >li", ".nav> li"] {
+            assert!(
+                Engine::selector_matches(sel, "li", &[], None, &anc).is_some(),
+                "{sel} must match an immediate child"
+            );
+        }
+    }
+
+    #[test]
+    fn all_spellings_agree_on_the_negative_case_too() {
+        // A spelling that parses but matches too much is as wrong as one that
+        // matches nothing. Every spelling must REFUSE the nested case.
+        let anc = [
+            ctx("ul", &["nav"], None),
+            ctx("li", &[], None),
+            ctx("ul", &[], None),
+        ];
+        for sel in [".nav>li", ".nav > li", ".nav >li", ".nav> li"] {
+            assert!(
+                Engine::selector_matches(sel, "li", &[], None, &anc).is_none(),
+                "{sel} must refuse a deeper descendant"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_combinators_index_correctly_in_a_longer_chain() {
+        // Talos attack point 1: is the "combinator to my right" indexing right
+        // in general, or only for the chain lengths tested? Chain of four with
+        // the child boundary in the MIDDLE, not at either end.
+        let anc = [
+            ctx("div", &["page"], None),
+            ctx("section", &[], None),
+            ctx("div", &["card"], None),
+            ctx("div", &["body"], None),
+            ctx("span", &[], None),
+        ];
+        assert!(
+            Engine::selector_matches(".page .card > .body .title", "h2", &["title"], None, &anc)
+                .is_some(),
+            "middle child boundary with descendants on both sides must match"
+        );
+
+        // Break ONLY the child boundary: a wrapper between .card and .body.
+        // Everything else is unchanged, so a failure here is the child
+        // constraint doing its job rather than some other part of the chain.
+        let broken = [
+            ctx("div", &["page"], None),
+            ctx("section", &[], None),
+            ctx("div", &["card"], None),
+            ctx("div", &["wrapper"], None),
+            ctx("div", &["body"], None),
+            ctx("span", &[], None),
+        ];
+        assert!(
+            Engine::selector_matches(".page .card > .body .title", "h2", &["title"], None, &broken)
+                .is_none(),
+            "a wrapper between .card and .body must break the child boundary"
+        );
+    }
+
+    #[test]
+    fn ordinary_descendant_selectors_still_match() {
+        // Talos attack point 2: over-refusing is the real regression risk --
+        // the malformed-None path must not swallow selectors that should match.
+        let anc = [
+            ctx("body", &[], None),
+            ctx("div", &["wrap"], None),
+            ctx("ul", &["nav"], None),
+        ];
+        for sel in ["li", ".nav li", "body .nav li", "ul li", "div li"] {
+            assert!(
+                Engine::selector_matches(sel, "li", &[], None, &anc).is_some(),
+                "{sel} is an ordinary descendant selector and must still match"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_groups_are_refused_without_panicking() {
+        let anc = [ctx("ul", &["nav"], None)];
+        for sel in ["> li", ".nav >", ">", ""] {
+            assert!(
+                Engine::selector_matches(sel, "li", &[], None, &anc).is_none(),
+                "{sel:?} is malformed and must not match"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_group_does_not_kill_its_valid_siblings() {
+        // Comma groups are independent. Refusing one must not refuse the rest,
+        // or a single typo silently disables an entire rule.
+        let anc = [ctx("ul", &["nav"], None)];
+        assert!(
+            Engine::selector_matches("> broken, .nav > li", "li", &[], None, &anc).is_some(),
+            "a valid group must still match alongside a malformed one"
+        );
+    }
+
+    #[test]
+    fn specificity_is_unchanged_by_the_combinator() {
+        // Combinators contribute nothing to specificity. `.nav > li` and
+        // `.nav li` must score identically on an element both match.
+        let anc = [ctx("ul", &["nav"], None)];
+        let child = Engine::selector_matches(".nav > li", "li", &[], None, &anc);
+        let desc = Engine::selector_matches(".nav li", "li", &[], None, &anc);
+        assert_eq!(child, desc, "a combinator must not change specificity");
+    }
+
+    #[test]
+    fn child_combinator_applies_through_the_real_layout_build() {
+        // Receipt through the actual cascade, not just the matcher: the rule
+        // must reach a computed style on the right element and skip the wrong
+        // one.
+        let e = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        };
+        let html = "<html><head><style>.nav > li { width: 123px }</style></head>\
+                    <body><ul class=\"nav\"><li>top<ul><li>nested</li></ul></li></ul></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d);
+
+        fn widths(b: &LayoutBox, out: &mut Vec<String>) {
+            out.push(format!("{:?}", b.style.width));
+            for c in &b.children {
+                widths(c, out);
+            }
+        }
+        let mut got = Vec::new();
+        widths(&layout, &mut got);
+        let hits = got.iter().filter(|w| w.contains("123")).count();
+        assert_eq!(
+            hits, 1,
+            "exactly the ONE immediate-child li may take the rule; got {got:?}"
         );
     }
 }
