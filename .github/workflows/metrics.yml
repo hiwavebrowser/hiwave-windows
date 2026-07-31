@@ -25,6 +25,12 @@ on:
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: never
+  # WORKFLOW scope, deliberately. A step's own `env:` block is NOT visible to
+  # that same step's `if:` -- the condition is evaluated before step env is
+  # built -- so the step-local form looks correct in review and is completely
+  # inert in production. (Atlas hit this on macOS and flagged it before anyone
+  # else could ship it the broken way.)
+  UMBRELLA_PAT: ${{ secrets.UMBRELLA_PAT }}
 
 jobs:
   collect-metrics:
@@ -190,3 +196,52 @@ jobs:
           else
             echo "Not master — history logic exercised, push skipped."
           fi
+
+      # ---------------------------------------------------------------------
+      # Tell the umbrella there is a fresh Windows row to read.
+      #
+      # Only on master: master is the only ref that actually pushed to
+      # metrics-history above, so pinging from a PR branch would wake the
+      # umbrella to re-read a CSV that did not change.
+      #
+      # THREE guards, and all three are load-bearing (Atlas's macOS shape,
+      # lifted with his ::warning:: refinement folded in from the start rather
+      # than added afterwards):
+      #
+      #   1. `env.UMBRELLA_PAT != ''` — skip cleanly when the token is ABSENT
+      #      instead of calling the API with an empty string.
+      #   2. `continue-on-error` — covers the token being PRESENT BUT REJECTED.
+      #      A revoked or expired PAT must never be able to fail a metrics run.
+      #      This is the one that actually mattered on macOS: the token was set
+      #      and rejected, so an absent-token guard alone would not have saved
+      #      it.
+      #   3. The ::warning:: below — because continue-on-error ALONE buys
+      #      silence, which is the other wrong answer. The step reports
+      #      conclusion=success while outcome=failure, the job goes green, and
+      #      nobody learns the umbrella was never pinged. Fatal and silent are
+      #      both wrong.
+      - name: Trigger umbrella metrics update
+        id: umbrella_dispatch
+        if: success() && github.ref == 'refs/heads/master' && env.UMBRELLA_PAT != ''
+        continue-on-error: true
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.UMBRELLA_PAT }}
+          repository: hiwavebrowser/hiwave
+          event-type: metrics-updated
+          client-payload: '{"platform": "windows", "run_id": "${{ github.run_number }}"}'
+
+      - name: Surface a failed umbrella ping
+        if: always() && steps.umbrella_dispatch.outcome == 'failure'
+        run: |
+          echo "::warning::Umbrella metrics dispatch FAILED — the Windows numbers"\
+            " on the umbrella will be stale until this is fixed. The metrics"\
+            " themselves are fine; this is the notification only. Most likely"\
+            " cause is a stale or revoked UMBRELLA_PAT — rotate the credential"\
+            " rather than minting a new secret."
+
+      - name: Note when the umbrella ping was skipped
+        if: success() && github.ref == 'refs/heads/master' && env.UMBRELLA_PAT == ''
+        run: |
+          echo "::notice::UMBRELLA_PAT not set — skipped the umbrella metrics"\
+            " dispatch. The metrics themselves were collected and published."
