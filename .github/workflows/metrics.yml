@@ -12,8 +12,13 @@ name: Windows Metrics
 # honestly report, so those are what this collects.
 
 on:
+  # master via push, everything else via the PR event. `branches: ['**']` plus
+  # `pull_request` ran this job TWICE on the same SHA for every PR push -- two
+  # runner slots and two CI notices per commit for one measurement. The
+  # master-gated "Update metrics history" step still fires, because master
+  # pushes are still push events.
   push:
-    branches: ['**']
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
