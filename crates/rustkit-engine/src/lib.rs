@@ -1147,6 +1147,25 @@ impl Engine {
                         style.background_clip = rustkit_css::BackgroundClip::Text;
                         style.background_gradient = parent.background_gradient.clone();
                     }
+                    // text-decoration does NOT inherit - and that is correct,
+                    // which is exactly why it needs handling here. CSS Text
+                    // Decoration distinguishes INHERITANCE from PROPAGATION: the
+                    // line is drawn across in-flow descendants of the element
+                    // that declared it. `inherit_from` re-initialises these four
+                    // fields (correctly), and the display list reads them off
+                    // the TEXT box, so without this an underlined <p> computed
+                    // its decoration and painted nothing - the property was
+                    // writable but still unreachable.
+                    if parent.text_decoration_line.underline
+                        || parent.text_decoration_line.overline
+                        || parent.text_decoration_line.line_through
+                    {
+                        style.text_decoration_line = parent.text_decoration_line;
+                        style.text_decoration_color = parent.text_decoration_color;
+                        style.text_decoration_style = parent.text_decoration_style;
+                        style.text_decoration_thickness =
+                            parent.text_decoration_thickness.clone();
+                    }
                     LayoutBox::new(BoxType::Text(trimmed.to_string()), style)
                 }
             }
@@ -2157,6 +2176,88 @@ impl Engine {
                     style.z_index = 0;
                 } else if let Ok(z) = v.parse::<i32>() {
                     style.z_index = z;
+                }
+            }
+            // OVERFLOW / WHITE-SPACE / TEXT-DECORATION.
+            //
+            // All three had implemented consumers and no producer: grid.rs
+            // sizes auto-min tracks off overflow_x and honours white_space
+            // Nowrap/Pre, and the display list emits TextDecoration commands -
+            // none of it reachable, because no arm could set the field. Ported
+            // from the macOS reference, which has these arms.
+            "overflow" => {
+                let o = parse_overflow(value);
+                style.overflow_x = o;
+                style.overflow_y = o;
+            }
+            "overflow-x" => {
+                style.overflow_x = parse_overflow(value);
+            }
+            "overflow-y" => {
+                style.overflow_y = parse_overflow(value);
+            }
+            "white-space" => {
+                style.white_space = match value.trim().to_lowercase().as_str() {
+                    "pre" => rustkit_css::WhiteSpace::Pre,
+                    "nowrap" => rustkit_css::WhiteSpace::Nowrap,
+                    "pre-wrap" => rustkit_css::WhiteSpace::PreWrap,
+                    "pre-line" => rustkit_css::WhiteSpace::PreLine,
+                    "break-spaces" => rustkit_css::WhiteSpace::BreakSpaces,
+                    _ => rustkit_css::WhiteSpace::Normal,
+                };
+            }
+            "text-decoration" | "text-decoration-line" => {
+                // `text-decoration` is a shorthand and MAY carry a colour and
+                // style as well as the line. Only the line is read here; a
+                // shorthand that also names a colour still sets the line
+                // correctly rather than being dropped whole, which is what
+                // matching the entire value against fixed keywords would do.
+                let mut line = rustkit_css::TextDecorationLine::NONE;
+                let mut saw_line_keyword = false;
+                for part in value.split_whitespace() {
+                    match part.to_lowercase().as_str() {
+                        "underline" => {
+                            line.underline = true;
+                            saw_line_keyword = true;
+                        }
+                        "overline" => {
+                            line.overline = true;
+                            saw_line_keyword = true;
+                        }
+                        "line-through" => {
+                            line.line_through = true;
+                            saw_line_keyword = true;
+                        }
+                        "none" => {
+                            line = rustkit_css::TextDecorationLine::NONE;
+                            saw_line_keyword = true;
+                        }
+                        _ => {}
+                    }
+                }
+                // A value naming no line keyword at all (e.g. a colour on its
+                // own) leaves the existing line alone instead of clearing it.
+                if saw_line_keyword {
+                    style.text_decoration_line = line;
+                }
+            }
+            "text-decoration-color" => {
+                if let Some(c) = parse_color(value) {
+                    style.text_decoration_color = Some(c);
+                }
+            }
+            "text-decoration-style" => {
+                style.text_decoration_style = match value.trim().to_lowercase().as_str() {
+                    "double" => rustkit_css::TextDecorationStyle::Double,
+                    "dotted" => rustkit_css::TextDecorationStyle::Dotted,
+                    "dashed" => rustkit_css::TextDecorationStyle::Dashed,
+                    "wavy" => rustkit_css::TextDecorationStyle::Wavy,
+                    _ => rustkit_css::TextDecorationStyle::Solid,
+                };
+            }
+            "text-decoration-thickness" => {
+                if let Some(length) = parse_length(value) {
+                    style.text_decoration_thickness = length;
                 }
             }
             "flex-direction" => {
@@ -3877,6 +3978,20 @@ fn parse_timing_function(value: &str) -> rustkit_css::TimingFunction {
             }
         }
         _ => rustkit_css::TimingFunction::Ease,
+    }
+}
+
+/// Parse an `overflow` keyword.
+///
+/// An unknown keyword yields the CSS initial (`visible`) rather than leaving a
+/// previous value in place, matching how the other keyword arms behave.
+fn parse_overflow(value: &str) -> rustkit_css::Overflow {
+    match value.trim().to_lowercase().as_str() {
+        "hidden" => rustkit_css::Overflow::Hidden,
+        "scroll" => rustkit_css::Overflow::Scroll,
+        "auto" => rustkit_css::Overflow::Auto,
+        "clip" => rustkit_css::Overflow::Clip,
+        _ => rustkit_css::Overflow::Visible,
     }
 }
 
@@ -5793,6 +5908,196 @@ mod display_list_reftests {
             statik, positioned,
             "an absolutely positioned box must not paint identically to a \
              static one - if these match, `position` is not reaching layout"
+        );
+    }
+}
+
+#[cfg(test)]
+mod overflow_whitespace_decoration_tests {
+    //! Two groups, per the #62 receipt shape:
+    //!   - COMPUTED-VALUE tests prove the arms parse.
+    //!   - REACHING tests prove the value changes what would be painted.
+    //! A wire unit needs both, or the receipt cannot distinguish "the property
+    //! parses" from "the property does anything".
+    use super::*;
+    use rustkit_layout::{Dimensions, DisplayList, Rect};
+
+    fn eng() -> Engine {
+        Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        }
+    }
+
+    fn display_list_of(e: &Engine, html: &str) -> String {
+        let d = Document::parse_html(html).expect("parse");
+        let mut root = e.build_layout_from_document(&d);
+        let mut cb = Dimensions::default();
+        cb.content = Rect::new(0.0, 0.0, 800.0, 600.0);
+        root.layout(&cb);
+        DisplayList::build(&root)
+            .commands
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // ---------- GROUP 1: computed values ----------
+
+    #[test]
+    fn overflow_keywords_compute() {
+        let mut s = ComputedStyle::new();
+        for (css, want) in [
+            ("hidden", rustkit_css::Overflow::Hidden),
+            ("scroll", rustkit_css::Overflow::Scroll),
+            ("auto", rustkit_css::Overflow::Auto),
+            ("clip", rustkit_css::Overflow::Clip),
+            ("visible", rustkit_css::Overflow::Visible),
+        ] {
+            Engine::apply_declaration(&mut s, "overflow-x", css);
+            assert_eq!(s.overflow_x, want, "overflow-x: {css}");
+        }
+    }
+
+    #[test]
+    fn the_overflow_shorthand_sets_BOTH_axes() {
+        // A shorthand that set only one axis would leave the other at its
+        // initial and be invisible in any single-axis assertion.
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "overflow", "hidden");
+        assert_eq!(s.overflow_x, rustkit_css::Overflow::Hidden);
+        assert_eq!(s.overflow_y, rustkit_css::Overflow::Hidden);
+    }
+
+    #[test]
+    fn the_axis_longhands_are_independent() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "overflow-x", "scroll");
+        Engine::apply_declaration(&mut s, "overflow-y", "hidden");
+        assert_eq!(s.overflow_x, rustkit_css::Overflow::Scroll);
+        assert_eq!(
+            s.overflow_y,
+            rustkit_css::Overflow::Hidden,
+            "setting one axis must not clobber the other"
+        );
+    }
+
+    #[test]
+    fn white_space_keywords_compute() {
+        let mut s = ComputedStyle::new();
+        for (css, want) in [
+            ("pre", rustkit_css::WhiteSpace::Pre),
+            ("nowrap", rustkit_css::WhiteSpace::Nowrap),
+            ("pre-wrap", rustkit_css::WhiteSpace::PreWrap),
+            ("pre-line", rustkit_css::WhiteSpace::PreLine),
+            ("break-spaces", rustkit_css::WhiteSpace::BreakSpaces),
+            ("normal", rustkit_css::WhiteSpace::Normal),
+        ] {
+            Engine::apply_declaration(&mut s, "white-space", css);
+            assert_eq!(s.white_space, want, "white-space: {css}");
+        }
+    }
+
+    #[test]
+    fn text_decoration_combines_multiple_lines() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "text-decoration", "underline line-through");
+        assert!(s.text_decoration_line.underline);
+        assert!(s.text_decoration_line.line_through);
+        assert!(!s.text_decoration_line.overline);
+    }
+
+    #[test]
+    fn a_shorthand_carrying_a_colour_still_sets_the_line() {
+        // `text-decoration: underline red` is legal. Matching the WHOLE value
+        // against fixed keywords would drop it entirely - the rule would be
+        // silently dead, which is the defect class this whole campaign is
+        // about.
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "text-decoration", "underline red");
+        assert!(
+            s.text_decoration_line.underline,
+            "a shorthand naming a colour as well as a line must still set the line"
+        );
+    }
+
+    #[test]
+    fn a_value_naming_no_line_keyword_leaves_the_line_alone() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "text-decoration", "underline");
+        Engine::apply_declaration(&mut s, "text-decoration", "red");
+        assert!(
+            s.text_decoration_line.underline,
+            "a colour-only value must not clear an already-set line"
+        );
+    }
+
+    #[test]
+    fn none_clears_the_line() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "text-decoration", "underline");
+        Engine::apply_declaration(&mut s, "text-decoration", "none");
+        assert!(!s.text_decoration_line.underline);
+    }
+
+    #[test]
+    fn decoration_style_and_thickness_compute() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "text-decoration-style", "wavy");
+        Engine::apply_declaration(&mut s, "text-decoration-thickness", "3px");
+        assert_eq!(s.text_decoration_style, rustkit_css::TextDecorationStyle::Wavy);
+        assert_eq!(s.text_decoration_thickness, rustkit_css::Length::Px(3.0));
+    }
+
+    // ---------- GROUP 2: does it reach what gets painted? ----------
+
+    #[test]
+    fn text_decoration_changes_the_display_list() {
+        // The reaching test. Before this wire the two documents produced
+        // identical display lists, because nothing could set
+        // text_decoration_line and the TextDecoration commands were
+        // unreachable.
+        let e = eng();
+        let plain = display_list_of(
+            &e,
+            "<html><body><p>hello world</p></body></html>",
+        );
+        let underlined = display_list_of(
+            &e,
+            "<html><body><p style=\"text-decoration: underline\">hello world</p></body></html>",
+        );
+        assert_ne!(
+            plain, underlined,
+            "an underlined paragraph must not paint identically to a plain one \
+             - if these match, text-decoration is not reaching the display list"
+        );
+    }
+
+    #[test]
+    fn white_space_nowrap_changes_the_display_list() {
+        // nowrap suppresses line breaking, so a string long enough to wrap in a
+        // narrow box must paint differently. If this ever stops differing, the
+        // white_space consumer has become unreachable again.
+        let e = eng();
+        let wrapped = display_list_of(
+            &e,
+            "<html><body><div style=\"width: 60px\">aaa bbb ccc ddd eee fff</div></body></html>",
+        );
+        let nowrap = display_list_of(
+            &e,
+            "<html><body><div style=\"width: 60px; white-space: nowrap\">aaa bbb ccc ddd eee fff</div></body></html>",
+        );
+        assert_ne!(
+            wrapped, nowrap,
+            "white-space: nowrap must change how the text is laid out"
         );
     }
 }
