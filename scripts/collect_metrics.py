@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import re
 import subprocess
 import sys
@@ -46,6 +47,76 @@ def run(cmd: list[str]) -> tuple[int, str]:
                           text=True, encoding="utf-8", errors="replace")
     return proc.returncode, proc.stdout or ""
 
+
+
+def reachability() -> dict:
+    """Count ComputedStyle fields that layout READS but CSS can never SET.
+
+    A field the layout engine consumes, with no `apply_declaration` arm able to
+    write it, is an implemented capability that no page can reach. That is
+    invisible to every unit test - the layout tests for such a field PASS,
+    because they construct the struct directly and set it by hand. Test coverage
+    measures whether code RUNS, not whether a user can CAUSE it to run.
+
+    Found on 2026-07-31: `position` was read in 24 places across rustkit-layout,
+    including out-of-flow handling in flex and grid, and had no arm at all - so
+    every page rendered position:static regardless of its CSS, and none of that
+    layout code was reachable.
+
+    Reports the LIST, not only the count. A count says how far there is to go;
+    the list says WHICH capability is dead, which is the part someone can act on.
+    Method and caveat are carried in the returned dict rather than in a commit
+    message, because whoever reads this number in six weeks will not read the
+    commit.
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    css = root / "crates" / "rustkit-css" / "src" / "lib.rs"
+    engine = root / "crates" / "rustkit-engine" / "src" / "lib.rs"
+    layout_dir = root / "crates" / "rustkit-layout" / "src"
+    if not (css.exists() and engine.exists() and layout_dir.is_dir()):
+        return {"available": False, "reason": "expected crate paths not found"}
+
+    css_text = css.read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"pub struct ComputedStyle \{(.*?)\n\}", css_text, re.S)
+    if not m:
+        return {"available": False, "reason": "ComputedStyle struct not found"}
+    fields = set(re.findall(r"^\s*pub (\w+):", m.group(1), re.M))
+
+    read = set()
+    for path in sorted(layout_dir.rglob("*.rs")):
+        t = path.read_text(encoding="utf-8", errors="replace")
+        read |= set(re.findall(r"style\.([a-z_][a-z0-9_]*)", t))
+    read &= fields
+
+    # Scan the WHOLE engine file for assignments rather than trying to slice out
+    # apply_declaration by signature. The signature has changed before (the fn
+    # became an associated fn), and a slice that silently misses arms produces
+    # FALSE UNREACHABLE entries - the failure mode being guarded against.
+    eng_text = engine.read_text(encoding="utf-8", errors="replace")
+    written = set(re.findall(r"(?:style|s)\.([a-z_][a-z0-9_]*)\s*=[^=]", eng_text))
+    written &= fields
+
+    unreachable = sorted(read - written)
+    return {
+        "available": True,
+        "computed_style_fields": len(fields),
+        "read_by_layout": len(read),
+        "writable_by_applier": len(written),
+        "unreachable_count": len(unreachable),
+        "unreachable": unreachable,
+        "method": (
+            "Fields matching `style.<name>` anywhere in rustkit-layout, minus "
+            "fields assigned as `style.<name> =` or `s.<name> =` anywhere in "
+            "rustkit-engine, intersected with the real ComputedStyle field set."
+        ),
+        "caveat": (
+            "REGEX OVER SOURCE, NOT TYPE-CHECKED. A field written only through "
+            "an alias this pattern misses is a FALSE POSITIVE. Grep any new "
+            "entry individually before acting on it - the audit that produced "
+            "this metric initially mis-extracted the applier body and had to be "
+            "re-checked field by field."
+        ),
+    }
 
 def collect(commit: str, branch: str) -> dict:
     build_code, build_out = run(["cargo", "build", "--workspace"])
@@ -103,6 +174,7 @@ def collect(commit: str, branch: str) -> dict:
         },
         "per_crate": dict(sorted(per_crate.items())),
         "crates_with_no_tests": empty,
+        "reachability": reachability(),
         "not_collected": {
             "parity_pixel_diff": (
                 "requires a GPU adapter; not collectable on a hosted Windows "
@@ -156,6 +228,19 @@ def to_markdown(m: dict) -> str:
         f"> Not collected: parity pixel diff - "
         f"{m['not_collected']['parity_pixel_diff']}",
     ]
+    r = m.get("reachability", {})
+    if r.get("available"):
+        lines.append("")
+        lines.append("### Reachability")
+        lines.append("")
+        lines.append(
+            f"- {r['unreachable_count']} of {r['read_by_layout']} ComputedStyle "
+            f"fields read by layout CANNOT be set from CSS"
+        )
+        if r["unreachable"]:
+            lines.append(f"- dead capabilities: `{'`, `'.join(r['unreachable'])}`")
+        lines.append(f"- caveat: {r['caveat']}")
+
     return "\n".join(lines)
 
 
