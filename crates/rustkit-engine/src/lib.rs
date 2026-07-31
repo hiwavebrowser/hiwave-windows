@@ -1241,6 +1241,28 @@ impl Engine {
                 style.margin_top = rustkit_css::Length::Px(18.72);
                 style.margin_bottom = rustkit_css::Length::Px(18.72);
             }
+            // h4-h6 had NO UA defaults on this tree at all: an <h4> rendered
+            // at body size, unbolded, with no margins. Values are the
+            // reference's, which are the Chrome UA sheet's em ratios resolved
+            // against a 16px root (1em / 0.83em / 0.67em).
+            "h4" => {
+                style.font_size = rustkit_css::Length::Px(16.0); // 1em
+                style.font_weight = rustkit_css::FontWeight::BOLD;
+                style.margin_top = rustkit_css::Length::Px(21.28); // 1.33em
+                style.margin_bottom = rustkit_css::Length::Px(21.28);
+            }
+            "h5" => {
+                style.font_size = rustkit_css::Length::Px(13.28); // 0.83em
+                style.font_weight = rustkit_css::FontWeight::BOLD;
+                style.margin_top = rustkit_css::Length::Px(22.17); // 1.67em
+                style.margin_bottom = rustkit_css::Length::Px(22.17);
+            }
+            "h6" => {
+                style.font_size = rustkit_css::Length::Px(10.72); // 0.67em
+                style.font_weight = rustkit_css::FontWeight::BOLD;
+                style.margin_top = rustkit_css::Length::Px(25.0); // 2.33em
+                style.margin_bottom = rustkit_css::Length::Px(25.0);
+            }
             "p" => {
                 style.margin_top = rustkit_css::Length::Px(16.0);
                 style.margin_bottom = rustkit_css::Length::Px(16.0);
@@ -1289,9 +1311,17 @@ impl Engine {
                 // row hug its tallest cell's content.
                 style.align_items = rustkit_css::AlignItems::FlexStart;
             }
-            "td" | "th" => {
+            "td" => {
                 style.flex_grow = 1.0;
                 style.flex_basis = rustkit_css::FlexBasis::Length(0.0);
+            }
+            "th" => {
+                style.flex_grow = 1.0;
+                style.flex_basis = rustkit_css::FlexBasis::Length(0.0);
+                // A header cell is BOLD. td and th shared one arm here, so
+                // every <th> rendered at normal weight - the reference bolds
+                // it, so this is a defect rather than a deliberate difference.
+                style.font_weight = rustkit_css::FontWeight::BOLD;
             }
             // Form controls do NOT inherit the document font in Chrome's UA
             // sheet — they reset to the system control font (~13.333px, normal
@@ -6360,5 +6390,87 @@ mod flex_item_property_tests {
              (ratio {ratio:.2}). If the ratio is 1.0 the grow factor never \
              reached layout."
         );
+    }
+}
+
+#[cfg(test)]
+mod ua_default_gap_tests {
+    //! Gaps found by a PER-PROPERTY reference comparison, not by reading the
+    //! code. Both are defects rather than divergences: the reference has them
+    //! and this tree did not.
+    use super::*;
+
+    fn ua(tag: &str) -> ComputedStyle {
+        let e = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        };
+        let attrs = std::collections::HashMap::new();
+        let sheet = Stylesheet::new();
+        let parent = ComputedStyle::new();
+        e.compute_style_for_element(tag, &attrs, &sheet, &parent, &[])
+    }
+
+    #[test]
+    fn h4_h5_h6_have_ua_defaults() {
+        // Before this, an <h4> rendered at body size, unbolded, with no
+        // margins - visually indistinguishable from a <div>.
+        for (tag, size) in [("h4", 16.0_f32), ("h5", 13.28), ("h6", 10.72)] {
+            let s = ua(tag);
+            assert_eq!(
+                s.font_weight,
+                rustkit_css::FontWeight::BOLD,
+                "<{tag}> must be bold"
+            );
+            assert_eq!(s.font_size, rustkit_css::Length::Px(size), "<{tag}> font-size");
+            assert_ne!(
+                s.margin_top,
+                rustkit_css::Length::Zero,
+                "<{tag}> must have a top margin"
+            );
+        }
+    }
+
+    #[test]
+    fn the_heading_scale_is_monotonically_decreasing() {
+        // A per-tag assertion cannot catch two headings given the same size, or
+        // h5 larger than h4. The ORDER is the property that makes a heading
+        // scale a scale.
+        let sizes: Vec<f32> = ["h1", "h2", "h3", "h4", "h5", "h6"]
+            .iter()
+            .map(|t| match ua(t).font_size {
+                rustkit_css::Length::Px(px) => px,
+                other => panic!("<{t}> font-size is {other:?}, expected Px"),
+            })
+            .collect();
+        for w in sizes.windows(2) {
+            assert!(
+                w[0] > w[1],
+                "heading sizes must strictly decrease; got {sizes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn th_is_bold_but_td_is_not() {
+        // td and th shared one arm, so every header cell rendered at normal
+        // weight. That distinction is the entire visual point of <th>.
+        let th = ua("th");
+        let td = ua("td");
+        assert_eq!(th.font_weight, rustkit_css::FontWeight::BOLD, "<th> is bold");
+        assert_ne!(td.font_weight, rustkit_css::FontWeight::BOLD, "<td> is NOT bold");
+        // Splitting the shared arm must not have dropped the table layout
+        // behaviour from either cell type.
+        assert_eq!(th.flex_grow, 1.0, "<th> keeps flex-grow");
+        assert_eq!(td.flex_grow, 1.0, "<td> keeps flex-grow");
+        assert_eq!(th.flex_basis, rustkit_css::FlexBasis::Length(0.0));
+        assert_eq!(td.flex_basis, rustkit_css::FlexBasis::Length(0.0));
     }
 }
