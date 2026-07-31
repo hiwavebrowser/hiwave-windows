@@ -1001,6 +1001,51 @@ impl Engine {
 
                 let mut layout_box = LayoutBox::new(box_type, style);
 
+                // Feed the positioned-layout path. Without this the layout
+                // crate's Position::Absolute / Fixed branches are unreachable
+                // no matter what the author wrote.
+                // rustkit_css::Position and rustkit_layout::Position are two
+                // separate enums with identical variants and no From impl
+                // between them (flagged as a duplication smell; not merged
+                // here). Matched EXHAUSTIVELY on purpose: adding a variant to
+                // either enum then breaks this build instead of silently
+                // mapping to Static.
+                layout_box.position = match layout_box.style.position {
+                    rustkit_css::Position::Static => rustkit_layout::Position::Static,
+                    rustkit_css::Position::Relative => rustkit_layout::Position::Relative,
+                    rustkit_css::Position::Absolute => rustkit_layout::Position::Absolute,
+                    rustkit_css::Position::Fixed => rustkit_layout::Position::Fixed,
+                    rustkit_css::Position::Sticky => rustkit_layout::Position::Sticky,
+                };
+                layout_box.z_index = layout_box.style.z_index;
+                {
+                    // Resolve offsets to px. Percentages resolve against the
+                    // CONTAINING BLOCK, which is not known while the tree is
+                    // still being built, so a percentage offset yields None
+                    // (treated as `auto`) rather than a wrong number. Same
+                    // restriction as the macOS reference; stated rather than
+                    // silently approximated.
+                    let fs = match &layout_box.style.font_size {
+                        rustkit_css::Length::Px(v) => *v,
+                        _ => 16.0,
+                    };
+                    let px = |l: &Option<rustkit_css::Length>| -> Option<f32> {
+                        match l {
+                            Some(rustkit_css::Length::Px(v)) => Some(*v),
+                            Some(rustkit_css::Length::Em(v)) => Some(v * fs),
+                            Some(rustkit_css::Length::Rem(v)) => Some(v * 16.0),
+                            _ => None,
+                        }
+                    };
+                    let (t, r, b, l) = (
+                        px(&layout_box.style.top),
+                        px(&layout_box.style.right),
+                        px(&layout_box.style.bottom),
+                        px(&layout_box.style.left),
+                    );
+                    layout_box.set_offsets(t, r, b, l);
+                }
+
                 // Get DOM children for processing
                 let dom_children = node.children();
                 trace!(tag = %tag_name, dom_children = dom_children.len(), "Processing element");
@@ -2063,6 +2108,55 @@ impl Engine {
             "display" => {
                 if let Some(d) = rustkit_css::parse_display(value) {
                     style.display = d;
+                }
+            }
+            // POSITION FAMILY. rustkit-layout already implements positioned
+            // layout - 24 Position:: references plus out-of-flow handling in
+            // flex.rs and grid.rs - but NOTHING could set style.position, so
+            // every page rendered position:static and all of that code was
+            // unreachable. Ported from the macOS reference, which has these
+            // arms.
+            "position" => {
+                style.position = match value.trim() {
+                    "static" => rustkit_css::Position::Static,
+                    "relative" => rustkit_css::Position::Relative,
+                    "absolute" => rustkit_css::Position::Absolute,
+                    "fixed" => rustkit_css::Position::Fixed,
+                    "sticky" => rustkit_css::Position::Sticky,
+                    // Unknown keyword falls back to the CSS initial rather
+                    // than leaving whatever a previous rule set.
+                    _ => rustkit_css::Position::Static,
+                };
+            }
+            "top" => {
+                if let Some(length) = parse_length(value) {
+                    style.top = Some(length);
+                }
+            }
+            "right" => {
+                if let Some(length) = parse_length(value) {
+                    style.right = Some(length);
+                }
+            }
+            "bottom" => {
+                if let Some(length) = parse_length(value) {
+                    style.bottom = Some(length);
+                }
+            }
+            "left" => {
+                if let Some(length) = parse_length(value) {
+                    style.left = Some(length);
+                }
+            }
+            "z-index" => {
+                // `auto` is stored as 0, matching LayoutBox::z_index and the
+                // macOS reference. A non-numeric value is ignored rather than
+                // silently becoming 0, which would flatten an authored stack.
+                let v = value.trim();
+                if v.eq_ignore_ascii_case("auto") {
+                    style.z_index = 0;
+                } else if let Ok(z) = v.parse::<i32>() {
+                    style.z_index = z;
                 }
             }
             "flex-direction" => {
@@ -5275,6 +5369,167 @@ mod child_combinator_tests {
         assert_eq!(
             hits, 1,
             "exactly the ONE immediate-child li may take the rule; got {got:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod position_wire_tests {
+    use super::*;
+
+    fn engine() -> Engine {
+        Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        }
+    }
+
+    fn find<'a>(b: &'a LayoutBox, pred: &dyn Fn(&LayoutBox) -> bool) -> Option<&'a LayoutBox> {
+        if pred(b) {
+            return Some(b);
+        }
+        for c in &b.children {
+            if let Some(f) = find(c, pred) {
+                return Some(f);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn all_five_position_keywords_compute() {
+        let mut s = ComputedStyle::new();
+        for (css, expected) in [
+            ("static", rustkit_css::Position::Static),
+            ("relative", rustkit_css::Position::Relative),
+            ("absolute", rustkit_css::Position::Absolute),
+            ("fixed", rustkit_css::Position::Fixed),
+            ("sticky", rustkit_css::Position::Sticky),
+        ] {
+            Engine::apply_declaration(&mut s, "position", css);
+            assert_eq!(s.position, expected, "position: {css}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_keyword_falls_back_to_static_rather_than_keeping_the_old_value() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "position", "absolute");
+        Engine::apply_declaration(&mut s, "position", "notakeyword");
+        assert_eq!(
+            s.position,
+            rustkit_css::Position::Static,
+            "an invalid keyword must reset to the CSS initial, not silently \
+             leave the element absolutely positioned"
+        );
+    }
+
+    #[test]
+    fn offsets_compute_and_auto_stays_distinct_from_zero() {
+        let mut s = ComputedStyle::new();
+        assert_eq!(s.top, None, "initial top is auto");
+        Engine::apply_declaration(&mut s, "top", "10px");
+        Engine::apply_declaration(&mut s, "left", "0px");
+        assert_eq!(s.top, Some(rustkit_css::Length::Px(10.0)));
+        assert_eq!(
+            s.left,
+            Some(rustkit_css::Length::Px(0.0)),
+            "left:0 must be Some(0), NOT None - `auto` and `0` mean different \
+             things and collapsing them loses the distinction"
+        );
+        assert_eq!(s.right, None, "unset offsets stay auto");
+    }
+
+    #[test]
+    fn z_index_parses_negatives_and_auto_but_ignores_garbage() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "z-index", "-3");
+        assert_eq!(s.z_index, -3, "negative z-index is legal CSS");
+        Engine::apply_declaration(&mut s, "z-index", "auto");
+        assert_eq!(s.z_index, 0, "auto is stored as 0");
+        Engine::apply_declaration(&mut s, "z-index", "5");
+        Engine::apply_declaration(&mut s, "z-index", "banana");
+        assert_eq!(
+            s.z_index, 5,
+            "a non-numeric value must be IGNORED, not flattened to 0 - \
+             flattening would silently restack the page"
+        );
+    }
+
+    #[test]
+    fn position_reaches_the_layout_box_not_just_the_computed_style() {
+        // The wire that was missing: nothing ever assigned layout_box.position,
+        // so the layout crate's Absolute/Fixed branches were unreachable.
+        let e = engine();
+        let html = "<html><body><div id=\"a\" style=\"position: absolute\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d);
+        let hit = find(&layout, &|b| b.position == rustkit_layout::Position::Absolute);
+        assert!(
+            hit.is_some(),
+            "no LayoutBox carried Position::Absolute - the layout crate cannot \
+             see the declaration"
+        );
+    }
+
+    #[test]
+    fn offsets_reach_the_layout_box_as_pixels() {
+        // GEOMETRIC RECEIPT. Computing a value is not the same as the layout
+        // engine receiving it; this asserts the resolved px landed on the box.
+        let e = engine();
+        let html = "<html><body><div style=\"position: absolute; top: 10px; left: 20px\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d);
+        let hit = find(&layout, &|b| b.offsets.top.is_some())
+            .expect("no LayoutBox received offsets");
+        assert_eq!(hit.offsets.top, Some(10.0));
+        assert_eq!(hit.offsets.left, Some(20.0));
+        assert_eq!(
+            hit.offsets.right, None,
+            "an unset offset must stay None (auto), not become 0"
+        );
+    }
+
+    #[test]
+    fn em_offsets_resolve_against_font_size() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "top", "2em");
+        assert_eq!(s.top, Some(rustkit_css::Length::Em(2.0)));
+    }
+
+    #[test]
+    fn z_index_reaches_the_layout_box() {
+        let e = engine();
+        let html = "<html><body><div style=\"position: absolute; z-index: 7\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d);
+        assert!(
+            find(&layout, &|b| b.z_index == 7).is_some(),
+            "z-index did not reach the layout box"
+        );
+    }
+
+    #[test]
+    fn a_percentage_offset_is_refused_rather_than_approximated() {
+        // Percentages resolve against the CONTAINING BLOCK, which is unknown
+        // while the tree is being built. Yielding None (auto) is honest;
+        // guessing a pixel value would be a silently wrong position.
+        let e = engine();
+        let html = "<html><body><div style=\"position: absolute; top: 50%\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d);
+        let positioned = find(&layout, &|b| b.position == rustkit_layout::Position::Absolute)
+            .expect("element should still be absolutely positioned");
+        assert_eq!(
+            positioned.offsets.top, None,
+            "a percentage offset must resolve to None, not an invented pixel value"
         );
     }
 }

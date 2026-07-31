@@ -1597,6 +1597,20 @@ pub struct ComputedStyle {
     // Box model
     pub display: Display,
     pub position: Position,
+
+    /// Box offsets for a positioned element. `None` is CSS `auto` — which is
+    /// NOT the same as `0`, and the distinction is load-bearing: `auto` means
+    /// "keep the static-flow position on this axis", while `0` pins the edge to
+    /// the containing block. Storing `Option<Length>` rather than a Length with
+    /// a zero default is what keeps those distinguishable.
+    pub top: Option<Length>,
+    pub right: Option<Length>,
+    pub bottom: Option<Length>,
+    pub left: Option<Length>,
+
+    /// `z-index`. 0 stands for `auto` here, matching the macOS reference and
+    /// `LayoutBox::z_index`, which is already an `i32`.
+    pub z_index: i32,
     pub width: Length,
     pub height: Length,
     pub min_width: Length,
@@ -2652,6 +2666,11 @@ mod inherit_partition_guard {
             animation_play_state,
             display,
             position,
+            top,
+            right,
+            bottom,
+            left,
+            z_index,
             width,
             height,
             min_width,
@@ -2755,6 +2774,14 @@ mod inherit_partition_guard {
         let _ = &animation_play_state;
         let _ = &display;
         let _ = &position;
+        // NOT inherited: CSS position offsets and z-index apply to the element
+        // that declares them. A child of an `top: 10px` element does not
+        // inherit that offset.
+        let _ = &top;
+        let _ = &right;
+        let _ = &bottom;
+        let _ = &left;
+        let _ = &z_index;
         let _ = &width;
         let _ = &height;
         let _ = &min_width;
@@ -2893,6 +2920,11 @@ mod initial_value_guard {
             animation_play_state,
             display,
             position,
+            top,
+            right,
+            bottom,
+            left,
+            z_index,
             width,
             height,
             min_width,
@@ -2990,6 +3022,16 @@ mod initial_value_guard {
         // difference is a recorded decision rather than an oversight that
         // happens to be right.
         assert_eq!(min_width, Length::Zero, "min-width initial IS 0 - correct fall-through");
+        // Offsets: the CSS initial is `auto`, represented as None. These DO
+        // fall through ..Default::default() and that is correct, because
+        // Option::default() is None - unlike Length::default(), which is Zero
+        // and would have meant "pinned to the edge" instead of "auto".
+        // Asserted so the difference is a recorded decision, as with min-width.
+        assert_eq!(top, None, "top initial is auto (None), not 0");
+        assert_eq!(right, None, "right initial is auto (None), not 0");
+        assert_eq!(bottom, None, "bottom initial is auto (None), not 0");
+        assert_eq!(left, None, "left initial is auto (None), not 0");
+        assert_eq!(z_index, 0, "z-index initial is auto, stored as 0");
         assert_eq!(min_height, Length::Zero, "min-height initial IS 0 - correct fall-through");
 
         // --- The paint-critical initials. Color::default() is opaque BLACK and
