@@ -2255,11 +2255,6 @@ impl Engine {
                     _ => rustkit_css::TextDecorationStyle::Solid,
                 };
             }
-            "text-decoration-thickness" => {
-                if let Some(length) = parse_length(value) {
-                    style.text_decoration_thickness = length;
-                }
-            }
             // FLEX ITEM / ALIGNMENT FAMILY.
             //
             // Four of these came straight off the reachability list
@@ -6158,12 +6153,13 @@ mod overflow_whitespace_decoration_tests {
     }
 
     #[test]
-    fn decoration_style_and_thickness_compute() {
+    fn decoration_style_computes() {
+        // thickness deliberately NOT asserted: the reference has no
+        // text-decoration-thickness arm, so wiring one here would be an
+        // undeclared divergence. See the commit message.
         let mut s = ComputedStyle::new();
         Engine::apply_declaration(&mut s, "text-decoration-style", "wavy");
-        Engine::apply_declaration(&mut s, "text-decoration-thickness", "3px");
         assert_eq!(s.text_decoration_style, rustkit_css::TextDecorationStyle::Wavy);
-        assert_eq!(s.text_decoration_thickness, rustkit_css::Length::Px(3.0));
     }
 
     // ---------- GROUP 2: does it reach what gets painted? ----------
