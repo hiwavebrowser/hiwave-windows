@@ -5533,3 +5533,266 @@ mod position_wire_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod display_list_reftests {
+    //! TIER 1 RENDERING TESTS: display-list reference tests.
+    //!
+    //! A reference test asserts that two DIFFERENT source documents produce the
+    //! SAME rendering (`==`), or deliberately different renderings (`!=`).
+    //!
+    //! This compares DISPLAY LISTS, not pixels. That is a deliberate choice:
+    //!
+    //!  - It needs no GPU adapter and no window, so it runs on a hosted CI
+    //!    runner exactly as it runs locally. Pixel comparison on a hosted
+    //!    runner measures the runner, which is why this tree publishes
+    //!    `parity: no data` rather than a number it cannot stand behind.
+    //!  - It catches the entire class of defect found by the 2026-07-31
+    //!    unreachable-capability audit. `position: absolute` doing nothing is
+    //!    invisible to a computed-value test and obvious in a display list,
+    //!    because the list is literally "what would be painted, where".
+    //!
+    //! What it does NOT catch: anything that goes wrong AFTER the display list
+    //! - rasterisation, texture upload, blending, font rendering. Those need
+    //! Tier 2 (pixel reftests on real hardware). Stated so this is not mistaken
+    //! for proof that a page looks right.
+    //!
+    //! The previous harness in rustkit-test compared NORMALIZED HTML TEXT,
+    //! which is inverted from what a reftest is for: a genuine pair (different
+    //! markup, identical rendering) FAILS that comparison, and a trivially
+    //! identical pair passes. The checked-in `color-red` pair is exactly such a
+    //! genuine pair and would have been reported as a failure.
+
+    use super::*;
+    use rustkit_layout::{Dimensions, DisplayList, Rect};
+    use std::path::{Path, PathBuf};
+
+    const VIEWPORT_W: f32 = 800.0;
+    const VIEWPORT_H: f32 = 600.0;
+
+    fn reftest_dir() -> PathBuf {
+        // CARGO_MANIFEST_DIR is crates/rustkit-engine.
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("wpt")
+            .join("reftest")
+    }
+
+    fn engine() -> Engine {
+        Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        }
+    }
+
+    /// Render one document to a display-list description.
+    ///
+    /// The containing block is fixed so the result is deterministic and
+    /// independent of any real window.
+    fn render_to_display_list(e: &Engine, html: &str) -> String {
+        let document = Document::parse_html(html).expect("parse");
+        let mut root = e.build_layout_from_document(&document);
+
+        let mut containing = Dimensions::default();
+        containing.content = Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H);
+        root.layout(&containing);
+
+        let list = DisplayList::build(&root);
+        // DisplayCommand derives Debug but not PartialEq, so the Debug
+        // rendering IS the comparison surface. It is sensitive to float
+        // formatting, which for a reftest is correct: two documents that should
+        // render identically should produce byte-identical commands.
+        list.commands
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    struct RefCase {
+        should_match: bool,
+        test: String,
+        reference: String,
+    }
+
+    fn parse_reftest_list(text: &str) -> Vec<RefCase> {
+        let mut cases = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            let should_match = match parts[0] {
+                "==" => true,
+                "!=" => false,
+                _ => continue,
+            };
+            cases.push(RefCase {
+                should_match,
+                test: parts[1].to_string(),
+                reference: parts[2].to_string(),
+            });
+        }
+        cases
+    }
+
+    /// SELF-CHECK. The comparison must be able to report a MISMATCH.
+    ///
+    /// A reftest harness whose comparison always returns "equal" passes every
+    /// `==` case and looks perfect. That is the decorative-green shape this
+    /// fleet has spent a week removing, and it is why Atlas's macOS WPT runner
+    /// runs a negative control FIRST and aborts if it does not fail.
+    #[test]
+    fn the_comparison_can_actually_report_a_difference() {
+        let e = engine();
+        let red = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #ff0000; width: 100px; height: 50px\"></div></body></html>",
+        );
+        let blue = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #0000ff; width: 100px; height: 50px\"></div></body></html>",
+        );
+        assert_ne!(
+            red, blue,
+            "NEGATIVE CONTROL FAILED: two documents with different background \
+             colours produced identical display lists. The comparison is inert, \
+             so every == case below would pass vacuously. Do not trust any \
+             reftest result from this run."
+        );
+    }
+
+    /// A pair that SHOULD match must match — the positive control.
+    #[test]
+    fn equivalent_documents_produce_equal_display_lists() {
+        let e = engine();
+        let a = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #ff0000; width: 100px\"></div></body></html>",
+        );
+        let b = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: rgb(255, 0, 0); width: 100px\"></div></body></html>",
+        );
+        assert_eq!(
+            a, b,
+            "#ff0000 and rgb(255,0,0) are the same colour and must produce the \
+             same display list"
+        );
+    }
+
+    /// The checked-in suite.
+    #[test]
+    fn checked_in_reftests_all_hold() {
+        let dir = reftest_dir();
+        let list_path = dir.join("reftest.list");
+        let text = std::fs::read_to_string(&list_path).unwrap_or_else(|e| {
+            panic!("cannot read {}: {e}", list_path.display());
+        });
+        let cases = parse_reftest_list(&text);
+
+        // AN EMPTY SUITE IS A FAILURE, NOT A PASS. The previous runner returned
+        // an empty summary when the directory did not exist, which reports
+        // success for having tested nothing - a wrong path would have looked
+        // identical to a green suite.
+        assert!(
+            !cases.is_empty(),
+            "no reftest cases parsed from {} - a harness that finds zero tests \
+             must fail rather than report success",
+            list_path.display()
+        );
+
+        let e = engine();
+        let mut failures = Vec::new();
+        for case in &cases {
+            let test_html = match std::fs::read_to_string(dir.join(&case.test)) {
+                Ok(h) => h,
+                Err(err) => {
+                    failures.push(format!("{}: cannot read test file: {err}", case.test));
+                    continue;
+                }
+            };
+            let ref_html = match std::fs::read_to_string(dir.join(&case.reference)) {
+                Ok(h) => h,
+                Err(err) => {
+                    failures.push(format!("{}: cannot read reference: {err}", case.reference));
+                    continue;
+                }
+            };
+            let got = render_to_display_list(&e, &test_html);
+            let want = render_to_display_list(&e, &ref_html);
+
+            // A pair that paints NOTHING compares equal to nothing and passes
+            // every `==` case vacuously. An empty display list means the
+            // document did not render, which is a failure however the case was
+            // declared.
+            if got.is_empty() || want.is_empty() {
+                failures.push(format!(
+                    "{} / {} : empty display list (test={} cmds, ref={} cmds) -                      a document that paints nothing cannot verify anything",
+                    case.test,
+                    case.reference,
+                    got.lines().count(),
+                    want.lines().count(),
+                ));
+                continue;
+            }
+
+            let equal = got == want;
+            if equal != case.should_match {
+                let op = if case.should_match { "==" } else { "!=" };
+                failures.push(format!(
+                    "{op} {} {} : expected {}, got {}",
+                    case.test,
+                    case.reference,
+                    if case.should_match { "match" } else { "mismatch" },
+                    if equal { "match" } else { "mismatch" },
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} reftest case(s) failed:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// The audit class, made visible.
+    ///
+    /// Before the position wire, these two documents produced IDENTICAL display
+    /// lists, because `position: absolute` could not be set and the offsets
+    /// never reached the layout box. No computed-value test could see that; a
+    /// display list shows it immediately.
+    #[test]
+    fn positioned_and_static_documents_differ_in_the_display_list() {
+        let e = engine();
+        let statik = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #00ff00; width: 50px; height: 50px\"></div></body></html>",
+        );
+        let positioned = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #00ff00; width: 50px; height: 50px; \
+             position: absolute; top: 30px; left: 40px\"></div></body></html>",
+        );
+        assert_ne!(
+            statik, positioned,
+            "an absolutely positioned box must not paint identically to a \
+             static one - if these match, `position` is not reaching layout"
+        );
+    }
+}
