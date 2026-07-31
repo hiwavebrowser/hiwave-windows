@@ -2600,7 +2600,37 @@ mod inherit_partition_guard {
     /// correct.
     #[test]
     fn every_field_has_a_conscious_inheritance_decision() {
-        let parent = ComputedStyle::new();
+        // THE FIXTURE IS THE TEST. A parent built from ComputedStyle::new()
+        // makes this assertion half VACUOUS: new().color is already BLACK, so
+        // "inherited BLACK" and "did not inherit and defaulted to BLACK" are
+        // indistinguishable. Verified by mutation on 2026-07-31 - breaking
+        // inherit_from so it stopped inheriting `color` left this test GREEN.
+        //
+        // Every inherited field below therefore carries a value that is NOT
+        // its default, so a field that stops inheriting changes observably.
+        let mut parent = ComputedStyle::new();
+        parent.color = Color::WHITE;
+        parent.font_size = Length::Px(37.0);
+        parent.font_weight = FontWeight(825);
+        parent.font_style = FontStyle::Italic;
+        parent.font_stretch = FontStretch::UltraCondensed;
+        parent.font_family = "guard-sentinel-family".to_string();
+        parent.line_height = 3.75;
+        parent.text_align = TextAlign::Center;
+        parent.letter_spacing = Length::Px(7.0);
+        parent.word_spacing = Length::Px(9.0);
+        parent.text_indent = Length::Px(11.0);
+        parent.text_transform = TextTransform::Uppercase;
+        parent.white_space = WhiteSpace::Pre;
+        parent.word_break = WordBreak::BreakAll;
+        parent.direction = Direction::Rtl;
+        parent.writing_mode = WritingMode::VerticalRl;
+        {
+            let mut props = std::collections::HashMap::new();
+            props.insert("--guard-sentinel".to_string(), "1".to_string());
+            parent.custom_properties = std::sync::Arc::new(props);
+        }
+
         let child = ComputedStyle::inherit_from(&parent);
 
         // Exhaustive: no `..` rest pattern. A new field breaks this line.
