@@ -2,6 +2,24 @@
 //!
 //! Reference tests compare rendered output against reference images
 //! or reference HTML that should produce identical output.
+//!
+//! # THIS RUNNER DOES NOT RENDER - see rustkit-engine instead
+//!
+//! `run_single` below compares NORMALIZED HTML TEXT, not rendered output.
+//! That is inverted from what a reference test is for: the point of a reftest
+//! is that two DIFFERENT source documents produce the SAME rendering, so a
+//! genuine pair FAILS this comparison while a trivially identical pair passes.
+//! The checked-in `color-red` pair (`color: red` vs `color: #ff0000`) is
+//! exactly such a genuine pair.
+//!
+//! Nothing in the workspace depends on this crate, so it is not run.
+//!
+//! The working Tier 1 harness is `display_list_reftests` in
+//! `crates/rustkit-engine/src/lib.rs`. It compares DISPLAY LISTS, needs no GPU,
+//! runs in CI, and carries a negative control that aborts the run if the
+//! comparison is inert. Use that. This module is left in place rather than
+//! deleted because removing a public API is a separate decision, but do not
+//! mistake it for coverage.
 
 use crate::{TestError, TestResult, TestSummary};
 use std::fs;

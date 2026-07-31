@@ -1001,6 +1001,51 @@ impl Engine {
 
                 let mut layout_box = LayoutBox::new(box_type, style);
 
+                // Feed the positioned-layout path. Without this the layout
+                // crate's Position::Absolute / Fixed branches are unreachable
+                // no matter what the author wrote.
+                // rustkit_css::Position and rustkit_layout::Position are two
+                // separate enums with identical variants and no From impl
+                // between them (flagged as a duplication smell; not merged
+                // here). Matched EXHAUSTIVELY on purpose: adding a variant to
+                // either enum then breaks this build instead of silently
+                // mapping to Static.
+                layout_box.position = match layout_box.style.position {
+                    rustkit_css::Position::Static => rustkit_layout::Position::Static,
+                    rustkit_css::Position::Relative => rustkit_layout::Position::Relative,
+                    rustkit_css::Position::Absolute => rustkit_layout::Position::Absolute,
+                    rustkit_css::Position::Fixed => rustkit_layout::Position::Fixed,
+                    rustkit_css::Position::Sticky => rustkit_layout::Position::Sticky,
+                };
+                layout_box.z_index = layout_box.style.z_index;
+                {
+                    // Resolve offsets to px. Percentages resolve against the
+                    // CONTAINING BLOCK, which is not known while the tree is
+                    // still being built, so a percentage offset yields None
+                    // (treated as `auto`) rather than a wrong number. Same
+                    // restriction as the macOS reference; stated rather than
+                    // silently approximated.
+                    let fs = match &layout_box.style.font_size {
+                        rustkit_css::Length::Px(v) => *v,
+                        _ => 16.0,
+                    };
+                    let px = |l: &Option<rustkit_css::Length>| -> Option<f32> {
+                        match l {
+                            Some(rustkit_css::Length::Px(v)) => Some(*v),
+                            Some(rustkit_css::Length::Em(v)) => Some(v * fs),
+                            Some(rustkit_css::Length::Rem(v)) => Some(v * 16.0),
+                            _ => None,
+                        }
+                    };
+                    let (t, r, b, l) = (
+                        px(&layout_box.style.top),
+                        px(&layout_box.style.right),
+                        px(&layout_box.style.bottom),
+                        px(&layout_box.style.left),
+                    );
+                    layout_box.set_offsets(t, r, b, l);
+                }
+
                 // Get DOM children for processing
                 let dom_children = node.children();
                 trace!(tag = %tag_name, dom_children = dom_children.len(), "Processing element");
@@ -2063,6 +2108,55 @@ impl Engine {
             "display" => {
                 if let Some(d) = rustkit_css::parse_display(value) {
                     style.display = d;
+                }
+            }
+            // POSITION FAMILY. rustkit-layout already implements positioned
+            // layout - 24 Position:: references plus out-of-flow handling in
+            // flex.rs and grid.rs - but NOTHING could set style.position, so
+            // every page rendered position:static and all of that code was
+            // unreachable. Ported from the macOS reference, which has these
+            // arms.
+            "position" => {
+                style.position = match value.trim() {
+                    "static" => rustkit_css::Position::Static,
+                    "relative" => rustkit_css::Position::Relative,
+                    "absolute" => rustkit_css::Position::Absolute,
+                    "fixed" => rustkit_css::Position::Fixed,
+                    "sticky" => rustkit_css::Position::Sticky,
+                    // Unknown keyword falls back to the CSS initial rather
+                    // than leaving whatever a previous rule set.
+                    _ => rustkit_css::Position::Static,
+                };
+            }
+            "top" => {
+                if let Some(length) = parse_length(value) {
+                    style.top = Some(length);
+                }
+            }
+            "right" => {
+                if let Some(length) = parse_length(value) {
+                    style.right = Some(length);
+                }
+            }
+            "bottom" => {
+                if let Some(length) = parse_length(value) {
+                    style.bottom = Some(length);
+                }
+            }
+            "left" => {
+                if let Some(length) = parse_length(value) {
+                    style.left = Some(length);
+                }
+            }
+            "z-index" => {
+                // `auto` is stored as 0, matching LayoutBox::z_index and the
+                // macOS reference. A non-numeric value is ignored rather than
+                // silently becoming 0, which would flatten an authored stack.
+                let v = value.trim();
+                if v.eq_ignore_ascii_case("auto") {
+                    style.z_index = 0;
+                } else if let Ok(z) = v.parse::<i32>() {
+                    style.z_index = z;
                 }
             }
             "flex-direction" => {
@@ -5275,6 +5369,430 @@ mod child_combinator_tests {
         assert_eq!(
             hits, 1,
             "exactly the ONE immediate-child li may take the rule; got {got:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod position_wire_tests {
+    use super::*;
+
+    fn engine() -> Engine {
+        Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        }
+    }
+
+    fn find<'a>(b: &'a LayoutBox, pred: &dyn Fn(&LayoutBox) -> bool) -> Option<&'a LayoutBox> {
+        if pred(b) {
+            return Some(b);
+        }
+        for c in &b.children {
+            if let Some(f) = find(c, pred) {
+                return Some(f);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn all_five_position_keywords_compute() {
+        let mut s = ComputedStyle::new();
+        for (css, expected) in [
+            ("static", rustkit_css::Position::Static),
+            ("relative", rustkit_css::Position::Relative),
+            ("absolute", rustkit_css::Position::Absolute),
+            ("fixed", rustkit_css::Position::Fixed),
+            ("sticky", rustkit_css::Position::Sticky),
+        ] {
+            Engine::apply_declaration(&mut s, "position", css);
+            assert_eq!(s.position, expected, "position: {css}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_keyword_falls_back_to_static_rather_than_keeping_the_old_value() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "position", "absolute");
+        Engine::apply_declaration(&mut s, "position", "notakeyword");
+        assert_eq!(
+            s.position,
+            rustkit_css::Position::Static,
+            "an invalid keyword must reset to the CSS initial, not silently \
+             leave the element absolutely positioned"
+        );
+    }
+
+    #[test]
+    fn offsets_compute_and_auto_stays_distinct_from_zero() {
+        let mut s = ComputedStyle::new();
+        assert_eq!(s.top, None, "initial top is auto");
+        Engine::apply_declaration(&mut s, "top", "10px");
+        Engine::apply_declaration(&mut s, "left", "0px");
+        assert_eq!(s.top, Some(rustkit_css::Length::Px(10.0)));
+        assert_eq!(
+            s.left,
+            Some(rustkit_css::Length::Px(0.0)),
+            "left:0 must be Some(0), NOT None - `auto` and `0` mean different \
+             things and collapsing them loses the distinction"
+        );
+        assert_eq!(s.right, None, "unset offsets stay auto");
+    }
+
+    #[test]
+    fn z_index_parses_negatives_and_auto_but_ignores_garbage() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "z-index", "-3");
+        assert_eq!(s.z_index, -3, "negative z-index is legal CSS");
+        Engine::apply_declaration(&mut s, "z-index", "auto");
+        assert_eq!(s.z_index, 0, "auto is stored as 0");
+        Engine::apply_declaration(&mut s, "z-index", "5");
+        Engine::apply_declaration(&mut s, "z-index", "banana");
+        assert_eq!(
+            s.z_index, 5,
+            "a non-numeric value must be IGNORED, not flattened to 0 - \
+             flattening would silently restack the page"
+        );
+    }
+
+    #[test]
+    fn position_reaches_the_layout_box_not_just_the_computed_style() {
+        // The wire that was missing: nothing ever assigned layout_box.position,
+        // so the layout crate's Absolute/Fixed branches were unreachable.
+        let e = engine();
+        let html = "<html><body><div id=\"a\" style=\"position: absolute\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d);
+        let hit = find(&layout, &|b| b.position == rustkit_layout::Position::Absolute);
+        assert!(
+            hit.is_some(),
+            "no LayoutBox carried Position::Absolute - the layout crate cannot \
+             see the declaration"
+        );
+    }
+
+    #[test]
+    fn offsets_reach_the_layout_box_as_pixels() {
+        // GEOMETRIC RECEIPT. Computing a value is not the same as the layout
+        // engine receiving it; this asserts the resolved px landed on the box.
+        let e = engine();
+        let html = "<html><body><div style=\"position: absolute; top: 10px; left: 20px\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d);
+        let hit = find(&layout, &|b| b.offsets.top.is_some())
+            .expect("no LayoutBox received offsets");
+        assert_eq!(hit.offsets.top, Some(10.0));
+        assert_eq!(hit.offsets.left, Some(20.0));
+        assert_eq!(
+            hit.offsets.right, None,
+            "an unset offset must stay None (auto), not become 0"
+        );
+    }
+
+    #[test]
+    fn em_offsets_resolve_against_font_size() {
+        let mut s = ComputedStyle::new();
+        Engine::apply_declaration(&mut s, "top", "2em");
+        assert_eq!(s.top, Some(rustkit_css::Length::Em(2.0)));
+    }
+
+    #[test]
+    fn z_index_reaches_the_layout_box() {
+        let e = engine();
+        let html = "<html><body><div style=\"position: absolute; z-index: 7\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d);
+        assert!(
+            find(&layout, &|b| b.z_index == 7).is_some(),
+            "z-index did not reach the layout box"
+        );
+    }
+
+    #[test]
+    fn a_percentage_offset_is_refused_rather_than_approximated() {
+        // Percentages resolve against the CONTAINING BLOCK, which is unknown
+        // while the tree is being built. Yielding None (auto) is honest;
+        // guessing a pixel value would be a silently wrong position.
+        let e = engine();
+        let html = "<html><body><div style=\"position: absolute; top: 50%\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d);
+        let positioned = find(&layout, &|b| b.position == rustkit_layout::Position::Absolute)
+            .expect("element should still be absolutely positioned");
+        assert_eq!(
+            positioned.offsets.top, None,
+            "a percentage offset must resolve to None, not an invented pixel value"
+        );
+    }
+}
+
+#[cfg(test)]
+mod display_list_reftests {
+    //! TIER 1 RENDERING TESTS: display-list reference tests.
+    //!
+    //! A reference test asserts that two DIFFERENT source documents produce the
+    //! SAME rendering (`==`), or deliberately different renderings (`!=`).
+    //!
+    //! This compares DISPLAY LISTS, not pixels. That is a deliberate choice:
+    //!
+    //!  - It needs no GPU adapter and no window, so it runs on a hosted CI
+    //!    runner exactly as it runs locally. Pixel comparison on a hosted
+    //!    runner measures the runner, which is why this tree publishes
+    //!    `parity: no data` rather than a number it cannot stand behind.
+    //!  - It catches the entire class of defect found by the 2026-07-31
+    //!    unreachable-capability audit. `position: absolute` doing nothing is
+    //!    invisible to a computed-value test and obvious in a display list,
+    //!    because the list is literally "what would be painted, where".
+    //!
+    //! What it does NOT catch: anything that goes wrong AFTER the display list
+    //! - rasterisation, texture upload, blending, font rendering. Those need
+    //! Tier 2 (pixel reftests on real hardware). Stated so this is not mistaken
+    //! for proof that a page looks right.
+    //!
+    //! The previous harness in rustkit-test compared NORMALIZED HTML TEXT,
+    //! which is inverted from what a reftest is for: a genuine pair (different
+    //! markup, identical rendering) FAILS that comparison, and a trivially
+    //! identical pair passes. The checked-in `color-red` pair is exactly such a
+    //! genuine pair and would have been reported as a failure.
+
+    use super::*;
+    use rustkit_layout::{Dimensions, DisplayList, Rect};
+    use std::path::{Path, PathBuf};
+
+    const VIEWPORT_W: f32 = 800.0;
+    const VIEWPORT_H: f32 = 600.0;
+
+    fn reftest_dir() -> PathBuf {
+        // CARGO_MANIFEST_DIR is crates/rustkit-engine.
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("wpt")
+            .join("reftest")
+    }
+
+    fn engine() -> Engine {
+        Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        }
+    }
+
+    /// Render one document to a display-list description.
+    ///
+    /// The containing block is fixed so the result is deterministic and
+    /// independent of any real window.
+    fn render_to_display_list(e: &Engine, html: &str) -> String {
+        let document = Document::parse_html(html).expect("parse");
+        let mut root = e.build_layout_from_document(&document);
+
+        let mut containing = Dimensions::default();
+        containing.content = Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H);
+        root.layout(&containing);
+
+        let list = DisplayList::build(&root);
+        // DisplayCommand derives Debug but not PartialEq, so the Debug
+        // rendering IS the comparison surface. It is sensitive to float
+        // formatting, which for a reftest is correct: two documents that should
+        // render identically should produce byte-identical commands.
+        list.commands
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    struct RefCase {
+        should_match: bool,
+        test: String,
+        reference: String,
+    }
+
+    fn parse_reftest_list(text: &str) -> Vec<RefCase> {
+        let mut cases = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            let should_match = match parts[0] {
+                "==" => true,
+                "!=" => false,
+                _ => continue,
+            };
+            cases.push(RefCase {
+                should_match,
+                test: parts[1].to_string(),
+                reference: parts[2].to_string(),
+            });
+        }
+        cases
+    }
+
+    /// SELF-CHECK. The comparison must be able to report a MISMATCH.
+    ///
+    /// A reftest harness whose comparison always returns "equal" passes every
+    /// `==` case and looks perfect. That is the decorative-green shape this
+    /// fleet has spent a week removing, and it is why Atlas's macOS WPT runner
+    /// runs a negative control FIRST and aborts if it does not fail.
+    #[test]
+    fn the_comparison_can_actually_report_a_difference() {
+        let e = engine();
+        let red = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #ff0000; width: 100px; height: 50px\"></div></body></html>",
+        );
+        let blue = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #0000ff; width: 100px; height: 50px\"></div></body></html>",
+        );
+        assert_ne!(
+            red, blue,
+            "NEGATIVE CONTROL FAILED: two documents with different background \
+             colours produced identical display lists. The comparison is inert, \
+             so every == case below would pass vacuously. Do not trust any \
+             reftest result from this run."
+        );
+    }
+
+    /// A pair that SHOULD match must match — the positive control.
+    #[test]
+    fn equivalent_documents_produce_equal_display_lists() {
+        let e = engine();
+        let a = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #ff0000; width: 100px\"></div></body></html>",
+        );
+        let b = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: rgb(255, 0, 0); width: 100px\"></div></body></html>",
+        );
+        assert_eq!(
+            a, b,
+            "#ff0000 and rgb(255,0,0) are the same colour and must produce the \
+             same display list"
+        );
+    }
+
+    /// The checked-in suite.
+    #[test]
+    fn checked_in_reftests_all_hold() {
+        let dir = reftest_dir();
+        let list_path = dir.join("reftest.list");
+        let text = std::fs::read_to_string(&list_path).unwrap_or_else(|e| {
+            panic!("cannot read {}: {e}", list_path.display());
+        });
+        let cases = parse_reftest_list(&text);
+
+        // AN EMPTY SUITE IS A FAILURE, NOT A PASS. The previous runner returned
+        // an empty summary when the directory did not exist, which reports
+        // success for having tested nothing - a wrong path would have looked
+        // identical to a green suite.
+        assert!(
+            !cases.is_empty(),
+            "no reftest cases parsed from {} - a harness that finds zero tests \
+             must fail rather than report success",
+            list_path.display()
+        );
+
+        let e = engine();
+        let mut failures = Vec::new();
+        for case in &cases {
+            let test_html = match std::fs::read_to_string(dir.join(&case.test)) {
+                Ok(h) => h,
+                Err(err) => {
+                    failures.push(format!("{}: cannot read test file: {err}", case.test));
+                    continue;
+                }
+            };
+            let ref_html = match std::fs::read_to_string(dir.join(&case.reference)) {
+                Ok(h) => h,
+                Err(err) => {
+                    failures.push(format!("{}: cannot read reference: {err}", case.reference));
+                    continue;
+                }
+            };
+            let got = render_to_display_list(&e, &test_html);
+            let want = render_to_display_list(&e, &ref_html);
+
+            // A pair that paints NOTHING compares equal to nothing and passes
+            // every `==` case vacuously. An empty display list means the
+            // document did not render, which is a failure however the case was
+            // declared.
+            if got.is_empty() || want.is_empty() {
+                failures.push(format!(
+                    "{} / {} : empty display list (test={} cmds, ref={} cmds) -                      a document that paints nothing cannot verify anything",
+                    case.test,
+                    case.reference,
+                    got.lines().count(),
+                    want.lines().count(),
+                ));
+                continue;
+            }
+
+            let equal = got == want;
+            if equal != case.should_match {
+                let op = if case.should_match { "==" } else { "!=" };
+                failures.push(format!(
+                    "{op} {} {} : expected {}, got {}",
+                    case.test,
+                    case.reference,
+                    if case.should_match { "match" } else { "mismatch" },
+                    if equal { "match" } else { "mismatch" },
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} reftest case(s) failed:\n{}",
+            failures.len(),
+            cases.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// The audit class, made visible.
+    ///
+    /// Before the position wire, these two documents produced IDENTICAL display
+    /// lists, because `position: absolute` could not be set and the offsets
+    /// never reached the layout box. No computed-value test could see that; a
+    /// display list shows it immediately.
+    #[test]
+    fn positioned_and_static_documents_differ_in_the_display_list() {
+        let e = engine();
+        let statik = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #00ff00; width: 50px; height: 50px\"></div></body></html>",
+        );
+        let positioned = render_to_display_list(
+            &e,
+            "<html><body><div style=\"background-color: #00ff00; width: 50px; height: 50px; \
+             position: absolute; top: 30px; left: 40px\"></div></body></html>",
+        );
+        assert_ne!(
+            statik, positioned,
+            "an absolutely positioned box must not paint identically to a \
+             static one - if these match, `position` is not reaching layout"
         );
     }
 }
