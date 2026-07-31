@@ -578,6 +578,11 @@ impl Engine {
         // repaint (a flash of unstyled content).
         self.load_external_stylesheets(id, &document, &url).await;
 
+        // And the images, also before layout: an <img> contributes its
+        // INTRINSIC size to layout, so loading after the first pass would lay
+        // the page out with zero-sized images and then reflow.
+        self.load_document_images(id, &document, &url).await;
+
         // Layout and render
         self.relayout(id)?;
 
@@ -1516,6 +1521,78 @@ impl Engine {
             }
         }
         urls
+    }
+
+    /// Discover every `<img src>` in the document, resolved against the
+    /// document's own URL.
+    ///
+    /// Returns `(src_attribute, resolved_url)` — the raw attribute is kept
+    /// because the renderer identifies an image box by the `src` it was
+    /// authored with, not by the resolved URL.
+    ///
+    /// Takes no `self`, same reasoning as `discover_external_stylesheets`:
+    /// tests exercise the real path without building an Engine.
+    ///
+    /// `srcset` / `<picture>` are NOT handled — only the plain `src`. Stated
+    /// rather than left to be discovered: a responsive-image page will load
+    /// its fallback here, not its best candidate.
+    fn discover_images(document: &Document, base_url: Option<&Url>) -> Vec<(String, Url)> {
+        let mut images = Vec::new();
+        for img in document.get_elements_by_tag_name("img") {
+            let Some(src) = img.get_attribute("src") else {
+                continue;
+            };
+            if src.trim().is_empty() {
+                continue;
+            }
+            let resolved = match base_url {
+                Some(base) => base.join(src).ok(),
+                None => Url::parse(src).ok(),
+            };
+            match resolved {
+                Some(url) => images.push((src.to_string(), url)),
+                None => warn!(src, "image src did not resolve; skipping"),
+            }
+        }
+        images
+    }
+
+    /// Fetch every `<img>` in the document into the image cache.
+    ///
+    /// Delegates each URL to `load_image`, which already fetches, decodes,
+    /// caches and emits ImageLoaded / ImageError. Reusing it rather than
+    /// reimplementing the loop means there is exactly ONE image-load path to
+    /// keep correct.
+    ///
+    /// FAIL-SOFT PER IMAGE: a broken `<img>` must not fail the navigation —
+    /// that is what a real browser does, and it is what `alt` text is for.
+    /// Every failure is logged with its URL. Returns how many are in cache.
+    async fn load_document_images(
+        &self,
+        id: EngineViewId,
+        document: &Document,
+        base_url: &Url,
+    ) -> usize {
+        let images = Self::discover_images(document, Some(base_url));
+        if images.is_empty() {
+            return 0;
+        }
+        let mut loaded = 0usize;
+        for (_src, url) in images {
+            if self.image_manager.is_cached(&url) {
+                loaded += 1;
+                continue;
+            }
+            match self.load_image(id, url.clone()).await {
+                Ok(()) => loaded += 1,
+                // load_image has already emitted ImageError; this is the
+                // operator-visible half. A silently missing image looks
+                // identical to a page that was authored without one.
+                Err(e) => warn!(%url, error = %e, "image failed to load"),
+            }
+        }
+        info!(?id, loaded, "document images loaded");
+        loaded
     }
 
     /// Recursively gather the text content of every `<style>` element.
@@ -4738,5 +4815,97 @@ mod external_stylesheet_tests {
         let mut b = Vec::new();
         widths(&e.build_layout_with_external_css(&d, ""), &mut b);
         assert_eq!(a, b, "empty external CSS must be a no-op");
+    }
+}
+
+#[cfg(test)]
+mod image_subresource_tests {
+    use super::*;
+
+    fn doc(html: &str) -> Document {
+        Document::parse_html(html).expect("parse")
+    }
+
+    fn base() -> Url {
+        Url::parse("https://example.com/dir/page.html").unwrap()
+    }
+
+    #[test]
+    fn relative_src_resolves_against_the_document_url() {
+        let d = doc(r#"<html><body><img src="cat.png"></body></html>"#);
+        let found = Engine::discover_images(&d, Some(&base()));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "cat.png", "raw src must be preserved");
+        assert_eq!(found[0].1.as_str(), "https://example.com/dir/cat.png");
+    }
+
+    #[test]
+    fn root_relative_and_absolute_both_resolve_and_order_is_document_order() {
+        let d = doc(
+            r#"<html><body>
+               <img src="/a.png">
+               <img src="https://cdn.example.org/b.png">
+               </body></html>"#,
+        );
+        let found = Engine::discover_images(&d, Some(&base()));
+        let urls: Vec<&str> = found.iter().map(|(_, u)| u.as_str()).collect();
+        assert!(urls.contains(&"https://example.com/a.png"), "got {urls:?}");
+        assert!(urls.contains(&"https://cdn.example.org/b.png"), "got {urls:?}");
+    }
+
+    #[test]
+    fn missing_and_empty_src_are_skipped_not_guessed() {
+        let d = doc(
+            r#"<html><body>
+               <img>
+               <img src="">
+               <img src="   ">
+               </body></html>"#,
+        );
+        assert!(Engine::discover_images(&d, Some(&base())).is_empty());
+    }
+
+    #[test]
+    fn without_a_base_url_only_absolute_src_resolves() {
+        let d = doc(
+            r#"<html><body>
+               <img src="relative.png">
+               <img src="https://cdn.example.org/abs.png">
+               </body></html>"#,
+        );
+        let found = Engine::discover_images(&d, None);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1.as_str(), "https://cdn.example.org/abs.png");
+    }
+
+    #[test]
+    fn only_img_elements_are_collected() {
+        // <link href> and <script src> are not images. Collecting any element
+        // with a URL attribute would fetch the stylesheet twice and try to
+        // decode JavaScript as a bitmap.
+        let d = doc(
+            r#"<html><head><link rel="stylesheet" href="a.css"></head>
+               <body><script src="app.js"></script><img src="real.png"></body></html>"#,
+        );
+        let found = Engine::discover_images(&d, Some(&base()));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1.as_str(), "https://example.com/dir/real.png");
+    }
+
+    #[test]
+    fn stylesheet_and_image_discovery_do_not_collect_each_other() {
+        // The two discovery passes run over the same document back to back.
+        // If either matched by "has a URL attribute" instead of by tag, this
+        // page would cross-contaminate and neither test alone would show it.
+        let d = doc(
+            r#"<html><head><link rel="stylesheet" href="s.css"></head>
+               <body><img src="i.png"></body></html>"#,
+        );
+        let sheets = Engine::discover_external_stylesheets(&d, Some(&base()));
+        let images = Engine::discover_images(&d, Some(&base()));
+        assert_eq!(sheets.len(), 1);
+        assert_eq!(images.len(), 1);
+        assert!(sheets[0].as_str().ends_with("s.css"));
+        assert!(images[0].1.as_str().ends_with("i.png"));
     }
 }
