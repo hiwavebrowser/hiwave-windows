@@ -1337,6 +1337,24 @@ pub enum DisplayCommand {
         color: Color,
         style: TextDecorationStyleValue,
     },
+    /// Draw a box shadow. Emitted BEFORE the background for outer shadows and
+    /// after it for inset ones, so painters draw them in the right order.
+    BoxShadow {
+        /// Shadow offset X.
+        offset_x: f32,
+        /// Shadow offset Y.
+        offset_y: f32,
+        /// Blur radius. NOT YET RENDERED - see the renderer's note.
+        blur_radius: f32,
+        /// Spread radius.
+        spread_radius: f32,
+        /// Shadow color.
+        color: rustkit_css::Color,
+        /// The box's border rect; the shadow is derived from it.
+        rect: Rect,
+        /// Inset shadows draw inside the box.
+        inset: bool,
+    },
     /// Draw an image.
     Image {
         /// URL or cache key of the image
@@ -1768,9 +1786,52 @@ impl DisplayList {
 
     /// Render a layout box's own content (background, borders, text).
     fn render_box_content(&mut self, layout_box: &LayoutBox) {
+        // Outer shadows paint UNDER the background, inset shadows OVER it.
+        // Hooked into render_box_content and NOT render_box: the latter is
+        // #[allow(dead_code)] and unreachable from render_stacking_context, so
+        // wiring it there would emit nothing and look correct in review. Talos
+        // hit exactly that trap on hiwave-linux #41 and warned the fleet.
+        self.render_box_shadows(layout_box);
         self.render_background(layout_box);
+        self.render_inset_shadows(layout_box);
         self.render_borders(layout_box);
         self.render_text(layout_box);
+    }
+
+    /// Emit outer box shadows (painted beneath the background).
+    fn render_box_shadows(&mut self, layout_box: &LayoutBox) {
+        let box_rect = layout_box.dimensions.border_box();
+        for shadow in &layout_box.style.box_shadows {
+            if shadow.is_visible() && !shadow.inset {
+                self.commands.push(DisplayCommand::BoxShadow {
+                    offset_x: shadow.offset_x,
+                    offset_y: shadow.offset_y,
+                    blur_radius: shadow.blur_radius,
+                    spread_radius: shadow.spread_radius,
+                    color: shadow.color,
+                    rect: box_rect,
+                    inset: false,
+                });
+            }
+        }
+    }
+
+    /// Emit inset box shadows (painted over the background).
+    fn render_inset_shadows(&mut self, layout_box: &LayoutBox) {
+        let box_rect = layout_box.dimensions.border_box();
+        for shadow in &layout_box.style.box_shadows {
+            if shadow.is_visible() && shadow.inset {
+                self.commands.push(DisplayCommand::BoxShadow {
+                    offset_x: shadow.offset_x,
+                    offset_y: shadow.offset_y,
+                    blur_radius: shadow.blur_radius,
+                    spread_radius: shadow.spread_radius,
+                    color: shadow.color,
+                    rect: box_rect,
+                    inset: true,
+                });
+            }
+        }
     }
 
     /// Render a layout box and its children (legacy method).
