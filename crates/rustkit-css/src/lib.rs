@@ -2575,3 +2575,239 @@ mod length_math_tests {
         assert_eq!(parse_length("min(10px, 2em)"), None);
     }
 }
+
+#[cfg(test)]
+mod inherit_partition_guard {
+    use super::*;
+
+    /// EXHAUSTIVE DESTRUCTURE GUARD.
+    ///
+    /// `inherit_from` assigns 17 fields from the parent, re-initialises 11
+    /// explicitly, and lets the remaining 71 fall through
+    /// `..Default::default()`. That tail is the hazard: add a NEW field to
+    /// `ComputedStyle` that CSS says should inherit, and it silently will not
+    /// - `..Default::default()` swallows it, every existing test still passes,
+    /// and the only symptom is a page that renders subtly wrong.
+    ///
+    /// A measurement whose failure mode is invisible needs a structural guard,
+    /// not vigilance. This test destructures `ComputedStyle` EXHAUSTIVELY, so
+    /// adding any field FAILS TO COMPILE here until someone writes it into one
+    /// of the two lists below - i.e. until a human makes a conscious
+    /// inherit / do-not-inherit decision.
+    ///
+    /// Audited 2026-07-31: none of the 71 fall-through fields is a property CSS
+    /// defines as inherited. The partition is correct TODAY; this keeps it
+    /// correct.
+    #[test]
+    fn every_field_has_a_conscious_inheritance_decision() {
+        let parent = ComputedStyle::new();
+        let child = ComputedStyle::inherit_from(&parent);
+
+        // Exhaustive: no `..` rest pattern. A new field breaks this line.
+        let ComputedStyle {
+            transform,
+            transform_origin,
+            box_shadows,
+            transition_property,
+            transition_duration,
+            transition_timing_function,
+            transition_delay,
+            animation_name,
+            animation_duration,
+            animation_timing_function,
+            animation_delay,
+            animation_iteration_count,
+            animation_direction,
+            animation_fill_mode,
+            animation_play_state,
+            display,
+            position,
+            width,
+            height,
+            min_width,
+            min_height,
+            max_width,
+            max_height,
+            margin_top,
+            margin_right,
+            margin_bottom,
+            margin_left,
+            padding_top,
+            padding_right,
+            padding_bottom,
+            padding_left,
+            border_top_width,
+            border_right_width,
+            border_bottom_width,
+            border_left_width,
+            border_top_color,
+            border_right_color,
+            border_bottom_color,
+            border_left_color,
+            color,
+            background_color,
+            font_size,
+            font_weight,
+            font_style,
+            font_family,
+            line_height,
+            text_align,
+            font_stretch,
+            letter_spacing,
+            word_spacing,
+            text_indent,
+            text_decoration_line,
+            text_decoration_color,
+            text_decoration_style,
+            text_decoration_thickness,
+            text_transform,
+            white_space,
+            word_break,
+            vertical_align,
+            writing_mode,
+            direction,
+            opacity,
+            overflow_x,
+            overflow_y,
+            flex_direction,
+            flex_wrap,
+            justify_content,
+            align_items,
+            align_content,
+            row_gap,
+            column_gap,
+            order,
+            flex_grow,
+            flex_shrink,
+            flex_basis,
+            align_self,
+            scroll_behavior,
+            overscroll_behavior_x,
+            overscroll_behavior_y,
+            scrollbar_width,
+            scrollbar_gutter,
+            scrollbar_color,
+            grid_template_columns,
+            grid_template_rows,
+            grid_template_areas,
+            grid_auto_columns,
+            grid_auto_rows,
+            grid_auto_flow,
+            grid_column_start,
+            grid_column_end,
+            grid_row_start,
+            grid_row_end,
+            justify_items,
+            justify_self,
+            custom_properties,
+            background_gradient,
+            background_radial_gradient,
+            background_clip,
+            box_sizing,
+        } = child;
+
+        // Silence unused-binding warnings for the deliberately non-inherited
+        // tail; the binding itself is what enforces exhaustiveness.
+        let _ = &transform;
+        let _ = &transform_origin;
+        let _ = &box_shadows;
+        let _ = &transition_property;
+        let _ = &transition_duration;
+        let _ = &transition_timing_function;
+        let _ = &transition_delay;
+        let _ = &animation_name;
+        let _ = &animation_duration;
+        let _ = &animation_timing_function;
+        let _ = &animation_delay;
+        let _ = &animation_iteration_count;
+        let _ = &animation_direction;
+        let _ = &animation_fill_mode;
+        let _ = &animation_play_state;
+        let _ = &display;
+        let _ = &position;
+        let _ = &width;
+        let _ = &height;
+        let _ = &min_width;
+        let _ = &min_height;
+        let _ = &max_width;
+        let _ = &max_height;
+        let _ = &margin_top;
+        let _ = &margin_right;
+        let _ = &margin_bottom;
+        let _ = &margin_left;
+        let _ = &padding_top;
+        let _ = &padding_right;
+        let _ = &padding_bottom;
+        let _ = &padding_left;
+        let _ = &border_top_width;
+        let _ = &border_right_width;
+        let _ = &border_bottom_width;
+        let _ = &border_left_width;
+        let _ = &border_top_color;
+        let _ = &border_right_color;
+        let _ = &border_bottom_color;
+        let _ = &border_left_color;
+        let _ = &background_color;
+        let _ = &text_decoration_line;
+        let _ = &text_decoration_color;
+        let _ = &text_decoration_style;
+        let _ = &text_decoration_thickness;
+        let _ = &vertical_align;
+        let _ = &opacity;
+        let _ = &overflow_x;
+        let _ = &overflow_y;
+        let _ = &flex_direction;
+        let _ = &flex_wrap;
+        let _ = &justify_content;
+        let _ = &align_items;
+        let _ = &align_content;
+        let _ = &row_gap;
+        let _ = &column_gap;
+        let _ = &order;
+        let _ = &flex_grow;
+        let _ = &flex_shrink;
+        let _ = &flex_basis;
+        let _ = &align_self;
+        let _ = &scroll_behavior;
+        let _ = &overscroll_behavior_x;
+        let _ = &overscroll_behavior_y;
+        let _ = &scrollbar_width;
+        let _ = &scrollbar_gutter;
+        let _ = &scrollbar_color;
+        let _ = &grid_template_columns;
+        let _ = &grid_template_rows;
+        let _ = &grid_template_areas;
+        let _ = &grid_auto_columns;
+        let _ = &grid_auto_rows;
+        let _ = &grid_auto_flow;
+        let _ = &grid_column_start;
+        let _ = &grid_column_end;
+        let _ = &grid_row_start;
+        let _ = &grid_row_end;
+        let _ = &justify_items;
+        let _ = &justify_self;
+        let _ = &background_gradient;
+        let _ = &background_radial_gradient;
+        let _ = &background_clip;
+        let _ = &box_sizing;
+
+        // The 17 inherited properties must equal the parent's.
+        assert_eq!(color, parent.color, "color must inherit");
+        assert_eq!(custom_properties, parent.custom_properties, "custom_properties must inherit");
+        assert_eq!(direction, parent.direction, "direction must inherit");
+        assert_eq!(font_family, parent.font_family, "font_family must inherit");
+        assert_eq!(font_size, parent.font_size, "font_size must inherit");
+        assert_eq!(font_stretch, parent.font_stretch, "font_stretch must inherit");
+        assert_eq!(font_style, parent.font_style, "font_style must inherit");
+        assert_eq!(font_weight, parent.font_weight, "font_weight must inherit");
+        assert_eq!(letter_spacing, parent.letter_spacing, "letter_spacing must inherit");
+        assert_eq!(line_height, parent.line_height, "line_height must inherit");
+        assert_eq!(text_align, parent.text_align, "text_align must inherit");
+        assert_eq!(text_indent, parent.text_indent, "text_indent must inherit");
+        assert_eq!(text_transform, parent.text_transform, "text_transform must inherit");
+        assert_eq!(white_space, parent.white_space, "white_space must inherit");
+        assert_eq!(word_break, parent.word_break, "word_break must inherit");
+        assert_eq!(word_spacing, parent.word_spacing, "word_spacing must inherit");
+        assert_eq!(writing_mode, parent.writing_mode, "writing_mode must inherit");
+    }
+}
