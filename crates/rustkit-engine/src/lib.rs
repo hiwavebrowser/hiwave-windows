@@ -156,6 +156,10 @@ struct ViewState {
     view_focused: bool,
     /// Headless bounds (only set for headless views, None for window-based views).
     headless_bounds: Option<Bounds>,
+    /// CSS text of every successfully fetched `<link rel="stylesheet">`, in
+    /// document order. Held on the view rather than re-fetched at layout time
+    /// because `relayout` is synchronous and runs on every resize.
+    external_css: String,
 }
 
 /// Engine configuration.
@@ -336,6 +340,7 @@ impl Engine {
             focused_node: None,
             view_focused: false,
             headless_bounds: None,
+            external_css: String::new(),
         };
 
         self.views.insert(id, view_state);
@@ -394,6 +399,7 @@ impl Engine {
             focused_node: None,
             view_focused: false,
             headless_bounds: Some(bounds),
+            external_css: String::new(),
         };
 
         self.views.insert(id, view_state);
@@ -567,6 +573,11 @@ impl Engine {
             view.bindings = Some(bindings);
         }
 
+        // Fetch <link rel="stylesheet"> BEFORE layout, so external rules take
+        // part in the very first cascade instead of appearing on a later
+        // repaint (a flash of unstyled content).
+        self.load_external_stylesheets(id, &document, &url).await;
+
         // Layout and render
         self.relayout(id)?;
 
@@ -729,7 +740,8 @@ impl Engine {
         };
 
         // Build layout tree from DOM
-        let mut root_box = self.build_layout_from_document(&document);
+        let external_css = view.external_css.clone();
+        let mut root_box = self.build_layout_with_external_css(&document, &external_css);
 
         // Count children for debugging
         let child_count = root_box.children.len();
@@ -806,6 +818,23 @@ impl Engine {
 
     /// Build a layout tree from a DOM document.
     fn build_layout_from_document(&self, document: &Document) -> LayoutBox {
+        self.build_layout_with_external_css(document, "")
+    }
+
+    /// Same, plus the CSS text of any fetched external stylesheets.
+    ///
+    /// `external_css` is placed BEFORE the inline `<style>` text so that an
+    /// inline rule wins over an external one at equal specificity. That is the
+    /// common authoring order (`<link>` then `<style>` in `<head>`) but it is a
+    /// SIMPLIFICATION: true CSS cascade order follows the document position of
+    /// each element, so a `<style>` that appears before a `<link>` is applied
+    /// in the wrong order here. Stated rather than glossed; fixing it needs
+    /// per-element source ordering, which this change does not add.
+    fn build_layout_with_external_css(
+        &self,
+        document: &Document,
+        external_css: &str,
+    ) -> LayoutBox {
         // Create root layout box for the document
         let mut root_style = ComputedStyle::new();
         root_style.background_color = rustkit_css::Color::WHITE;
@@ -816,6 +845,10 @@ impl Engine {
         // so every `<style>` rule — backgrounds, class selectors, sizes — was
         // silently ignored).
         let mut css_text = String::new();
+        if !external_css.is_empty() {
+            css_text.push_str(external_css);
+            css_text.push('\n');
+        }
         self.collect_style_text(&document.root(), &mut css_text);
         let sheet = Stylesheet::parse(&css_text).unwrap_or_else(|_| Stylesheet::new());
         info!(rule_count = sheet.rules.len(), css_len = css_text.len(), "CSS: author stylesheet parsed");
@@ -1440,6 +1473,49 @@ impl Engine {
             i = j;
         }
         Some(spec)
+    }
+
+    /// Discover every `<link rel="stylesheet">` href in the document, resolved
+    /// against the document's own URL.
+    ///
+    /// Takes no `self` - it is a pure function of the document, so the tests
+    /// exercise the real discovery path without constructing an Engine (and
+    /// therefore without a GPU adapter). Same reasoning as #52.
+    ///
+    /// Relative hrefs need `base_url`; with no base, only absolute hrefs
+    /// resolve. An href that will not parse is SKIPPED, not guessed at.
+    fn discover_external_stylesheets(document: &Document, base_url: Option<&Url>) -> Vec<Url> {
+        let mut urls = Vec::new();
+        for link in document.get_elements_by_tag_name("link") {
+            // `rel` is an unordered set in HTML ("stylesheet", "alternate
+            // stylesheet"); match any token rather than the whole attribute,
+            // and case-insensitively - `REL="StyleSheet"` is legal.
+            let is_stylesheet = link
+                .get_attribute("rel")
+                .map(|rel| {
+                    rel.split_whitespace()
+                        .any(|t| t.eq_ignore_ascii_case("stylesheet"))
+                })
+                .unwrap_or(false);
+            if !is_stylesheet {
+                continue;
+            }
+            let Some(href) = link.get_attribute("href") else {
+                continue;
+            };
+            if href.trim().is_empty() {
+                continue;
+            }
+            let resolved = match base_url {
+                Some(base) => base.join(href).ok(),
+                None => Url::parse(href).ok(),
+            };
+            match resolved {
+                Some(url) => urls.push(url),
+                None => warn!(href, "stylesheet href did not resolve; skipping"),
+            }
+        }
+        urls
     }
 
     /// Recursively gather the text content of every `<style>` element.
@@ -2377,6 +2453,49 @@ impl Engine {
     }
 
     /// Load an image from a URL.
+    /// Fetch every `<link rel="stylesheet">` in the document and store the CSS
+    /// on the view so the next layout can cascade it.
+    ///
+    /// FAIL-SOFT PER SHEET, DELIBERATELY: one 404 stylesheet must not fail the
+    /// whole navigation - that is how a real browser behaves. But each failure
+    /// is logged at warn with its URL, because a silently-dropped stylesheet
+    /// looks exactly like a page that renders wrong for no reason. Returns the
+    /// number of sheets that actually loaded.
+    async fn load_external_stylesheets(
+        &mut self,
+        id: EngineViewId,
+        document: &Document,
+        base_url: &Url,
+    ) -> usize {
+        let urls = Self::discover_external_stylesheets(document, Some(base_url));
+        if urls.is_empty() {
+            return 0;
+        }
+        let mut css = String::new();
+        let mut loaded = 0usize;
+        for url in urls {
+            match self.loader.fetch(Request::get(url.clone())).await {
+                Ok(response) if response.ok() => match response.text().await {
+                    Ok(text) => {
+                        css.push_str(&text);
+                        css.push('\n');
+                        loaded += 1;
+                    }
+                    Err(e) => warn!(%url, error = %e, "stylesheet body was not readable"),
+                },
+                Ok(response) => {
+                    warn!(%url, status = %response.status, "stylesheet fetch returned non-OK")
+                }
+                Err(e) => warn!(%url, error = %e, "stylesheet fetch failed"),
+            }
+        }
+        if let Some(view) = self.views.get_mut(&id) {
+            view.external_css = css;
+        }
+        info!(?id, loaded, "external stylesheets loaded");
+        loaded
+    }
+
     pub async fn load_image(&self, view_id: EngineViewId, url: Url) -> Result<(), EngineError> {
         let image_manager = self.image_manager.clone();
         let event_tx = self.event_tx.clone();
@@ -4453,5 +4572,171 @@ mod animation_wire_tests {
         assert_eq!(s.animation_iteration_count, AnimationIterationCount::One);
         assert_eq!(s.animation_play_state, AnimationPlayState::Running);
         assert_eq!(s.animation_fill_mode, AnimationFillMode::None);
+    }
+}
+
+#[cfg(test)]
+mod external_stylesheet_tests {
+    use super::*;
+
+    fn doc(html: &str) -> Document {
+        Document::parse_html(html).expect("parse")
+    }
+
+    fn base() -> Url {
+        Url::parse("https://example.com/dir/page.html").unwrap()
+    }
+
+    #[test]
+    fn relative_href_resolves_against_the_document_url() {
+        // The whole point of carrying base_url: "site.css" next to the page is
+        // the overwhelmingly common authoring form.
+        let d = doc(r#"<html><head><link rel="stylesheet" href="site.css"></head><body></body></html>"#);
+        let urls = Engine::discover_external_stylesheets(&d, Some(&base()));
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].as_str(), "https://example.com/dir/site.css");
+    }
+
+    #[test]
+    fn root_relative_and_absolute_hrefs_both_resolve() {
+        let d = doc(
+            r#"<html><head>
+               <link rel="stylesheet" href="/a.css">
+               <link rel="stylesheet" href="https://cdn.example.org/b.css">
+               </head><body></body></html>"#,
+        );
+        let urls = Engine::discover_external_stylesheets(&d, Some(&base()));
+        let got: Vec<&str> = urls.iter().map(|u| u.as_str()).collect();
+        assert!(got.contains(&"https://example.com/a.css"), "got {got:?}");
+        assert!(got.contains(&"https://cdn.example.org/b.css"), "got {got:?}");
+    }
+
+    #[test]
+    fn non_stylesheet_links_are_ignored() {
+        // <link> is used for icons, preconnect, manifests. Treating every
+        // <link href> as CSS would fetch the favicon and try to parse it.
+        let d = doc(
+            r#"<html><head>
+               <link rel="icon" href="favicon.ico">
+               <link rel="preconnect" href="https://fonts.example.com">
+               <link rel="manifest" href="app.webmanifest">
+               </head><body></body></html>"#,
+        );
+        assert!(Engine::discover_external_stylesheets(&d, Some(&base())).is_empty());
+    }
+
+    #[test]
+    fn rel_matching_is_case_insensitive_and_token_wise() {
+        // `rel` is an unordered SET. "alternate stylesheet" contains the token,
+        // and REL="StyleSheet" is legal HTML. A whole-attribute equality check
+        // would silently drop both.
+        let d = doc(
+            r#"<html><head>
+               <link rel="StyleSheet" href="a.css">
+               <link rel="alternate stylesheet" href="b.css">
+               </head><body></body></html>"#,
+        );
+        assert_eq!(Engine::discover_external_stylesheets(&d, Some(&base())).len(), 2);
+    }
+
+    #[test]
+    fn missing_empty_and_unresolvable_hrefs_are_skipped_not_guessed() {
+        let d = doc(
+            r#"<html><head>
+               <link rel="stylesheet">
+               <link rel="stylesheet" href="">
+               <link rel="stylesheet" href="   ">
+               </head><body></body></html>"#,
+        );
+        assert!(Engine::discover_external_stylesheets(&d, Some(&base())).is_empty());
+    }
+
+    #[test]
+    fn without_a_base_url_only_absolute_hrefs_resolve() {
+        // load_html has no document URL. A relative href genuinely cannot be
+        // resolved then - it must be dropped, never guessed relative to cwd.
+        let d = doc(
+            r#"<html><head>
+               <link rel="stylesheet" href="relative.css">
+               <link rel="stylesheet" href="https://cdn.example.org/abs.css">
+               </head><body></body></html>"#,
+        );
+        let urls = Engine::discover_external_stylesheets(&d, None);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].as_str(), "https://cdn.example.org/abs.css");
+    }
+
+    #[test]
+    fn external_css_participates_in_the_cascade() {
+        // The load-bearing test: before this change external CSS could not
+        // reach the cascade at all, because only <style> text was collected.
+        let e = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(
+                ResourceLoader::new(LoaderConfig::default()).expect("loader"),
+            ),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        };
+        let d = doc(r#"<html><body><div id="t">x</div></body></html>"#);
+
+        // Walk the tree: `#t` is a DESCENDANT, so asserting on the root box
+        // would compare the document root's style and pass vacuously.
+        fn widths(b: &LayoutBox, out: &mut Vec<String>) {
+            out.push(format!("{:?}", b.style.width));
+            for c in &b.children {
+                widths(c, out);
+            }
+        }
+        let mut without = Vec::new();
+        widths(&e.build_layout_from_document(&d), &mut without);
+        let mut with = Vec::new();
+        widths(
+            &e.build_layout_with_external_css(&d, "#t { width: 123px }"),
+            &mut with,
+        );
+
+        assert_ne!(
+            with, without,
+            "external CSS must change the computed tree; if these match the sheet never reached the cascade"
+        );
+        assert!(
+            with.iter().any(|w| w.contains("123")),
+            "expected a box to compute width:123px from the external sheet, got {with:?}"
+        );
+    }
+
+    #[test]
+    fn empty_external_css_leaves_the_cascade_untouched() {
+        let e = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(
+                ResourceLoader::new(LoaderConfig::default()).expect("loader"),
+            ),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        };
+        let d = doc(r#"<html><head><style>#t{width:7px}</style></head><body><div id="t">x</div></body></html>"#);
+        fn widths(b: &LayoutBox, out: &mut Vec<String>) {
+            out.push(format!("{:?}", b.style.width));
+            for c in &b.children {
+                widths(c, out);
+            }
+        }
+        let mut a = Vec::new();
+        widths(&e.build_layout_from_document(&d), &mut a);
+        let mut b = Vec::new();
+        widths(&e.build_layout_with_external_css(&d, ""), &mut b);
+        assert_eq!(a, b, "empty external CSS must be a no-op");
     }
 }
