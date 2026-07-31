@@ -6566,3 +6566,96 @@ mod ua_default_gap_tests {
         assert_eq!(td.flex_basis, rustkit_css::FlexBasis::Length(0.0));
     }
 }
+
+#[cfg(test)]
+mod box_shadow_paint_tests {
+    //! box-shadow has PARSED since #49 and never drawn a pixel. Group A (the
+    //! computed-value assertions from #49) passed the whole time, so a
+    //! computed-value suite called box-shadow "supported" while a shadowed page
+    //! rendered identically to an unshadowed one.
+    use super::*;
+    use rustkit_layout::{Dimensions, DisplayList, Rect};
+
+    fn dl(html: &str) -> String {
+        let e = Engine {
+            config: EngineConfig::default(),
+            views: HashMap::new(),
+            viewhost: ViewHost::new(),
+            compositor: test_compositor(),
+            renderer: None,
+            loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+            image_manager: Arc::new(ImageManager::new()),
+            event_tx: tokio::sync::mpsc::unbounded_channel().0,
+            event_rx: None,
+        };
+        let d = Document::parse_html(html).expect("parse");
+        let mut root = e.build_layout_from_document(&d);
+        let mut cb = Dimensions::default();
+        cb.content = Rect::new(0.0, 0.0, 800.0, 600.0);
+        root.layout(&cb);
+        DisplayList::build(&root)
+            .commands
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_shadowed_box_paints_differently_from_an_unshadowed_one() {
+        let plain = dl("<html><body><div style=\"width:100px;height:50px;background-color:#fff\"></div></body></html>");
+        let shadowed = dl("<html><body><div style=\"width:100px;height:50px;background-color:#fff;\
+                           box-shadow: 4px 4px 0 #000\"></div></body></html>");
+        assert_ne!(
+            plain, shadowed,
+            "a box-shadow must change what is painted; if these match the \
+             shadow is parsed and never drawn"
+        );
+        assert!(
+            shadowed.contains("BoxShadow"),
+            "expected a BoxShadow command in the display list, got:\n{shadowed}"
+        );
+    }
+
+    #[test]
+    fn the_shadow_is_emitted_BEFORE_the_background() {
+        // Paint order is the whole point of an outer shadow: emitted after the
+        // background it would cover the box it is meant to sit behind.
+        let s = dl("<html><body><div style=\"width:100px;height:50px;background-color:#ff0000;\
+                    box-shadow: 4px 4px 0 #000\"></div></body></html>");
+        let shadow_at = s.find("BoxShadow").expect("no BoxShadow command");
+        let bg_at = s
+            .find("SolidColor(Color { r: 255, g: 0, b: 0")
+            .expect("no red background command");
+        assert!(
+            shadow_at < bg_at,
+            "the outer shadow must be emitted before the background it sits behind"
+        );
+    }
+
+    #[test]
+    fn an_inset_shadow_is_emitted_AFTER_the_background() {
+        let s = dl("<html><body><div style=\"width:100px;height:50px;background-color:#ff0000;\
+                    box-shadow: inset 4px 4px 0 #000\"></div></body></html>");
+        let shadow_at = s.find("BoxShadow").expect("no BoxShadow command");
+        let bg_at = s
+            .find("SolidColor(Color { r: 255, g: 0, b: 0")
+            .expect("no red background command");
+        assert!(
+            shadow_at > bg_at,
+            "an inset shadow must be emitted after the background so it paints over it"
+        );
+    }
+
+    #[test]
+    fn a_fully_transparent_shadow_emits_nothing() {
+        // is_visible() gates emission. A transparent shadow that still emitted
+        // a command would cost a draw call for nothing.
+        let s = dl("<html><body><div style=\"width:100px;height:50px;\
+                    box-shadow: 4px 4px 0 rgba(0,0,0,0)\"></div></body></html>");
+        assert!(
+            !s.contains("BoxShadow"),
+            "a fully transparent shadow must not be emitted, got:\n{s}"
+        );
+    }
+}

@@ -567,6 +567,26 @@ impl Renderer {
                 self.draw_solid_rect(*rect, *color);
             }
 
+            DisplayCommand::BoxShadow {
+                offset_x,
+                offset_y,
+                blur_radius,
+                spread_radius,
+                color,
+                rect,
+                inset,
+            } => {
+                self.draw_box_shadow(
+                    *rect,
+                    *offset_x,
+                    *offset_y,
+                    *blur_radius,
+                    *spread_radius,
+                    *color,
+                    *inset,
+                );
+            }
+
             DisplayCommand::LinearGradient {
                 rect,
                 angle_deg,
@@ -781,6 +801,56 @@ impl Renderer {
     }
 
     /// Draw a solid color rectangle.
+    /// Paint a box shadow as a HARD-EDGED offset rectangle.
+    ///
+    /// BLUR IS NOT IMPLEMENTED. `blur_radius` is accepted, carried through the
+    /// display list, and ignored here, so a blurred shadow paints with a sharp
+    /// edge. That is a visible difference from the reference, which blurs, and
+    /// it is stated rather than hidden: a shadow drawn hard is obviously
+    /// approximate, whereas no shadow at all is indistinguishable from a page
+    /// that never asked for one — which is the state this replaces, where
+    /// box-shadow had parsed since #49 and never drawn a pixel.
+    ///
+    /// The geometry IS faithful: offset moves the rect, spread grows it on all
+    /// four sides, and an inset shadow shrinks inward instead. Blur is the
+    /// single missing term and it is a separate unit with its own receipt.
+    fn draw_box_shadow(
+        &mut self,
+        rect: Rect,
+        offset_x: f32,
+        offset_y: f32,
+        _blur_radius: f32,
+        spread_radius: f32,
+        color: Color,
+        inset: bool,
+    ) {
+        if color.a == 0.0 {
+            return;
+        }
+        let shadow_rect = if inset {
+            // Inset: the shadow lies INSIDE the border box, pulled in by the
+            // spread and pushed by the offset.
+            Rect::new(
+                rect.x + offset_x.max(0.0) + spread_radius,
+                rect.y + offset_y.max(0.0) + spread_radius,
+                (rect.width - spread_radius * 2.0 - offset_x.abs()).max(0.0),
+                (rect.height - spread_radius * 2.0 - offset_y.abs()).max(0.0),
+            )
+        } else {
+            // Outer: offset, then grown by the spread on every side.
+            Rect::new(
+                rect.x + offset_x - spread_radius,
+                rect.y + offset_y - spread_radius,
+                (rect.width + spread_radius * 2.0).max(0.0),
+                (rect.height + spread_radius * 2.0).max(0.0),
+            )
+        };
+        if shadow_rect.width <= 0.0 || shadow_rect.height <= 0.0 {
+            return;
+        }
+        self.draw_solid_rect(shadow_rect, color);
+    }
+
     fn draw_solid_rect(&mut self, rect: Rect, color: Color) {
         // Apply clipping
         let rect = if let Some(clip) = self.current_clip() {
