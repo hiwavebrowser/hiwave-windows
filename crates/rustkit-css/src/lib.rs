@@ -2811,3 +2811,258 @@ mod inherit_partition_guard {
         assert_eq!(writing_mode, parent.writing_mode, "writing_mode must inherit");
     }
 }
+
+#[cfg(test)]
+mod initial_value_guard {
+    use super::*;
+
+    /// EXHAUSTIVE DESTRUCTURE GUARD on the CSS INITIAL VALUES.
+    ///
+    /// Sibling of `every_field_has_a_conscious_inheritance_decision`. That one
+    /// guards `inherit_from`; this one guards `new()`. Both end in
+    /// `..Default::default()`, and the derived `Default` is actively dangerous
+    /// for layout and paint:
+    ///
+    ///   `Length::default()` is `Zero`  - not `Auto`
+    ///   `Color::default()`  is opaque BLACK - not `TRANSPARENT`
+    ///   `f32::default()`    is `0.0` - not `1.0` for opacity
+    ///
+    /// This is not hypothetical. It has already shipped twice:
+    ///
+    ///   - Windows, 2026-07-07: `Length::Zero` as the width default laid every
+    ///     unstyled element out at width 0 - the zero-width tree in that day's
+    ///     parity baseline. The scar comment above `width:` in `new()` is that
+    ///     incident.
+    ///   - hiwave-linux, 2026-07-31: `inherit_from` fell through to `Default`
+    ///     for the same fields. Every inheriting element would have been 0x0,
+    ///     opaque black and invisible ON EVERY PAGE - and all eight of that
+    ///     PR's tests passed. Caught by Argos and Talos probing what the
+    ///     function actually returned instead of trusting its name.
+    ///
+    /// Adding a field to `ComputedStyle` fails to compile here until someone
+    /// states its initial value deliberately. A wrong initial is invisible in
+    /// unit tests and catastrophic on screen, which is exactly the shape that
+    /// needs a structural guard rather than review attention.
+    #[test]
+    fn every_field_has_a_deliberate_initial_value() {
+        let ComputedStyle {
+            transform,
+            transform_origin,
+            box_shadows,
+            transition_property,
+            transition_duration,
+            transition_timing_function,
+            transition_delay,
+            animation_name,
+            animation_duration,
+            animation_timing_function,
+            animation_delay,
+            animation_iteration_count,
+            animation_direction,
+            animation_fill_mode,
+            animation_play_state,
+            display,
+            position,
+            width,
+            height,
+            min_width,
+            min_height,
+            max_width,
+            max_height,
+            margin_top,
+            margin_right,
+            margin_bottom,
+            margin_left,
+            padding_top,
+            padding_right,
+            padding_bottom,
+            padding_left,
+            border_top_width,
+            border_right_width,
+            border_bottom_width,
+            border_left_width,
+            border_top_color,
+            border_right_color,
+            border_bottom_color,
+            border_left_color,
+            color,
+            background_color,
+            font_size,
+            font_weight,
+            font_style,
+            font_family,
+            line_height,
+            text_align,
+            font_stretch,
+            letter_spacing,
+            word_spacing,
+            text_indent,
+            text_decoration_line,
+            text_decoration_color,
+            text_decoration_style,
+            text_decoration_thickness,
+            text_transform,
+            white_space,
+            word_break,
+            vertical_align,
+            writing_mode,
+            direction,
+            opacity,
+            overflow_x,
+            overflow_y,
+            flex_direction,
+            flex_wrap,
+            justify_content,
+            align_items,
+            align_content,
+            row_gap,
+            column_gap,
+            order,
+            flex_grow,
+            flex_shrink,
+            flex_basis,
+            align_self,
+            scroll_behavior,
+            overscroll_behavior_x,
+            overscroll_behavior_y,
+            scrollbar_width,
+            scrollbar_gutter,
+            scrollbar_color,
+            grid_template_columns,
+            grid_template_rows,
+            grid_template_areas,
+            grid_auto_columns,
+            grid_auto_rows,
+            grid_auto_flow,
+            grid_column_start,
+            grid_column_end,
+            grid_row_start,
+            grid_row_end,
+            justify_items,
+            justify_self,
+            custom_properties,
+            background_gradient,
+            background_radial_gradient,
+            background_clip,
+            box_sizing,
+        } = ComputedStyle::new();
+
+        // --- The layout-critical initials. Length::default() is Zero, so each
+        // of these must be set EXPLICITLY in new(); falling through gives a
+        // zero-sized box. This is the 2026-07-07 regression, pinned.
+        assert_eq!(width, Length::Auto, "width initial is auto, not 0");
+        assert_eq!(height, Length::Auto, "height initial is auto, not 0");
+        assert_eq!(max_width, Length::Auto, "max-width initial is none, not 0");
+        assert_eq!(max_height, Length::Auto, "max-height initial is none, not 0");
+
+        // min-width/min-height DO fall through, and that is correct: the CSS
+        // 2.1 initial for both IS 0, unlike width/height. Asserted so the
+        // difference is a recorded decision rather than an oversight that
+        // happens to be right.
+        assert_eq!(min_width, Length::Zero, "min-width initial IS 0 - correct fall-through");
+        assert_eq!(min_height, Length::Zero, "min-height initial IS 0 - correct fall-through");
+
+        // --- The paint-critical initials. Color::default() is opaque BLACK and
+        // f32::default() is 0.0, so falling through paints a black box at zero
+        // opacity. That is the Linux 2026-07-31 blank-page defect.
+        assert_eq!(background_color, Color::TRANSPARENT, "background initial is transparent, not black");
+        assert_eq!(opacity, 1.0, "opacity initial is 1.0, not 0.0");
+        assert_eq!(color, Color::BLACK, "color initial IS black");
+
+        // --- Remaining explicit initials in new().
+        assert_eq!(font_size, Length::Px(16.0), "font-size initial is 16px");
+        assert_eq!(flex_shrink, 1.0, "flex-shrink initial is 1, not 0");
+        assert_eq!(font_family, "sans-serif", "font-family initial");
+        assert_eq!(text_decoration_line, TextDecorationLine::NONE, "text-decoration initial");
+
+        // Deliberately-defaulted tail. Bound so the destructure stays
+        // exhaustive; a new field lands here only after someone reads the
+        // doc comment above and decides it belongs here.
+        let _ = &transform;
+        let _ = &transform_origin;
+        let _ = &box_shadows;
+        let _ = &transition_property;
+        let _ = &transition_duration;
+        let _ = &transition_timing_function;
+        let _ = &transition_delay;
+        let _ = &animation_name;
+        let _ = &animation_duration;
+        let _ = &animation_timing_function;
+        let _ = &animation_delay;
+        let _ = &animation_iteration_count;
+        let _ = &animation_direction;
+        let _ = &animation_fill_mode;
+        let _ = &animation_play_state;
+        let _ = &display;
+        let _ = &position;
+        let _ = &margin_top;
+        let _ = &margin_right;
+        let _ = &margin_bottom;
+        let _ = &margin_left;
+        let _ = &padding_top;
+        let _ = &padding_right;
+        let _ = &padding_bottom;
+        let _ = &padding_left;
+        let _ = &border_top_width;
+        let _ = &border_right_width;
+        let _ = &border_bottom_width;
+        let _ = &border_left_width;
+        let _ = &border_top_color;
+        let _ = &border_right_color;
+        let _ = &border_bottom_color;
+        let _ = &border_left_color;
+        let _ = &font_weight;
+        let _ = &font_style;
+        let _ = &line_height;
+        let _ = &text_align;
+        let _ = &font_stretch;
+        let _ = &letter_spacing;
+        let _ = &word_spacing;
+        let _ = &text_indent;
+        let _ = &text_decoration_color;
+        let _ = &text_decoration_style;
+        let _ = &text_decoration_thickness;
+        let _ = &text_transform;
+        let _ = &white_space;
+        let _ = &word_break;
+        let _ = &vertical_align;
+        let _ = &writing_mode;
+        let _ = &direction;
+        let _ = &overflow_x;
+        let _ = &overflow_y;
+        let _ = &flex_direction;
+        let _ = &flex_wrap;
+        let _ = &justify_content;
+        let _ = &align_items;
+        let _ = &align_content;
+        let _ = &row_gap;
+        let _ = &column_gap;
+        let _ = &order;
+        let _ = &flex_grow;
+        let _ = &flex_basis;
+        let _ = &align_self;
+        let _ = &scroll_behavior;
+        let _ = &overscroll_behavior_x;
+        let _ = &overscroll_behavior_y;
+        let _ = &scrollbar_width;
+        let _ = &scrollbar_gutter;
+        let _ = &scrollbar_color;
+        let _ = &grid_template_columns;
+        let _ = &grid_template_rows;
+        let _ = &grid_template_areas;
+        let _ = &grid_auto_columns;
+        let _ = &grid_auto_rows;
+        let _ = &grid_auto_flow;
+        let _ = &grid_column_start;
+        let _ = &grid_column_end;
+        let _ = &grid_row_start;
+        let _ = &grid_row_end;
+        let _ = &justify_items;
+        let _ = &justify_self;
+        let _ = &custom_properties;
+        let _ = &background_gradient;
+        let _ = &background_radial_gradient;
+        let _ = &background_clip;
+        let _ = &box_sizing;
+    }
+}
