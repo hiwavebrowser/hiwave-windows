@@ -109,6 +109,18 @@ def reachability() -> dict:
             "fields assigned as `style.<name> =` or `s.<name> =` anywhere in "
             "rustkit-engine, intersected with the real ComputedStyle field set."
         ),
+        "limit": (
+            "A FLOOR, NOT A PROOF. This measures WRITABILITY - whether any arm "
+            "can set the field - not whether setting it changes what gets "
+            "painted. A field can leave this list and still be inert, because "
+            "the break can be BELOW the applier: in propagation, in which box "
+            "the consumer reads from, or in a consumer nothing populates. "
+            "Measured 2026-07-31: text_decoration_line left this list and an "
+            "underlined <p> still painted identically to a plain one, because "
+            "decoration PROPAGATES to descendants rather than inheriting and "
+            "the display list reads it off the text box. Pair this number with "
+            "a test that asserts the value changes the display list."
+        ),
         "caveat": (
             "REGEX OVER SOURCE, NOT TYPE-CHECKED. A field written only through "
             "an alias this pattern misses is a FALSE POSITIVE. Grep any new "
@@ -239,6 +251,7 @@ def to_markdown(m: dict) -> str:
         )
         if r["unreachable"]:
             lines.append(f"- dead capabilities: `{'`, `'.join(r['unreachable'])}`")
+        lines.append(f"- limit: {r['limit']}")
         lines.append(f"- caveat: {r['caveat']}")
 
     return "\n".join(lines)
