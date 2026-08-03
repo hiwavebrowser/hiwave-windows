@@ -276,8 +276,11 @@ impl<'a> GridItem<'a> {
         let text_lines = self.count_text_lines();
 
         // Padding contribution
-        let padding_top = self.layout_box.style.padding_top.to_px(font_size, font_size, 0.0);
-        let padding_bottom = self.layout_box.style.padding_bottom.to_px(font_size, font_size, 0.0);
+        // SITE 3 — passed `font_size` as BOTH the em and the rem base, so
+        // `rem` resolved against the element instead of the root.
+        let style = &self.layout_box.style;
+        let padding_top = crate::resolve_length_px(&style.padding_top, style, 0.0);
+        let padding_bottom = crate::resolve_length_px(&style.padding_bottom, style, 0.0);
 
         let text_content = if text_lines > 0 {
             line_height_px * text_lines as f32
@@ -1341,9 +1344,10 @@ pub fn layout_grid_container(
         container.children.len()
     );
 
-    // Compute gaps
-    let column_gap = style.column_gap.to_px(16.0, 16.0, container_width);
-    let row_gap = style.row_gap.to_px(16.0, 16.0, container_height);
+    // SITE 6 — hardcoded 16 as the em base, so `gap: 2em` ignored the
+    // container's font size. This is FINAL geometry: it paints.
+    let column_gap = crate::resolve_length_px(&style.column_gap, style, container_width);
+    let row_gap = crate::resolve_length_px(&style.row_gap, style, container_height);
 
     // Create grid layout
     let mut grid = GridLayout::new(
@@ -1856,19 +1860,21 @@ pub fn layout_grid_container(
                 child,
             );
 
-            // Calculate padding and border
-            let font_size = match child.style.font_size {
-                Length::Px(px) => px,
-                _ => 16.0,
-            };
-            let padding_left = child.style.padding_left.to_px(font_size, font_size, border_box_width);
-            let padding_right = child.style.padding_right.to_px(font_size, font_size, border_box_width);
-            let padding_top = child.style.padding_top.to_px(font_size, font_size, border_box_height);
-            let padding_bottom = child.style.padding_bottom.to_px(font_size, font_size, border_box_height);
-            let border_left = child.style.border_left_width.to_px(font_size, font_size, border_box_width);
-            let border_right = child.style.border_right_width.to_px(font_size, font_size, border_box_width);
-            let border_top = child.style.border_top_width.to_px(font_size, font_size, border_box_height);
-            let border_bottom = child.style.border_bottom_width.to_px(font_size, font_size, border_box_height);
+            // SITE 5 — passed the child's `font_size` as BOTH the em and the
+            // rem base, so `rem` resolved against the element instead of the
+            // root. These values are written straight into the child's
+            // dimensions below: this is FINAL geometry and it paints.
+            let cs = &child.style;
+            let h = |l: &Length| crate::resolve_length_px(l, cs, border_box_width);
+            let v = |l: &Length| crate::resolve_length_px(l, cs, border_box_height);
+            let padding_left = h(&cs.padding_left);
+            let padding_right = h(&cs.padding_right);
+            let padding_top = v(&cs.padding_top);
+            let padding_bottom = v(&cs.padding_bottom);
+            let border_left = h(&cs.border_left_width);
+            let border_right = h(&cs.border_right_width);
+            let border_top = v(&cs.border_top_width);
+            let border_bottom = v(&cs.border_bottom_width);
 
             // Set padding and border dimensions
             child.dimensions.padding.left = padding_left;
@@ -2337,17 +2343,34 @@ pub(crate) fn estimate_max_content_width(layout_box: &LayoutBox) -> f32 {
     max_contribution + padding_border
 }
 
+// SITE 2 — grid horizontal intrinsic contributions.
+//
+// These were px-only (`if let Length::Px(v) = l { *v } else { 0.0 }`), so em,
+// rem and % padding/margins each contributed ZERO to a box's min-content
+// width. That is live: `GridItem::get_width_contribution` feeds this into the
+// automatic minimum (CSS Grid §6.6) for any item with `overflow-x: visible`.
+//
+// `%` still resolves to 0 here, and that is deliberate policy, not an
+// oversight: no containing size exists at intrinsic time, which is the same
+// case final layout hits when its container is unresolved. em/rem are never
+// dropped.
+const NO_CONTAINING_SIZE_AT_INTRINSIC_TIME: f32 = 0.0;
+
 fn horizontal_margins(style: &ComputedStyle) -> f32 {
-    let px = |l: &Length| if let Length::Px(v) = l { *v } else { 0.0 };
-    px(&style.margin_left) + px(&style.margin_right)
+    let edge = |l: &Length| {
+        crate::resolve_length_px(l, style, NO_CONTAINING_SIZE_AT_INTRINSIC_TIME)
+    };
+    edge(&style.margin_left) + edge(&style.margin_right)
 }
 
 fn horizontal_padding_border(style: &ComputedStyle) -> f32 {
-    let px = |l: &Length| if let Length::Px(v) = l { *v } else { 0.0 };
-    px(&style.padding_left)
-        + px(&style.padding_right)
-        + px(&style.border_left_width)
-        + px(&style.border_right_width)
+    let edge = |l: &Length| {
+        crate::resolve_length_px(l, style, NO_CONTAINING_SIZE_AT_INTRINSIC_TIME)
+    };
+    edge(&style.padding_left)
+        + edge(&style.padding_right)
+        + edge(&style.border_left_width)
+        + edge(&style.border_right_width)
 }
 
 fn size_grid_tracks(tracks: &mut [GridTrack], container_size: f32, gap: f32) {
@@ -2780,6 +2803,148 @@ fn apply_align_self(
             }
         },
         AlignSelf::Baseline => (cell_y, child_height), // Simplified
+    }
+}
+
+/// L1 wrong-base T-RED matrix — sites 2, 3, 5, 6.
+///
+/// ORACLE DISCIPLINE: every expectation is a hard CSS number (em × element
+/// font-size, rem × the root constant 16). No grid or flex box is ever used
+/// as its own oracle — under this defect class a broken intrinsic and a
+/// broken final compare EQUAL and green accidentally.
+///
+/// The element font-size is deliberately 10px, never 16: at 16 the defective
+/// and correct paths return the same value and the whole class is invisible.
+#[cfg(test)]
+mod l1_wrong_base_matrix {
+    use super::*;
+    use crate::BoxType;
+    use rustkit_css::{ComputedStyle, GridTemplateAreas};
+
+    const FS: f32 = 10.0; // element font-size, deliberately != 16
+    const EM2: f32 = 20.0; // 2em  @ font-size 10 => 20 per side
+    const REM1: f32 = 16.0; // 1rem @ root const 16 => 16 per side
+
+    fn styled(pad: Length) -> ComputedStyle {
+        let mut s = ComputedStyle::new();
+        s.font_size = Length::Px(FS);
+        s.padding_left = pad.clone();
+        s.padding_right = pad.clone();
+        s.padding_top = pad.clone();
+        s.padding_bottom = pad;
+        s
+    }
+
+    fn boxed(pad: Length) -> LayoutBox {
+        let mut ts = ComputedStyle::new();
+        ts.font_size = Length::Px(FS);
+        let text = LayoutBox::new(BoxType::Text("HIWAVE".to_string()), ts);
+        let mut b = LayoutBox::new(BoxType::Block, styled(pad));
+        b.children.push(text);
+        b
+    }
+
+    // ---- SITE 2: grid-H intrinsic (min-content estimate; live via grid
+    // automatic minimum whenever overflow-x is visible)
+    fn site2(pad: Length) -> f32 {
+        estimate_min_content_width(&boxed(pad)) - estimate_min_content_width(&boxed(Length::Zero))
+    }
+
+    // ---- SITE 3: grid-V intrinsic (height contribution)
+    fn site3(pad: Length) -> f32 {
+        GridItem::new(&boxed(pad)).get_height_contribution(0.0)
+            - GridItem::new(&boxed(Length::Zero)).get_height_contribution(0.0)
+    }
+
+    // ---- SITES 5 + 6: FINAL rendered geometry from a real grid run.
+    /// Runs a real grid layout and returns the FINAL rendered
+    /// (child padding-left, child padding-top, second child's x).
+    ///
+    /// BOTH axes are returned because site 5 resolves horizontal and vertical
+    /// edges through separate closures — asserting only one leaves the other
+    /// door untested. Per-site falsification caught exactly that gap.
+    fn site5_and_6(pad: Length, gap: Length) -> (f32, f32, f32) {
+        let child = LayoutBox::new(BoxType::Block, styled(pad));
+        let mut second = ComputedStyle::new();
+        second.font_size = Length::Px(FS);
+        let child2 = LayoutBox::new(BoxType::Block, second);
+
+        let mut style = ComputedStyle::new();
+        style.font_size = Length::Px(FS);
+        style.display = Display::Grid;
+        style.column_gap = gap.clone();
+        style.row_gap = gap;
+        style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Px(100.0), TrackSize::Px(100.0)]);
+        style.grid_template_rows = GridTemplate::from_sizes(vec![TrackSize::Px(100.0)]);
+        style.grid_template_areas = Some(GridTemplateAreas::default());
+
+        let mut c = LayoutBox::new(BoxType::Block, style);
+        c.children.push(child);
+        c.children.push(child2);
+        layout_grid_container(&mut c, 400.0, 200.0);
+        (
+            c.children[0].dimensions.padding.left,
+            c.children[0].dimensions.padding.top,
+            c.children[1].dimensions.content.x,
+        )
+    }
+
+    fn gap_of(gap: Length) -> f32 {
+        let (_, _, x) = site5_and_6(Length::Zero, gap);
+        let (_, _, x0) = site5_and_6(Length::Zero, Length::Zero);
+        x - x0
+    }
+
+    /// NON-VACUITY: the content must measure non-zero, or "padding dropped"
+    /// would be indistinguishable from an empty fixture.
+    #[test]
+    fn fixture_is_not_vacuous() {
+        assert!(
+            estimate_min_content_width(&boxed(Length::Zero)) > 0.0,
+            "FIXTURE VACUOUS: content measured 0"
+        );
+    }
+
+    /// CONTROL: absolute units already work on every site. This isolates
+    /// "relative units resolve wrongly" from "the path is broken".
+    #[test]
+    fn px_control_is_green_on_every_site() {
+        assert_eq!(site2(Length::Px(20.0)), 40.0, "site 2 px control");
+        assert_eq!(site3(Length::Px(20.0)), 40.0, "site 3 px control");
+        let (pad, pad_t, _) = site5_and_6(Length::Px(20.0), Length::Px(20.0));
+        assert_eq!(pad, 20.0, "site 5 px control (horizontal)");
+        assert_eq!(pad_t, 20.0, "site 5 px control (vertical)");
+        assert_eq!(gap_of(Length::Px(20.0)), 20.0, "site 6 px control");
+    }
+
+    #[test]
+    fn site2_grid_h_intrinsic_resolves_em_and_rem() {
+        assert_eq!(site2(Length::Em(2.0)), EM2 * 2.0, "site 2 em");
+        assert_eq!(site2(Length::Rem(1.0)), REM1 * 2.0, "site 2 rem");
+    }
+
+    #[test]
+    fn site3_grid_v_intrinsic_resolves_em_and_rem() {
+        assert_eq!(site3(Length::Em(2.0)), EM2 * 2.0, "site 3 em");
+        assert_eq!(site3(Length::Rem(1.0)), REM1 * 2.0, "site 3 rem");
+    }
+
+    #[test]
+    fn site5_grid_child_final_padding_resolves_em_and_rem() {
+        let (em_l, em_t, _) = site5_and_6(Length::Em(2.0), Length::Zero);
+        let (rem_l, rem_t, _) = site5_and_6(Length::Rem(1.0), Length::Zero);
+        // Horizontal and vertical edges go through separate closures: assert both.
+        assert_eq!(em_l, EM2, "site 5 em (FINAL padding-left)");
+        assert_eq!(em_t, EM2, "site 5 em (FINAL padding-top)");
+        assert_eq!(rem_l, REM1, "site 5 rem (FINAL padding-left)");
+        assert_eq!(rem_t, REM1, "site 5 rem (FINAL padding-top)");
+    }
+
+    #[test]
+    fn site6_grid_final_gap_resolves_em_and_rem() {
+        assert_eq!(gap_of(Length::Em(2.0)), EM2, "site 6 em (FINAL gap)");
+        assert_eq!(gap_of(Length::Rem(1.0)), REM1, "site 6 rem (FINAL gap)");
     }
 }
 
