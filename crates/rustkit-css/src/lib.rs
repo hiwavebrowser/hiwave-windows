@@ -1765,6 +1765,17 @@ impl ComputedStyle {
             height: Length::Auto,
             max_width: Length::Auto,
             max_height: Length::Auto,
+            // A1 — min-width/min-height initial is `auto`, per CSS Flexbox
+            // Level 1 §4.5 and modern CSS Sizing. NOT CSS 2.1's `0`, which is
+            // superseded: under §4.5 an `auto` minimum on a flex item resolves
+            // to its content floor rather than collapsing to nothing.
+            //
+            // This must be set EXPLICITLY. `Length::default()` is Zero, and a
+            // fall-through here would make `auto` indistinguishable from an
+            // authored `min-width: 0` — which is precisely the distinction
+            // §4.5 turns on: authored 0 stays collapsible, unset does not.
+            min_width: Length::Auto,
+            min_height: Length::Auto,
             ..Default::default()
         }
     }
@@ -1801,6 +1812,11 @@ impl ComputedStyle {
             height: Length::Auto,
             max_width: Length::Auto,
             max_height: Length::Auto,
+            // A1 — same Flexbox §4.5 initial as new(). Inheriting elements
+            // must get `auto` too, or a child would silently differ from a
+            // root-constructed style in exactly the field §4.5 turns on.
+            min_width: Length::Auto,
+            min_height: Length::Auto,
             flex_shrink: 1.0,
 
             // Non-inherited paint initials. background-color is NOT inherited;
@@ -3017,11 +3033,14 @@ mod initial_value_guard {
         assert_eq!(max_width, Length::Auto, "max-width initial is none, not 0");
         assert_eq!(max_height, Length::Auto, "max-height initial is none, not 0");
 
-        // min-width/min-height DO fall through, and that is correct: the CSS
-        // 2.1 initial for both IS 0, unlike width/height. Asserted so the
-        // difference is a recorded decision rather than an oversight that
-        // happens to be right.
-        assert_eq!(min_width, Length::Zero, "min-width initial IS 0 - correct fall-through");
+        // A2 — min-width/min-height are set EXPLICITLY to Auto, and must not
+        // fall through. This assertion previously pinned `Length::Zero` and
+        // cited CSS 2.1 as a deliberate decision. That was a superseded-spec
+        // trap: green, confident, and defending the absence of Flexbox §4.5.
+        // A guard that has to be deleted to ship a fix is defending the bug —
+        // same shape as the flex `Em(em) => em * 16.0` equivalence pin killed
+        // in #70, and Talos's Linux #26 guard.
+        assert_eq!(min_width, Length::Auto, "min-width initial is auto (Flexbox 4.5), not 0");
         // Offsets: the CSS initial is `auto`, represented as None. These DO
         // fall through ..Default::default() and that is correct, because
         // Option::default() is None - unlike Length::default(), which is Zero
@@ -3032,7 +3051,7 @@ mod initial_value_guard {
         assert_eq!(bottom, None, "bottom initial is auto (None), not 0");
         assert_eq!(left, None, "left initial is auto (None), not 0");
         assert_eq!(z_index, 0, "z-index initial is auto, stored as 0");
-        assert_eq!(min_height, Length::Zero, "min-height initial IS 0 - correct fall-through");
+        assert_eq!(min_height, Length::Auto, "min-height initial is auto (Flexbox 4.5), not 0");
 
         // --- The paint-critical initials. Color::default() is opaque BLACK and
         // f32::default() is 0.0, so falling through paints a black box at zero
