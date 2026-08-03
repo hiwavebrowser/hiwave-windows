@@ -214,12 +214,12 @@ pub fn layout_flex_container(
 
     // Get gap values
     let main_gap = match main_axis {
-        Axis::Horizontal => resolve_length(&style.column_gap, container_main_size),
-        Axis::Vertical => resolve_length(&style.row_gap, container_main_size),
+        Axis::Horizontal => resolve_length(&style.column_gap, style, container_main_size),
+        Axis::Vertical => resolve_length(&style.row_gap, style, container_main_size),
     };
     let cross_gap = match cross_axis {
-        Axis::Horizontal => resolve_length(&style.column_gap, container_cross_size),
-        Axis::Vertical => resolve_length(&style.row_gap, container_cross_size),
+        Axis::Horizontal => resolve_length(&style.column_gap, style, container_cross_size),
+        Axis::Vertical => resolve_length(&style.row_gap, style, container_cross_size),
     };
 
     // 2. Collect flex items (skip absolutely positioned)
@@ -418,10 +418,10 @@ pub fn layout_flex_container(
 
 /// Own horizontal padding + border of a box (left + right edges).
 fn horizontal_edges(style: &rustkit_css::ComputedStyle) -> f32 {
-    resolve_length(&style.padding_left, 0.0)
-        + resolve_length(&style.padding_right, 0.0)
-        + resolve_length(&style.border_left_width, 0.0)
-        + resolve_length(&style.border_right_width, 0.0)
+    resolve_length(&style.padding_left, style, 0.0)
+        + resolve_length(&style.padding_right, style, 0.0)
+        + resolve_length(&style.border_left_width, style, 0.0)
+        + resolve_length(&style.border_right_width, style, 0.0)
 }
 
 /// Max-content **content-box** width of a box: the width its content wants if it
@@ -475,16 +475,16 @@ fn create_flex_item<'a>(
     // Get margins
     let (main_margin_start, main_margin_end, cross_margin_start, cross_margin_end) = match main_axis {
         Axis::Horizontal => (
-            resolve_length(&layout_box.style.margin_left, container_main),
-            resolve_length(&layout_box.style.margin_right, container_main),
-            resolve_length(&layout_box.style.margin_top, container_cross),
-            resolve_length(&layout_box.style.margin_bottom, container_cross),
+            resolve_length(&layout_box.style.margin_left, &layout_box.style, container_main),
+            resolve_length(&layout_box.style.margin_right, &layout_box.style, container_main),
+            resolve_length(&layout_box.style.margin_top, &layout_box.style, container_cross),
+            resolve_length(&layout_box.style.margin_bottom, &layout_box.style, container_cross),
         ),
         Axis::Vertical => (
-            resolve_length(&layout_box.style.margin_top, container_main),
-            resolve_length(&layout_box.style.margin_bottom, container_main),
-            resolve_length(&layout_box.style.margin_left, container_cross),
-            resolve_length(&layout_box.style.margin_right, container_cross),
+            resolve_length(&layout_box.style.margin_top, &layout_box.style, container_main),
+            resolve_length(&layout_box.style.margin_bottom, &layout_box.style, container_main),
+            resolve_length(&layout_box.style.margin_left, &layout_box.style, container_cross),
+            resolve_length(&layout_box.style.margin_right, &layout_box.style, container_cross),
         ),
     };
 
@@ -496,7 +496,7 @@ fn create_flex_item<'a>(
         };
         match cross_len {
             Length::Auto | Length::Zero => None,
-            l => Some(resolve_length(l, container_cross)),
+            l => Some(resolve_length(l, &layout_box.style, container_cross)),
         }
     };
 
@@ -522,8 +522,8 @@ fn create_flex_item<'a>(
         FlexBasis::Auto => {
             // Main size property if definite, else the content-based size.
             let explicit = match main_axis {
-                Axis::Horizontal => resolve_length(&layout_box.style.width, container_main),
-                Axis::Vertical => resolve_length(&layout_box.style.height, container_main),
+                Axis::Horizontal => resolve_length(&layout_box.style.width, &layout_box.style, container_main),
+                Axis::Vertical => resolve_length(&layout_box.style.height, &layout_box.style, container_main),
             };
             if explicit > 0.0 {
                 explicit
@@ -561,16 +561,16 @@ fn create_flex_item<'a>(
     // Get min/max constraints
     let (min_main, max_main, min_cross, max_cross) = match main_axis {
         Axis::Horizontal => (
-            resolve_length(&layout_box.style.min_width, container_main),
-            resolve_max_length(&layout_box.style.max_width, container_main),
-            resolve_length(&layout_box.style.min_height, container_cross),
-            resolve_max_length(&layout_box.style.max_height, container_cross),
+            resolve_length(&layout_box.style.min_width, &layout_box.style, container_main),
+            resolve_max_length(&layout_box.style.max_width, &layout_box.style, container_main),
+            resolve_length(&layout_box.style.min_height, &layout_box.style, container_cross),
+            resolve_max_length(&layout_box.style.max_height, &layout_box.style, container_cross),
         ),
         Axis::Vertical => (
-            resolve_length(&layout_box.style.min_height, container_main),
-            resolve_max_length(&layout_box.style.max_height, container_main),
-            resolve_length(&layout_box.style.min_width, container_cross),
-            resolve_max_length(&layout_box.style.max_width, container_cross),
+            resolve_length(&layout_box.style.min_height, &layout_box.style, container_main),
+            resolve_max_length(&layout_box.style.max_height, &layout_box.style, container_main),
+            resolve_length(&layout_box.style.min_width, &layout_box.style, container_cross),
+            resolve_max_length(&layout_box.style.max_width, &layout_box.style, container_cross),
         ),
     };
 
@@ -1008,8 +1008,11 @@ fn apply_positions(
 ///
 /// DEFER unchanged: when flex layout is threaded with viewport dimensions,
 /// this should call `to_px_with_viewport` and pass them through.
-fn resolve_length(length: &Length, container_size: f32) -> f32 {
-    length.to_px(16.0, 16.0, container_size)
+/// SITE 4 — this hardcoded 16.0 as the em base, so every flex gap, margin,
+/// width and min/max stated in `em` ignored the element's own font size.
+/// Now delegates to the one canonical resolver.
+fn resolve_length(length: &Length, style: &rustkit_css::ComputedStyle, container_size: f32) -> f32 {
+    crate::resolve_length_px(length, style, container_size)
 }
 
 /// Resolve a max Length (returns f32::INFINITY when unconstrained).
@@ -1017,10 +1020,14 @@ fn resolve_length(length: &Length, container_size: f32) -> f32 {
 /// CSS initial value for max-width/max-height is `none`, not 0. Treating it
 /// as a real 0 ceiling clamped EVERY flex item's hypothetical size to zero
 /// (root cause of the 2026-07-07 Windows zero-width baseline).
-fn resolve_max_length(length: &Length, container_size: f32) -> f32 {
+fn resolve_max_length(
+    length: &Length,
+    style: &rustkit_css::ComputedStyle,
+    container_size: f32,
+) -> f32 {
     match length {
         Length::Auto | Length::Zero => f32::INFINITY,
-        _ => resolve_length(length, container_size),
+        _ => resolve_length(length, style, container_size),
     }
 }
 
@@ -1502,58 +1509,117 @@ mod tests {
 }
 
 
+/// L1 wrong-base T-RED matrix — site 4 (flex intrinsic edges).
+///
+/// Same oracle discipline as the grid matrix: hard CSS numbers, element
+/// font-size deliberately != 16.
 #[cfg(test)]
-mod resolve_length_consolidation_tests {
+mod l1_wrong_base_matrix_flex {
     use super::*;
+    use rustkit_css::ComputedStyle;
+    use crate::BoxType;
 
-    /// The exact arms `resolve_length` had before it was consolidated into
-    /// `Length::to_px`. Kept verbatim so the equivalence claim in that
-    /// function's doc comment is PROVEN rather than asserted.
-    fn previous_hand_written_arms(length: &Length, container_size: f32) -> f32 {
-        match length {
-            Length::Px(px) => *px,
-            Length::Em(em) => em * 16.0,
-            Length::Rem(rem) => rem * 16.0,
-            Length::Percent(pct) => pct / 100.0 * container_size,
-            Length::Vw(_) | Length::Vh(_) | Length::Vmin(_) | Length::Vmax(_) => 0.0,
-            Length::Auto => 0.0,
-            Length::Zero => 0.0,
-            // Min/Max/Clamp did not exist then; excluded from the comparison.
-            _ => f32::NAN,
-        }
+    const FS: f32 = 10.0;
+
+    fn edges(pad: Length) -> f32 {
+        let mut s = ComputedStyle::new();
+        s.font_size = Length::Px(FS);
+        s.padding_left = pad.clone();
+        s.padding_right = pad;
+        let b = LayoutBox::new(BoxType::Block, s);
+        horizontal_edges(&b.style)
     }
 
     #[test]
-    fn resolve_length_matches_the_previous_hand_written_arms() {
-        let container = 250.0;
-        let cases = [
-            Length::Px(12.5),
-            Length::Em(2.0),
-            Length::Rem(1.5),
-            Length::Percent(40.0),
-            Length::Vw(50.0),
-            Length::Vh(50.0),
-            Length::Vmin(10.0),
-            Length::Vmax(10.0),
-            Length::Auto,
-            Length::Zero,
-        ];
-        for c in &cases {
+    fn site4_flex_edges_px_control() {
+        assert_eq!(edges(Length::Px(20.0)), 40.0, "site 4 px control");
+    }
+
+    #[test]
+    fn site4_flex_edges_resolve_em_and_rem() {
+        // 2em @ font-size 10 => 20/side; 1rem @ root const 16 => 16/side.
+        assert_eq!(edges(Length::Em(2.0)), 40.0, "site 4 em");
+        assert_eq!(edges(Length::Rem(1.0)), 32.0, "site 4 rem");
+    }
+}
+
+#[cfg(test)]
+mod resolve_length_semantics_tests {
+    use super::*;
+    use rustkit_css::ComputedStyle;
+
+    // NOTE ON WHAT WAS DELETED HERE.
+    //
+    // This module used to hold `resolve_length_matches_the_previous_hand_written_arms`,
+    // which asserted that `resolve_length` agreed with a verbatim copy of the
+    // pre-consolidation match. That copy contained:
+    //
+    //     Length::Em(em) => em * 16.0,   // Default font size
+    //
+    // It was green PRECISELY BECAUSE em ignored the element's font size, so it
+    // pinned the site-4 defect as correct. A guard that has to be deleted to
+    // repair a bug is defending the bug — the same shape as the CSS 2.1
+    // min-width assertion and Talos's Linux #26 guard.
+    //
+    // Pinning against an older implementation only ever proves "unchanged".
+    // These tests state what the values must BE.
+
+    fn styled(font_size: f32) -> ComputedStyle {
+        let mut s = ComputedStyle::new();
+        s.font_size = Length::Px(font_size);
+        s
+    }
+
+    #[test]
+    fn em_resolves_against_the_element_font_size() {
+        let s = styled(10.0);
+        assert_eq!(resolve_length(&Length::Em(2.0), &s, 250.0), 20.0);
+        let s = styled(20.0);
+        assert_eq!(resolve_length(&Length::Em(2.0), &s, 250.0), 40.0);
+    }
+
+    /// Guards the OPPOSITE error from the one just fixed: a repair that
+    /// over-reaches and wires BOTH bases to the element font size would make
+    /// this fail. rem must stay on the root constant.
+    #[test]
+    fn rem_resolves_against_the_root_constant_not_the_element() {
+        for fs in [10.0, 16.0, 20.0] {
             assert_eq!(
-                resolve_length(c, container),
-                previous_hand_written_arms(c, container),
-                "consolidation changed behaviour for {:?}",
-                c
+                resolve_length(&Length::Rem(1.5), &styled(fs), 250.0),
+                1.5 * crate::ROOT_FONT_SIZE_PX,
+                "rem must not follow the element font size ({fs}px)"
             );
         }
     }
 
     #[test]
-    fn consolidation_also_resolves_the_math_variants_the_old_arms_could_not() {
-        // The reason the duplicate became untenable: these need their
-        // operands resolved with the same context, which a flat match cannot
-        // do without re-implementing the whole resolver.
+    fn percent_and_absolute_units_are_unaffected() {
+        let s = styled(10.0);
+        assert_eq!(resolve_length(&Length::Px(12.5), &s, 250.0), 12.5);
+        assert_eq!(resolve_length(&Length::Percent(40.0), &s, 250.0), 100.0);
+        assert_eq!(resolve_length(&Length::Auto, &s, 250.0), 0.0);
+        assert_eq!(resolve_length(&Length::Zero, &s, 250.0), 0.0);
+    }
+
+    #[test]
+    fn math_variants_resolve_their_operands_with_the_same_context() {
         let l = Length::Min(Box::new((Length::Px(80.0), Length::Percent(10.0))));
-        assert_eq!(resolve_length(&l, 250.0), 25.0);
+        assert_eq!(resolve_length(&l, &styled(10.0), 250.0), 25.0);
+    }
+
+    /// ANTI-DRIFT: the flex resolver and the block-layout oracle must agree
+    /// by construction. Both delegate to `crate::resolve_length_px`; if either
+    /// ever re-rolls its own bases, this fails.
+    #[test]
+    fn flex_resolver_agrees_with_the_block_oracle() {
+        let s = styled(10.0);
+        let b = LayoutBox::new(BoxType::Block, s.clone());
+        for l in [Length::Em(2.0), Length::Rem(1.0), Length::Px(7.0), Length::Percent(25.0)] {
+            assert_eq!(
+                resolve_length(&l, &s, 250.0),
+                b.length_to_px(&l, 250.0),
+                "flex resolver drifted from the block oracle for {l:?}"
+            );
+        }
     }
 }

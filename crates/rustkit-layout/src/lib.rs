@@ -394,6 +394,42 @@ fn resolve_line_height_px(line_height: f32, font_size: f32) -> f32 {
     }
 }
 
+/// The engine's `rem` base.
+///
+/// KNOWN DIVERGENCE, deliberately not fixed here: CSS Values 3 defines `rem`
+/// against the ROOT ELEMENT's computed font-size, which is 16 only because
+/// `html` usually sets none. This engine uses a constant, so any document
+/// setting `html { font-size: … }` renders differently from a conformant
+/// engine. Shared with the macOS and Linux trees and tracked as a separate
+/// coordinated unit (rem-root). Fixing it piecemeal would leave these paths
+/// disagreeing again — the exact failure this module repairs.
+pub(crate) const ROOT_FONT_SIZE_PX: f32 = 16.0;
+
+/// An element's own font size in px, falling back to the root size.
+pub(crate) fn element_font_size_px(style: &ComputedStyle) -> f32 {
+    match style.font_size {
+        Length::Px(px) => px,
+        _ => ROOT_FONT_SIZE_PX,
+    }
+}
+
+/// THE canonical `Length` → px conversion for box edges (padding, border,
+/// margin, gap) and for intrinsic contributions.
+///
+/// `em` resolves against the ELEMENT's font size; `rem` against the ROOT
+/// constant; `%` against the containing size. Every consumer must call this
+/// rather than hand-rolling the bases — the wrong-base defect class this
+/// replaces existed because six call sites each picked their own answer:
+/// two dropped relative units to zero, two used the element size for `rem`,
+/// and two hardcoded 16 for `em`.
+pub(crate) fn resolve_length_px(
+    length: &Length,
+    style: &ComputedStyle,
+    container_size: f32,
+) -> f32 {
+    length.to_px(element_font_size_px(style), ROOT_FONT_SIZE_PX, container_size)
+}
+
 impl LayoutBox {
     /// Create a new layout box.
     pub fn new(box_type: BoxType, style: ComputedStyle) -> Self {
@@ -1078,12 +1114,13 @@ impl LayoutBox {
     }
 
     /// Convert a Length to pixels.
-    fn length_to_px(&self, length: &Length, container_size: f32) -> f32 {
-        let font_size = match self.style.font_size {
-            Length::Px(px) => px,
-            _ => 16.0,
-        };
-        length.to_px(font_size, 16.0, container_size)
+    ///
+    /// Delegates to [`resolve_length_px`] so this path — the block-layout
+    /// oracle — and every intrinsic/grid/flex consumer agree BY CONSTRUCTION
+    /// rather than by coincidence. Six hand-rolled copies of these bases is
+    /// how they silently diverged in the first place.
+    pub(crate) fn length_to_px(&self, length: &Length, container_size: f32) -> f32 {
+        resolve_length_px(length, &self.style, container_size)
     }
 
     /// Get children sorted by z-index for painting.
