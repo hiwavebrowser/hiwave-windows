@@ -3046,6 +3046,103 @@ mod l1_wrong_base_matrix {
         assert!(track1_width(Length::Em(2.0), BINDING_CW) > bare, "2em did not widen the track");
         assert!(track1_width(Length::Rem(1.0), BINDING_CW) > bare, "1rem did not widen the track");
     }
+
+    /// Same fixture with `overflow-x` NOT visible. The automatic minimum must
+    /// NOT arm, so padding — of any unit — must not move the track.
+    ///
+    /// This pins that the fix rides the CSS Grid §6.6 automatic-minimum path
+    /// specifically, rather than being a global length rewrite that happens to
+    /// produce the right numbers. Without it, a change that resolved lengths
+    /// correctly everywhere but armed the floor unconditionally would pass
+    /// every other test here.
+    fn track1_width_clipped(pad: Length, container_width: f32) -> f32 {
+        let mut s = styled(pad);
+        s.overflow_x = Overflow::Hidden;
+        let mut ts = ComputedStyle::new();
+        ts.font_size = Length::Px(FS);
+        let mut item = LayoutBox::new(BoxType::Block, s);
+        item.children.push(LayoutBox::new(BoxType::Text("HIWAVE".to_string()), ts));
+
+        let mut s2 = ComputedStyle::new();
+        s2.font_size = Length::Px(FS);
+        s2.overflow_x = Overflow::Hidden;
+        let item2 = LayoutBox::new(BoxType::Block, s2);
+
+        let mut style = ComputedStyle::new();
+        style.font_size = Length::Px(FS);
+        style.display = Display::Grid;
+        style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Auto, TrackSize::Auto]);
+        style.grid_template_rows = GridTemplate::from_sizes(vec![TrackSize::Auto]);
+        style.grid_template_areas = Some(GridTemplateAreas::default());
+
+        let mut c = LayoutBox::new(BoxType::Block, style);
+        c.children.push(item);
+        c.children.push(item2);
+        layout_grid_container(&mut c, container_width, 200.0);
+        c.children[0].dimensions.content.width
+    }
+
+    #[test]
+    fn automatic_minimum_does_not_arm_when_overflow_is_not_visible() {
+        for cw in [50.0f32, BINDING_CW, 80.0] {
+            assert_eq!(
+                track1_width_clipped(Length::Em(2.0), cw),
+                track1_width_clipped(Length::Zero, cw),
+                "auto-min must not arm at overflow-x != visible (cw={cw})"
+            );
+        }
+    }
+
+    /// The helper must read the ELEMENT's font size, not a fixture constant.
+    /// Run at font sizes where `2em` is not a convenient round number, and
+    /// cross-check against the px equivalent rather than a literal.
+    ///
+    /// The `rem != em` assert is the discriminating half: if `rem` ever
+    /// followed the element font size these would collapse together.
+    #[test]
+    fn em_tracks_the_element_font_size_at_sizes_other_than_ten() {
+        for fs in [12.0f32, 20.0] {
+            let em = track1_width_at(Length::Em(2.0), fs);
+            let px_equivalent = track1_width_at(Length::Px(2.0 * fs), fs);
+            assert_eq!(em, px_equivalent, "2em must equal its px equivalent at font-size {fs}");
+
+            let rem = track1_width_at(Length::Rem(1.0), fs);
+            assert_ne!(
+                rem, em,
+                "rem must NOT follow the element font size (font-size {fs})"
+            );
+        }
+    }
+
+    fn track1_width_at(pad: Length, fs: f32) -> f32 {
+        let mut s = styled(pad);
+        s.font_size = Length::Px(fs);
+        s.overflow_x = Overflow::Visible;
+        let mut ts = ComputedStyle::new();
+        ts.font_size = Length::Px(fs);
+        let mut item = LayoutBox::new(BoxType::Block, s);
+        item.children.push(LayoutBox::new(BoxType::Text("HIWAVE".to_string()), ts));
+
+        let mut s2 = ComputedStyle::new();
+        s2.font_size = Length::Px(fs);
+        s2.overflow_x = Overflow::Visible;
+        let item2 = LayoutBox::new(BoxType::Block, s2);
+
+        let mut style = ComputedStyle::new();
+        style.font_size = Length::Px(fs);
+        style.display = Display::Grid;
+        style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Auto, TrackSize::Auto]);
+        style.grid_template_rows = GridTemplate::from_sizes(vec![TrackSize::Auto]);
+        style.grid_template_areas = Some(GridTemplateAreas::default());
+
+        let mut c = LayoutBox::new(BoxType::Block, style);
+        c.children.push(item);
+        c.children.push(item2);
+        layout_grid_container(&mut c, BINDING_CW, 200.0);
+        c.children[0].dimensions.content.width
+    }
 }
 
 #[cfg(test)]
