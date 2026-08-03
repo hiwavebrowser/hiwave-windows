@@ -2946,6 +2946,203 @@ mod l1_wrong_base_matrix {
         assert_eq!(gap_of(Length::Em(2.0)), EM2, "site 6 em (FINAL gap)");
         assert_eq!(gap_of(Length::Rem(1.0)), REM1, "site 6 rem (FINAL gap)");
     }
+
+    // ---- SITE-2 TRACK-SIZE PARITY, PINNED IN CI ------------------------
+    //
+    // The unit matrix above proves the resolver returns the right numbers.
+    // It does NOT prove those numbers reach real grid track sizing. That
+    // evidence lived only in a docs table, which rots — so it is executable
+    // here.
+    //
+    // The container width matters and is the whole trick: the automatic
+    // minimum (CSS Grid §6.6) only floors a track when the content minimum
+    // EXCEEDS the space the track would otherwise get. At a wide container
+    // the floor never binds and before/after are identical — a first version
+    // of this probe was written at 400px and was vacuous for exactly that
+    // reason. `binding_width_actually_binds` below is what stops that
+    // happening again silently.
+
+    const BINDING_CW: f32 = 60.0; // narrow enough that the min-content floor binds
+
+    /// Width of the first auto track for an item with the given padding.
+    fn track1_width(pad: Length, container_width: f32) -> f32 {
+        let mut s = styled(pad);
+        s.overflow_x = Overflow::Visible;
+        let mut ts = ComputedStyle::new();
+        ts.font_size = Length::Px(FS);
+        let text = LayoutBox::new(BoxType::Text("HIWAVE".to_string()), ts);
+        let mut item = LayoutBox::new(BoxType::Block, s);
+        item.children.push(text);
+
+        let mut second = ComputedStyle::new();
+        second.font_size = Length::Px(FS);
+        second.overflow_x = Overflow::Visible;
+        let item2 = LayoutBox::new(BoxType::Block, second);
+
+        let mut style = ComputedStyle::new();
+        style.font_size = Length::Px(FS);
+        style.display = Display::Grid;
+        style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Auto, TrackSize::Auto]);
+        style.grid_template_rows = GridTemplate::from_sizes(vec![TrackSize::Auto]);
+        style.grid_template_areas = Some(GridTemplateAreas::default());
+
+        let mut c = LayoutBox::new(BoxType::Block, style);
+        c.children.push(item);
+        c.children.push(item2);
+        layout_grid_container(&mut c, container_width, 200.0);
+        c.children[0].dimensions.content.width
+    }
+
+    /// GUARDS THE FIXTURE ITSELF: asserts the automatic minimum is actually
+    /// in its binding regime, so the parity assertions below are exercising
+    /// the floor rather than passing for free.
+    ///
+    /// MEASURED SCOPE, so this comment does not claim more than was checked:
+    /// with only the FIRST item padded, this fixture still binds at 400px —
+    /// regressing site 2 with `BINDING_CW = 400.0` was verified to still turn
+    /// the parity test red. So this guard is defence in depth, not the sole
+    /// thing standing between the parity test and vacuity. The vacuity that
+    /// actually occurred was in the docs probe, where BOTH items carried the
+    /// same padding and the tracks therefore split evenly at 400px, making
+    /// before and after identical. Keep it: a fixture that silently leaves
+    /// the binding regime is the failure mode this whole unit is about.
+    #[test]
+    fn binding_width_actually_binds() {
+        let bare = track1_width(Length::Zero, BINDING_CW);
+        let padded = track1_width(Length::Px(20.0), BINDING_CW);
+        assert!(
+            padded > bare,
+            "FIXTURE NO LONGER BINDS at cw={BINDING_CW}: padding did not widen the \
+             track ({bare} -> {padded}). The parity assertions below would be vacuous."
+        );
+    }
+
+    /// Site-2 parity: relative padding must move real track sizes, and must
+    /// move them to EXACTLY where the equivalent absolute padding lands.
+    ///
+    /// Asserting against the px path rather than a literal is deliberate: it
+    /// cross-checks the relative units against the absolute-unit path that
+    /// was never broken, so this stays honest even if the text metric that
+    /// sets the content floor ever changes.
+    #[test]
+    fn site2_relative_padding_moves_grid_tracks_like_the_px_equivalent() {
+        let bare = track1_width(Length::Zero, BINDING_CW);
+
+        // 2em @ font-size 10 == 20px, exactly.
+        assert_eq!(
+            track1_width(Length::Em(2.0), BINDING_CW),
+            track1_width(Length::Px(EM2), BINDING_CW),
+            "2em must size tracks identically to its px equivalent"
+        );
+        // 1rem @ root 16 == 16px, exactly.
+        assert_eq!(
+            track1_width(Length::Rem(1.0), BINDING_CW),
+            track1_width(Length::Px(REM1), BINDING_CW),
+            "1rem must size tracks identically to its px equivalent"
+        );
+        // And both must actually have moved the track off its unpadded size,
+        // or the equality above could hold with everything dropped to zero.
+        assert!(track1_width(Length::Em(2.0), BINDING_CW) > bare, "2em did not widen the track");
+        assert!(track1_width(Length::Rem(1.0), BINDING_CW) > bare, "1rem did not widen the track");
+    }
+
+    /// Same fixture with `overflow-x` NOT visible. The automatic minimum must
+    /// NOT arm, so padding — of any unit — must not move the track.
+    ///
+    /// This pins that the fix rides the CSS Grid §6.6 automatic-minimum path
+    /// specifically, rather than being a global length rewrite that happens to
+    /// produce the right numbers. Without it, a change that resolved lengths
+    /// correctly everywhere but armed the floor unconditionally would pass
+    /// every other test here.
+    fn track1_width_clipped(pad: Length, container_width: f32) -> f32 {
+        let mut s = styled(pad);
+        s.overflow_x = Overflow::Hidden;
+        let mut ts = ComputedStyle::new();
+        ts.font_size = Length::Px(FS);
+        let mut item = LayoutBox::new(BoxType::Block, s);
+        item.children.push(LayoutBox::new(BoxType::Text("HIWAVE".to_string()), ts));
+
+        let mut s2 = ComputedStyle::new();
+        s2.font_size = Length::Px(FS);
+        s2.overflow_x = Overflow::Hidden;
+        let item2 = LayoutBox::new(BoxType::Block, s2);
+
+        let mut style = ComputedStyle::new();
+        style.font_size = Length::Px(FS);
+        style.display = Display::Grid;
+        style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Auto, TrackSize::Auto]);
+        style.grid_template_rows = GridTemplate::from_sizes(vec![TrackSize::Auto]);
+        style.grid_template_areas = Some(GridTemplateAreas::default());
+
+        let mut c = LayoutBox::new(BoxType::Block, style);
+        c.children.push(item);
+        c.children.push(item2);
+        layout_grid_container(&mut c, container_width, 200.0);
+        c.children[0].dimensions.content.width
+    }
+
+    #[test]
+    fn automatic_minimum_does_not_arm_when_overflow_is_not_visible() {
+        for cw in [50.0f32, BINDING_CW, 80.0] {
+            assert_eq!(
+                track1_width_clipped(Length::Em(2.0), cw),
+                track1_width_clipped(Length::Zero, cw),
+                "auto-min must not arm at overflow-x != visible (cw={cw})"
+            );
+        }
+    }
+
+    /// The helper must read the ELEMENT's font size, not a fixture constant.
+    /// Run at font sizes where `2em` is not a convenient round number, and
+    /// cross-check against the px equivalent rather than a literal.
+    ///
+    /// The `rem != em` assert is the discriminating half: if `rem` ever
+    /// followed the element font size these would collapse together.
+    #[test]
+    fn em_tracks_the_element_font_size_at_sizes_other_than_ten() {
+        for fs in [12.0f32, 20.0] {
+            let em = track1_width_at(Length::Em(2.0), fs);
+            let px_equivalent = track1_width_at(Length::Px(2.0 * fs), fs);
+            assert_eq!(em, px_equivalent, "2em must equal its px equivalent at font-size {fs}");
+
+            let rem = track1_width_at(Length::Rem(1.0), fs);
+            assert_ne!(
+                rem, em,
+                "rem must NOT follow the element font size (font-size {fs})"
+            );
+        }
+    }
+
+    fn track1_width_at(pad: Length, fs: f32) -> f32 {
+        let mut s = styled(pad);
+        s.font_size = Length::Px(fs);
+        s.overflow_x = Overflow::Visible;
+        let mut ts = ComputedStyle::new();
+        ts.font_size = Length::Px(fs);
+        let mut item = LayoutBox::new(BoxType::Block, s);
+        item.children.push(LayoutBox::new(BoxType::Text("HIWAVE".to_string()), ts));
+
+        let mut s2 = ComputedStyle::new();
+        s2.font_size = Length::Px(fs);
+        s2.overflow_x = Overflow::Visible;
+        let item2 = LayoutBox::new(BoxType::Block, s2);
+
+        let mut style = ComputedStyle::new();
+        style.font_size = Length::Px(fs);
+        style.display = Display::Grid;
+        style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Auto, TrackSize::Auto]);
+        style.grid_template_rows = GridTemplate::from_sizes(vec![TrackSize::Auto]);
+        style.grid_template_areas = Some(GridTemplateAreas::default());
+
+        let mut c = LayoutBox::new(BoxType::Block, style);
+        c.children.push(item);
+        c.children.push(item2);
+        layout_grid_container(&mut c, BINDING_CW, 200.0);
+        c.children[0].dimensions.content.width
+    }
 }
 
 #[cfg(test)]
