@@ -4160,6 +4160,98 @@ fn test_compositor() -> Compositor {
 
 #[cfg(test)]
 mod tests {
+    /// A-LEG ENGINE-PATH GUARDS.
+    ///
+    /// Both of these run end-to-end through `Document::parse_html` and
+    /// `build_layout_from_document` rather than on a hand-built `LayoutBox`,
+    /// and that is the entire point. Talos's Linux leg A shipped correct in
+    /// unit tests and did NOTHING in the engine, because the engine reaches
+    /// non-root elements through `ComputedStyle::inherit_from` rather than
+    /// `ComputedStyle::new()`. A unit-level test cannot see that gap.
+    ///
+    /// The Windows A-leg (#72) set the Flexbox §4.5 `Auto` initial in BOTH
+    /// constructors, so it does not have that defect — these tests exist so a
+    /// future change cannot reintroduce it silently.
+    #[cfg(test)]
+    mod a_leg_engine_path_guards {
+        use super::*;
+
+        fn engine_for_test() -> Engine {
+            let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+            Engine {
+                config: EngineConfig::default(),
+                views: HashMap::new(),
+                viewhost: ViewHost::new(),
+                compositor: test_compositor(),
+                renderer: None,
+                loader: Arc::new(
+                    ResourceLoader::new(LoaderConfig::default()).expect("loader"),
+                ),
+                image_manager: Arc::new(ImageManager::new()),
+                event_tx,
+                event_rx: Some(event_rx),
+            }
+        }
+
+        fn layout_of(html: &str) -> LayoutBox {
+            let document = Rc::new(Document::parse_html(html).expect("parse"));
+            engine_for_test().build_layout_from_document(&document)
+        }
+
+        fn every_box_min_width(b: &LayoutBox, out: &mut Vec<rustkit_css::Length>) {
+            out.push(b.style.min_width.clone());
+            for c in &b.children {
+                every_box_min_width(c, out);
+            }
+        }
+
+        /// The §4.5 `auto` initial must survive the ENGINE's construction path,
+        /// including for nested non-root elements built via `inherit_from`.
+        /// Without this, A1 could be correct in `ComputedStyle::new()` and the
+        /// floor would still never arm for any real document.
+        #[test]
+        fn auto_min_width_initial_survives_the_engine_build_path() {
+            let html = r#"<!DOCTYPE html><html><body>
+                <div style="display:flex">
+                  <div><span>HIWAVE</span></div>
+                </div>
+            </body></html>"#;
+
+            let mut mins = Vec::new();
+            every_box_min_width(&layout_of(html), &mut mins);
+
+            assert!(mins.len() >= 4, "fixture too shallow to exercise inherit_from");
+            for (i, m) in mins.iter().enumerate() {
+                assert!(
+                    matches!(m, rustkit_css::Length::Auto),
+                    "box {i} lost the Flexbox 4.5 auto initial in the engine path: {m:?}"
+                );
+            }
+        }
+
+        /// An authored `min-width: 0` must still reach the engine as `Zero`.
+        ///
+        /// This is the discriminating half: if the cascade ever coerced every
+        /// unset AND authored value to the same variant, the test above would
+        /// still pass while §4.5 lost the distinction it turns on.
+        #[test]
+        fn authored_zero_min_width_still_arrives_as_zero() {
+            let html = r#"<!DOCTYPE html><html><body>
+                <div style="display:flex">
+                  <div style="min-width:0">HIWAVE</div>
+                </div>
+            </body></html>"#;
+
+            let mut mins = Vec::new();
+            every_box_min_width(&layout_of(html), &mut mins);
+
+            assert!(
+                mins.iter().any(|m| matches!(m, rustkit_css::Length::Zero)),
+                "an authored min-width:0 must survive as Zero, not be normalised to Auto: {mins:?}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

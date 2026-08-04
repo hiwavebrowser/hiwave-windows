@@ -1688,6 +1688,33 @@ mod a_leg_automatic_minimum_matrix {
         }
     }
 
+    /// ARGOS RESIDUAL on #72 — the gate is per-AXIS.
+    ///
+    /// A row flex container's main axis is horizontal, so clipping VERTICALLY
+    /// must not suppress the horizontal floor. If both axes were consulted,
+    /// this would wrongly collapse to 0.
+    ///
+    /// Argos verified this by injecting a check during R1, which proves the
+    /// tip was correct but does not stop the next tip regressing. An
+    /// R1-time injection and an in-tree test are different artifacts: his is
+    /// evidence about a SHA, this is a guard about the rule. Shape taken from
+    /// Talos's Linux #56, offered on the exchange.
+    #[test]
+    fn cross_axis_clip_does_not_suppress_the_main_axis_floor() {
+        let mut b = item(Length::Auto, Overflow::Visible, Length::Em(2.0));
+        b.style.overflow_y = Overflow::Hidden;
+        assert_eq!(
+            min_main_of(&b),
+            bare_content_width() + 40.0,
+            "overflow-y must not suppress the floor on a HORIZONTAL main axis"
+        );
+
+        // And the mirror: clipping the MAIN axis does suppress it.
+        let mut c = item(Length::Auto, Overflow::Hidden, Length::Em(2.0));
+        c.style.overflow_y = Overflow::Visible;
+        assert_eq!(min_main_of(&c), 0.0, "overflow-x must suppress a horizontal main axis");
+    }
+
     /// Vertical main axis returns 0.0 — matching the macOS #81 residual
     /// rather than inventing a min-content height estimator. Pinned so the
     /// residual is a recorded decision, not an accident.
