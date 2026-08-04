@@ -558,21 +558,21 @@ fn create_flex_item<'a>(
         FlexBasis::Percent(pct) => pct / 100.0 * container_main,
     };
 
-    // Get min/max constraints
-    let (min_main, max_main, min_cross, max_cross) = match main_axis {
+    // Get min/max constraints. The MAIN-axis minimum goes through the §4.5
+    // automatic-minimum path (A3); the cross axis keeps the plain resolve.
+    let (max_main, min_cross, max_cross) = match main_axis {
         Axis::Horizontal => (
-            resolve_length(&layout_box.style.min_width, &layout_box.style, container_main),
             resolve_max_length(&layout_box.style.max_width, &layout_box.style, container_main),
             resolve_length(&layout_box.style.min_height, &layout_box.style, container_cross),
             resolve_max_length(&layout_box.style.max_height, &layout_box.style, container_cross),
         ),
         Axis::Vertical => (
-            resolve_length(&layout_box.style.min_height, &layout_box.style, container_main),
             resolve_max_length(&layout_box.style.max_height, &layout_box.style, container_main),
             resolve_length(&layout_box.style.min_width, &layout_box.style, container_cross),
             resolve_max_length(&layout_box.style.max_width, &layout_box.style, container_cross),
         ),
     };
+    let min_main = automatic_minimum_main(layout_box, main_axis, container_main);
 
     // Hypothetical main size (clamped)
     let hypothetical_main_size = flex_basis.max(min_main).min(max_main);
@@ -1008,6 +1008,61 @@ fn apply_positions(
 ///
 /// DEFER unchanged: when flex layout is threaded with viewport dimensions,
 /// this should call `to_px_with_viewport` and pass them through.
+/// A3 — CSS Flexbox Level 1 §4.5, automatic minimum size.
+///
+/// Returns the main-axis minimum for a flex item.
+///
+/// THE DECISION IS MADE ON THE SPECIFIED VARIANT, NOT THE RESOLVED PIXELS.
+/// `Length::Auto` and `Length::Zero` both resolve to 0.0, so a resolved-value
+/// test cannot tell "unset" from an authored `min-width: 0` — and that
+/// distinction is the whole of §4.5. An authored 0 stays collapsible; an
+/// unset (auto) minimum is floored by the item's content.
+///
+/// This is why A1 (the `Auto` initial) and this function are one unit: without
+/// the initial, every unset item still reads as `Zero` here and the floor
+/// never arms; without this function, the initial changes nothing observable
+/// because both variants resolve to the same number.
+fn automatic_minimum_main(
+    layout_box: &LayoutBox,
+    main_axis: Axis,
+    container_main: f32,
+) -> f32 {
+    let style = &layout_box.style;
+    let specified = match main_axis {
+        Axis::Horizontal => &style.min_width,
+        Axis::Vertical => &style.min_height,
+    };
+
+    // Authored value — including an explicit `0` — resolves as before.
+    if !matches!(specified, Length::Auto) {
+        return resolve_length(specified, style, container_main);
+    }
+
+    // The automatic minimum applies only when the box is not a scroll
+    // container: a scroll container may shrink below its content, and keeps
+    // the explicit-only contribution.
+    let overflow_main = match main_axis {
+        Axis::Horizontal => style.overflow_x,
+        Axis::Vertical => style.overflow_y,
+    };
+    if overflow_main != rustkit_css::Overflow::Visible {
+        return 0.0;
+    }
+
+    match main_axis {
+        // `estimate_min_content_width` already returns a BORDER-BOX width — it
+        // adds `horizontal_padding_border` itself — so it is used RAW. Wrapping
+        // it in another border-box conversion would double-count padding, the
+        // residual flagged on the macOS #81 review.
+        Axis::Horizontal => crate::grid::estimate_min_content_width(layout_box),
+        // Vertical main axis: macOS #81 returns 0.0 here rather than inventing
+        // a min-content HEIGHT estimator, and this port matches that residual
+        // deliberately. Answering differently would be a Windows-only
+        // divergence dressed up as a port.
+        Axis::Vertical => 0.0,
+    }
+}
+
 /// SITE 4 — this hardcoded 16.0 as the em base, so every flex gap, margin,
 /// width and min/max stated in `em` ignored the element's own font size.
 /// Now delegates to the one canonical resolver.
@@ -1508,6 +1563,192 @@ mod tests {
     }
 }
 
+
+/// A-leg T-RED matrix — CSS Flexbox §4.5 automatic minimum size.
+///
+/// Element font-size is 10px throughout, never 16, for the same reason as the
+/// L1 matrix: at 16 the em path and the root path agree and an accidental
+/// green is indistinguishable from a real one.
+#[cfg(test)]
+mod a_leg_automatic_minimum_matrix {
+    use super::*;
+    use crate::BoxType;
+    use rustkit_css::{ComputedStyle, Overflow};
+
+    const FS: f32 = 10.0;
+
+    /// A box whose min-content width is text + `2em` of horizontal padding.
+    /// At font-size 10 that is content + 40.
+    fn item(min_width: Length, overflow: Overflow, pad: Length) -> LayoutBox {
+        let mut ts = ComputedStyle::new();
+        ts.font_size = Length::Px(FS);
+        let text = LayoutBox::new(BoxType::Text("HIWAVE".to_string()), ts);
+
+        let mut s = ComputedStyle::new();
+        s.font_size = Length::Px(FS);
+        s.min_width = min_width;
+        s.overflow_x = overflow;
+        s.padding_left = pad.clone();
+        s.padding_right = pad;
+        let mut b = LayoutBox::new(BoxType::Block, s);
+        b.children.push(text);
+        b
+    }
+
+    fn bare_content_width() -> f32 {
+        crate::grid::estimate_min_content_width(&item(
+            Length::Auto,
+            Overflow::Visible,
+            Length::Zero,
+        ))
+    }
+
+    fn min_main_of(b: &LayoutBox) -> f32 {
+        automatic_minimum_main(b, Axis::Horizontal, 1000.0)
+    }
+
+    /// NON-VACUITY: the fixture must have real content, or every assertion
+    /// below could hold with the floor collapsed to nothing.
+    #[test]
+    fn fixture_has_content() {
+        assert!(bare_content_width() > 0.0, "FIXTURE VACUOUS");
+    }
+
+    /// §3.3 #3 — the whole product. An UNSET (auto) minimum on a visible-
+    /// overflow item is floored by its border-box min-content width, padding
+    /// included. Before A3 this returned 0.0 and the item was free to shrink
+    /// to nothing.
+    #[test]
+    fn unset_min_is_floored_by_border_box_min_content() {
+        let floored = min_main_of(&item(Length::Auto, Overflow::Visible, Length::Em(2.0)));
+        assert_eq!(
+            floored,
+            bare_content_width() + 40.0,
+            "auto min must be floored by content + 2em padding on both sides"
+        );
+        assert!(floored > 0.0, "auto min must not be zero");
+    }
+
+    /// §3.3 #2 — an AUTHORED zero stays collapsible. This is the distinction
+    /// that forces the variant match: `Auto` and `Zero` both resolve to 0.0,
+    /// so a resolved-value test cannot separate these two cases at all.
+    #[test]
+    fn authored_zero_stays_collapsible() {
+        assert_eq!(
+            min_main_of(&item(Length::Zero, Overflow::Visible, Length::Em(2.0))),
+            0.0,
+            "an authored min-width:0 must still collapse"
+        );
+    }
+
+    /// An authored POSITIVE minimum keeps resolving through the normal path,
+    /// including relative units (post-#70).
+    #[test]
+    fn authored_positive_min_still_resolves() {
+        assert_eq!(
+            min_main_of(&item(Length::Em(3.0), Overflow::Visible, Length::Zero)),
+            30.0,
+            "3em at font-size 10 must resolve to 30"
+        );
+    }
+
+    /// §3.3 #4 — a scroll container may shrink below its content, so the
+    /// automatic minimum must NOT arm. Without this, a change that floored
+    /// unconditionally would pass every other test here.
+    #[test]
+    fn scroll_container_does_not_arm_the_floor() {
+        for ov in [Overflow::Hidden, Overflow::Scroll, Overflow::Auto, Overflow::Clip] {
+            assert_eq!(
+                min_main_of(&item(Length::Auto, ov, Length::Em(2.0))),
+                0.0,
+                "auto min must not arm for non-visible overflow ({ov:?})"
+            );
+        }
+    }
+
+    /// §3.3 #5 — em must follow the ELEMENT font size here too, not a
+    /// constant. Run where 2em is not a round number and cross-check against
+    /// the px equivalent rather than a literal.
+    #[test]
+    fn floor_uses_element_font_size_not_a_constant() {
+        for fs in [12.0f32, 20.0] {
+            let mut em_box = item(Length::Auto, Overflow::Visible, Length::Em(2.0));
+            em_box.style.font_size = Length::Px(fs);
+            em_box.children[0].style.font_size = Length::Px(fs);
+
+            let mut px_box = item(Length::Auto, Overflow::Visible, Length::Px(2.0 * fs));
+            px_box.style.font_size = Length::Px(fs);
+            px_box.children[0].style.font_size = Length::Px(fs);
+
+            assert_eq!(
+                min_main_of(&em_box),
+                min_main_of(&px_box),
+                "2em floor must equal its px equivalent at font-size {fs}"
+            );
+        }
+    }
+
+    /// Vertical main axis returns 0.0 — matching the macOS #81 residual
+    /// rather than inventing a min-content height estimator. Pinned so the
+    /// residual is a recorded decision, not an accident.
+    #[test]
+    fn vertical_main_axis_returns_zero_by_design() {
+        let b = item(Length::Auto, Overflow::Visible, Length::Em(2.0));
+        assert_eq!(automatic_minimum_main(&b, Axis::Vertical, 1000.0), 0.0);
+    }
+
+    /// A1 <-> A3 COUPLING — the reason these are one PR.
+    ///
+    /// Every other test here SETS `min_width` explicitly, so none of them
+    /// exercise the initial value. This one deliberately never touches it: the
+    /// box is styled exactly as an unstyled element would be. If A1 regressed
+    /// to a `Zero` initial, the variant match in A3 would see `Zero`, read it
+    /// as an authored collapse, and the floor would silently never arm —
+    /// with every other assertion in this module still green.
+    ///
+    /// Per-sub-leg falsification caught that gap: reverting A1 initially
+    /// reddened only the initial-value guard, i.e. a self-referential
+    /// assertion, and no product test at all.
+    #[test]
+    fn a1_initial_is_what_makes_a3_arm_for_an_unstyled_element() {
+        let mut ts = ComputedStyle::new();
+        ts.font_size = Length::Px(FS);
+        let text = LayoutBox::new(BoxType::Text("HIWAVE".to_string()), ts);
+
+        let mut s = ComputedStyle::new();
+        s.font_size = Length::Px(FS);
+        s.padding_left = Length::Em(2.0);
+        s.padding_right = Length::Em(2.0);
+        // NOTE: min_width deliberately NOT set — this is the A1 initial.
+        let mut b = LayoutBox::new(BoxType::Block, s);
+        b.children.push(text);
+
+        assert!(
+            matches!(b.style.min_width, Length::Auto),
+            "A1 regressed: an unstyled element's min-width initial is not Auto"
+        );
+        assert_eq!(
+            min_main_of(&b),
+            bare_content_width() + 40.0,
+            "the §4.5 floor must arm from the INITIAL value, with no author min-width"
+        );
+    }
+
+    /// WIRING: the floor must actually reach the FlexItem, not merely exist.
+    /// A helper that is never consulted is the "green over a feature that
+    /// never ran" shape.
+    #[test]
+    fn floor_reaches_the_flex_item() {
+        let mut b = item(Length::Auto, Overflow::Visible, Length::Em(2.0));
+        let expected = bare_content_width() + 40.0;
+        let fi = create_flex_item(&mut b, Axis::Horizontal, 1000.0, 500.0);
+        assert_eq!(fi.min_main_size, expected, "min_main_size must carry the §4.5 floor");
+        assert!(
+            fi.hypothetical_main_size >= expected,
+            "hypothetical main size must be clamped up to the floor"
+        );
+    }
+}
 
 /// L1 wrong-base T-RED matrix — site 4 (flex intrinsic edges).
 ///
