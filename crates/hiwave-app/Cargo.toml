@@ -11,9 +11,19 @@ name = "hiwave"
 path = "src/main.rs"
 
 [features]
-# Default to RustKit hybrid mode (RustKit for content, WebView2 for chrome UI)
+# DEFAULT SHELL: hybrid. WebView2 (via wry) paints ALL web content.
+#
+# This said "RustKit hybrid mode (RustKit for content, WebView2 for chrome UI)"
+# and that was FALSE: there is no cfg(feature = "rustkit") arm at the content
+# construction site (main.rs builds it unconditionally with WebViewBuilder), so
+# the feature below links the RustKit crates and changes nothing about what
+# renders. The comment claimed the opposite of the behaviour.
+#
+# For a build where RustKit actually paints, use --features native-win32.
 default = ["rustkit"]
-# RustKit: Pure Rust browser engine for content rendering
+# RustKit crates LINKED IN. Does not, on its own, make RustKit paint content --
+# see the note above. Kept as the default so the engine stays compiled and
+# tested while the content site is wired up.
 rustkit = ["rustkit-engine", "rustkit-viewhost", "rustkit-net", "wry", "tao", "muda", "windows", "tokio"]
 # WebView fallback: Uses system WebView (WebView2/WebKit) for everything
 webview-fallback = ["wry", "tao", "muda"]
