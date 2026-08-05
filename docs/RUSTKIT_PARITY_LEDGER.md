@@ -64,6 +64,27 @@ it is 6 complete.
 | analytics | 3 | |
 | other | 25 | `ClearBrowsingData`, `PrintPage`, `OpenCommandPalette`, `NavigationStateChanged`, … |
 
+## Amendment — 2026-08-05, the rented five, measured then built
+
+The first version of this ledger said the 5 rented capabilities "must be
+built." That was wrong twice over, in opposite directions, and this section
+replaces it:
+
+| Capability | First claim | Measured truth | Status |
+|---|---|---|---|
+| back / forward | must be built | `SessionHistory` existed all along (43 fns, **test-only orphan**) beside NSM's live `Vec<Url>` — TWO STACKS | **OURS** — SessionHistory canonical per the 2026-08-05 pin; Vec deleted as owner; `Engine::go_back/go_forward` load via replace-disposition so traversal never truncates the forward stack |
+| reload | must be built | same wire gap | **OURS** — `Engine::reload`, replace-disposition |
+| stop | "cancel exists" (WRONG — that was DownloadManager, file downloads) | page loads had NO cancellation | **OURS** — generation-gated (`Engine::stop`); stop-as-observed, socket abort is a separate loader unit |
+| print | must be built | absent from every crate, positive-controlled | **still a PROJECT** — paginating layout to a page box; not before the rest |
+
+The native shell's three IPC TODOs (`go_back`/`go_forward`/`reload`) are live
+handlers now. The hybrid shell still rents all five from Chromium and keeps
+doing so until the default flips — Pete's call, not a builder's.
+
+Grep lesson recorded so the next reader doesn't repeat it: "no history in the
+engine" came from searching ONE FILE. `SessionHistory` was one crate over. An
+absence claim needs a workspace-wide search AND a positive control.
+
 ## Ladder
 
 - [x] **(a) label honesty** — `#78`. The tree no longer claims RustKit paints

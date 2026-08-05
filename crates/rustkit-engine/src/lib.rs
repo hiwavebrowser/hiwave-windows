@@ -514,15 +514,38 @@ impl Engine {
 
     /// Load a URL in a view.
     pub async fn load_url(&mut self, id: EngineViewId, url: Url) -> Result<(), EngineError> {
+        self.load_url_with_disposition(id, url, false).await
+    }
+
+    /// Load a URL, optionally REPLACING the current history entry instead of
+    /// pushing a new one.
+    ///
+    /// `replace = true` is how history traversal works end to end: go_back /
+    /// go_forward / reload move the SessionHistory cursor (or keep it, for
+    /// reload) and then arrive here as a replace-load against the entry they
+    /// landed on. Replacing an entry with its own URL is a no-op that
+    /// PRESERVES the entry's state objects — which is exactly why traversal
+    /// must never come through the pushing path: pushing would truncate the
+    /// forward stack the user is trying to walk.
+    async fn load_url_with_disposition(
+        &mut self,
+        id: EngineViewId,
+        url: Url,
+        replace: bool,
+    ) -> Result<(), EngineError> {
         let view = self
             .views
             .get_mut(&id)
             .ok_or(EngineError::ViewNotFound(id))?;
 
-        info!(?id, %url, "Loading URL");
+        info!(?id, %url, replace, "Loading URL");
 
         // Start navigation
-        let request = NavigationRequest::new(url.clone());
+        let request = if replace {
+            NavigationRequest::new(url.clone()).with_replace()
+        } else {
+            NavigationRequest::new(url.clone())
+        };
         view.navigation
             .start_navigation(request)
             .map_err(|e| EngineError::NavigationError(e.to_string()))?;
@@ -2852,6 +2875,63 @@ impl Engine {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Go back one entry in the view's session history and load it.
+    ///
+    /// Returns `Ok(false)` when there is nowhere to go — pressing Back on the
+    /// first page is a no-op, not an error. The cursor moves FIRST, then the
+    /// landed-on entry is loaded as a REPLACE against itself, so the traversal
+    /// neither pushes a duplicate nor truncates the forward stack the user is
+    /// walking, and the entry's pushState state survives.
+    ///
+    /// This is the capability the hybrid shell rents from Chromium as
+    /// `evaluate_script("history.back()")`. Here it is ours: SessionHistory
+    /// cursor + our own loader, no JavaScript, no WebView2.
+    pub async fn go_back(&mut self, id: EngineViewId) -> Result<bool, EngineError> {
+        let target = {
+            let view = self.views.get_mut(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.navigation.go_back().cloned()
+        };
+        match target {
+            Some(url) => {
+                self.load_url_with_disposition(id, url, true).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Go forward one entry. Mirror of [`Engine::go_back`] in every respect.
+    pub async fn go_forward(&mut self, id: EngineViewId) -> Result<bool, EngineError> {
+        let target = {
+            let view = self.views.get_mut(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.navigation.go_forward().cloned()
+        };
+        match target {
+            Some(url) => {
+                self.load_url_with_disposition(id, url, true).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Re-load the current history entry. `Ok(false)` if the view has never
+    /// finished a navigation (nothing to reload). A reload is a REPLACE — it
+    /// must not push a duplicate of the page onto its own back stack.
+    pub async fn reload(&mut self, id: EngineViewId) -> Result<bool, EngineError> {
+        let target = {
+            let view = self.views.get(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.navigation.current_url().cloned()
+        };
+        match target {
+            Some(url) => {
+                self.load_url_with_disposition(id, url, true).await?;
+                Ok(true)
+            }
+            None => Ok(false),
         }
     }
 
@@ -6996,5 +7076,79 @@ mod stop_navigation_tests {
         let a = e.bump_nav_generation_for_test(id);
         let b = e.bump_nav_generation_for_test(id);
         assert_eq!(b, a + 1, "generation must advance by one");
+    }
+}
+
+#[cfg(test)]
+mod history_traversal_tests {
+    //! Engine-level contract for go_back / go_forward / reload.
+    //!
+    //! The full round trip (load A, load B, go_back lands on A) requires the
+    //! network and lives at the core layer, where the NSM tests drive
+    //! start/commit/finish directly. What the ENGINE owns — and what these
+    //! pin — is the edge contract: traversal on a view with nowhere to go is
+    //! Ok(false), never an error and never a panic, because mashing Back on
+    //! the first page is a user gesture, not a fault.
+    use super::*;
+
+    fn engine_with_view() -> (Engine, EngineViewId) {
+        let mut e = Engine::new(EngineConfig::default()).expect("engine");
+        let id = e
+            .create_headless_view(Bounds { x: 0, y: 0, width: 800, height: 600 })
+            .expect("headless view");
+        (e, id)
+    }
+
+    #[tokio::test]
+    async fn back_on_a_fresh_view_is_a_quiet_no_op() {
+        let (mut e, id) = engine_with_view();
+        assert_eq!(e.go_back(id).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn forward_on_a_fresh_view_is_a_quiet_no_op() {
+        let (mut e, id) = engine_with_view();
+        assert_eq!(e.go_forward(id).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn reload_with_no_history_is_a_quiet_no_op() {
+        let (mut e, id) = engine_with_view();
+        assert_eq!(e.reload(id).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn traversal_on_a_missing_view_is_an_error_not_a_panic() {
+        let (mut e, _id) = engine_with_view();
+        let ghost = EngineViewId::new();
+        assert!(e.go_back(ghost).await.is_err());
+        assert!(e.go_forward(ghost).await.is_err());
+        assert!(e.reload(ghost).await.is_err());
+    }
+
+    /// NON-VACUITY: prove the no-op result is reachable as TRUE too — after
+    /// load_html (which pushes about:blank... no, load_html does not push) —
+    /// instead: reload becomes Ok(true)-capable once history has an entry.
+    /// We seed history through the NSM directly, no network.
+    #[tokio::test]
+    async fn reload_fires_once_history_has_an_entry() {
+        let (mut e, id) = engine_with_view();
+        // Seed one committed entry through the canonical stack.
+        {
+            let view = e.views.get_mut(&id).unwrap();
+            let url = Url::parse("https://seeded.example/").unwrap();
+            view.navigation.start_navigation(
+                rustkit_core::NavigationRequest::new(url)).unwrap();
+            view.navigation.commit_navigation().unwrap();
+            view.navigation.finish_navigation().unwrap();
+        }
+        // Reload now attempts a real load of the seeded URL. The fetch will
+        // fail (no such host in tests) — the CONTRACT here is only that the
+        // engine took the Ok(true) path, i.e. it found an entry and tried.
+        let r = e.reload(id).await;
+        assert!(
+            !matches!(r, Ok(false)),
+            "with history present, reload must not report nothing-to-do"
+        );
     }
 }
