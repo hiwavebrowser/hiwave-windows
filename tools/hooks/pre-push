@@ -1,0 +1,63 @@
+#!/bin/sh
+# Announce a tip move on a branch that has an open PR.
+#
+# WHY:
+#   I amended a commit to drop a stray file, force-pushed, and moved the tip
+#   from 0d80b14 to 27eabfe while a reviewer was mid-review of the old one.
+#   His R1 GREEN silently stopped covering the head. Nobody noticed until a
+#   second reviewer cleared a different SHA and the two disagreed.
+#
+#   The content was identical -- the amend only dropped a scratch file -- so it
+#   cost nothing that time. That was luck about WHAT changed, not correctness:
+#   an amend is a tip move even when the diff is empty, and under the
+#   develop->master model the promotion review is the ONLY external gate, so a
+#   tip moving under a reviewer is where quality can silently leave.
+#
+#   I committed to announcing every tip move. This is that commitment as a
+#   mechanism, because I had already written the equivalent rule to memory and
+#   broken it ninety minutes later.
+#
+# WHAT IT DOES:
+#   Non-blocking. It prints the old and new SHA and the PR that is affected, so
+#   the announcement is in front of you at the moment it becomes true rather
+#   than remembered afterwards. It never refuses a push -- a hook that blocks
+#   gets disabled, and a disabled hook protects nothing.
+#
+# INSTALL:
+#   git config core.hooksPath tools/hooks
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # New branch or deletion: nothing has moved under anyone.
+    case "$remote_sha" in
+        0000000000000000000000000000000000000000) continue ;;
+    esac
+    [ "$local_sha" = "$remote_sha" ] && continue
+
+    branch=${remote_ref#refs/heads/}
+
+    # Fast-forward is a normal advance, not a rewrite. Only a NON-fast-forward
+    # invalidates review of the previous head.
+    if git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        continue
+    fi
+
+    pr=$(gh pr list --head "$branch" --state open \
+            --json number,reviews -q '.[0].number' 2>/dev/null)
+    [ -z "$pr" ] && continue
+
+    printf '\n'
+    printf '  ================================================================\n'
+    printf '   TIP MOVE ON A BRANCH WITH AN OPEN PR  (#%s)\n' "$pr"
+    printf '     branch : %s\n' "$branch"
+    printf '     old    : %s\n' "$remote_sha"
+    printf '     new    : %s\n' "$local_sha"
+    printf '\n'
+    printf '   Any R1 naming the old SHA no longer covers the head.\n'
+    printf '   Earlier-SHA-covers-later NEVER holds -- announce this to the\n'
+    printf '   reviewer NOW, naming both SHAs, before they spend another\n'
+    printf '   minute on it. An amend counts even if the diff is empty.\n'
+    printf '  ================================================================\n'
+    printf '\n'
+done
+
+exit 0
