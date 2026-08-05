@@ -567,6 +567,14 @@ impl Renderer {
                 self.draw_solid_rect(*rect, *color);
             }
 
+            DisplayCommand::RoundedRect { color, rect, radius } => {
+                if radius.is_zero() {
+                    self.draw_solid_rect(*rect, *color);
+                } else {
+                    self.draw_rounded_rect(*rect, *color, *radius);
+                }
+            }
+
             DisplayCommand::BoxShadow {
                 offset_x,
                 offset_y,
@@ -849,6 +857,138 @@ impl Renderer {
             return;
         }
         self.draw_solid_rect(shadow_rect, color);
+    }
+
+    // ---- ROUNDED-RECT PAINT ----
+    //
+    // Ported from hiwave-linux#50 (Talos), which in turn took it verbatim from
+    // the macOS reference. CPU, not GPU: corners are rasterised by point-in-
+    // shape testing rather than with a shader.
+    //
+    // KEPT BYTE-FAITHFUL rather than "improved". An independently better
+    // rasteriser here would be an undeclared divergence and would make any
+    // future three-way pixel diff meaningless — the whole value of a peer port
+    // is that the output is comparable.
+
+    #[inline]
+    fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+        let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    /// Draw a rounded rectangle: solid interior bands plus SDF corners.
+    fn draw_rounded_rect(
+        &mut self,
+        rect: Rect,
+        color: Color,
+        radius: rustkit_layout::BorderRadius,
+    ) {
+        // Small radii or tiny rects are indistinguishable from square once
+        // rasterised — take the cheap path.
+        let max_radius = radius
+            .top_left
+            .max(radius.top_right)
+            .max(radius.bottom_left)
+            .max(radius.bottom_right);
+        if max_radius < 1.0 || rect.width < 4.0 || rect.height < 4.0 {
+            self.draw_solid_rect(rect, color);
+            return;
+        }
+
+        // Clamp radii to half the rect dimensions.
+        let max_r = (rect.width / 2.0).min(rect.height / 2.0);
+        let r_tl = radius.top_left.min(max_r);
+        let r_tr = radius.top_right.min(max_r);
+        let r_br = radius.bottom_right.min(max_r);
+        let r_bl = radius.bottom_left.min(max_r);
+
+        // Interior (non-corner) regions as solid rects.
+        if rect.width > r_tl + r_tr {
+            self.draw_solid_rect(
+                Rect::new(rect.x + r_tl, rect.y, rect.width - r_tl - r_tr, r_tl.max(r_tr)),
+                color,
+            );
+        }
+        if rect.width > r_bl + r_br {
+            self.draw_solid_rect(
+                Rect::new(
+                    rect.x + r_bl,
+                    rect.y + rect.height - r_bl.max(r_br),
+                    rect.width - r_bl - r_br,
+                    r_bl.max(r_br),
+                ),
+                color,
+            );
+        }
+        let top_corner_height = r_tl.max(r_tr);
+        let bottom_corner_height = r_bl.max(r_br);
+        if rect.height > top_corner_height + bottom_corner_height {
+            self.draw_solid_rect(
+                Rect::new(
+                    rect.x,
+                    rect.y + top_corner_height,
+                    rect.width,
+                    rect.height - top_corner_height - bottom_corner_height,
+                ),
+                color,
+            );
+        }
+
+        self.draw_rounded_corner(rect.x, rect.y, r_tl, color, 0);
+        self.draw_rounded_corner(rect.x + rect.width - r_tr, rect.y, r_tr, color, 1);
+        self.draw_rounded_corner(
+            rect.x + rect.width - r_br,
+            rect.y + rect.height - r_br,
+            r_br,
+            color,
+            2,
+        );
+        self.draw_rounded_corner(rect.x, rect.y + rect.height - r_bl, r_bl, color, 3);
+    }
+
+    /// quadrant: 0=top-left, 1=top-right, 2=bottom-right, 3=bottom-left
+    fn draw_rounded_corner(&mut self, x: f32, y: f32, radius: f32, color: Color, quadrant: u8) {
+        if radius < 1.0 {
+            return;
+        }
+        let (cx, cy) = match quadrant {
+            0 => (x + radius, y + radius),
+            1 => (x, y + radius),
+            2 => (x, y),
+            3 => (x + radius, y),
+            _ => return,
+        };
+
+        let step = 1.0;
+        let mut py = y;
+        while py < y + radius {
+            let mut px = x;
+            while px < x + radius {
+                let dx = match quadrant {
+                    0 | 3 => cx - (px + step / 2.0),
+                    _ => (px + step / 2.0) - cx,
+                };
+                let dy = match quadrant {
+                    0 | 1 => cy - (py + step / 2.0),
+                    _ => (py + step / 2.0) - cy,
+                };
+                let dist = (dx * dx + dy * dy).sqrt();
+                // Signed distance to the edge: positive inside, negative out.
+                let signed_dist = radius - dist;
+
+                if signed_dist >= 1.0 {
+                    self.draw_solid_rect(Rect::new(px, py, step, step), color);
+                } else if signed_dist > -1.0 {
+                    let coverage = (signed_dist * 0.5 + 0.5).clamp(0.0, 1.0);
+                    if coverage > 0.01 {
+                        let aa_color = Color::new(color.r, color.g, color.b, color.a * coverage);
+                        self.draw_solid_rect(Rect::new(px, py, step, step), aa_color);
+                    }
+                }
+                px += step;
+            }
+            py += step;
+        }
     }
 
     fn draw_solid_rect(&mut self, rect: Rect, color: Color) {
