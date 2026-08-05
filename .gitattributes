@@ -1,0 +1,4 @@
+# Shell hooks must stay LF. A CRLF checkout breaks "#!/bin/sh" with
+# "bad interpreter" -- and a hook that fails to run protects nothing while
+# still looking installed.
+tools/hooks/* text eol=lf
