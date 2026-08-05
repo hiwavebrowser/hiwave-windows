@@ -207,17 +207,39 @@ impl IWebView for wry::WebView {
 // Engine detection
 // ============================================================================
 
-/// Check if we're using RustKit engine
+/// Whether the RUSTKIT CRATES are linked into this build.
+///
+/// NOTE THE NARROWNESS, IT IS DELIBERATE. This says the engine is COMPILED IN.
+/// It does NOT say the engine paints anything. In hybrid mode it does not:
+/// `main.rs` builds the content webview unconditionally with
+/// `WebViewBuilder::new()` and there is no `cfg(feature = "rustkit")` arm at
+/// that site, so WebView2 paints all web content regardless of this flag.
+///
+/// Renamed from `is_rustkit_enabled`, which read as "RustKit is doing the
+/// work" and was false on every default build.
 #[allow(dead_code)]
-pub fn is_rustkit_enabled() -> bool {
+pub fn rustkit_crates_linked() -> bool {
     cfg!(all(target_os = "windows", feature = "rustkit"))
 }
 
-/// Get the current WebView engine name
+/// The engine that ACTUALLY PAINTS WEB CONTENT in this build.
+///
+/// THIS FUNCTION USED TO LIE. It returned "RustKit" for
+/// `cfg(all(windows, feature = "rustkit"))` — and `rustkit` is the DEFAULT
+/// feature — so a stock `cargo run` printed "WebView engine: RustKit" at
+/// startup while WebView2 painted every page. Measured: zero
+/// `cfg(feature = "rustkit")` arms exist in main.rs (positive control: the
+/// same pattern matches `native-win32` three times in that file), so enabling
+/// the feature links crates and changes nothing about what renders.
+///
+/// This file is compiled ONLY into the hybrid (wry/tao) shell — `main.rs`
+/// takes an early return into `native::run_native()` under
+/// `feature = "native-win32"` before reaching any caller here. So within this
+/// module the honest answer is unconditional: the hybrid shell paints content
+/// with WebView2. The native shell prints its own banner.
+///
+/// The name is what a user reads to know what is rendering their web pages.
+/// It reports the painter, not the dependency graph.
 pub fn engine_name() -> &'static str {
-    #[cfg(all(target_os = "windows", feature = "rustkit"))]
-    return "RustKit";
-
-    #[cfg(not(all(target_os = "windows", feature = "rustkit")))]
-    return "WebView2 (WRY)";
+    "WebView2 (WRY)"
 }
