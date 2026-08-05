@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use rustkit_viewhost::{Bounds, ViewId};
 
@@ -93,11 +93,35 @@ impl SurfaceState {
         trace!(view_id = ?self.view_id, width, height, "Surface resized");
     }
 
-    /// Get the current texture for rendering.
-    pub fn get_current_texture(&self) -> Result<wgpu::SurfaceTexture, CompositorError> {
-        self.surface
-            .get_current_texture()
-            .map_err(|e| CompositorError::Swapchain(e.to_string()))
+    /// Get the current texture for rendering, recovering from a stale swapchain.
+    ///
+    /// PORT OF THE macOS LIVE-DEMO WEDGE FIX (hiwave-macos PR#100). Without
+    /// `Outdated`/`Lost` handling, one resize or occlusion event wedges the
+    /// screen on the last presented frame FOREVER — Pete watched a frozen
+    /// frame for 20+ minutes while navigation, layout and render all kept
+    /// working underneath. Three pixel-identical screenshots later, the only
+    /// symptom was silence.
+    ///
+    /// Recovery is reconfigure + retry ONCE. A second failure is a real error
+    /// and must surface — retry loops here would turn a dead GPU into a spin.
+    pub fn get_current_texture(
+        &self,
+        device: &wgpu::Device,
+    ) -> Result<wgpu::SurfaceTexture, CompositorError> {
+        match self.surface.get_current_texture() {
+            Ok(t) => Ok(t),
+            Err(e @ (wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost)) => {
+                warn!(
+                    view_id = ?self.view_id, error = %e,
+                    "Surface stale — reconfiguring and retrying once"
+                );
+                self.surface.configure(device, &self.config);
+                self.surface.get_current_texture().map_err(|e| {
+                    CompositorError::Swapchain(format!("after reconfigure: {e}"))
+                })
+            }
+            Err(e) => Err(CompositorError::Swapchain(e.to_string())),
+        }
     }
 }
 
@@ -390,7 +414,7 @@ impl Compositor {
             .get(&view_id)
             .ok_or(CompositorError::SurfaceNotFound(view_id))?;
 
-        let output = state.get_current_texture()?;
+        let output = state.get_current_texture(&self.device)?;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -494,7 +518,7 @@ impl Compositor {
             .get(&view_id)
             .ok_or(CompositorError::SurfaceNotFound(view_id))?;
 
-        let output = state.get_current_texture()?;
+        let output = state.get_current_texture(&self.device)?;
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
