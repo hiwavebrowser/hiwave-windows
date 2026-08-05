@@ -85,7 +85,15 @@ impl NativeBrowser {
 
         // Create the engine
         let engine = EngineBuilder::new()
-            .user_agent("HiWave/1.0 RustKit/1.0")
+            .user_agent(
+                // Finding 4 from the macOS live demo, ported: the bare
+                // "HiWave/1.0 RustKit/1.0" UA is scraper-shaped — Wikimedia
+                // 429'd it and eBay challenged it. Safari-shaped with an
+                // HONEST Windows platform string plus the HiWave token: sites
+                // get a recognisable engine family, and we stay identifiable
+                // rather than impersonating Chrome outright.
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/605.1.15                  (KHTML, like Gecko) Version/17.4 Safari/605.1.15 HiWave/1.0",
+            )
             .javascript_enabled(true)
             .cookies_enabled(true)
             .build()

@@ -224,6 +224,9 @@ impl EngineConfig {
 
 /// The main browser engine.
 pub struct Engine {
+    /// Views currently in a rendering-failure episode. Drives once-per-episode
+    /// logging in `render_all_views` — the anti-log-silent-freeze mechanism.
+    render_failing: std::collections::HashSet<EngineViewId>,
     config: EngineConfig,
     viewhost: ViewHost,
     compositor: Compositor,
@@ -305,7 +308,8 @@ impl Engine {
             loader,
             image_manager,
             views: HashMap::new(),
-            event_tx,
+            
+            render_failing: std::collections::HashSet::new(),event_tx,
             event_rx: Some(event_rx),
         })
     }
@@ -2672,8 +2676,26 @@ impl Engine {
     pub fn render_all_views(&mut self) {
         let view_ids: Vec<_> = self.views.keys().copied().collect();
         for id in view_ids {
-            if let Err(e) = self.render(id) {
-                trace!(?id, error = %e, "Failed to render view");
+            match self.render(id) {
+                Ok(()) => {
+                    // Episode logging, macOS PR#100 shape: one info! on
+                    // RECOVERY so an operator can see where a freeze ended.
+                    if self.render_failing.remove(&id) {
+                        info!(?id, "View rendering recovered");
+                    }
+                }
+                Err(e) => {
+                    // The wedge Pete watched live on macOS was log-SILENT:
+                    // render errors swallowed at trace! while the screen sat
+                    // frozen on one presented frame for 20+ minutes. warn!
+                    // once per failure EPISODE (not per frame — a 60fps loop
+                    // would emit thousands of lines), trace! on repeats.
+                    if self.render_failing.insert(id) {
+                        warn!(?id, error = %e, "View rendering failing (start of episode)");
+                    } else {
+                        trace!(?id, error = %e, "View rendering still failing");
+                    }
+                }
             }
         }
     }
@@ -4462,7 +4484,8 @@ mod tests {
             let engine = Engine {
                 config: EngineConfig::default(),
                 views: HashMap::new(),
-                viewhost: ViewHost::new(),
+                
+                render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
                 compositor: test_compositor(),
                 renderer: None,
                 loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -4545,7 +4568,8 @@ mod tests {
             Engine {
                 config: EngineConfig::default(),
                 views: HashMap::new(),
-                viewhost: ViewHost::new(),
+                
+                render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
                 compositor: test_compositor(),
                 renderer: None,
                 loader: Arc::new(
@@ -4665,7 +4689,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -4717,7 +4742,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -4756,7 +4782,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -4812,7 +4839,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -4873,7 +4901,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -5047,7 +5076,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -5080,7 +5110,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -5113,7 +5144,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -5146,7 +5178,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -5238,7 +5271,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(
@@ -5638,7 +5672,8 @@ mod external_stylesheet_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(
@@ -5681,7 +5716,8 @@ mod external_stylesheet_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(
@@ -5818,7 +5854,8 @@ mod external_css_lifetime_tests {
         let mut engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(
@@ -6019,7 +6056,8 @@ mod child_combinator_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6056,7 +6094,8 @@ mod position_wire_tests {
         Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6259,7 +6298,8 @@ mod display_list_reftests {
         Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6486,7 +6526,8 @@ mod overflow_whitespace_decoration_tests {
         Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6676,7 +6717,8 @@ mod flex_item_property_tests {
         Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6830,7 +6872,8 @@ mod ua_default_gap_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6914,7 +6957,8 @@ mod box_shadow_paint_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
