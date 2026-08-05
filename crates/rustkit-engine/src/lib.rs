@@ -2115,6 +2115,63 @@ impl Engine {
             "padding-left" => {
                 if let Some(l) = parse_length(value) { style.padding_left = l; }
             }
+            // BORDER-RADIUS. Four corners plus the shorthand.
+            //
+            // DIVERGENCE FROM THE macOS REFERENCE, DECLARED — inherited from
+            // Talos's hiwave-linux#51, which existed only because #50 shipped
+            // this same divergence UNDECLARED. Declaring it here up front is
+            // the whole reason for taking his follow-up along with his feature.
+            //
+            // The macOS arm calls parse_length() on the WHOLE value, so it
+            // supports the ONE-VALUE form only: `border-radius: 5px 10px`
+            // parses to None there and leaves all four corners square. This
+            // tree implements the CSS fill-in rules (CSS Backgrounds and
+            // Borders 3 §5.1: one to four values, clockwise from top-left,
+            // 2 -> [TL+BR, TR+BL], 3 -> [TL, TR+BL, BR]) — spec-correct, and
+            // MORE than the reference does.
+            //
+            // ELLIPTICAL RADII (`10px / 20px`) are supported on NO tree. This
+            // arm takes the horizontal half and discards the vertical; the
+            // reference fails to parse them at all. Both wrong, this one less
+            // so. A real fix needs two radii per corner in ComputedStyle — a
+            // type change on all three trees, so it is a fleet unit and not a
+            // unilateral Windows expansion.
+            "border-radius" => {
+                let parts: Vec<&str> = value
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .collect();
+                let r: Vec<rustkit_css::Length> =
+                    parts.iter().filter_map(|p| parse_length(p)).collect();
+                // Unparseable or empty leaves the previous value rather than
+                // resetting corners a typo never mentioned.
+                if let Some((tl, tr, br, bl)) = match r.len() {
+                    1 => Some((r[0].clone(), r[0].clone(), r[0].clone(), r[0].clone())),
+                    2 => Some((r[0].clone(), r[1].clone(), r[0].clone(), r[1].clone())),
+                    3 => Some((r[0].clone(), r[1].clone(), r[2].clone(), r[1].clone())),
+                    4 => Some((r[0].clone(), r[1].clone(), r[2].clone(), r[3].clone())),
+                    _ => None,
+                } {
+                    style.border_top_left_radius = tl;
+                    style.border_top_right_radius = tr;
+                    style.border_bottom_right_radius = br;
+                    style.border_bottom_left_radius = bl;
+                }
+            }
+            "border-top-left-radius" => {
+                if let Some(l) = parse_length(value) { style.border_top_left_radius = l; }
+            }
+            "border-top-right-radius" => {
+                if let Some(l) = parse_length(value) { style.border_top_right_radius = l; }
+            }
+            "border-bottom-right-radius" => {
+                if let Some(l) = parse_length(value) { style.border_bottom_right_radius = l; }
+            }
+            "border-bottom-left-radius" => {
+                if let Some(l) = parse_length(value) { style.border_bottom_left_radius = l; }
+            }
             "border" => {
                 // `<width> <style> <color>` in any order; ignore the line style.
                 let mut w = None;
@@ -4190,6 +4247,88 @@ fn test_compositor() -> Compositor {
 
 #[cfg(test)]
 mod tests {
+    /// BORDER-RADIUS — ENGINE-PATH GUARDS.
+    ///
+    /// End-to-end through `Document::parse_html` + `build_layout_from_document`
+    /// + `DisplayList::build`, NOT on a hand-built LayoutBox. Talos's Linux
+    /// leg A shipped correct in unit tests and did NOTHING in the engine
+    /// because non-root elements are built via `inherit_from`; a unit-level
+    /// test structurally cannot see that. Same reason #73 exists on this tree.
+    #[cfg(test)]
+    mod border_radius_engine_path {
+        use super::*;
+
+        fn rounded_rect_count(style_decls: &str) -> usize {
+            let html = format!(
+                r#"<!DOCTYPE html><html><body><div style="width:80px;height:40px;background-color:#3366cc;font-size:10px;{style_decls}">x</div></body></html>"#
+            );
+            let document = Rc::new(Document::parse_html(&html).expect("parse"));
+            let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+            let engine = Engine {
+                config: EngineConfig::default(),
+                views: HashMap::new(),
+                viewhost: ViewHost::new(),
+                compositor: test_compositor(),
+                renderer: None,
+                loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
+                image_manager: Arc::new(ImageManager::new()),
+                event_tx,
+                event_rx: Some(event_rx),
+            };
+            let mut layout = engine.build_layout_from_document(&document);
+            let mut cb = rustkit_layout::Dimensions::default();
+            cb.content.width = 800.0;
+            cb.content.height = 600.0;
+            layout.layout(&cb);
+            rustkit_layout::DisplayList::build(&layout)
+                .commands
+                .iter()
+                .filter(|c| format!("{c:?}").starts_with("RoundedRect"))
+                .count()
+        }
+
+        #[test]
+        fn a_radius_declaration_reaches_paint_through_the_engine() {
+            assert_eq!(rounded_rect_count("border-radius:12px"), 1);
+        }
+
+        /// The discriminating half: no radius must emit NO RoundedRect. Without
+        /// it, a change that rounded everything unconditionally would pass the
+        /// test above.
+        #[test]
+        fn no_radius_declaration_emits_no_rounded_rect() {
+            assert_eq!(rounded_rect_count(""), 0);
+        }
+
+        /// THE DECLARED DIVERGENCE, PINNED BY TEST.
+        /// `border-radius: 5px 10px` is the CSS 2-value fill-in form. The macOS
+        /// reference calls parse_length() on the whole string, gets None, and
+        /// leaves the box square. This tree implements the spec fill-in rules,
+        /// so it rounds. If anyone ever "fixes" us toward the reference, this
+        /// fails and the comment in the parse arm explains why it must not be.
+        #[test]
+        fn the_multi_value_shorthand_rounds_here_even_though_the_reference_cannot() {
+            assert_eq!(rounded_rect_count("border-radius:5px 10px"), 1);
+            assert_eq!(rounded_rect_count("border-radius:5px 10px 15px"), 1);
+            assert_eq!(rounded_rect_count("border-radius:5px 10px 15px 20px"), 1);
+        }
+
+        /// Relative units survive the cascade to the paint boundary.
+        #[test]
+        fn a_relative_radius_survives_to_paint() {
+            assert_eq!(rounded_rect_count("border-radius:1em"), 1);
+            assert_eq!(rounded_rect_count("border-radius:1rem"), 1);
+        }
+
+        /// Elliptical radii are unsupported on every tree; this arm takes the
+        /// horizontal half rather than failing to parse. Pinned so the
+        /// behaviour is a recorded decision, not an accident.
+        #[test]
+        fn an_elliptical_radius_takes_the_horizontal_half() {
+            assert_eq!(rounded_rect_count("border-radius:10px / 20px"), 1);
+        }
+    }
+
     /// A-LEG ENGINE-PATH GUARDS.
     ///
     /// Both of these run end-to-end through `Document::parse_html` and

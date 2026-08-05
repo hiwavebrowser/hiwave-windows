@@ -394,6 +394,63 @@ fn resolve_line_height_px(line_height: f32, font_size: f32) -> f32 {
     }
 }
 
+/// Resolve the four corner radii to px.
+///
+/// PORT NOTE — this DELIBERATELY DIVERGES from the Linux reference
+/// (hiwave-linux#50/#52), and the divergence is a repair, not an expansion.
+/// That implementation hand-rolls its own `to_px` closure (`em * font_px`,
+/// `rem * 16.0`) because it predates the shared resolver its own tree gained
+/// later in #53. Copying it here would have created a SEVENTH hand-rolled
+/// `Length -> px` conversion on this tree — the exact class #70 eliminated,
+/// reintroduced by a port.
+///
+/// So this delegates to [`resolve_length_px`] like every other length on this
+/// tree: `em` from the element's font size, `rem` from the root constant,
+/// and `%` deliberately 0 because a percentage radius resolves against the
+/// box's own size, which is not a containing size and is not supported on any
+/// tree yet.
+pub(crate) fn resolve_radius(style: &ComputedStyle) -> BorderRadius {
+    // No containing size: a percentage radius is relative to the box's own
+    // dimensions, which this signature does not carry. Stated policy, not an
+    // accident — same shape as the intrinsic helpers.
+    let r = |l: &Length| resolve_length_px(l, style, 0.0);
+    BorderRadius {
+        top_left: r(&style.border_top_left_radius),
+        top_right: r(&style.border_top_right_radius),
+        bottom_right: r(&style.border_bottom_right_radius),
+        bottom_left: r(&style.border_bottom_left_radius),
+    }
+}
+
+/// The four resolved corner radii of a box, in px.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BorderRadius {
+    pub top_left: f32,
+    pub top_right: f32,
+    pub bottom_right: f32,
+    pub bottom_left: f32,
+}
+
+impl BorderRadius {
+    /// All four corners the same.
+    pub fn uniform(radius: f32) -> Self {
+        Self {
+            top_left: radius,
+            top_right: radius,
+            bottom_right: radius,
+            bottom_left: radius,
+        }
+    }
+
+    /// No rounding anywhere — the renderer falls back to a plain rect.
+    pub fn is_zero(&self) -> bool {
+        self.top_left <= 0.0
+            && self.top_right <= 0.0
+            && self.bottom_right <= 0.0
+            && self.bottom_left <= 0.0
+    }
+}
+
 /// The engine's `rem` base.
 ///
 /// KNOWN DIVERGENCE, deliberately not fixed here: CSS Values 3 defines `rem`
@@ -1323,6 +1380,16 @@ pub struct HitTestAncestor {
 pub enum DisplayCommand {
     /// Fill a rectangle with a solid color.
     SolidColor(Color, Rect),
+    /// Fill a rectangle with a solid color, with rounded corners.
+    ///
+    /// Emitted INSTEAD of `SolidColor` when any corner radius is non-zero — a
+    /// square box keeps the cheap path rather than paying the rounded
+    /// rasteriser for nothing.
+    RoundedRect {
+        color: Color,
+        rect: Rect,
+        radius: BorderRadius,
+    },
     /// Fill a rectangle with a linear gradient. `angle_deg` follows CSS
     /// convention (0 = up, 90 = right, 180 = down); `stops` positions are
     /// 0.0–1.0 along the gradient axis.
@@ -1893,8 +1960,20 @@ impl DisplayList {
         let border_box = layout_box.dimensions.border_box();
         let color = layout_box.style.background_color;
         if color.a > 0.0 {
-            self.commands
-                .push(DisplayCommand::SolidColor(color, border_box));
+            let radius = resolve_radius(&layout_box.style);
+            if radius.is_zero() {
+                // Square boxes emit exactly what they always did. A rounded
+                // command for a square box would cost every page the corner
+                // rasteriser for nothing.
+                self.commands
+                    .push(DisplayCommand::SolidColor(color, border_box));
+            } else {
+                self.commands.push(DisplayCommand::RoundedRect {
+                    color,
+                    rect: border_box,
+                    radius,
+                });
+            }
         }
         // A gradient paints over the solid base color (CSS layers background
         // images above background-color).
@@ -2574,6 +2653,94 @@ mod c0_mandatory_break_tests {
         let s = style_with(WhiteSpace::Normal);
         assert_eq!(wrap_text("hello world", 10_000.0, &s), vec!["hello world".to_string()]);
         assert_eq!(wrap_text("", 10_000.0, &s), vec![String::new()]);
+    }
+}
+
+/// BORDER-RADIUS — emit side.
+///
+/// These go through `DisplayList::build`, the LIVE path, deliberately.
+/// `render_box` is dead legacy on this tree (only ever calls itself);
+/// `render_box_content` is what the stacking-context walk reaches. Talos lost
+/// an hour to hooking the dead one on Linux — the test stayed red with NO
+/// error — and he handed that scar over with the code. Asserting through the
+/// display list means a wrong hook cannot pass.
+#[cfg(test)]
+mod border_radius_emit_tests {
+    use super::*;
+    use rustkit_css::ComputedStyle;
+
+    fn box_with(radius: Length, bg: Color) -> LayoutBox {
+        let mut s = ComputedStyle::new();
+        s.background_color = bg;
+        s.border_top_left_radius = radius.clone();
+        s.border_top_right_radius = radius.clone();
+        s.border_bottom_right_radius = radius.clone();
+        s.border_bottom_left_radius = radius;
+        let mut b = LayoutBox::new(BoxType::Block, s);
+        b.dimensions.content.width = 80.0;
+        b.dimensions.content.height = 40.0;
+        b
+    }
+
+    fn kinds(b: &LayoutBox) -> Vec<String> {
+        DisplayList::build(b)
+            .commands
+            .iter()
+            .map(|c| {
+                format!("{c:?}")
+                    .chars()
+                    .take_while(|ch| ch.is_alphanumeric())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A square box must keep the cheap path. Without this, "rounded works"
+    /// could be satisfied by emitting RoundedRect unconditionally.
+    #[test]
+    fn a_square_box_still_emits_solid_color() {
+        let k = kinds(&box_with(Length::Zero, Color::new(51, 102, 204, 1.0)));
+        assert!(k.contains(&"SolidColor".to_string()), "got {k:?}");
+        assert!(!k.contains(&"RoundedRect".to_string()), "got {k:?}");
+    }
+
+    /// The product: a rounded box emits RoundedRect INSTEAD of SolidColor.
+    #[test]
+    fn a_rounded_box_emits_roundedrect_through_the_live_path() {
+        let k = kinds(&box_with(Length::Px(12.0), Color::new(51, 102, 204, 1.0)));
+        assert!(k.contains(&"RoundedRect".to_string()), "got {k:?}");
+        assert!(!k.contains(&"SolidColor".to_string()), "got {k:?}");
+    }
+
+    /// A transparent background emits nothing at all, rounded or not.
+    #[test]
+    fn a_transparent_box_emits_no_fill() {
+        let k = kinds(&box_with(Length::Px(12.0), Color::TRANSPARENT));
+        assert!(!k.contains(&"RoundedRect".to_string()), "got {k:?}");
+        assert!(!k.contains(&"SolidColor".to_string()), "got {k:?}");
+    }
+
+    /// Radii resolve through the CANONICAL resolver, not a hand-rolled match.
+    /// em against the element font size, rem against the root constant — the
+    /// #70 semantics. The Linux reference hand-rolls this; porting its closure
+    /// verbatim would have reintroduced the defect class #70 removed.
+    #[test]
+    fn radii_use_the_canonical_resolver_not_a_hand_rolled_match() {
+        let mut s = ComputedStyle::new();
+        s.font_size = Length::Px(10.0);
+        s.border_top_left_radius = Length::Em(2.0);
+        s.border_top_right_radius = Length::Rem(1.0);
+        let r = resolve_radius(&s);
+        assert_eq!(r.top_left, 20.0, "2em at font-size 10 must be 20");
+        assert_eq!(r.top_right, ROOT_FONT_SIZE_PX, "1rem must use the ROOT constant, not the element");
+        assert_ne!(r.top_left, r.top_right, "em and rem must not collapse together");
+    }
+
+    #[test]
+    fn is_zero_is_true_only_when_every_corner_is_zero() {
+        assert!(BorderRadius::default().is_zero());
+        assert!(!BorderRadius { top_left: 1.0, ..Default::default() }.is_zero());
+        assert!(!BorderRadius::uniform(4.0).is_zero());
     }
 }
 

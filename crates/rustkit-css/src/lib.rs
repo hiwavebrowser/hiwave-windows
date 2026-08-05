@@ -1635,6 +1635,14 @@ pub struct ComputedStyle {
     pub border_right_width: Length,
     pub border_bottom_width: Length,
     pub border_left_width: Length,
+
+    /// Corner radii. Stored as `Length` so `border-radius: 1em` survives the
+    /// cascade; resolved to px at the paint boundary like every other length.
+    pub border_top_left_radius: Length,
+    pub border_top_right_radius: Length,
+    pub border_bottom_right_radius: Length,
+    pub border_bottom_left_radius: Length,
+
     pub border_top_color: Color,
     pub border_right_color: Color,
     pub border_bottom_color: Color,
@@ -2705,6 +2713,10 @@ mod inherit_partition_guard {
             border_right_width,
             border_bottom_width,
             border_left_width,
+            border_top_left_radius,
+            border_top_right_radius,
+            border_bottom_right_radius,
+            border_bottom_left_radius,
             border_top_color,
             border_right_color,
             border_bottom_color,
@@ -2801,6 +2813,10 @@ mod inherit_partition_guard {
         let _ = &width;
         let _ = &height;
         let _ = &min_width;
+        let _ = &border_top_left_radius;
+        let _ = &border_top_right_radius;
+        let _ = &border_bottom_right_radius;
+        let _ = &border_bottom_left_radius;
         let _ = &min_height;
         let _ = &max_width;
         let _ = &max_height;
@@ -2959,6 +2975,10 @@ mod initial_value_guard {
             border_right_width,
             border_bottom_width,
             border_left_width,
+            border_top_left_radius,
+            border_top_right_radius,
+            border_bottom_right_radius,
+            border_bottom_left_radius,
             border_top_color,
             border_right_color,
             border_bottom_color,
@@ -3041,6 +3061,17 @@ mod initial_value_guard {
         // same shape as the flex `Em(em) => em * 16.0` equivalence pin killed
         // in #70, and Talos's Linux #26 guard.
         assert_eq!(min_width, Length::Auto, "min-width initial is auto (Flexbox 4.5), not 0");
+
+        // Corner radii fall through ..Default::default() to Length::Zero, and
+        // that IS the correct CSS initial — unlike width, where Zero was wrong
+        // and blanked the page. Right by virtue of a good default, asserted so
+        // it is VISIBLY true rather than accidentally true. (Shape taken from
+        // Talos's hiwave-linux#50.)
+        assert_eq!(border_top_left_radius, Length::Zero, "border-radius initial IS 0 - deliberate");
+        assert_eq!(border_top_right_radius, Length::Zero, "border-radius initial IS 0 - deliberate");
+        assert_eq!(border_bottom_right_radius, Length::Zero, "border-radius initial IS 0 - deliberate");
+        assert_eq!(border_bottom_left_radius, Length::Zero, "border-radius initial IS 0 - deliberate");
+
         // Offsets: the CSS initial is `auto`, represented as None. These DO
         // fall through ..Default::default() and that is correct, because
         // Option::default() is None - unlike Length::default(), which is Zero
