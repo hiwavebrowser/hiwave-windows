@@ -315,6 +315,28 @@ impl NativeBrowser {
     }
 
     /// Navigate to a URL.
+    /// Stop the content view's in-flight navigation.
+    ///
+    /// This is the first of the five rented capabilities to become OURS. The
+    /// hybrid shell implements Stop as `evaluate_script("window.stop()")` —
+    /// a JavaScript call asking Chromium to cancel its own load. This asks
+    /// nobody: `Engine::stop` marks the navigation superseded so the engine
+    /// will not apply its result.
+    ///
+    /// Honest limit, same as the engine's: the socket is not aborted, because
+    /// `rustkit-net::fetch` has no cancellation surface yet. The bytes arrive
+    /// and are discarded. Stop-as-observed, not stop-as-transport.
+    pub fn stop_loading(&self) {
+        if let Some(&content_id) = self.views.get(&ViewType::Content) {
+            let mut engine = self.engine.borrow_mut();
+            if engine.stop(content_id) {
+                info!("Navigation stopped");
+            } else {
+                warn!("Stop requested for a content view that does not exist");
+            }
+        }
+    }
+
     pub fn navigate(&self, url: &str) {
         if let Some(&content_id) = self.views.get(&ViewType::Content) {
             match url::Url::parse(url) {
@@ -441,7 +463,12 @@ impl NativeBrowser {
             }
             "reload" => {
                 debug!("Page reload");
-                // TODO: Implement reload
+                // TODO: Implement reload — needs Engine::reload, which lands
+                // with the history unit (SessionHistory canonical, per the
+                // 2026-08-05 design pin).
+            }
+            "stop" => {
+                self.stop_loading();
             }
             "expand_chrome" => {
                 trace!("Layout: chrome expanded");
