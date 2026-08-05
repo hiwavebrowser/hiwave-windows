@@ -71,3 +71,9 @@ __pycache__/
 
 # Pinned Chrome for Testing downloads (150MB+, machine-local)
 .browsers/
+
+# Scratch: commit-message files, temp probes, falsification harnesses.
+# These were committed by accident once (_cm.txt in #75) — the fix is to make
+# it impossible, not to remember to check.
+_*.txt
+_*.py
