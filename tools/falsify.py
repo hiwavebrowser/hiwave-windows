@@ -54,11 +54,19 @@ from pathlib import Path
 
 CARGO_TEST = ["cargo", "test", "--workspace", "--no-fail-fast"]
 
+# A mutation file may override the suite command. WHY THIS EXISTS: the fixed
+# command above runs DEFAULT features only, so any code behind an opt-in
+# feature (`native-win32`) never compiles under it — every mutation then
+# reports "0 RED, the guard is decorative" when the truth is that the guard
+# was never run. Four tab-model mutations hit exactly that on 2026-08-06.
+# The harness now REQUIRES the command to actually exercise the mutated code:
+# pass {"test_cmd": [...]} as the first element of the mutation file.
 
-def run_suite() -> tuple[list[str], bool]:
+
+def run_suite(cmd: list[str] | None = None) -> tuple[list[str], bool]:
     """Return (named failing tests, compile_error)."""
     proc = subprocess.run(
-        CARGO_TEST, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        cmd or CARGO_TEST, capture_output=True, text=True, encoding="utf-8", errors="replace"
     )
     out = proc.stdout + proc.stderr
     failed = sorted(
@@ -74,10 +82,15 @@ def run_suite() -> tuple[list[str], bool]:
 
 
 def run(mutations: list[dict], repo: Path) -> int:
+    cmd = None
+    if mutations and "test_cmd" in mutations[0]:
+        cmd = mutations[0]["test_cmd"]
+        mutations = mutations[1:]
+        print(f"suite: {' '.join(cmd)}")
     paths = {repo / m["file"] for m in mutations}
     originals = {p: io.open(p, encoding="utf-8").read() for p in paths}
 
-    baseline, broke = run_suite()
+    baseline, broke = run_suite(cmd)
     if baseline or broke:
         print("REFUSING TO RUN: the tree is not green before mutating.")
         for f in baseline:
@@ -98,7 +111,7 @@ def run(mutations: list[dict], repo: Path) -> int:
                 continue
 
             io.open(path, "w", encoding="utf-8").write(src.replace(m["find"], m["replace"], 1))
-            failed, broke = run_suite()
+            failed, broke = run_suite(cmd)
             io.open(path, "w", encoding="utf-8").write(src)  # restore immediately
 
             tag = "  [COMPILE ERROR]" if broke else ""
