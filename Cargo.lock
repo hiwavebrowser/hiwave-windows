@@ -2531,6 +2531,7 @@ dependencies = [
  "muda",
  "rfd",
  "rustkit-bindings",
+ "rustkit-core",
  "rustkit-engine",
  "rustkit-net",
  "rustkit-viewhost",
