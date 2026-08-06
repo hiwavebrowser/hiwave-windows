@@ -25,12 +25,14 @@
 //! cargo build --features native-win32
 //! ```
 
+use rustkit_core::input::{InputEvent, KeyCode, KeyEventType, Modifiers};
+use super::shortcuts::{self, Shortcut};
 use super::tabs::{TabModel, TabSwitch};
 use rustkit_engine::{Engine, EngineBuilder, EngineViewId, IpcMessage};
 use rustkit_viewhost::{Bounds, MainWindowConfig, ViewEvent, ViewHost};
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 use windows::Win32::Foundation::HWND;
 
@@ -66,6 +68,13 @@ pub struct NativeBrowser {
     views: HashMap<ViewType, EngineViewId>,
     /// Reverse map: engine view ID to view type (for IPC routing)
     engine_view_types: HashMap<EngineViewId, ViewType>,
+    /// Key presses captured by the viewhost callback, drained each frame.
+    ///
+    /// A queue rather than direct dispatch because the callback is
+    /// `Fn + Send + Sync` and the browser is not: it owns `RefCell<Engine>`
+    /// and must only be touched from the loop thread. Same shape as the
+    /// existing IPC drain.
+    key_queue: Arc<Mutex<VecDeque<(KeyCode, Modifiers)>>>,
     /// Tab strip. `None` until the first content view exists — the model
     /// cannot represent a zero-tab window, so it is not constructed until
     /// there is a real view to put in it (see `native/tabs.rs`).
@@ -115,6 +124,7 @@ impl NativeBrowser {
             engine: RefCell::new(engine),
             views: HashMap::new(),
             engine_view_types: HashMap::new(),
+            key_queue: Arc::new(Mutex::new(VecDeque::new())),
             tabs: None,
             app_state,
             window_width: 1280,
@@ -143,6 +153,18 @@ impl NativeBrowser {
 
         // Create the three views
         self.create_views(hwnd)?;
+        self.subscribe_to_keys();
+        // Focus the content view. WITHOUT THIS, KEYBOARD SHORTCUTS DO NOT
+        // WORK AT ALL: Win32 delivers WM_KEYDOWN to the FOCUSED window, the
+        // main window proc handles no keys, and only the child-view proc
+        // emits them. At startup nothing held focus, so every keypress went
+        // to a window that dropped it. Found by pressing Ctrl+T at a running
+        // browser and reading the log — the unit tests were all green.
+        if let Some(&content) = self.views.get(&ViewType::Content) {
+            if let Err(e) = self.engine.borrow().focus_view(content) {
+                warn!(error = %e, "Failed to focus the content view");
+            }
+        }
 
         // Load initial content
         self.load_initial_content()?;
@@ -381,6 +403,11 @@ impl NativeBrowser {
         self.views.insert(ViewType::Content, switch.current);
         self.engine_view_types
             .insert(switch.current, ViewType::Content);
+        // Focus follows the active tab, or the next shortcut goes to a window
+        // that is no longer showing.
+        if let Err(e) = self.engine.borrow().focus_view(switch.current) {
+            warn!(error = %e, "Failed to focus the incoming tab");
+        }
     }
 
     /// Open a new tab and select it.
@@ -446,6 +473,64 @@ impl NativeBrowser {
             }
             // Out of range or already active: nothing to show or hide.
             None => debug!(index, "Tab activation: nothing to do"),
+        }
+    }
+
+    /// Subscribe to viewhost key events.
+    ///
+    /// The viewhost has been emitting fully-formed `KeyEvent`s with modifiers
+    /// since it was written; nothing ever listened. This is the wire, not a
+    /// new capability.
+    fn subscribe_to_keys(&self) {
+        let queue = Arc::clone(&self.key_queue);
+        self.viewhost.set_event_callback(Arc::new(move |event| {
+            if let ViewEvent::Input {
+                event: InputEvent::Key(key),
+                ..
+            } = event
+            {
+                // KeyDown only: acting on both edges fires every shortcut
+                // twice. Repeats are kept — held Alt+Left walking back
+                // through history is the behaviour people expect.
+                if key.event_type == KeyEventType::KeyDown {
+                    if let Ok(mut q) = queue.lock() {
+                        q.push_back((key.key_code, key.modifiers));
+                    }
+                }
+            }
+        }));
+    }
+
+    /// Drain queued key presses and run any bound shortcut.
+    fn process_key_events(&mut self) {
+        let pending: Vec<(KeyCode, Modifiers)> = match self.key_queue.lock() {
+            Ok(mut q) => q.drain(..).collect(),
+            Err(e) => {
+                warn!(error = %e, "Key queue poisoned");
+                return;
+            }
+        };
+        for (key, mods) in pending {
+            // Unbound keys belong to the page. Swallowing them would break
+            // every text field on the web.
+            let Some(shortcut) = shortcuts::resolve(key, mods) else {
+                continue;
+            };
+            debug!(?shortcut, "Shortcut");
+            match shortcut {
+                Shortcut::NewTab => self.new_tab(),
+                Shortcut::CloseTab => self.close_active_tab(),
+                Shortcut::ActivateTab(i) => self.activate_tab_by_index(i),
+                Shortcut::ActivateLastTab => {
+                    if let Some(last) = self.tabs.as_ref().map(|t| t.count() - 1) {
+                        self.activate_tab_by_index(last);
+                    }
+                }
+                Shortcut::Back => self.traverse("back"),
+                Shortcut::Forward => self.traverse("forward"),
+                Shortcut::Reload => self.traverse("reload"),
+                Shortcut::Stop => self.stop_loading(),
+            }
         }
     }
 
@@ -532,6 +617,9 @@ impl NativeBrowser {
 
             // Process any IPC messages from views
             self.process_ipc_messages();
+
+            // Run any keyboard shortcuts pressed since the last frame
+            self.process_key_events();
 
             // Small sleep to prevent busy-waiting (target ~60fps)
             std::thread::sleep(std::time::Duration::from_millis(16));

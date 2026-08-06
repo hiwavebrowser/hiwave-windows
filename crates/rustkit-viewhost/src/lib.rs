@@ -715,19 +715,32 @@ impl ViewHost {
 
     /// Focus a view.
     pub fn focus(&self, view_id: ViewId) -> Result<(), ViewHostError> {
-        let views = self.views.read().unwrap();
-        let state = views
-            .get(&view_id)
-            .ok_or(ViewHostError::ViewNotFound(view_id))?;
-
-        let state = state.lock().unwrap();
+        // SELF-DEADLOCK, FIXED 2026-08-06: this used to hold the per-view
+        // Mutex across SetFocus. SetFocus is SYNCHRONOUS — it dispatches
+        // WM_SETFOCUS straight into our own `wnd_proc`, which locks the SAME
+        // per-view Mutex to update `focused`. std Mutex is not reentrant, so
+        // the process hung forever on the FIRST focus call. Every call did
+        // this; the API was simply never used, which is why nothing found it
+        // until the native shell tried to focus its content view so that
+        // keyboard shortcuts could work.
+        //
+        // The rule this encodes: never hold a lock across a synchronous
+        // platform call that can re-enter your own window procedure. Copy
+        // what you need, drop the guards, then call.
+        #[allow(unused_variables)]
+        let hwnd_raw = {
+            let views = self.views.read().unwrap();
+            let state = views
+                .get(&view_id)
+                .ok_or(ViewHostError::ViewNotFound(view_id))?;
+            let state = state.lock().unwrap();
+            state.hwnd_raw
+            // both guards drop here, BEFORE SetFocus
+        };
 
         #[cfg(windows)]
-        {
-            let hwnd = HWND(state.hwnd_raw as *mut _);
-            unsafe {
-                let _ = SetFocus(hwnd);
-            }
+        unsafe {
+            let _ = SetFocus(HWND(hwnd_raw as *mut _));
         }
 
         debug!(?view_id, "Focus requested");
