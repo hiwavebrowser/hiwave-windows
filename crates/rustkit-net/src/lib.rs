@@ -24,10 +24,14 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, trace, warn};
 use url::Url;
 
+pub mod cache;
 pub mod download;
 pub mod intercept;
 pub mod security;
 
+pub use cache::{
+    parse_cache_control, CacheConfig, CacheKey, CacheStats, CachedResponse, MemoryCache,
+};
 pub use download::{Download, DownloadEvent, DownloadId, DownloadManager, DownloadState};
 pub use intercept::{InterceptAction, InterceptHandler, RequestInterceptor};
 pub use security::{
