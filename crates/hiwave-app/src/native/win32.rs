@@ -25,6 +25,7 @@
 //! cargo build --features native-win32
 //! ```
 
+use super::tabs::{TabModel, TabSwitch};
 use rustkit_engine::{Engine, EngineBuilder, EngineViewId, IpcMessage};
 use rustkit_viewhost::{Bounds, MainWindowConfig, ViewEvent, ViewHost};
 use std::cell::RefCell;
@@ -65,6 +66,10 @@ pub struct NativeBrowser {
     views: HashMap<ViewType, EngineViewId>,
     /// Reverse map: engine view ID to view type (for IPC routing)
     engine_view_types: HashMap<EngineViewId, ViewType>,
+    /// Tab strip. `None` until the first content view exists — the model
+    /// cannot represent a zero-tab window, so it is not constructed until
+    /// there is a real view to put in it (see `native/tabs.rs`).
+    tabs: Option<TabModel<EngineViewId>>,
     /// Application state
     #[allow(dead_code)]
     app_state: Arc<AppState>,
@@ -110,6 +115,7 @@ impl NativeBrowser {
             engine: RefCell::new(engine),
             views: HashMap::new(),
             engine_view_types: HashMap::new(),
+            tabs: None,
             app_state,
             window_width: 1280,
             window_height: 800,
@@ -170,6 +176,7 @@ impl NativeBrowser {
             .map_err(|e| format!("Failed to create Content view: {}", e))?;
         self.views.insert(ViewType::Content, content_id);
         self.engine_view_types.insert(content_id, ViewType::Content);
+        self.tabs = Some(TabModel::new(content_id));
         debug!(?content_id, "Content view created");
 
         // Create Shelf view (command palette, hidden by default)
@@ -354,6 +361,94 @@ impl NativeBrowser {
     /// Same block_on shape as `navigate` — one current-thread runtime per
     /// call. That is the known engine-thread soft spot (Atlas's follow-up
     /// unit, inherited by this tree), not a new decision made here.
+    /// Apply a tab switch to the Win32 side.
+    ///
+    /// THE INVARIANT THIS MAINTAINS: `views[ViewType::Content]` always names
+    /// the active tab's view. Every existing code path — navigate, traverse,
+    /// resize, render, IPC routing — reads Content and keeps working without
+    /// knowing tabs exist. Tabs became a list of content views plus this one
+    /// rule, rather than a rewrite of the shell.
+    fn apply_switch(&mut self, switch: TabSwitch<EngineViewId>) {
+        {
+            let engine = self.engine.borrow();
+            if let Err(e) = engine.set_view_visible(switch.previous, false) {
+                warn!(error = %e, "Failed to hide the outgoing tab");
+            }
+            if let Err(e) = engine.set_view_visible(switch.current, true) {
+                warn!(error = %e, "Failed to show the incoming tab");
+            }
+        }
+        self.views.insert(ViewType::Content, switch.current);
+        self.engine_view_types
+            .insert(switch.current, ViewType::Content);
+    }
+
+    /// Open a new tab and select it.
+    fn new_tab(&mut self) {
+        let Some(parent) = self.viewhost.get_main_hwnd() else {
+            warn!("No main window — cannot open a tab");
+            return;
+        };
+        let bounds = self.calculate_content_bounds();
+        let created = self.engine.borrow_mut().create_view(parent, bounds);
+        let view = match created {
+            Ok(v) => v,
+            Err(e) => {
+                error!(error = %e, "Failed to create a view for the new tab");
+                return;
+            }
+        };
+        let Some(tabs) = self.tabs.as_mut() else {
+            warn!("Tab model not initialised — cannot open a tab");
+            return;
+        };
+        let switch = tabs.push(view);
+        let count = tabs.count();
+        self.apply_switch(switch);
+        info!(?view, count, "New tab");
+    }
+
+    /// Close the active tab.
+    ///
+    /// Closing the LAST tab is deliberately a no-op here rather than a window
+    /// close: quitting on Ctrl+W is a product decision, and the tab strip
+    /// refusing to empty itself (`close_active` -> None) is what keeps
+    /// `active_view()` total. Wire the quit at the window layer when the
+    /// product calls for it.
+    fn close_active_tab(&mut self) {
+        let Some(tabs) = self.tabs.as_mut() else {
+            return;
+        };
+        let Some((closed, switch)) = tabs.close_active() else {
+            debug!("Refusing to close the last tab");
+            return;
+        };
+        let count = tabs.count();
+        self.apply_switch(switch);
+        // Destroy AFTER the switch: the replacement is already visible, so
+        // there is no frame where the window has nothing to show.
+        if let Err(e) = self.engine.borrow_mut().destroy_view(closed) {
+            warn!(error = %e, ?closed, "Failed to destroy the closed tab's view");
+        }
+        self.engine_view_types.remove(&closed);
+        info!(?closed, count, "Tab closed");
+    }
+
+    /// Select a tab by index (Ctrl+1..9).
+    fn activate_tab_by_index(&mut self, index: usize) {
+        let Some(tabs) = self.tabs.as_mut() else {
+            return;
+        };
+        match tabs.activate(index) {
+            Some(switch) => {
+                self.apply_switch(switch);
+                debug!(index, "Tab activated");
+            }
+            // Out of range or already active: nothing to show or hide.
+            None => debug!(index, "Tab activation: nothing to do"),
+        }
+    }
+
     fn traverse(&self, direction: &str) {
         let Some(&content_id) = self.views.get(&ViewType::Content) else {
             return;
@@ -501,6 +596,14 @@ impl NativeBrowser {
             }
             "go_forward" => {
                 self.traverse("forward");
+            }
+            "new_tab" => self.new_tab(),
+            "close_active_tab" => self.close_active_tab(),
+            "activate_tab_by_index" => {
+                match json.get("index").and_then(|v| v.as_u64()) {
+                    Some(i) => self.activate_tab_by_index(i as usize),
+                    None => warn!("activate_tab_by_index without an index"),
+                }
             }
             "reload" => {
                 self.traverse("reload");
