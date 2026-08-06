@@ -148,6 +148,29 @@ struct ViewState {
     #[allow(dead_code)]
     bindings: Option<DomBindings>,
     navigation: NavigationStateMachine,
+    /// Monotonic navigation generation, bumped by `Engine::stop` and by each
+    /// new `load_url`.
+    ///
+    /// This is how STOP works, and the shape is deliberate. `load_url` is an
+    /// `async fn` that awaits the network; there is no way to reach inside a
+    /// future that is already suspended. So instead of trying to kill the
+    /// task, the load CAPTURES this counter before it awaits and re-checks it
+    /// after every await point. A `stop` (or a newer navigation) bumps the
+    /// counter, the in-flight load notices it is stale at the next boundary,
+    /// and abandons without touching view state.
+    ///
+    /// The alternative — an `AbortHandle` per load — needs the load to own a
+    /// spawned task, which it does not: `load_url` borrows `&mut self`. A
+    /// generation counter needs no task ownership and cannot leave a
+    /// half-applied navigation behind, because every mutation is gated on it.
+    ///
+    /// NOTE: this stops the ENGINE applying the result. It does not abort the
+    /// socket — `rustkit-net`'s `fetch` has no cancellation surface today, so
+    /// the request still completes in the background and its bytes are
+    /// discarded. Stated rather than implied: this is stop-as-observed, not
+    /// stop-as-transport. Closing that needs a cancel token threaded into the
+    /// loader and is a separate unit.
+    nav_generation: u64,
     #[allow(dead_code)]
     nav_event_rx: mpsc::UnboundedReceiver<LoadEvent>,
     /// Currently focused DOM node.
@@ -201,6 +224,9 @@ impl EngineConfig {
 
 /// The main browser engine.
 pub struct Engine {
+    /// Views currently in a rendering-failure episode. Drives once-per-episode
+    /// logging in `render_all_views` — the anti-log-silent-freeze mechanism.
+    render_failing: std::collections::HashSet<EngineViewId>,
     config: EngineConfig,
     viewhost: ViewHost,
     compositor: Compositor,
@@ -282,7 +308,8 @@ impl Engine {
             loader,
             image_manager,
             views: HashMap::new(),
-            event_tx,
+            
+            render_failing: std::collections::HashSet::new(),event_tx,
             event_rx: Some(event_rx),
         })
     }
@@ -336,6 +363,7 @@ impl Engine {
             display_list: None,
             bindings: None,
             navigation,
+            nav_generation: 0,
             nav_event_rx: nav_rx,
             focused_node: None,
             view_focused: false,
@@ -395,6 +423,7 @@ impl Engine {
             display_list: None,
             bindings: None,
             navigation,
+            nav_generation: 0,
             nav_event_rx: nav_rx,
             focused_node: None,
             view_focused: false,
@@ -489,15 +518,38 @@ impl Engine {
 
     /// Load a URL in a view.
     pub async fn load_url(&mut self, id: EngineViewId, url: Url) -> Result<(), EngineError> {
+        self.load_url_with_disposition(id, url, false).await
+    }
+
+    /// Load a URL, optionally REPLACING the current history entry instead of
+    /// pushing a new one.
+    ///
+    /// `replace = true` is how history traversal works end to end: go_back /
+    /// go_forward / reload move the SessionHistory cursor (or keep it, for
+    /// reload) and then arrive here as a replace-load against the entry they
+    /// landed on. Replacing an entry with its own URL is a no-op that
+    /// PRESERVES the entry's state objects — which is exactly why traversal
+    /// must never come through the pushing path: pushing would truncate the
+    /// forward stack the user is trying to walk.
+    async fn load_url_with_disposition(
+        &mut self,
+        id: EngineViewId,
+        url: Url,
+        replace: bool,
+    ) -> Result<(), EngineError> {
         let view = self
             .views
             .get_mut(&id)
             .ok_or(EngineError::ViewNotFound(id))?;
 
-        info!(?id, %url, "Loading URL");
+        info!(?id, %url, replace, "Loading URL");
 
         // Start navigation
-        let request = NavigationRequest::new(url.clone());
+        let request = if replace {
+            NavigationRequest::new(url.clone()).with_replace()
+        } else {
+            NavigationRequest::new(url.clone())
+        };
         view.navigation
             .start_navigation(request)
             .map_err(|e| EngineError::NavigationError(e.to_string()))?;
@@ -508,9 +560,25 @@ impl Engine {
             url: url.clone(),
         });
 
+        // STOP support: take this load's generation BEFORE the first await.
+        // Anything that bumps the view's generation while we are suspended
+        // (Engine::stop, or a newer load_url) makes this load stale, and a
+        // stale load must not touch view state.
+        let generation = {
+            let view = self.views.get_mut(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.nav_generation = view.nav_generation.wrapping_add(1);
+            view.nav_generation
+        };
+
         // Fetch the URL
         let request = Request::get(url.clone());
         let response = self.loader.fetch(request).await?;
+
+        // First await boundary crossed — are we still the current navigation?
+        if self.nav_superseded(id, generation) {
+            debug!(?id, %url, "Navigation abandoned: superseded or stopped");
+            return Ok(());
+        }
 
         if !response.ok() {
             let error = format!("HTTP {}", response.status);
@@ -541,6 +609,12 @@ impl Engine {
 
         // Parse HTML
         let html = response.text().await?;
+
+        // Body fully read — still current?
+        if self.nav_superseded(id, generation) {
+            debug!(?id, %url, "Navigation abandoned after body read");
+            return Ok(());
+        }
         let document =
             Document::parse_html(&html).map_err(|e| EngineError::RenderError(e.to_string()))?;
         let document = Rc::new(document);
@@ -588,6 +662,14 @@ impl Engine {
         // INTRINSIC size to layout, so loading after the first pass would lay
         // the page out with zero-sized images and then reflow.
         self.load_document_images(id, &document, &url).await;
+
+        // LAST GATE before we mutate anything visible. Subresource
+        // loading awaits the network too, so a stop during stylesheet or
+        // image fetch must not fall through into layout and paint.
+        if self.nav_superseded(id, generation) {
+            debug!(?id, %url, "Navigation abandoned before layout");
+            return Ok(());
+        }
 
         // Layout and render
         self.relayout(id)?;
@@ -2594,8 +2676,26 @@ impl Engine {
     pub fn render_all_views(&mut self) {
         let view_ids: Vec<_> = self.views.keys().copied().collect();
         for id in view_ids {
-            if let Err(e) = self.render(id) {
-                trace!(?id, error = %e, "Failed to render view");
+            match self.render(id) {
+                Ok(()) => {
+                    // Episode logging, macOS PR#100 shape: one info! on
+                    // RECOVERY so an operator can see where a freeze ended.
+                    if self.render_failing.remove(&id) {
+                        info!(?id, "View rendering recovered");
+                    }
+                }
+                Err(e) => {
+                    // The wedge Pete watched live on macOS was log-SILENT:
+                    // render errors swallowed at trace! while the screen sat
+                    // frozen on one presented frame for 20+ minutes. warn!
+                    // once per failure EPISODE (not per frame — a 60fps loop
+                    // would emit thousands of lines), trace! on repeats.
+                    if self.render_failing.insert(id) {
+                        warn!(?id, error = %e, "View rendering failing (start of episode)");
+                    } else {
+                        trace!(?id, error = %e, "View rendering still failing");
+                    }
+                }
             }
         }
     }
@@ -2761,6 +2861,123 @@ impl Engine {
     /// Get the title of a view.
     pub fn get_title(&self, id: EngineViewId) -> Option<String> {
         self.views.get(&id).and_then(|v| v.title.clone())
+    }
+
+    /// Stop the in-flight navigation for a view.
+    ///
+    /// Returns `true` if the view exists. Safe and idempotent when nothing is
+    /// loading — stopping an idle view simply bumps the generation, which no
+    /// in-flight load is holding.
+    ///
+    /// WHAT THIS DOES AND DOES NOT DO, because the distinction is the whole
+    /// honesty of the feature:
+    ///  - DOES: guarantee the engine will not apply the result of the
+    ///    abandoned load. No document swap, no layout, no paint, no
+    ///    NavigationCompleted event, no history entry.
+    ///  - DOES NOT: abort the underlying socket. `rustkit-net`'s `fetch` has
+    ///    no cancellation surface today, so the request completes in the
+    ///    background and its bytes are dropped. That is a separate unit
+    ///    (thread a cancel token through the loader) and is NOT claimed here.
+    ///
+    /// This is deliberately NOT the `DownloadManager` cancel path in
+    /// rustkit-net — that one cancels FILE DOWNLOADS and has nothing to do
+    /// with page loads. Conflating them was the first wrong turn on this unit.
+    pub fn stop(&mut self, id: EngineViewId) -> bool {
+        match self.views.get_mut(&id) {
+            Some(view) => {
+                view.nav_generation = view.nav_generation.wrapping_add(1);
+                info!(?id, "Navigation stopped");
+                let _ = self.event_tx.send(EngineEvent::NavigationFailed {
+                    view_id: id,
+                    url: view.url.clone().unwrap_or_else(|| {
+                        Url::parse("about:blank").expect("about:blank parses")
+                    }),
+                    error: "stopped".to_string(),
+                });
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Go back one entry in the view's session history and load it.
+    ///
+    /// Returns `Ok(false)` when there is nowhere to go — pressing Back on the
+    /// first page is a no-op, not an error. The cursor moves FIRST, then the
+    /// landed-on entry is loaded as a REPLACE against itself, so the traversal
+    /// neither pushes a duplicate nor truncates the forward stack the user is
+    /// walking, and the entry's pushState state survives.
+    ///
+    /// This is the capability the hybrid shell rents from Chromium as
+    /// `evaluate_script("history.back()")`. Here it is ours: SessionHistory
+    /// cursor + our own loader, no JavaScript, no WebView2.
+    pub async fn go_back(&mut self, id: EngineViewId) -> Result<bool, EngineError> {
+        let target = {
+            let view = self.views.get_mut(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.navigation.go_back().cloned()
+        };
+        match target {
+            Some(url) => {
+                self.load_url_with_disposition(id, url, true).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Go forward one entry. Mirror of [`Engine::go_back`] in every respect.
+    pub async fn go_forward(&mut self, id: EngineViewId) -> Result<bool, EngineError> {
+        let target = {
+            let view = self.views.get_mut(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.navigation.go_forward().cloned()
+        };
+        match target {
+            Some(url) => {
+                self.load_url_with_disposition(id, url, true).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Re-load the current history entry. `Ok(false)` if the view has never
+    /// finished a navigation (nothing to reload). A reload is a REPLACE — it
+    /// must not push a duplicate of the page onto its own back stack.
+    pub async fn reload(&mut self, id: EngineViewId) -> Result<bool, EngineError> {
+        let target = {
+            let view = self.views.get(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.navigation.current_url().cloned()
+        };
+        match target {
+            Some(url) => {
+                self.load_url_with_disposition(id, url, true).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Test hook: advance a view's navigation generation and return the new
+    /// value, exactly as `load_url` does before its first await.
+    ///
+    /// Exists so the stop CONTRACT can be tested without standing up a network
+    /// fetch. Kept `cfg(test)` so it cannot become a production back door.
+    #[cfg(test)]
+    fn bump_nav_generation_for_test(&mut self, id: EngineViewId) -> u64 {
+        let view = self.views.get_mut(&id).expect("view exists");
+        view.nav_generation = view.nav_generation.wrapping_add(1);
+        view.nav_generation
+    }
+
+    /// Has this navigation been superseded by a `stop` or a newer load?
+    ///
+    /// A view that vanished mid-load counts as superseded — the alternative is
+    /// writing into a view that no longer exists.
+    fn nav_superseded(&self, id: EngineViewId, generation: u64) -> bool {
+        match self.views.get(&id) {
+            Some(view) => view.nav_generation != generation,
+            None => true,
+        }
     }
 
     /// Check if a view can go back.
@@ -4267,7 +4484,8 @@ mod tests {
             let engine = Engine {
                 config: EngineConfig::default(),
                 views: HashMap::new(),
-                viewhost: ViewHost::new(),
+                
+                render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
                 compositor: test_compositor(),
                 renderer: None,
                 loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -4350,7 +4568,8 @@ mod tests {
             Engine {
                 config: EngineConfig::default(),
                 views: HashMap::new(),
-                viewhost: ViewHost::new(),
+                
+                render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
                 compositor: test_compositor(),
                 renderer: None,
                 loader: Arc::new(
@@ -4470,7 +4689,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -4522,7 +4742,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -4561,7 +4782,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -4617,7 +4839,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -4678,7 +4901,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader")),
@@ -4852,7 +5076,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -4885,7 +5110,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -4918,7 +5144,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -4951,7 +5178,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -5043,7 +5271,8 @@ mod tests {
         let engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(
@@ -5443,7 +5672,8 @@ mod external_stylesheet_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(
@@ -5486,7 +5716,8 @@ mod external_stylesheet_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(
@@ -5623,7 +5854,8 @@ mod external_css_lifetime_tests {
         let mut engine = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(
@@ -5824,7 +6056,8 @@ mod child_combinator_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -5861,7 +6094,8 @@ mod position_wire_tests {
         Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6064,7 +6298,8 @@ mod display_list_reftests {
         Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6291,7 +6526,8 @@ mod overflow_whitespace_decoration_tests {
         Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6481,7 +6717,8 @@ mod flex_item_property_tests {
         Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6635,7 +6872,8 @@ mod ua_default_gap_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6719,7 +6957,8 @@ mod box_shadow_paint_tests {
         let e = Engine {
             config: EngineConfig::default(),
             views: HashMap::new(),
-            viewhost: ViewHost::new(),
+            
+            render_failing: std::collections::HashSet::new(),viewhost: ViewHost::new(),
             compositor: test_compositor(),
             renderer: None,
             loader: Arc::new(ResourceLoader::new(LoaderConfig::default()).expect("loader")),
@@ -6795,6 +7034,165 @@ mod box_shadow_paint_tests {
         assert!(
             !s.contains("BoxShadow"),
             "a fully transparent shadow must not be emitted, got:\n{s}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod stop_navigation_tests {
+    //! STOP: cancel an in-flight navigation.
+    //!
+    //! The load path is an `async fn` holding `&mut self`, so there is no task
+    //! to abort and no handle to cancel. Stop therefore works by GENERATION:
+    //! a load captures the view's counter before its first await and re-checks
+    //! it after every await; `stop` bumps the counter, and the stale load
+    //! abandons without touching view state.
+    //!
+    //! These tests pin the CONTRACT, not the mechanism, so a future switch to
+    //! a real cancel token does not have to rewrite them.
+    use super::*;
+
+    fn engine_with_view() -> (Engine, EngineViewId) {
+        let mut e = Engine::new(EngineConfig::default()).expect("engine");
+        let id = e
+            .create_headless_view(Bounds { x: 0, y: 0, width: 800, height: 600 })
+            .expect("headless view");
+        (e, id)
+    }
+
+    /// Stopping a view that exists reports success and is idempotent — a user
+    /// mashing Stop on an idle page must not error.
+    #[test]
+    fn stop_is_safe_and_idempotent_on_an_idle_view() {
+        let (mut e, id) = engine_with_view();
+        assert!(e.stop(id), "first stop");
+        assert!(e.stop(id), "second stop");
+        assert!(e.stop(id), "third stop");
+    }
+
+    /// Stopping a view that does not exist is false, not a panic.
+    #[test]
+    fn stop_on_a_missing_view_is_false_not_a_panic() {
+        let (mut e, _id) = engine_with_view();
+        assert!(!e.stop(EngineViewId::new()));
+    }
+
+    /// THE PRODUCT: after a stop, a navigation that captured the earlier
+    /// generation is superseded and must abandon.
+    #[test]
+    fn a_stop_supersedes_an_in_flight_navigation() {
+        let (mut e, id) = engine_with_view();
+        // Simulate a load that captured its generation before awaiting.
+        let captured = e.bump_nav_generation_for_test(id);
+        assert!(!e.nav_superseded(id, captured), "not stale before stop");
+        e.stop(id);
+        assert!(e.nav_superseded(id, captured), "MUST be stale after stop");
+    }
+
+    /// A NEWER NAVIGATION also supersedes an older one. Without this, two
+    /// rapid navigations race and the slower response wins — the classic
+    /// back-button-shows-the-wrong-page defect.
+    #[test]
+    fn a_newer_navigation_supersedes_an_older_one() {
+        let (mut e, id) = engine_with_view();
+        let first = e.bump_nav_generation_for_test(id);
+        let second = e.bump_nav_generation_for_test(id);
+        assert_ne!(first, second);
+        assert!(e.nav_superseded(id, first), "older load must be stale");
+        assert!(!e.nav_superseded(id, second), "newest load must be live");
+    }
+
+    /// A vanished view counts as superseded — the alternative is writing into
+    /// a view that no longer exists.
+    #[test]
+    fn a_destroyed_view_supersedes_its_own_in_flight_load() {
+        let (mut e, id) = engine_with_view();
+        let g = e.bump_nav_generation_for_test(id);
+        e.destroy_view(id).ok();
+        assert!(e.nav_superseded(id, g));
+    }
+
+    /// NON-VACUITY: the helper must actually move the counter, or every test
+    /// above passes against a no-op.
+    #[test]
+    fn the_generation_actually_advances() {
+        let (mut e, id) = engine_with_view();
+        let a = e.bump_nav_generation_for_test(id);
+        let b = e.bump_nav_generation_for_test(id);
+        assert_eq!(b, a + 1, "generation must advance by one");
+    }
+}
+
+#[cfg(test)]
+mod history_traversal_tests {
+    //! Engine-level contract for go_back / go_forward / reload.
+    //!
+    //! The full round trip (load A, load B, go_back lands on A) requires the
+    //! network and lives at the core layer, where the NSM tests drive
+    //! start/commit/finish directly. What the ENGINE owns — and what these
+    //! pin — is the edge contract: traversal on a view with nowhere to go is
+    //! Ok(false), never an error and never a panic, because mashing Back on
+    //! the first page is a user gesture, not a fault.
+    use super::*;
+
+    fn engine_with_view() -> (Engine, EngineViewId) {
+        let mut e = Engine::new(EngineConfig::default()).expect("engine");
+        let id = e
+            .create_headless_view(Bounds { x: 0, y: 0, width: 800, height: 600 })
+            .expect("headless view");
+        (e, id)
+    }
+
+    #[tokio::test]
+    async fn back_on_a_fresh_view_is_a_quiet_no_op() {
+        let (mut e, id) = engine_with_view();
+        assert_eq!(e.go_back(id).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn forward_on_a_fresh_view_is_a_quiet_no_op() {
+        let (mut e, id) = engine_with_view();
+        assert_eq!(e.go_forward(id).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn reload_with_no_history_is_a_quiet_no_op() {
+        let (mut e, id) = engine_with_view();
+        assert_eq!(e.reload(id).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn traversal_on_a_missing_view_is_an_error_not_a_panic() {
+        let (mut e, _id) = engine_with_view();
+        let ghost = EngineViewId::new();
+        assert!(e.go_back(ghost).await.is_err());
+        assert!(e.go_forward(ghost).await.is_err());
+        assert!(e.reload(ghost).await.is_err());
+    }
+
+    /// NON-VACUITY: prove the no-op result is reachable as TRUE too — after
+    /// load_html (which pushes about:blank... no, load_html does not push) —
+    /// instead: reload becomes Ok(true)-capable once history has an entry.
+    /// We seed history through the NSM directly, no network.
+    #[tokio::test]
+    async fn reload_fires_once_history_has_an_entry() {
+        let (mut e, id) = engine_with_view();
+        // Seed one committed entry through the canonical stack.
+        {
+            let view = e.views.get_mut(&id).unwrap();
+            let url = Url::parse("https://seeded.example/").unwrap();
+            view.navigation.start_navigation(
+                rustkit_core::NavigationRequest::new(url)).unwrap();
+            view.navigation.commit_navigation().unwrap();
+            view.navigation.finish_navigation().unwrap();
+        }
+        // Reload now attempts a real load of the seeded URL. The fetch will
+        // fail (no such host in tests) — the CONTRACT here is only that the
+        // engine took the Ok(true) path, i.e. it found an entry and tried.
+        let r = e.reload(id).await;
+        assert!(
+            !matches!(r, Ok(false)),
+            "with history present, reload must not report nothing-to-do"
         );
     }
 }

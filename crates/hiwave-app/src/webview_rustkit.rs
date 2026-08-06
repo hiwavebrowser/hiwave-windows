@@ -1,15 +1,40 @@
-//! RustKit WebView adapter for HiWave
+//! RustKit WebView adapter for HiWave — **NOT WIRED. NOTHING CALLS THIS.**
 //!
-//! This module provides the RustKit engine as an alternative WebView backend.
-//! It wraps `rustkit_engine::Engine` and implements the `IWebView` trait.
+//! # STATUS: COMPILED DEAD CODE
 //!
-//! # Feature Flag
+//! Measured 2026-08-05 on develop: `RustKitView` is never constructed outside
+//! this file, and `create_rustkit_view` has ZERO callers. An orphan sweep over
+//! every `mod` in this crate found exactly one module with no external
+//! reference — this one:
 //!
-//! This module is only compiled when the `rustkit` feature is enabled:
-//!
-//! ```toml
-//! cargo build --features rustkit
+//! ```text
+//! ipc 65 · import 17 · state 13 · platform 5 · webview 2 · native 1
+//! shield_adapter 1 · webview_rustkit 0   <-- orphan
 //! ```
+//!
+//! `main.rs` builds the content webview unconditionally with
+//! `WebViewBuilder::new()`. There is no `cfg(feature = "rustkit")` arm at that
+//! site, so enabling the `rustkit` feature compiles this file and changes
+//! nothing about what paints. It type-checks on every build and renders
+//! nothing — which is precisely how a decorative path survives review.
+//!
+//! # WHY IT IS KEPT RATHER THAN DELETED
+//!
+//! It is not junk: it is the UNFINISHED HALF of wiring RustKit into the hybrid
+//! shell. `IWebView for RustKitView` is the adapter that a content-site
+//! `cfg(feature = "rustkit")` arm would select. Deleting it would mean writing
+//! it again.
+//!
+//! So it stays, LABELLED, until it is either wired or replaced. What was not
+//! acceptable was leaving it undocumented, where a reader could reasonably
+//! conclude from `mod webview_rustkit;` that RustKit renders content here.
+//!
+//! # WHERE RUSTKIT ACTUALLY PAINTS TODAY
+//!
+//! `--features native-win32` → `native::win32::NativeBrowser`, which owns a
+//! `rustkit_engine::Engine` and a `ViewHost` and paints via the compositor.
+//! Verified by run on 2026-08-05: fetched, laid out and GPU-painted
+//! `https://example.com` with no wry in the path.
 //!
 //! # Thread Safety
 //!

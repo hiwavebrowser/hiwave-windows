@@ -85,7 +85,15 @@ impl NativeBrowser {
 
         // Create the engine
         let engine = EngineBuilder::new()
-            .user_agent("HiWave/1.0 RustKit/1.0")
+            .user_agent(
+                // Finding 4 from the macOS live demo, ported: the bare
+                // "HiWave/1.0 RustKit/1.0" UA is scraper-shaped — Wikimedia
+                // 429'd it and eBay challenged it. Safari-shaped with an
+                // HONEST Windows platform string plus the HiWave token: sites
+                // get a recognisable engine family, and we stay identifiable
+                // rather than impersonating Chrome outright.
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/605.1.15                  (KHTML, like Gecko) Version/17.4 Safari/605.1.15 HiWave/1.0",
+            )
             .javascript_enabled(true)
             .cookies_enabled(true)
             .build()
@@ -315,6 +323,63 @@ impl NativeBrowser {
     }
 
     /// Navigate to a URL.
+    /// Stop the content view's in-flight navigation.
+    ///
+    /// This is the first of the five rented capabilities to become OURS. The
+    /// hybrid shell implements Stop as `evaluate_script("window.stop()")` —
+    /// a JavaScript call asking Chromium to cancel its own load. This asks
+    /// nobody: `Engine::stop` marks the navigation superseded so the engine
+    /// will not apply its result.
+    ///
+    /// Honest limit, same as the engine's: the socket is not aborted, because
+    /// `rustkit-net::fetch` has no cancellation surface yet. The bytes arrive
+    /// and are discarded. Stop-as-observed, not stop-as-transport.
+    pub fn stop_loading(&self) {
+        if let Some(&content_id) = self.views.get(&ViewType::Content) {
+            let mut engine = self.engine.borrow_mut();
+            if engine.stop(content_id) {
+                info!("Navigation stopped");
+            } else {
+                warn!("Stop requested for a content view that does not exist");
+            }
+        }
+    }
+
+    /// History traversal — back, forward, reload — on OUR engine.
+    ///
+    /// The hybrid shell rents all three from Chromium via
+    /// `evaluate_script("history.back()")` etc. These run against RustKit's
+    /// SessionHistory (canonical per the 2026-08-05 pin) and our own loader.
+    ///
+    /// Same block_on shape as `navigate` — one current-thread runtime per
+    /// call. That is the known engine-thread soft spot (Atlas's follow-up
+    /// unit, inherited by this tree), not a new decision made here.
+    fn traverse(&self, direction: &str) {
+        let Some(&content_id) = self.views.get(&ViewType::Content) else {
+            return;
+        };
+        let mut engine = self.engine.borrow_mut();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create runtime");
+        rt.block_on(async {
+            let result = match direction {
+                "back" => engine.go_back(content_id).await,
+                "forward" => engine.go_forward(content_id).await,
+                "reload" => engine.reload(content_id).await,
+                _ => return,
+            };
+            match result {
+                Ok(true) => info!(direction, "History traversal complete"),
+                // Nowhere to go is a no-op, not an error — mashing Back on
+                // the first page must stay silent.
+                Ok(false) => debug!(direction, "History traversal: nothing to do"),
+                Err(e) => error!(error = %e, direction, "History traversal failed"),
+            }
+        });
+    }
+
     pub fn navigate(&self, url: &str) {
         if let Some(&content_id) = self.views.get(&ViewType::Content) {
             match url::Url::parse(url) {
@@ -432,16 +497,16 @@ impl NativeBrowser {
                 }
             }
             "go_back" => {
-                debug!("History: back");
-                // TODO: Implement navigation history
+                self.traverse("back");
             }
             "go_forward" => {
-                debug!("History: forward");
-                // TODO: Implement navigation history
+                self.traverse("forward");
             }
             "reload" => {
-                debug!("Page reload");
-                // TODO: Implement reload
+                self.traverse("reload");
+            }
+            "stop" => {
+                self.stop_loading();
             }
             "expand_chrome" => {
                 trace!("Layout: chrome expanded");
