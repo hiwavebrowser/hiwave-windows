@@ -2175,6 +2175,13 @@ mod rem_parse_regression {
     }
 }
 
+// ATTRIBUTE OWNERSHIP: this module had NO #[cfg(test)] and so compiled into
+// the LIBRARY. An attribute belongs to the item immediately below it, and any
+// edit that puts a line between them silently reassigns it — the same class
+// Talos hit on Linux when conflict-marker deletion left a shared #[cfg(test)]
+// owning the wrong module. The compiler was reporting it as an unused-import
+// warning on the next line, which is not what the defect looks like.
+#[cfg(test)]
 mod background_partial_tests {
     use super::*;
 
