@@ -225,6 +225,27 @@ impl ViewRegistry {
         self.event_callback = Some(callback);
     }
 
+    /// The child window that should receive keyboard focus.
+    ///
+    /// The most recently focused visible view, falling back to the first
+    /// visible one. Deliberately NOT "the first view created": that is the
+    /// chrome, and forwarding keys there would send every shortcut to the
+    /// browser UI instead of the page.
+    fn focus_target(&self) -> Option<isize> {
+        self.hwnd_to_state
+            .values()
+            .find(|v| {
+                let s = v.lock().ok();
+                s.map(|s| s.focused && s.visible).unwrap_or(false)
+            })
+            .or_else(|| {
+                self.hwnd_to_state
+                    .values()
+                    .find(|v| v.lock().ok().map(|s| s.visible).unwrap_or(false))
+            })
+            .and_then(|v| v.lock().ok().map(|s| s.hwnd_raw))
+    }
+
     fn emit(&self, event: ViewEvent) {
         if let Some(ref cb) = self.event_callback {
             cb(event);
@@ -458,6 +479,32 @@ impl ViewHost {
                         dpi: GetDpiForWindow(hwnd),
                     });
                 }
+            }
+
+            // KEYBOARD INPUT DEPENDS ON THIS. Win32 delivers WM_KEYDOWN to the
+            // FOCUSED window, and only the CHILD view proc emits key events --
+            // this proc handles none. Focusing a child at startup is not
+            // enough: focus set BEFORE the top-level window is first activated
+            // is discarded by Windows on activation, so every keypress went to
+            // a window that dropped it. Measured by injecting real chords with
+            // SendInput and reading the log: OS accepted them, shell saw
+            // nothing.
+            //
+            // Forwarding on WM_SETFOCUS is the standard remedy: whenever the
+            // frame takes focus, hand it to the child that actually wants
+            // keys.
+            WM_SETFOCUS => {
+                let child = {
+                    let registry = VIEW_REGISTRY.read().ok();
+                    registry.and_then(|r| r.focus_target())
+                };
+                if let Some(hwnd_raw) = child {
+                    unsafe {
+                        let _ = SetFocus(HWND(hwnd_raw as *mut _));
+                    }
+                    trace!(hwnd_raw, "Frame focus forwarded to child view");
+                }
+                return LRESULT(0);
             }
 
             WM_CLOSE => {
