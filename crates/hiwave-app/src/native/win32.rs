@@ -74,7 +74,7 @@ pub struct NativeBrowser {
     /// `Fn + Send + Sync` and the browser is not: it owns `RefCell<Engine>`
     /// and must only be touched from the loop thread. Same shape as the
     /// existing IPC drain.
-    key_queue: Arc<Mutex<VecDeque<(KeyCode, Modifiers)>>>,
+    event_queue: Arc<Mutex<VecDeque<ViewEvent>>>,
     /// Tab strip. `None` until the first content view exists — the model
     /// cannot represent a zero-tab window, so it is not constructed until
     /// there is a real view to put in it (see `native/tabs.rs`).
@@ -124,7 +124,7 @@ impl NativeBrowser {
             engine: RefCell::new(engine),
             views: HashMap::new(),
             engine_view_types: HashMap::new(),
-            key_queue: Arc::new(Mutex::new(VecDeque::new())),
+            event_queue: Arc::new(Mutex::new(VecDeque::new())),
             tabs: None,
             app_state,
             window_width: 1280,
@@ -153,7 +153,7 @@ impl NativeBrowser {
 
         // Create the three views
         self.create_views(hwnd)?;
-        self.subscribe_to_keys();
+        self.subscribe_to_events();
         // Focus the content view. WITHOUT THIS, KEYBOARD SHORTCUTS DO NOT
         // WORK AT ALL: Win32 delivers WM_KEYDOWN to the FOCUSED window, the
         // main window proc handles no keys, and only the child-view proc
@@ -476,61 +476,83 @@ impl NativeBrowser {
         }
     }
 
-    /// Subscribe to viewhost key events.
+    /// Subscribe to viewhost events.
     ///
-    /// The viewhost has been emitting fully-formed `KeyEvent`s with modifiers
-    /// since it was written; nothing ever listened. This is the wire, not a
-    /// new capability.
-    fn subscribe_to_keys(&self) {
-        let queue = Arc::clone(&self.key_queue);
+    /// ORPHAN #9, WIRED. `Engine::handle_view_event` is the engine's COMPLETE
+    /// input dispatcher -- it maps viewhost_id -> EngineViewId and fans out to
+    /// mouse, key and focus handlers that all already existed -- and it had
+    /// ZERO production callers. That is why this shell had no input at all:
+    /// no clicks, no keys, no scroll. The capability was never missing; the
+    /// wire was never run.
+    ///
+    /// The callback queues WHOLE ViewEvents rather than extracting keys: the
+    /// shortcut layer needs first refusal on keys, while everything else --
+    /// mouse, scroll, focus -- belongs to the engine untouched.
+    ///
+    /// A queue rather than direct dispatch because the callback is
+    /// `Fn + Send + Sync` and the browser is not: it owns `RefCell<Engine>`
+    /// and must only be touched from the loop thread.
+    fn subscribe_to_events(&self) {
+        let queue = Arc::clone(&self.event_queue);
         self.viewhost.set_event_callback(Arc::new(move |event| {
-            if let ViewEvent::Input {
-                event: InputEvent::Key(key),
-                ..
-            } = event
-            {
-                // KeyDown only: acting on both edges fires every shortcut
-                // twice. Repeats are kept — held Alt+Left walking back
-                // through history is the behaviour people expect.
-                if key.event_type == KeyEventType::KeyDown {
-                    if let Ok(mut q) = queue.lock() {
-                        q.push_back((key.key_code, key.modifiers));
-                    }
-                }
+            if let Ok(mut q) = queue.lock() {
+                q.push_back(event);
             }
         }));
     }
 
-    /// Drain queued key presses and run any bound shortcut.
-    fn process_key_events(&mut self) {
-        let pending: Vec<(KeyCode, Modifiers)> = match self.key_queue.lock() {
+    /// Drain queued input: shell shortcuts first, then the engine.
+    ///
+    /// ORDER IS THE DESIGN. A shell shortcut must beat the page: Ctrl+T has to
+    /// open a tab even on a page that binds Ctrl+T itself, or a page can hold
+    /// the browser hostage. Everything the shell does NOT claim is handed to
+    /// the engine untouched -- swallowing unrecognised input would break every
+    /// text field on the web.
+    fn process_input_events(&mut self) {
+        let pending: Vec<ViewEvent> = match self.event_queue.lock() {
             Ok(mut q) => q.drain(..).collect(),
             Err(e) => {
-                warn!(error = %e, "Key queue poisoned");
+                warn!(error = %e, "Event queue poisoned");
                 return;
             }
         };
-        for (key, mods) in pending {
-            // Unbound keys belong to the page. Swallowing them would break
-            // every text field on the web.
-            let Some(shortcut) = shortcuts::resolve(key, mods) else {
-                continue;
-            };
-            debug!(?shortcut, "Shortcut");
-            match shortcut {
-                Shortcut::NewTab => self.new_tab(),
-                Shortcut::CloseTab => self.close_active_tab(),
-                Shortcut::ActivateTab(i) => self.activate_tab_by_index(i),
-                Shortcut::ActivateLastTab => {
-                    if let Some(last) = self.tabs.as_ref().map(|t| t.count() - 1) {
-                        self.activate_tab_by_index(last);
+
+        for event in pending {
+            // KeyDown only: acting on both edges fires every shortcut twice.
+            // Repeats are kept -- held Alt+Left walking back through history
+            // is what people expect.
+            if let ViewEvent::Input {
+                event: InputEvent::Key(key),
+                ..
+            } = &event
+            {
+                if key.event_type == KeyEventType::KeyDown {
+                    if let Some(shortcut) = shortcuts::resolve(key.key_code, key.modifiers) {
+                        debug!(?shortcut, "Shortcut");
+                        self.run_shortcut(shortcut);
+                        // Claimed by the shell; the page never sees it.
+                        continue;
                     }
                 }
-                Shortcut::Back => self.traverse("back"),
-                Shortcut::Forward => self.traverse("forward"),
-                Shortcut::Reload => self.traverse("reload"),
-                Shortcut::Stop => self.stop_loading(),
             }
+            self.engine.borrow_mut().handle_view_event(event);
+        }
+    }
+
+    fn run_shortcut(&mut self, shortcut: Shortcut) {
+        match shortcut {
+            Shortcut::NewTab => self.new_tab(),
+            Shortcut::CloseTab => self.close_active_tab(),
+            Shortcut::ActivateTab(i) => self.activate_tab_by_index(i),
+            Shortcut::ActivateLastTab => {
+                if let Some(last) = self.tabs.as_ref().map(|t| t.count() - 1) {
+                    self.activate_tab_by_index(last);
+                }
+            }
+            Shortcut::Back => self.traverse("back"),
+            Shortcut::Forward => self.traverse("forward"),
+            Shortcut::Reload => self.traverse("reload"),
+            Shortcut::Stop => self.stop_loading(),
         }
     }
 
@@ -619,7 +641,7 @@ impl NativeBrowser {
             self.process_ipc_messages();
 
             // Run any keyboard shortcuts pressed since the last frame
-            self.process_key_events();
+            self.process_input_events();
 
             // Small sleep to prevent busy-waiting (target ~60fps)
             std::thread::sleep(std::time::Duration::from_millis(16));
