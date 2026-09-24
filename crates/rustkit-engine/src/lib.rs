@@ -14260,10 +14260,23 @@ mod web_font_tests {
             resolve_font_source(Some(&about), "fonts/Ahem.ttf"),
             FontSource::Blocked(_)
         ), "a relative path has nothing to resolve against for inline content");
-        let file = Url::parse("file:///srv/site/index.html").unwrap();
+        // A file: document resolves relative sources against its own
+        // directory. The URL must be a valid local path on the platform
+        // under test: `file:///srv/...` has no drive letter, and
+        // Url::to_file_path() rightly refuses it on Windows.
+        #[cfg(not(windows))]
+        let (file, expected) = (
+            Url::parse("file:///srv/site/index.html").unwrap(),
+            std::path::PathBuf::from("/srv/site/fonts/Ahem.ttf"),
+        );
+        #[cfg(windows)]
+        let (file, expected) = (
+            Url::parse("file:///C:/srv/site/index.html").unwrap(),
+            std::path::PathBuf::from(r"C:\srv\site\fonts\Ahem.ttf"),
+        );
         assert!(matches!(
             resolve_font_source(Some(&file), "fonts/Ahem.ttf"),
-            FontSource::File(p) if p == std::path::Path::new("/srv/site/fonts/Ahem.ttf")
+            FontSource::File(p) if p == expected
         ));
     }
 
