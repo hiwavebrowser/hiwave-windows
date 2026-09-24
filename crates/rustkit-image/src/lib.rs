@@ -396,6 +396,15 @@ impl ImageManager {
         Ok(Arc::new(loaded))
     }
 
+    /// Decode bytes through the real engine path. Test-only surface so a
+    /// codec fix can be proven to REACH the engine rather than merely
+    /// existing in its own crate — the orphan shape this codebase keeps
+    /// producing. Calls the same private decoder production uses.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn decode_bytes_for_test(&self, url: &Url, bytes: &[u8]) -> ImageResult<LoadedImage> {
+        self.decode_bytes(url, bytes)
+    }
+
     /// Decode image from bytes
     fn decode_bytes(&self, url: &Url, bytes: &[u8]) -> ImageResult<LoadedImage> {
         // Guess format from bytes
@@ -479,7 +488,7 @@ impl ImageManager {
     /// Decode a data URL
     fn decode_data_url(&self, url: &Url) -> ImageResult<Arc<LoadedImage>> {
         let path = url.path();
-        
+
         // Parse data URL: data:[<mediatype>][;base64],<data>
         let comma_pos = path.find(',')
             .ok_or_else(|| ImageError::InvalidUrl("Invalid data URL format".into()))?;
@@ -488,6 +497,7 @@ impl ImageManager {
         let data = &path[comma_pos + 1..];
 
         let is_base64 = metadata.contains("base64");
+        let is_svg = metadata.contains("image/svg+xml");
 
         let bytes = if is_base64 {
             use base64::Engine;
@@ -501,8 +511,82 @@ impl ImageManager {
                 .into_bytes()
         };
 
+        // Handle SVG data URLs specially
+        if is_svg {
+            let svg_text = String::from_utf8(bytes)
+                .map_err(|e| ImageError::DecodeError(format!("SVG not valid UTF-8: {}", e)))?;
+            return self.rasterize_svg(url, &svg_text);
+        }
+
         let loaded = self.decode_bytes(url, &bytes)?;
         Ok(Arc::new(loaded))
+    }
+
+    /// Rasterize an SVG to pixels using a simple inline parser.
+    /// This handles basic SVG shapes (rect, circle) with solid fills,
+    /// which is sufficient for most image placeholder and test cases.
+    fn rasterize_svg(&self, url: &Url, svg_text: &str) -> ImageResult<Arc<LoadedImage>> {
+        // Parse SVG dimensions from attributes
+        let (width, height) = parse_svg_dimensions(svg_text).unwrap_or((100, 100));
+        let width = width.max(1);
+        let height = height.max(1);
+
+        // Create pixel buffer with transparent background
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+
+        // Parse and render rectangles
+        for rect_match in find_svg_rects(svg_text) {
+            let (rx, ry, rw, rh, fill_color) = rect_match;
+            let x0 = (rx.max(0.0) as u32).min(width);
+            let y0 = (ry.max(0.0) as u32).min(height);
+            let x1 = ((rx + rw).max(0.0) as u32).min(width);
+            let y1 = ((ry + rh).max(0.0) as u32).min(height);
+
+            // Fill the rectangle
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let idx = ((y * width + x) * 4) as usize;
+                    if idx + 3 < pixels.len() {
+                        pixels[idx] = fill_color.0;     // R
+                        pixels[idx + 1] = fill_color.1; // G
+                        pixels[idx + 2] = fill_color.2; // B
+                        pixels[idx + 3] = fill_color.3; // A
+                    }
+                }
+            }
+        }
+
+        // Parse and render circles
+        for circle_match in find_svg_circles(svg_text) {
+            let (cx, cy, r, fill_color) = circle_match;
+            let r_sq = r * r;
+
+            // Render circle with simple distance-based fill
+            let x0 = ((cx - r).max(0.0) as u32).min(width);
+            let y0 = ((cy - r).max(0.0) as u32).min(height);
+            let x1 = ((cx + r).max(0.0) as u32).min(width);
+            let y1 = ((cy + r).max(0.0) as u32).min(height);
+
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let dx = x as f32 - cx;
+                    let dy = y as f32 - cy;
+                    if dx * dx + dy * dy <= r_sq {
+                        let idx = ((y * width + x) * 4) as usize;
+                        if idx + 3 < pixels.len() {
+                            pixels[idx] = fill_color.0;
+                            pixels[idx + 1] = fill_color.1;
+                            pixels[idx + 2] = fill_color.2;
+                            pixels[idx + 3] = fill_color.3;
+                        }
+                    }
+                }
+            }
+        }
+
+        let image = RgbaImage::from_rgba8(width, height, pixels)
+            .map_err(|e| ImageError::DecodeError(format!("SVG rasterization failed: {}", e)))?;
+        Ok(Arc::new(LoadedImage::new(url.clone(), image)))
     }
 
     /// Preload an image without blocking
@@ -529,6 +613,41 @@ impl ImageManager {
     pub fn get_cached(&self, url: &Url) -> Option<Arc<LoadedImage>> {
         self.cache.read().unwrap().get(url)
     }
+
+    /// Load an image synchronously (blocking).
+    /// This is primarily for parity testing where we need images to be loaded
+    /// before capturing a frame.
+    pub fn load_blocking(&self, url: Url) -> ImageResult<Arc<LoadedImage>> {
+        // Check cache first
+        if let Some(cached) = self.cache.read().unwrap().get(&url) {
+            return Ok(cached);
+        }
+
+        // For data URLs, decode synchronously
+        if url.scheme() == "data" {
+            return self.decode_data_url(&url);
+        }
+
+        // For other URLs, we need to block on the async load
+        // This uses a simple polling approach
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| ImageError::FetchError(format!("Runtime error: {}", e)))?;
+
+        runtime.block_on(self.load(url))
+    }
+
+    /// Check if an image is loading
+    pub fn is_loading(&self, url: &Url) -> bool {
+        self.pending.read().unwrap().contains_key(url)
+    }
+
+    /// Get all cached images.
+    /// Returns a vector of (URL, image) pairs for all images in the cache.
+    pub fn get_all_cached(&self) -> Vec<(Url, Arc<LoadedImage>)> {
+        self.cache.read().unwrap().entries()
+    }
 }
 
 impl Default for ImageManager {
@@ -541,10 +660,10 @@ impl Default for ImageManager {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ObjectFit {
     /// Fill the box, possibly distorting the image
+    #[default]
     Fill,
 
     /// Scale to fit inside the box, preserving aspect ratio
-    #[default]
     Contain,
 
     /// Scale to cover the box, preserving aspect ratio
@@ -688,9 +807,195 @@ impl ObjectPosition {
     }
 }
 
+// ==================== Simple SVG Parsing Helpers ====================
+
+/// Parse SVG dimensions from the root element attributes.
+fn parse_svg_dimensions(svg: &str) -> Option<(u32, u32)> {
+    // Look for width and height attributes in the <svg> tag
+    let svg_start = svg.find("<svg")?;
+    let svg_end = svg[svg_start..].find('>')? + svg_start;
+    let svg_attrs = &svg[svg_start..svg_end];
+
+    let width = extract_svg_attr(svg_attrs, "width")
+        .and_then(|s| s.trim_end_matches("px").parse::<f32>().ok())
+        .map(|v| v as u32)?;
+
+    let height = extract_svg_attr(svg_attrs, "height")
+        .and_then(|s| s.trim_end_matches("px").parse::<f32>().ok())
+        .map(|v| v as u32)?;
+
+    Some((width, height))
+}
+
+/// Extract an attribute value from an SVG tag string.
+fn extract_svg_attr(tag: &str, name: &str) -> Option<String> {
+    // Look for name=' or name="
+    let patterns = [format!("{}='", name), format!("{}=\"", name)];
+
+    for pattern in &patterns {
+        if let Some(start) = tag.find(pattern) {
+            let rest = &tag[start + pattern.len()..];
+            let quote = if pattern.ends_with('\'') { '\'' } else { '"' };
+            if let Some(end) = rest.find(quote) {
+                return Some(rest[..end].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Find all <rect> elements and extract their properties.
+/// Returns (x, y, width, height, fill_color) tuples.
+fn find_svg_rects(svg: &str) -> Vec<(f32, f32, f32, f32, (u8, u8, u8, u8))> {
+    let mut rects = Vec::new();
+    let mut pos = 0;
+
+    while let Some(rect_start) = svg[pos..].find("<rect") {
+        let rect_start = pos + rect_start;
+        let rect_end = match svg[rect_start..].find("/>") {
+            Some(e) => rect_start + e + 2,
+            None => match svg[rect_start..].find('>') {
+                Some(e) => rect_start + e + 1,
+                None => break,
+            },
+        };
+
+        let rect_tag = &svg[rect_start..rect_end];
+
+        let x = extract_svg_attr(rect_tag, "x")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let y = extract_svg_attr(rect_tag, "y")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let width = extract_svg_attr(rect_tag, "width")
+            .and_then(|s| s.trim_end_matches("px").parse().ok())
+            .unwrap_or(0.0);
+        let height = extract_svg_attr(rect_tag, "height")
+            .and_then(|s| s.trim_end_matches("px").parse().ok())
+            .unwrap_or(0.0);
+        let fill = extract_svg_attr(rect_tag, "fill")
+            .map(|s| parse_svg_color(&s))
+            .unwrap_or((0, 0, 0, 255));
+
+        rects.push((x, y, width, height, fill));
+        pos = rect_end;
+    }
+
+    rects
+}
+
+/// Find all <circle> elements and extract their properties.
+/// Returns (cx, cy, r, fill_color) tuples.
+fn find_svg_circles(svg: &str) -> Vec<(f32, f32, f32, (u8, u8, u8, u8))> {
+    let mut circles = Vec::new();
+    let mut pos = 0;
+
+    while let Some(circle_start) = svg[pos..].find("<circle") {
+        let circle_start = pos + circle_start;
+        let circle_end = match svg[circle_start..].find("/>") {
+            Some(e) => circle_start + e + 2,
+            None => match svg[circle_start..].find('>') {
+                Some(e) => circle_start + e + 1,
+                None => break,
+            },
+        };
+
+        let circle_tag = &svg[circle_start..circle_end];
+
+        let cx = extract_svg_attr(circle_tag, "cx")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let cy = extract_svg_attr(circle_tag, "cy")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let r = extract_svg_attr(circle_tag, "r")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let fill = extract_svg_attr(circle_tag, "fill")
+            .map(|s| parse_svg_color(&s))
+            .unwrap_or((0, 0, 0, 255));
+
+        circles.push((cx, cy, r, fill));
+        pos = circle_end;
+    }
+
+    circles
+}
+
+/// Parse an SVG color value to RGBA.
+fn parse_svg_color(s: &str) -> (u8, u8, u8, u8) {
+    let s = s.trim();
+
+    // Hex colors
+    if s.starts_with('#') {
+        let hex = &s[1..];
+        match hex.len() {
+            3 => {
+                let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).unwrap_or(0);
+                let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).unwrap_or(0);
+                let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).unwrap_or(0);
+                return (r, g, b, 255);
+            }
+            6 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+                return (r, g, b, 255);
+            }
+            _ => {}
+        }
+    }
+
+    // URL-encoded hex (e.g., %23ff0000 for #ff0000)
+    if s.starts_with("%23") {
+        let hex = &s[3..];
+        match hex.len() {
+            6 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+                return (r, g, b, 255);
+            }
+            _ => {}
+        }
+    }
+
+    // Named colors
+    match s.to_lowercase().as_str() {
+        "black" => (0, 0, 0, 255),
+        "white" => (255, 255, 255, 255),
+        "red" => (255, 0, 0, 255),
+        "green" => (0, 128, 0, 255),
+        "blue" => (0, 0, 255, 255),
+        "yellow" => (255, 255, 0, 255),
+        "cyan" => (0, 255, 255, 255),
+        "magenta" => (255, 0, 255, 255),
+        "gray" | "grey" => (128, 128, 128, 255),
+        "orange" => (255, 165, 0, 255),
+        "purple" => (128, 0, 128, 255),
+        "transparent" => (0, 0, 0, 0),
+        _ => (0, 0, 0, 255), // Default to black
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_svg_parsing() {
+        let svg = r#"<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><rect fill='%23e74c3c' width='100' height='100'/></svg>"#;
+        let dims = parse_svg_dimensions(svg);
+        assert_eq!(dims, Some((100, 100)));
+
+        let rects = find_svg_rects(svg);
+        assert_eq!(rects.len(), 1);
+        assert_eq!(rects[0].2, 100.0); // width
+        assert_eq!(rects[0].3, 100.0); // height
+        // %23e74c3c is URL-encoded #e74c3c (tomato red)
+        assert_eq!(rects[0].4, (231, 76, 60, 255));
+    }
 
     #[test]
     fn test_object_fit_contain() {

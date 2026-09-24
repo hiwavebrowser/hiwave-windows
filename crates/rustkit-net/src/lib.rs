@@ -21,13 +21,15 @@ use mime::Mime;
 use rustkit_http::Client as HttpClient;
 use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 use url::Url;
 
+pub mod cache;
 pub mod download;
 pub mod intercept;
 pub mod security;
 
+pub use cache::{cache_eligibility, CacheConfig, CacheKey, CacheStats, CachedResponse, Ineligible, MemoryCache, parse_cache_control};
 pub use download::{Download, DownloadEvent, DownloadId, DownloadManager, DownloadState};
 pub use intercept::{InterceptAction, InterceptHandler, RequestInterceptor};
 pub use security::{
@@ -417,11 +419,20 @@ pub struct ResourceLoader {
     config: LoaderConfig,
     interceptor: Option<Arc<RwLock<RequestInterceptor>>>,
     download_manager: Arc<DownloadManager>,
+    cache: Arc<MemoryCache>,
 }
 
 impl ResourceLoader {
     /// Create a new resource loader.
     pub fn new(config: LoaderConfig) -> Result<Self, NetError> {
+        Self::with_interceptor(config, None)
+    }
+
+    /// Create a new resource loader with an optional request interceptor.
+    pub fn with_interceptor(
+        config: LoaderConfig,
+        interceptor: Option<RequestInterceptor>,
+    ) -> Result<Self, NetError> {
         let client = HttpClient::builder()
             .user_agent(&config.user_agent)
             .timeout(config.default_timeout)
@@ -430,26 +441,34 @@ impl ResourceLoader {
             .build()
             .map_err(|e| NetError::RequestFailed(e.to_string()))?;
 
-        info!("ResourceLoader initialized");
+        if interceptor.is_some() {
+            info!("ResourceLoader initialized with request interceptor and cache");
+        } else {
+            info!("ResourceLoader initialized with cache");
+        }
 
         Ok(Self {
             client,
             config,
-            interceptor: None,
+            interceptor: interceptor.map(|i| Arc::new(RwLock::new(i))),
             download_manager: Arc::new(DownloadManager::new()),
+            cache: Arc::new(MemoryCache::new()),
         })
+    }
+    
+    /// Get a reference to the memory cache.
+    pub fn cache(&self) -> &Arc<MemoryCache> {
+        &self.cache
+    }
+    
+    /// Get cache statistics.
+    pub fn cache_stats(&self) -> CacheStats {
+        self.cache.stats()
     }
 
     /// Set the request interceptor.
     pub fn set_interceptor(&mut self, interceptor: RequestInterceptor) {
         self.interceptor = Some(Arc::new(RwLock::new(interceptor)));
-    }
-
-    /// Create a new resource loader with an interceptor.
-    pub fn with_interceptor(config: LoaderConfig, interceptor: RequestInterceptor) -> Result<Self, NetError> {
-        let mut loader = Self::new(config)?;
-        loader.set_interceptor(interceptor);
-        Ok(loader)
     }
 
     /// Get the download manager.
@@ -486,6 +505,33 @@ impl ResourceLoader {
                 }
             }
         }
+        
+        // Check cache for GET requests
+        let cache_key = if request.method == Method::GET && self.cache.enabled() {
+            let key = CacheKey::new(&request.url);
+            if let Some(cached) = self.cache.get(&key) {
+                debug!(url = %request.url, "Serving from cache");
+                
+                // Parse content type
+                let content_type = cached.headers
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<Mime>().ok());
+                
+                return Ok(Response {
+                    request_id: request.id,
+                    url: request.url.clone(),
+                    status: cached.status,
+                    headers: cached.headers,
+                    content_type,
+                    content_length: Some(cached.body.len() as u64),
+                    body: ResponseBody::Full(cached.body),
+                });
+            }
+            Some(key)
+        } else {
+            None
+        };
 
         // Build headers for rustkit-http request
         let mut headers = request.headers.clone();
@@ -531,6 +577,71 @@ impl ResourceLoader {
             body_len = http_response.body.len(),
             "Response received"
         );
+        
+        // Cache successful GET responses
+        if let Some(key) = cache_key {
+            if http_response.status.is_success() {
+                use std::time::Instant;
+                
+                // Determine TTL from Cache-Control, falling back to the
+                // CACHE's default TTL.
+                //
+                // This used to fall back to `self.config.default_timeout` —
+                // the loader's NETWORK REQUEST TIMEOUT (30s). Two separate
+                // bugs in one expression: header-less responses were cached
+                // for the wrong duration, and `CacheConfig::default_ttl`
+                // (300s) became dead config that the cache still announces in
+                // its startup log. A number printed at boot and applied
+                // nowhere is worse than no number.
+                // Eligibility BEFORE freshness. A response can carry a
+                // perfectly good max-age and still be ineligible — credentialed
+                // requests, Cache-Control: private, and anything carrying Vary
+                // (which this cache does not key on, so serving it would return
+                // the wrong body for a differing request).
+                // Eligibility BEFORE freshness: a response can carry a
+                // perfectly good max-age and still be ineligible.
+                //
+                // Deliberately NOT an early return. The first version of this
+                // returned a second Response here, which duplicated the exit at
+                // the bottom of the function and got one field wrong: it sent
+                // `request.url` (pre-redirect) where the real exit sends `url`
+                // (post-redirect, from http_response). Every relative CSS,
+                // image and script path then resolved against the wrong base on
+                // any site that redirects — which is nearly all of them — and
+                // because Vary makes most real responses ineligible, that rare
+                // path became the common one. One exit means the mismatch cannot
+                // recur.
+                match cache_eligibility(
+                    self.cache.enabled(),
+                    &request.headers,
+                    &http_response.headers,
+                ) {
+                    Some(reason) => {
+                        debug!(url = %url, ?reason, "Response not cacheable");
+                    }
+                    None => {
+                        let ttl = if self.cache.respects_cache_control() {
+                            parse_cache_control(&http_response.headers)
+                                .unwrap_or_else(|| self.cache.default_ttl())
+                        } else {
+                            self.cache.default_ttl()
+                        };
+
+                        if ttl > Duration::ZERO {
+                            let cached = CachedResponse {
+                                status: http_response.status,
+                                headers: http_response.headers.clone(),
+                                body: http_response.body.clone(),
+                                cached_at: Instant::now(),
+                                expires_at: Instant::now() + ttl,
+                                size: http_response.body.len(),
+                            };
+                            self.cache.put(key, cached);
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(Response {
             request_id: request.id,

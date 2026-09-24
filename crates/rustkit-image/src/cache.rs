@@ -108,6 +108,11 @@ impl ImageCache {
             crate::ImageData::Animated(anim) => pixels * 4 * anim.frames.len(),
         }
     }
+
+    /// Get all cached entries as (URL, image) pairs
+    pub fn entries(&self) -> Vec<(Url, Arc<LoadedImage>)> {
+        self.cache.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
 }
 
 #[cfg(test)]

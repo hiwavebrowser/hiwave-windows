@@ -24,13 +24,18 @@ rustkit-js = { path = "../rustkit-js" }
 rustkit-bindings = { path = "../rustkit-bindings" }
 rustkit-net = { path = "../rustkit-net" }
 rustkit-image = { path = "../rustkit-image" }
+rustkit-svg = { path = "../rustkit-svg" }
 rustkit-renderer = { path = "../rustkit-renderer" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["sync", "time", "rt"] }
+futures = "0.3"
 
 # URL handling
 url = "2.5"
+
+# data: URI payloads (@font-face src)
+base64 = "0.22"
 
 # Error handling
 thiserror = "1.0"

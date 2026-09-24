@@ -332,7 +332,8 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-/// Interpolate between two colors.
+/// Interpolate between two colors in sRGB space.
+/// CSS color transitions use sRGB interpolation for browser compatibility.
 fn interpolate_color(a: &Color, b: &Color, t: f32) -> Color {
     Color {
         r: (lerp(a.r as f32, b.r as f32, t).round() as u8).clamp(0, 255),
@@ -1095,20 +1096,25 @@ impl AnimationTimeline {
             let is_running = animation.tick(now);
 
             if was_running && animation.play_state == AnimationPlayState::Finished {
-                finished_animations.push((*id, animation.name.clone(), animation.target));
+                let elapsed = if let Some(start) = animation.start_time {
+                    (now - start).as_secs_f64()
+                } else {
+                    animation.timing.duration.as_secs_f64()
+                };
+                finished_animations.push((*id, animation.name.clone(), animation.target, elapsed));
             }
 
             any_running |= is_running;
         }
 
         // Emit animation end events
-        for (_id, name, target) in finished_animations {
+        for (_id, name, target, elapsed_time) in finished_animations {
             self.pending_events.push(AnimationEvent {
                 event_type: AnimationEventType::AnimationEnd,
                 target,
                 animation_name: Some(name),
                 property_name: None,
-                elapsed_time: 0.0, // TODO: calculate actual elapsed time
+                elapsed_time,
                 pseudo_element: String::new(),
             });
         }
@@ -1120,20 +1126,25 @@ impl AnimationTimeline {
             let is_running = transition.tick(now);
 
             if was_running && transition.state == TransitionState::Completed {
-                finished_transitions.push((*id, transition.property, transition.target));
+                let elapsed = if let Some(start) = transition.start_time {
+                    (now - start).as_secs_f64()
+                } else {
+                    transition.duration.as_secs_f64()
+                };
+                finished_transitions.push((*id, transition.property, transition.target, elapsed));
             }
 
             any_running |= is_running;
         }
 
         // Emit transition end events
-        for (_id, property, target) in finished_transitions {
+        for (_id, property, target, elapsed_time) in finished_transitions {
             self.pending_events.push(AnimationEvent {
                 event_type: AnimationEventType::TransitionEnd,
                 target,
                 animation_name: None,
                 property_name: Some(format!("{:?}", property).to_lowercase()),
-                elapsed_time: 0.0,
+                elapsed_time,
                 pseudo_element: String::new(),
             });
         }
@@ -1384,7 +1395,7 @@ mod tests {
             ..Default::default()
         };
 
-        let id = timeline.animate(target, "fade", timing).unwrap();
+        let _id = timeline.animate(target, "fade", timing).unwrap();
         assert_eq!(timeline.animation_count(), 1);
 
         // Tick should be running

@@ -16,7 +16,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_native_tls::TlsConnector;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 use url::Url;
 
 /// HTTP client errors.
@@ -495,9 +495,18 @@ async fn read_chunked_body<R: tokio::io::AsyncBufRead + Unpin>(
 
     loop {
         let mut size_line = String::new();
-        reader.read_line(&mut size_line).await?;
+        if reader.read_line(&mut size_line).await? == 0 {
+            // The peer closed before the terminating 0-size chunk. Keep what
+            // arrived, as Chrome does for a document: netflix.com's edge
+            // intermittently closes at exactly 512 KiB of a ~660 KiB page,
+            // and failing the whole navigation left a blank tab.
+            warn!(received = body.len(), "chunked body truncated by EOF; using partial body");
+            break;
+        }
 
-        let size = usize::from_str_radix(size_line.trim(), 16)
+        // RFC 9112 §7.1.1: chunk-size may be followed by chunk extensions.
+        let size_field = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_field, 16)
             .map_err(|_| HttpError::InvalidResponse("Invalid chunk size".to_string()))?;
 
         if size == 0 {
@@ -507,9 +516,14 @@ async fn read_chunked_body<R: tokio::io::AsyncBufRead + Unpin>(
             break;
         }
 
-        let mut chunk = vec![0u8; size];
-        reader.read_exact(&mut chunk).await?;
+        let mut chunk = Vec::with_capacity(size);
+        (&mut *reader).take(size as u64).read_to_end(&mut chunk).await?;
+        let complete = chunk.len() == size;
         body.extend_from_slice(&chunk);
+        if !complete {
+            warn!(received = body.len(), "chunked body truncated by EOF mid-chunk; using partial body");
+            break;
+        }
 
         // Read trailing CRLF after chunk
         let mut _crlf = [0u8; 2];
@@ -764,6 +778,39 @@ mod tests {
         assert_eq!(response.content_type(), Some("text/html"));
         assert_eq!(response.content_length(), Some(1234));
         assert_eq!(response.text().unwrap(), "Hello");
+    }
+
+    fn decode_chunked(raw: &[u8]) -> Result<Bytes, HttpError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut reader = BufReader::new(raw);
+        rt.block_on(read_chunked_body(&mut reader))
+    }
+
+    #[test]
+    fn chunked_body_decodes_extensions_and_terminator() {
+        let body = decode_chunked(b"5;name=val\r\nhello\r\n6\r\n world\r\n0\r\n\r\n").unwrap();
+        assert_eq!(&body[..], b"hello world");
+    }
+
+    #[test]
+    fn chunked_body_truncated_by_eof_keeps_what_arrived() {
+        // EOF where the next size line should be (netflix.com's edge closes
+        // at 512 KiB), and EOF inside a chunk: both used to fail the whole
+        // navigation with "Invalid chunk size" / UnexpectedEof.
+        let at_boundary = decode_chunked(b"5\r\nhello\r\n").unwrap();
+        assert_eq!(&at_boundary[..], b"hello");
+        let mid_chunk = decode_chunked(b"5\r\nhello\r\na\r\n wor").unwrap();
+        assert_eq!(&mid_chunk[..], b"hello wor");
+    }
+
+    #[test]
+    fn chunked_body_rejects_a_garbage_size_line() {
+        assert!(matches!(
+            decode_chunked(b"zz\r\nhello\r\n0\r\n\r\n"),
+            Err(HttpError::InvalidResponse(_))
+        ));
     }
 
     #[test]

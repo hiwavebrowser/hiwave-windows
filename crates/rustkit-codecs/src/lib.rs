@@ -137,7 +137,8 @@ pub fn decode_any(bytes: &[u8]) -> Result<Decoded, CodecError> {
         ImageFormat::Png => Ok(Decoded::Static(decode_png(bytes)?)),
         ImageFormat::Jpeg => Ok(Decoded::Static(decode_jpeg(bytes)?)),
         ImageFormat::Gif => Ok(Decoded::Animated(decode_gif(bytes)?)),
-        ImageFormat::WebP | ImageFormat::Bmp | ImageFormat::Ico | ImageFormat::Unknown => {
+        ImageFormat::WebP => Ok(Decoded::Static(decode_webp(bytes)?)),
+        ImageFormat::Bmp | ImageFormat::Ico | ImageFormat::Unknown => {
             Err(CodecError::Unsupported(fmt))
         }
     }
@@ -175,6 +176,36 @@ pub fn decode_png(bytes: &[u8]) -> Result<RgbaImage, CodecError> {
         }
     };
 
+    RgbaImage::from_rgba8(width, height, rgba)
+}
+
+/// Decode a WebP still image (lossy or lossless) to RGBA8.
+///
+/// Detection existed without decoding: `detect_format` returned `WebP` and
+/// `decode_any` then returned `Unsupported` — so every WebP on the web
+/// failed with a message that read like a missing feature rather than a
+/// missing decoder. eBay serves every listing photo as WebP; a live session
+/// (2026-08-07) produced 82 of these on one page.
+///
+/// Animated WebP decodes its first frame here rather than erroring: a still
+/// frame is closer to right than a hole, and the animation path belongs with
+/// the GIF-style `Decoded::Animated` work, not this bundle.
+pub fn decode_webp(bytes: &[u8]) -> Result<RgbaImage, CodecError> {
+    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes))
+        .map_err(|e| CodecError::Decode(e.to_string()))?;
+    let (width, height) = decoder.dimensions();
+    let has_alpha = decoder.has_alpha();
+
+    let mut buf = vec![0u8; decoder.output_buffer_size().ok_or_else(|| {
+        CodecError::Decode("WebP dimensions overflow the output buffer size".to_string())
+    })?];
+    decoder
+        .read_image(&mut buf)
+        .map_err(|e| CodecError::Decode(e.to_string()))?;
+
+    // image-webp emits RGB8 or RGBA8 depending on the alpha channel; the
+    // engine's texture path is RGBA8 only.
+    let rgba = if has_alpha { buf } else { rgb_to_rgba(buf, 255) };
     RgbaImage::from_rgba8(width, height, rgba)
 }
 

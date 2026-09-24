@@ -4,13 +4,11 @@
 
 use crate::RendererError;
 use hashbrown::HashMap;
-use std::path::Path;
-use std::path::PathBuf;
-use std::{env, fs};
 #[cfg(windows)]
-use rustkit_text::{FontCollection as RkFontCollection, FontStretch as RkFontStretch, FontStyle as RkFontStyle, FontWeight as RkFontWeight};
-#[cfg(windows)]
-use windows::Win32::Graphics::DirectWrite::*;
+use rustkit_text::{
+    FontCollection as RkFontCollection, FontStretch as RkFontStretch, FontStyle as RkFontStyle,
+    FontWeight as RkFontWeight,
+};
 
 /// Key for identifying a specific glyph.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -20,6 +18,41 @@ pub struct GlyphKey {
     pub font_size: u32, // Fixed-point (size * 10)
     pub font_weight: u16,
     pub font_style: u8, // 0 = normal, 1 = italic
+    /// Horizontal subpixel phase, `0..SUBPIXEL_QUANTIZE`.
+    ///
+    /// WHY THIS EXISTS: every glyph was rasterized ONCE at phase 0 into an
+    /// integer-sized atlas bitmap, then drawn at arbitrary FRACTIONAL device
+    /// positions and bilinearly resampled. Chrome rasterizes AT the phase.
+    /// Measured baselines on fixtures/typography.html land at .081/.280/.120/
+    /// .960/.200/.441/.880 -- arbitrary phases on every line -- which is the
+    /// mechanism behind the bimodal text diff tail.
+    ///
+    /// PRODUCTION IS FROZEN AT PHASE 0 IN THIS COMMIT, DELIBERATELY. The
+    /// rasterizer still draws a phase-0 bitmap for every phase, so emitting
+    /// multi-phase keys now would mint up to SUBPIXEL_QUANTIZE BYTE-IDENTICAL
+    /// atlas entries per glyph: more memory, more eviction pressure, and not
+    /// one pixel different. The call-site flip belongs in the same commit as
+    /// the rasterizer that can honor it.
+    pub subpixel_phase: u8,
+}
+
+/// Number of horizontal subpixel phases a glyph may be rasterized at.
+///
+/// 4 (quarter-pixel) is the industry default: it is the point where added
+/// positional accuracy stops being visible at normal text sizes while atlas
+/// cost still grows linearly. 3 is the LCD-subpixel-triad choice and belongs
+/// to a different rendering mode, not to this key.
+pub const SUBPIXEL_QUANTIZE: u8 = 4;
+
+/// Quantize a fractional device X into a phase bucket.
+///
+/// Takes the FRACTIONAL part, so it is correct for any x including negatives:
+/// `-0.25` and `0.75` are the same phase, because what a rasterizer needs is
+/// the offset within the pixel, not the pixel.
+pub fn subpixel_phase_for(x: f32) -> u8 {
+    let frac = x - x.floor();
+    let phase = (frac * SUBPIXEL_QUANTIZE as f32).floor() as i32;
+    phase.clamp(0, SUBPIXEL_QUANTIZE as i32 - 1) as u8
 }
 
 /// Cached glyph entry.
@@ -40,11 +73,20 @@ pub struct GlyphCache {
     bind_group: wgpu::BindGroup,
     atlas_size: u32,
     entries: HashMap<GlyphKey, GlyphEntry>,
-    /// CPU mirror of the atlas (R8 coverage). Used for deterministic debug dumps.
-    cpu_atlas: Vec<u8>,
     next_x: u32,
     next_y: u32,
     row_height: u32,
+    // Parallel RGBA atlas for COLOR glyphs (emoji). The grayscale atlas above
+    // is R8 and the renderer tints it; color-bitmap emoji need real RGBA, drawn
+    // with the passthrough (blit) pipeline. Kept separate so the grayscale text
+    // hot path is untouched — this atlas stays empty on pages without emoji.
+    color_atlas: wgpu::Texture,
+    _color_atlas_view: wgpu::TextureView,
+    color_bind_group: wgpu::BindGroup,
+    color_entries: HashMap<GlyphKey, GlyphEntry>,
+    color_next_x: u32,
+    color_next_y: u32,
+    color_row_height: u32,
 }
 
 impl GlyphCache {
@@ -124,16 +166,74 @@ impl GlyphCache {
             label: Some("glyph_atlas_bind_group"),
         });
 
+        // Parallel RGBA color-glyph atlas (emoji). Same bind-group layout —
+        // Rgba8Unorm is float-sampleable like R8Unorm.
+        let color_atlas = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Color Glyph Atlas"),
+            size: wgpu::Extent3d {
+                width: atlas_size,
+                height: atlas_size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let color_empty = vec![0u8; (atlas_size * atlas_size * 4) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &color_atlas,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &color_empty,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(atlas_size * 4),
+                rows_per_image: Some(atlas_size),
+            },
+            wgpu::Extent3d {
+                width: atlas_size,
+                height: atlas_size,
+                depth_or_array_layers: 1,
+            },
+        );
+        let color_atlas_view = color_atlas.create_view(&wgpu::TextureViewDescriptor::default());
+        let color_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&color_atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+            label: Some("color_glyph_atlas_bind_group"),
+        });
+
         Ok(Self {
             atlas,
             _atlas_view: atlas_view,
             bind_group,
             atlas_size,
             entries: HashMap::new(),
-            cpu_atlas: empty_data,
             next_x: 1, // Start at 1 to avoid edge artifacts
             next_y: 1,
             row_height: 0,
+            color_atlas,
+            _color_atlas_view: color_atlas_view,
+            color_bind_group,
+            color_entries: HashMap::new(),
+            color_next_x: 1,
+            color_next_y: 1,
+            color_row_height: 0,
         })
     }
 
@@ -147,69 +247,107 @@ impl GlyphCache {
         &self.bind_group
     }
 
-    /// Dump the current glyph atlas (CPU mirror) to a PNG for debugging.
-    ///
-    /// The atlas is R8 coverage; we visualize it as grayscale (RGB) with alpha=255.
-    pub fn dump_cpu_atlas_png(&self, path: impl AsRef<Path>) -> Result<(), RendererError> {
-        let size = self.atlas_size as usize;
-        let mut rgba = vec![0u8; size * size * 4];
-        for (i, a) in self.cpu_atlas.iter().copied().enumerate() {
-            let o = i * 4;
-            rgba[o] = a;
-            rgba[o + 1] = a;
-            rgba[o + 2] = a;
-            rgba[o + 3] = 255;
-        }
-        crate::screenshot::save_png(path, self.atlas_size, self.atlas_size, &rgba)
-            .map_err(|e| RendererError::TextureUpload(e.to_string()))
+    /// Get the bind group for the RGBA color-glyph atlas.
+    pub fn color_bind_group(&self) -> &wgpu::BindGroup {
+        &self.color_bind_group
     }
 
-    fn blit_into_cpu_atlas(&mut self, x: u32, y: u32, w: u32, h: u32, src: &[u8]) {
-        let atlas_w = self.atlas_size as usize;
-        let x0 = x as usize;
-        let y0 = y as usize;
-        let w_us = w as usize;
-        for row in 0..h as usize {
-            let src_off = row * w_us;
-            let dst_off = (y0 + row) * atlas_w + x0;
-            if src_off + w_us <= src.len() && dst_off + w_us <= self.cpu_atlas.len() {
-                self.cpu_atlas[dst_off..dst_off + w_us].copy_from_slice(&src[src_off..src_off + w_us]);
-            }
+    /// Get or rasterize a COLOR glyph (emoji) into the RGBA atlas. Returns the
+    /// atlas entry (tex_coords into the color atlas), or None if the platform
+    /// or font can't produce a color glyph for this codepoint.
+    #[allow(unused_variables)]
+    pub fn get_or_rasterize_color(
+        &mut self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: &GlyphKey,
+    ) -> Option<GlyphEntry> {
+        if let Some(entry) = self.color_entries.get(key) {
+            return Some(entry.clone());
         }
-    }
 
-    fn maybe_dump_glyph_bitmap(&self, key: &GlyphKey, w: u32, h: u32, alpha: &[u8]) {
-        let dump_dir = match env::var_os("RUSTKIT_GLYPH_DUMP_DIR") {
-            Some(v) if !v.is_empty() => PathBuf::from(v),
-            _ => return,
+        #[cfg(target_os = "macos")]
+        let raster = {
+            let italic = key.font_style == 1;
+            let family = if key.font_family.is_empty() {
+                "Helvetica"
+            } else {
+                key.font_family.as_str()
+            };
+            let rasterizer = rustkit_text::macos::GlyphRasterizer::with_style(
+                family,
+                key.font_size as f32 / 10.0,
+                key.font_weight,
+                italic,
+            );
+            rasterizer.rasterize_char_color(key.codepoint)
         };
+        #[cfg(not(target_os = "macos"))]
+        let raster: Option<(Vec<u8>, u32, u32, f32, f32, f32)> = None;
 
-        let chars = env::var("RUSTKIT_GLYPH_DUMP_CHARS").unwrap_or_else(|_| "A,g,#".to_string());
-        let want = chars
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .any(|s| s.chars().next() == Some(key.codepoint));
-        if !want {
-            return;
+        let (rgba, gw, gh, advance, bearing_x, bearing_y) = raster?;
+        let gw = gw.max(1).min(256);
+        let gh = gh.max(1).min(256);
+
+        let (ax, ay) = self.allocate_color_space(gw + 2, gh + 2)?;
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.color_atlas,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: ax + 1,
+                    y: ay + 1,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(gw * 4),
+                rows_per_image: Some(gh),
+            },
+            wgpu::Extent3d {
+                width: gw,
+                height: gh,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        let u0 = (ax + 1) as f32 / self.atlas_size as f32;
+        let v0 = (ay + 1) as f32 / self.atlas_size as f32;
+        let u1 = (ax + 1 + gw) as f32 / self.atlas_size as f32;
+        let v1 = (ay + 1 + gh) as f32 / self.atlas_size as f32;
+
+        let entry = GlyphEntry {
+            tex_coords: [u0, v0, u1, v1],
+            offset: [bearing_x, -bearing_y],
+            advance,
+        };
+        self.color_entries.insert(key.clone(), entry.clone());
+        Some(entry)
+    }
+
+    /// Allocate space in the COLOR atlas (separate cursor from the grayscale one).
+    fn allocate_color_space(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+        if self.color_next_x + width > self.atlas_size {
+            self.color_next_x = 1;
+            self.color_next_y += self.color_row_height + 1;
+            self.color_row_height = 0;
         }
-
-        if fs::create_dir_all(&dump_dir).is_err() {
-            return;
+        if self.color_next_y + height > self.atlas_size {
+            tracing::warn!("Color glyph atlas full, clearing cache");
+            self.color_entries.clear();
+            self.color_next_x = 1;
+            self.color_next_y = 1;
+            self.color_row_height = 0;
         }
-
-        let mut rgba = vec![0u8; (w * h * 4) as usize];
-        for (i, a) in alpha.iter().copied().enumerate() {
-            let o = i * 4;
-            rgba[o] = a;
-            rgba[o + 1] = a;
-            rgba[o + 2] = a;
-            rgba[o + 3] = 255;
-        }
-
-        let cp = key.codepoint as u32;
-        let path = dump_dir.join(format!("glyph_{:04X}_{}.png", cp, key.codepoint));
-        let _ = crate::screenshot::save_png(path, w, h, &rgba);
+        let x = self.color_next_x;
+        let y = self.color_next_y;
+        self.color_next_x += width + 1;
+        self.color_row_height = self.color_row_height.max(height);
+        Some((x, y))
     }
 
     /// Get or rasterize a glyph.
@@ -223,329 +361,11 @@ impl GlyphCache {
             return Some(entry.clone());
         }
 
-        // Use DirectWrite on Windows for proper glyph rendering
-        #[cfg(windows)]
-        {
-            return self.rasterize_glyph_directwrite(queue, key);
-        }
-        
-        // Fallback for non-Windows platforms
-        #[cfg(not(windows))]
-        {
-            return self.rasterize_glyph_fallback(queue, key);
-        }
+        // Rasterize using fallback (simple rectangle placeholder)
+        self.rasterize_glyph_fallback(queue, key)
     }
 
-    /// Rasterize a glyph using DirectWrite.
-    #[cfg(windows)]
-    fn rasterize_glyph_directwrite(
-        &mut self,
-        queue: &wgpu::Queue,
-        key: &GlyphKey,
-    ) -> Option<GlyphEntry> {
-        use windows::core::PCWSTR;
-        use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-        
-        let font_size = key.font_size as f32 / 10.0;
-        
-        unsafe {
-            // Ensure COM is initialized
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            
-            // Create DirectWrite factory
-            let factory: IDWriteFactory = match DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::warn!("Failed to create DWrite factory: {:?}", e);
-                    return self.rasterize_glyph_fallback(queue, key);
-                }
-            };
-            
-            // Get system font collection
-            let mut collection: Option<IDWriteFontCollection> = None;
-            if factory.GetSystemFontCollection(&mut collection, false).is_err() {
-                return self.rasterize_glyph_fallback(queue, key);
-            }
-            let collection = collection?;
-            
-            // Find font family
-            let family_wide: Vec<u16> = key.font_family.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut index: u32 = 0;
-            let mut exists = windows::core::BOOL(0);
-            if collection.FindFamilyName(PCWSTR(family_wide.as_ptr()), &mut index, &mut exists).is_err() || !exists.as_bool() {
-                // Try fallback fonts
-                let fallbacks = ["Segoe UI", "Arial", "Tahoma"];
-                let mut found = false;
-                for fallback in fallbacks {
-                    let fb_wide: Vec<u16> = fallback.encode_utf16().chain(std::iter::once(0)).collect();
-                    if collection.FindFamilyName(PCWSTR(fb_wide.as_ptr()), &mut index, &mut exists).is_ok() && exists.as_bool() {
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    return self.rasterize_glyph_fallback(queue, key);
-                }
-            }
-            
-            // Get font family
-            let family = match collection.GetFontFamily(index) {
-                Ok(f) => f,
-                Err(_) => return self.rasterize_glyph_fallback(queue, key),
-            };
-            
-            // Get matching font
-            let dw_weight = DWRITE_FONT_WEIGHT(key.font_weight as i32);
-            let dw_stretch = DWRITE_FONT_STRETCH(5); // Normal
-            let dw_style = if key.font_style == 1 { DWRITE_FONT_STYLE_ITALIC } else { DWRITE_FONT_STYLE_NORMAL };
-            
-            let font = match family.GetFirstMatchingFont(dw_weight, dw_stretch, dw_style) {
-                Ok(f) => f,
-                Err(_) => return self.rasterize_glyph_fallback(queue, key),
-            };
-
-            // Create font face
-            let face = match font.CreateFontFace() {
-                Ok(f) => f,
-                Err(_) => return self.rasterize_glyph_fallback(queue, key),
-            };
-            
-            // Get glyph index for codepoint
-            let codepoint = key.codepoint as u32;
-            let mut glyph_indices = [0u16; 1];
-            if face.GetGlyphIndices(&codepoint as *const u32, 1, glyph_indices.as_mut_ptr()).is_err() {
-                return self.rasterize_glyph_fallback(queue, key);
-            }
-            
-            let glyph_index = glyph_indices[0];
-            if glyph_index == 0 {
-                // Glyph not found - use fallback
-                return self.rasterize_glyph_fallback(queue, key);
-            }
-            
-            // Get font metrics for baseline calculation
-            let mut font_metrics = DWRITE_FONT_METRICS::default();
-            face.GetMetrics(&mut font_metrics);
-            let design_units_per_em = font_metrics.designUnitsPerEm as f32;
-            let ascent = font_metrics.ascent as f32 * font_size / design_units_per_em;
-            
-            // Get glyph metrics
-            let mut glyph_metrics = [DWRITE_GLYPH_METRICS::default()];
-            if face.GetDesignGlyphMetrics(&glyph_index, 1, glyph_metrics.as_mut_ptr(), false).is_err() {
-                return self.rasterize_glyph_fallback(queue, key);
-            }
-            
-            let advance_width = glyph_metrics[0].advanceWidth as f32 * font_size / design_units_per_em;
-            let left_bearing = glyph_metrics[0].leftSideBearing as f32 * font_size / design_units_per_em;
-            let top_bearing = glyph_metrics[0].topSideBearing as f32 * font_size / design_units_per_em;
-            let glyph_width_design = (glyph_metrics[0].advanceWidth as i32 - glyph_metrics[0].leftSideBearing - glyph_metrics[0].rightSideBearing) as f32;
-            let glyph_height_design = (glyph_metrics[0].advanceHeight as i32 - glyph_metrics[0].topSideBearing - glyph_metrics[0].bottomSideBearing) as f32;
-            
-            let glyph_width = ((glyph_width_design * font_size / design_units_per_em).ceil() as u32).max(1).min(256);
-            let glyph_height = ((glyph_height_design * font_size / design_units_per_em).ceil() as u32).max(1).min(256);
-            
-            // For whitespace, use minimal dimensions
-            if key.codepoint.is_whitespace() {
-                let (w, h) = estimate_glyph_size(key.codepoint, font_size);
-                let (atlas_x, atlas_y) = self.allocate_space(w + 2, h + 2)?;
-                let bitmap = vec![0u8; (w * h) as usize];
-                
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &self.atlas,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d { x: atlas_x + 1, y: atlas_y + 1, z: 0 },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &bitmap,
-                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w), rows_per_image: Some(h) },
-                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                );
-                
-                let u0 = (atlas_x + 1) as f32 / self.atlas_size as f32;
-                let v0 = (atlas_y + 1) as f32 / self.atlas_size as f32;
-                let u1 = (atlas_x + 1 + w) as f32 / self.atlas_size as f32;
-                let v1 = (atlas_y + 1 + h) as f32 / self.atlas_size as f32;
-                
-                let entry = GlyphEntry {
-                    tex_coords: [u0, v0, u1, v1],
-                    offset: [0.0, 0.0],
-                    advance: advance_width,
-                };
-                self.entries.insert(key.clone(), entry.clone());
-                return Some(entry);
-            }
-            
-            // Create glyph run for rendering
-            let glyph_run = DWRITE_GLYPH_RUN {
-                fontFace: std::mem::ManuallyDrop::new(Some(face.clone())),
-                fontEmSize: font_size,
-                glyphCount: 1,
-                glyphIndices: &glyph_index,
-                glyphAdvances: std::ptr::null(),
-                glyphOffsets: std::ptr::null(),
-                isSideways: windows::core::BOOL(0),
-                bidiLevel: 0,
-            };
-            
-            // Create glyph run analysis
-            let analysis: IDWriteGlyphRunAnalysis = match factory.CreateGlyphRunAnalysis(
-                &glyph_run,
-                1.0, // pixels per DIP
-                None,
-                DWRITE_RENDERING_MODE_NATURAL,
-                DWRITE_MEASURING_MODE_NATURAL,
-                0.0, // baseline origin x
-                0.0, // baseline origin y
-            ) {
-                Ok(a) => a,
-                Err(e) => {
-                    // Clean up manually dropped face
-                    std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
-                    return self.rasterize_glyph_fallback(queue, key);
-                }
-            };
-            
-            // Get texture bounds. In NATURAL (ClearType) rendering mode the
-            // ALIASED_1x1 bounds come back EMPTY (0,0,0,0) rather than as an
-            // error, so an Ok-but-empty result must also fall through to the
-            // CLEARTYPE_3x1 bounds — otherwise every glyph is treated as a
-            // zero-size (whitespace) box and drops to the placeholder fallback.
-            let non_empty = |b: &windows::Win32::Foundation::RECT| {
-                b.right > b.left && b.bottom > b.top
-            };
-            // `use_cleartype` tracks which texture mode produced the bounds so
-            // the alpha-texture read below matches it. In NATURAL rendering mode
-            // the ALIASED_1x1 bounds are empty, so we fall through to CLEARTYPE.
-            let (bounds, use_cleartype) = match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1) {
-                Ok(b) if non_empty(&b) => (b, false),
-                _ => match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) {
-                    Ok(b) if non_empty(&b) => (b, true),
-                    _ => {
-                        std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
-                        return self.rasterize_glyph_fallback(queue, key);
-                    }
-                },
-            };
-
-            let tex_width = (bounds.right - bounds.left) as u32;
-            let tex_height = (bounds.bottom - bounds.top) as u32;
-
-            if tex_width == 0 || tex_height == 0 {
-                // Empty glyph (whitespace)
-                std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
-                return self.rasterize_glyph_fallback(queue, key);
-            }
-            
-            // Allocate atlas space
-            let (atlas_x, atlas_y) = match self.allocate_space(tex_width + 2, tex_height + 2) {
-                Some(pos) => pos,
-                None => {
-                    std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
-                    return None;
-                }
-            };
-            
-            // Get alpha texture (grayscale coverage), matching the mode that
-            // produced the bounds. CLEARTYPE is 3 bytes/pixel (averaged to one
-            // coverage byte); ALIASED is already 1 byte/pixel. Reading ALIASED
-            // from a ClearType analysis returns success-but-zeros, which is why
-            // the mode must match — mismatched, every glyph was invisible.
-            let mut alpha_values = vec![0u8; (tex_width * tex_height) as usize];
-            let tex_ok = if use_cleartype {
-                let mut ct_values = vec![0u8; (tex_width * tex_height * 3) as usize];
-                let ok = analysis.CreateAlphaTexture(
-                    DWRITE_TEXTURE_CLEARTYPE_3x1,
-                    &bounds,
-                    ct_values.as_mut_slice(),
-                ).is_ok();
-                if ok {
-                    for i in 0..(tex_width * tex_height) as usize {
-                        let r = ct_values[i * 3] as u32;
-                        let g = ct_values[i * 3 + 1] as u32;
-                        let b = ct_values[i * 3 + 2] as u32;
-                        alpha_values[i] = ((r + g + b) / 3) as u8;
-                    }
-                }
-                ok
-            } else {
-                analysis.CreateAlphaTexture(
-                    DWRITE_TEXTURE_ALIASED_1x1,
-                    &bounds,
-                    alpha_values.as_mut_slice(),
-                ).is_ok()
-            };
-            if !tex_ok {
-                std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
-                return self.rasterize_glyph_fallback(queue, key);
-            }
-
-            // Debug dump + CPU atlas mirror before upload.
-            self.maybe_dump_glyph_bitmap(key, tex_width, tex_height, &alpha_values);
-            self.blit_into_cpu_atlas(atlas_x + 1, atlas_y + 1, tex_width, tex_height, &alpha_values);
-            
-            // Clean up manually dropped face
-            std::mem::ManuallyDrop::into_inner(glyph_run.fontFace);
-            
-            // Upload to atlas
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &self.atlas,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: atlas_x + 1, y: atlas_y + 1, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &alpha_values,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(tex_width),
-                    rows_per_image: Some(tex_height),
-                },
-                wgpu::Extent3d { width: tex_width, height: tex_height, depth_or_array_layers: 1 },
-            );
-            
-            let u0 = (atlas_x + 1) as f32 / self.atlas_size as f32;
-            let v0 = (atlas_y + 1) as f32 / self.atlas_size as f32;
-            let u1 = (atlas_x + 1 + tex_width) as f32 / self.atlas_size as f32;
-            let v1 = (atlas_y + 1 + tex_height) as f32 / self.atlas_size as f32;
-            
-            // Calculate offset from cursor position to glyph origin
-            // bounds.left/top are in pixels relative to the glyph run origin (baseline)
-            // We need to position the glyph texture such that when drawn at (cursor_x, cursor_y),
-            // the glyph appears correctly on the baseline.
-            //
-            // For text rendering:
-            // - cursor_y is the TOP of the text line in our coordinate system (y increases downward)
-            // - bounds.top is typically negative (glyph extends above baseline)
-            // - We want to position glyphs relative to the text line top
-            let offset_x = bounds.left as f32;
-            let offset_y = ascent + bounds.top as f32; // Position relative to line top
-            
-            tracing::trace!(
-                codepoint = ?key.codepoint,
-                bounds_left = bounds.left,
-                bounds_top = bounds.top,
-                tex_width,
-                tex_height,
-                ascent,
-                offset_x,
-                offset_y,
-                advance_width,
-                "Glyph rasterized via DirectWrite"
-            );
-            
-            let entry = GlyphEntry {
-                tex_coords: [u0, v0, u1, v1],
-                offset: [offset_x, offset_y],
-                advance: advance_width,
-            };
-            
-            self.entries.insert(key.clone(), entry.clone());
-            Some(entry)
-        }
-    }
-    
-    /// Fallback glyph rasterization (creates placeholder rectangles).
+    /// Rasterize a glyph using platform-specific text rendering.
     fn rasterize_glyph_fallback(
         &mut self,
         queue: &wgpu::Queue,
@@ -553,41 +373,110 @@ impl GlyphCache {
     ) -> Option<GlyphEntry> {
         let font_size = key.font_size as f32 / 10.0;
 
-        #[cfg(windows)]
-        {
-            // Silence unused import warnings
-            let _ = (RkFontCollection::system, RkFontWeight::from_u32, RkFontStretch::from_u32);
-            let _ = |s: u8| match s { 0 => RkFontStyle::Normal, 1 => RkFontStyle::Italic, _ => RkFontStyle::Normal };
-        }
+        // Use platform-specific glyph rasterization
+        #[cfg(target_os = "macos")]
+        let raster_result = {
+            let italic = key.font_style == 1;
+            // Map font families for parity testing
+            let family = if key.font_family.is_empty() {
+                "Helvetica"
+            } else {
+                // Map ParityTest to Noto Sans for consistent cross-platform rendering
+                match key.font_family.as_str() {
+                    "ParityTest" | "'ParityTest'" => "Noto Sans",
+                    "Noto Sans" | "'Noto Sans'" => "Noto Sans",
+                    other => other,
+                }
+            };
+            let rasterizer = rustkit_text::macos::GlyphRasterizer::with_style(
+                family,
+                font_size,
+                key.font_weight,
+                italic,
+            );
+            rasterizer.rasterize_char(key.codepoint, 0.0)
+        };
 
-        // Estimate glyph dimensions based on character (fallback)
-        let (glyph_width, glyph_height) = estimate_glyph_size(key.codepoint, font_size);
+        #[cfg(windows)]
+        let raster_result = {
+            // Windows fallback - use simple placeholder
+            let (glyph_width, glyph_height) = estimate_glyph_size(key.codepoint, font_size);
+            let glyph_width = glyph_width.max(1).min(256);
+            let glyph_height = glyph_height.max(1).min(256);
+
+            let mut bitmap = vec![0u8; (glyph_width * glyph_height) as usize];
+            if key.codepoint.is_ascii_graphic() || key.codepoint.is_alphabetic() {
+                for y in 0..glyph_height {
+                    for x in 0..glyph_width {
+                        let idx = (y * glyph_width + x) as usize;
+                        let border =
+                            x == 0 || x == glyph_width - 1 || y == 0 || y == glyph_height - 1;
+                        bitmap[idx] = if border { 255 } else { 200 };
+                    }
+                }
+            }
+            Some((
+                bitmap,
+                glyph_width,
+                glyph_height,
+                glyph_width as f32,
+                0.0f32,
+                font_size * 0.8,
+            ))
+        };
+
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let raster_result: Option<(Vec<u8>, u32, u32, f32, f32, f32)> = {
+            // Fallback for other platforms
+            let (glyph_width, glyph_height) = estimate_glyph_size(key.codepoint, font_size);
+            let glyph_width = glyph_width.max(1).min(256);
+            let glyph_height = glyph_height.max(1).min(256);
+
+            let mut bitmap = vec![0u8; (glyph_width * glyph_height) as usize];
+            if key.codepoint.is_ascii_graphic() || key.codepoint.is_alphabetic() {
+                for y in 0..glyph_height {
+                    for x in 0..glyph_width {
+                        let idx = (y * glyph_width + x) as usize;
+                        let border =
+                            x == 0 || x == glyph_width - 1 || y == 0 || y == glyph_height - 1;
+                        bitmap[idx] = if border { 255 } else { 200 };
+                    }
+                }
+            }
+            Some((
+                bitmap,
+                glyph_width,
+                glyph_height,
+                glyph_width as f32,
+                0.0f32,
+                font_size * 0.8,
+            ))
+        };
+
+        let (bitmap, glyph_width, glyph_height, advance, bearing_x, bearing_y) = raster_result?;
 
         let glyph_width = glyph_width.max(1).min(256);
         let glyph_height = glyph_height.max(1).min(256);
 
-        // Allocate space
+        // PAINT-0 (P0c atlas A/B): FNV-1a over the rasterized bitmap. If the
+        // metrics-normal build produces identical hashes to flat-1.2, the
+        // bitmaps are byte-identical and any pixel delta is pure seating.
+        if crate::paint0_probe() {
+            let mut hash: u64 = 0xcbf29ce484222325;
+            for &b in &bitmap {
+                hash ^= b as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            eprintln!(
+                "PAINT0 atlas cp={:?} fs={} w={} h={} bearing_x={} bearing_y={} advance={} hash={:016x}",
+                key.codepoint, key.font_size, glyph_width, glyph_height, bearing_x, bearing_y, advance, hash
+            );
+        }
+
+        // Allocate space in the atlas
         let (atlas_x, atlas_y) = self.allocate_space(glyph_width + 2, glyph_height + 2)?;
 
-        // Create simple glyph bitmap (filled rectangle for fallback)
-        let mut bitmap = vec![0u8; (glyph_width * glyph_height) as usize];
-        
-        // For printable characters, create a visible shape
-        if key.codepoint.is_ascii_graphic() || key.codepoint.is_alphabetic() {
-            for y in 0..glyph_height {
-                for x in 0..glyph_width {
-                    let idx = (y * glyph_width + x) as usize;
-                    // Create a simple pattern
-                    let border = x == 0 || x == glyph_width - 1 || y == 0 || y == glyph_height - 1;
-                    bitmap[idx] = if border { 255 } else { 200 };
-                }
-            }
-        }
-        // Whitespace characters remain transparent
-
-        // Upload
-        self.maybe_dump_glyph_bitmap(key, glyph_width, glyph_height, &bitmap);
-        self.blit_into_cpu_atlas(atlas_x + 1, atlas_y + 1, glyph_width, glyph_height, &bitmap);
+        // Upload to atlas
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.atlas,
@@ -617,12 +506,22 @@ impl GlyphCache {
         let u1 = (atlas_x + 1 + glyph_width) as f32 / self.atlas_size as f32;
         let v1 = (atlas_y + 1 + glyph_height) as f32 / self.atlas_size as f32;
 
-        // For fallback glyphs, position them at the text line top
-        // The glyph should start at y=0 relative to the line top
+        // ADVANCE CONTRACT (2026-07-11): entries are BASELINE-relative.
+        // offset[1] = -bearing_y (glyph top relative to the baseline); the
+        // draw path decides where the baseline is — from layout's ascent
+        // when the display command carries one, else one per-run fallback.
+        // The old code built a THIRD TextShaper here PER GLYPH just to get
+        // an ascent, and its metrics disagreed with layout's by 2-3px —
+        // every glyph on every page painted low.
+        let y_offset = -bearing_y;
+
+        // x_offset: horizontal bearing adjustment
+        let x_offset = bearing_x;
+
         let entry = GlyphEntry {
             tex_coords: [u0, v0, u1, v1],
-            offset: [0.0, 0.0], // Start at line top
-            advance: glyph_width as f32,
+            offset: [x_offset, y_offset],
+            advance,
         };
 
         self.entries.insert(key.clone(), entry.clone());
@@ -659,178 +558,21 @@ impl GlyphCache {
     /// Clear the cache.
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.cpu_atlas.fill(0);
         self.next_x = 1;
         self.next_y = 1;
         self.row_height = 0;
+        self.color_entries.clear();
+        self.color_next_x = 1;
+        self.color_next_y = 1;
+        self.color_row_height = 0;
     }
-    
-    /// Dump the glyph atlas to a PNG file for debugging.
-    ///
-    /// This reads back the atlas texture from the GPU and saves it as a grayscale PNG.
-    pub fn dump_atlas_to_file(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        output_path: impl AsRef<Path>,
-    ) -> Result<(), crate::RendererError> {
-        use std::fs::File;
-        use std::io::BufWriter;
-        
-        let size = self.atlas_size;
-        
-        // Create readback buffer
-        let bytes_per_row = (size + 255) & !255; // Align to 256 bytes
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Atlas Readback Buffer"),
-            size: (bytes_per_row * size) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        
-        // Copy texture to buffer
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Atlas Readback Encoder"),
-        });
-        
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.atlas,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(size),
-                },
-            },
-            wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: 1,
-            },
-        );
-        
-        queue.submit(std::iter::once(encoder.finish()));
-        
-        // Read back the data
-        let buffer_slice = buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        
-        device.poll(wgpu::Maintain::Wait);
-        
-        rx.recv()
-            .map_err(|_| crate::RendererError::BufferCreation("Failed to receive buffer map result".into()))?
-            .map_err(|_| crate::RendererError::BufferCreation("Buffer mapping failed".into()))?;
-        
-        let data = buffer_slice.get_mapped_range();
-        
-        // Remove row padding and convert to RGBA for PNG
-        let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-        for y in 0..size {
-            let row_start = (y * bytes_per_row) as usize;
-            for x in 0..size {
-                let alpha = data[row_start + x as usize];
-                // Convert grayscale to RGBA (white text on transparent background)
-                rgba.push(255); // R
-                rgba.push(255); // G
-                rgba.push(255); // B
-                rgba.push(alpha); // A
-            }
-        }
-        
-        drop(data);
-        buffer.unmap();
-        
-        // Save as PNG
-        let file = File::create(output_path)
-            .map_err(|e| crate::RendererError::BufferCreation(format!("Failed to create file: {}", e)))?;
-        let writer = BufWriter::new(file);
-        
-        let mut encoder = png::Encoder::new(writer, size, size);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        
-        let mut png_writer = encoder.write_header()
-            .map_err(|e| crate::RendererError::BufferCreation(format!("PNG header error: {}", e)))?;
-        
-        png_writer.write_image_data(&rgba)
-            .map_err(|e| crate::RendererError::BufferCreation(format!("PNG write error: {}", e)))?;
-        
-        tracing::info!(
-            entries = self.entries.len(),
-            "Glyph atlas dumped to file"
-        );
-        
-        Ok(())
-    }
-    
-    /// Dump info about specific glyphs for debugging.
-    pub fn dump_glyph_info(&self, codepoints: &[char]) -> Vec<String> {
-        let mut info = Vec::new();
-        
-        for &cp in codepoints {
-            let matching: Vec<_> = self.entries.iter()
-                .filter(|(k, _)| k.codepoint == cp)
-                .collect();
-            
-            if matching.is_empty() {
-                info.push(format!("'{}' (U+{:04X}): NOT CACHED", cp, cp as u32));
-            } else {
-                for (key, entry) in matching {
-                    info.push(format!(
-                        "'{}' (U+{:04X}): family={}, size={}, tex_coords=[{:.4}, {:.4}, {:.4}, {:.4}], offset=[{:.1}, {:.1}], advance={:.1}",
-                        cp, cp as u32,
-                        key.font_family,
-                        key.font_size as f32 / 10.0,
-                        entry.tex_coords[0], entry.tex_coords[1], entry.tex_coords[2], entry.tex_coords[3],
-                        entry.offset[0], entry.offset[1],
-                        entry.advance
-                    ));
-                }
-            }
-        }
-        
-        info
-    }
-    
-    /// Get statistics about the glyph cache.
-    pub fn stats(&self) -> GlyphCacheStats {
-        GlyphCacheStats {
-            entries: self.entries.len(),
-            atlas_size: self.atlas_size,
-            next_x: self.next_x,
-            next_y: self.next_y,
-            row_height: self.row_height,
-            estimated_usage_percent: 
-                ((self.next_y as f64 * self.atlas_size as f64 + self.next_x as f64) / 
-                 (self.atlas_size as f64 * self.atlas_size as f64) * 100.0),
-        }
-    }
-}
-
-/// Statistics about the glyph cache.
-#[derive(Debug, Clone)]
-pub struct GlyphCacheStats {
-    pub entries: usize,
-    pub atlas_size: u32,
-    pub next_x: u32,
-    pub next_y: u32,
-    pub row_height: u32,
-    pub estimated_usage_percent: f64,
 }
 
 /// Estimate glyph size based on character and font size.
+#[allow(dead_code)]
 fn estimate_glyph_size(ch: char, font_size: f32) -> (u32, u32) {
     let height = font_size.ceil() as u32;
-    
+
     // Estimate width based on character type
     let width_factor = match ch {
         ' ' => 0.3,
@@ -839,18 +581,112 @@ fn estimate_glyph_size(ch: char, font_size: f32) -> (u32, u32) {
         _ if ch.is_ascii() => 0.6,
         _ => 0.8, // CJK and other wide characters
     };
-    
+
     let width = (font_size * width_factor).ceil() as u32;
     (width.max(1), height.max(1))
 }
 
 #[cfg(test)]
 mod tests {
+
+    fn key_at(phase: u8) -> GlyphKey {
+        GlyphKey {
+            codepoint: 'a',
+            font_family: "Helvetica".to_string(),
+            font_size: 160,
+            font_weight: 400,
+            font_style: 0,
+            subpixel_phase: phase,
+        }
+    }
+
+    #[test]
+    fn one_glyph_occupies_at_most_quantize_cache_slots() {
+        // ATLAS GROWTH BOUND (Argos's soft note on #131). The phase field
+        // multiplies cache entries per glyph, and this cache has NO eviction
+        // -- `clear()` is the only reset -- so the growth FACTOR is the whole
+        // safety story. It must be exactly SUBPIXEL_QUANTIZE, not "however
+        // many distinct fractions a page happens to produce".
+        use std::collections::HashSet;
+        let mut keys = HashSet::new();
+        // Sweep far more x positions than there are phases; the bucket count,
+        // not the position count, must bound the entries.
+        for i in 0..500 {
+            let x = i as f32 * 0.013;
+            keys.insert(key_at(subpixel_phase_for(x)));
+        }
+        assert_eq!(
+            keys.len(),
+            SUBPIXEL_QUANTIZE as usize,
+            "500 distinct x positions must collapse to exactly {} cache slots",
+            SUBPIXEL_QUANTIZE
+        );
+    }
+
+    #[test]
+    fn the_growth_bound_is_the_only_thing_this_unit_guarantees() {
+        // Deliberate documentation-as-test. Paying 4x atlas for a glyph is
+        // only worth it if the four phases produce four DIFFERENT bitmaps --
+        // and Atlas measured that CoreGraphics grid-fits glyph origins and
+        // rounds the offset away by default: at 36px, phases .25 and .50 gave
+        // a 0.00px and a 1.00px shift, i.e. TWO bitmaps in FOUR slots. That is
+        // fixed in the rasterizer half (#132, subpixel positioning on,
+        // subpixel quantization off), NOT here.
+        //
+        // This test exists so a reader of THIS file learns that the key alone
+        // does not buy distinct rendering, and does not mistake a green suite
+        // here for a working subpixel pipeline.
+        assert_eq!(SUBPIXEL_QUANTIZE, 4);
+    }
+
+    #[test]
+    fn glyphs_at_different_phases_are_different_cache_entries() {
+        // THE POINT OF THE WHOLE UNIT. Before the phase field, a glyph at
+        // x=10.0 and the same glyph at x=10.5 collided on one key, so both got
+        // the phase-0 bitmap and the .5 one was resampled into blur.
+        assert_ne!(key_at(0), key_at(2));
+    }
+
+    #[test]
+    fn the_same_phase_is_the_same_entry() {
+        // The other direction: phases must still SHARE, or the cache degrades
+        // into one entry per draw and the atlas grows without bound.
+        assert_eq!(key_at(2), key_at(2));
+    }
+
+    #[test]
+    fn phase_quantization_buckets_the_fraction() {
+        assert_eq!(subpixel_phase_for(10.0), 0);
+        assert_eq!(subpixel_phase_for(10.24), 0);
+        assert_eq!(subpixel_phase_for(10.25), 1);
+        assert_eq!(subpixel_phase_for(10.5), 2);
+        assert_eq!(subpixel_phase_for(10.75), 3);
+        assert_eq!(subpixel_phase_for(10.999), 3, "never reaches QUANTIZE");
+    }
+
+    #[test]
+    fn a_negative_x_phases_by_its_fraction_not_its_sign() {
+        // Text can be laid out at a negative device X (scrolled, or a run that
+        // starts left of the viewport). Using the raw value rather than the
+        // fractional part would produce a negative bucket and panic on cast.
+        assert_eq!(subpixel_phase_for(-0.25), 3, "-0.25 sits at .75 of a pixel");
+        assert_eq!(subpixel_phase_for(-1.0), 0);
+    }
+
+    #[test]
+    fn every_phase_is_in_range() {
+        for i in 0..400 {
+            let x = i as f32 * 0.017 - 3.0;
+            let p = subpixel_phase_for(x);
+            assert!(p < SUBPIXEL_QUANTIZE, "phase {p} out of range for x={x}");
+        }
+    }
     use super::*;
 
     #[test]
     fn test_glyph_key_hash() {
         let key1 = GlyphKey {
+            subpixel_phase: 0,
             codepoint: 'A',
             font_family: "Arial".to_string(),
             font_size: 160,
@@ -859,6 +695,7 @@ mod tests {
         };
 
         let key2 = GlyphKey {
+            subpixel_phase: 0,
             codepoint: 'A',
             font_family: "Arial".to_string(),
             font_size: 160,
@@ -872,6 +709,7 @@ mod tests {
     #[test]
     fn test_glyph_key_different() {
         let key1 = GlyphKey {
+            subpixel_phase: 0,
             codepoint: 'A',
             font_family: "Arial".to_string(),
             font_size: 160,
@@ -880,6 +718,7 @@ mod tests {
         };
 
         let key2 = GlyphKey {
+            subpixel_phase: 0,
             codepoint: 'B',
             font_family: "Arial".to_string(),
             font_size: 160,
@@ -895,7 +734,7 @@ mod tests {
         let (w, h) = estimate_glyph_size('A', 16.0);
         assert!(w > 0);
         assert!(h > 0);
-        
+
         let (narrow_w, _) = estimate_glyph_size('i', 16.0);
         let (wide_w, _) = estimate_glyph_size('M', 16.0);
         assert!(narrow_w < wide_w);

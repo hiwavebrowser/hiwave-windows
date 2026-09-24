@@ -116,27 +116,39 @@ impl LineBreaker {
     /// Returns an iterator over `BreakOpportunity` structs indicating where
     /// line breaks can occur.
     pub fn break_opportunities<'a>(&self, text: &'a str) -> impl Iterator<Item = BreakOpportunity> + 'a {
-        let word_break = self.word_break;
-        let _overflow_wrap = self.overflow_wrap; // Reserved for future use
+        // UAX #14 break opportunities. In keep-all mode a complete
+        // implementation would suppress breaks within CJK; for now all
+        // UAX #14 breaks are allowed there (pre-existing simplification).
+        let mut ops: Vec<BreakOpportunity> = linebreaks(text)
+            .map(|(offset, break_op)| BreakOpportunity {
+                offset,
+                kind: match break_op {
+                    UnicodeBreakOp::Mandatory => BreakKind::Mandatory,
+                    UnicodeBreakOp::Allowed => BreakKind::Allowed,
+                },
+            })
+            .collect();
 
-        // Get UAX #14 break opportunities
-        linebreaks(text).filter_map(move |(offset, break_op)| {
-            let kind = match break_op {
-                UnicodeBreakOp::Mandatory => BreakKind::Mandatory,
-                UnicodeBreakOp::Allowed => {
-                    // Check if this break is allowed by word-break property
-                    if word_break == WordBreak::KeepAll {
-                        // In keep-all mode, check if we're breaking within CJK
-                        // For simplicity, we allow all UAX #14 breaks but a more
-                        // complete implementation would check character classes
-                        BreakKind::Allowed
-                    } else {
-                        BreakKind::Allowed
-                    }
+        // css-text-3 §4.2 `word-break: break-all`: breaking is allowed
+        // between any two typographic character units, so every grapheme
+        // boundary UAX #14 did not already surface is a REAL soft wrap
+        // opportunity (used in normal line filling), not an emergency one.
+        if self.word_break == WordBreak::BreakAll {
+            use crate::segmentation::grapheme_boundaries;
+            let existing: std::collections::HashSet<usize> =
+                ops.iter().map(|op| op.offset).collect();
+            for offset in grapheme_boundaries(text).into_iter().skip(1) {
+                if !existing.contains(&offset) {
+                    ops.push(BreakOpportunity {
+                        offset,
+                        kind: BreakKind::Allowed,
+                    });
                 }
-            };
-            Some(BreakOpportunity { offset, kind })
-        })
+            }
+            ops.sort_by_key(|op| op.offset);
+        }
+
+        ops.into_iter()
     }
 
     /// Get break opportunities as byte offsets.
@@ -232,15 +244,61 @@ pub fn has_mandatory_breaks(text: &str) -> bool {
     text.chars().any(is_mandatory_break)
 }
 
+/// The byte range of every mandatory break in `text`, in order.
+///
+/// **Single owner of the UAX #14 LB5 pairing rule: CRLF is ONE break.** Both
+/// public splitters below consume this, so they cannot disagree about where a
+/// line ends.
+///
+/// This exists because the duplication was the defect, not a symptom of it.
+/// The same hand-rolled `char_indices()` walk lived in both functions and both
+/// got CRLF wrong; on the sibling trees the first fix landed on one copy and
+/// left the other broken. Two copies of a rule means one fix can only ever be
+/// half a fix, so the rule now lives in one place. Athena factored it this way
+/// on Windows after Prometheus caught the second site; macOS mirrors it, and
+/// the property test below pins the two entry points together.
+///
+/// Lazy and allocation-free — the callers already allocate their own output.
+fn mandatory_break_bounds(text: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut chars = text.char_indices().peekable();
+    std::iter::from_fn(move || {
+        for (i, c) in chars.by_ref() {
+            if is_mandatory_break(c) {
+                let mut end = i + c.len_utf8();
+                // LB5: CR followed by LF is a single break. Consume the LF here
+                // rather than letting it register as a second break, which is
+                // what produced a phantom empty line after every CRLF.
+                if c == '\r' {
+                    if let Some(&(j, '\n')) = chars.peek() {
+                        chars.next();
+                        end = j + '\n'.len_utf8();
+                    }
+                }
+                return Some((i, end));
+            }
+        }
+        None
+    })
+}
+
 /// Split text at mandatory breaks.
 ///
 /// Returns an iterator over line segments, preserving the break characters
 /// at the end of each segment (except the last).
 pub fn split_at_mandatory_breaks(text: &str) -> impl Iterator<Item = &str> {
-    let mut segments: Vec<&str> = mandatory_break_bounds(text)
-        .into_iter()
-        .map(|(s, e, _)| &text[s..e])
-        .collect();
+    let mut last_end = 0;
+    let mut segments = Vec::new();
+
+    for (_, end) in mandatory_break_bounds(text) {
+        // The break characters stay attached to the segment they terminate.
+        segments.push(&text[last_end..end]);
+        last_end = end;
+    }
+
+    // Add remaining text if any
+    if last_end < text.len() {
+        segments.push(&text[last_end..]);
+    }
 
     // Handle empty text
     if segments.is_empty() && !text.is_empty() {
@@ -285,59 +343,32 @@ impl<'a> LineSegment<'a> {
     }
 }
 
-/// Segment `text` on mandatory breaks, returning `(start, end, ends_with_break)`
-/// byte bounds. Single source of truth for mandatory-break segmentation.
-///
-/// UAX #14 rule LB5: do NOT break between CR and LF — CRLF is ONE mandatory
-/// break. Without that pairing, every CRLF document gains a spurious empty
-/// line per break; invisible on LF-only sources, and it hits essentially all
-/// Windows-authored content.
-///
-/// This exists as ONE helper because the bug it fixes was caused by having
-/// two hand-rolled copies of this loop (`break_into_lines` and
-/// `split_at_mandatory_breaks`) — fixing only the copy in front of you leaves
-/// the other one wrong. Both now call this.
-fn mandatory_break_bounds(text: &str) -> Vec<(usize, usize, bool)> {
-    let mut out: Vec<(usize, usize, bool)> = Vec::new();
-    let mut start = 0;
-    let mut prev_was_cr = false;
-
-    for (i, c) in text.char_indices() {
-        if c == '\n' && prev_was_cr {
-            // The break was already emitted at the CR; extend it over the LF
-            // so the pair is consumed as a single break.
-            if let Some(last) = out.last_mut() {
-                last.1 = i + c.len_utf8();
-            }
-            start = i + c.len_utf8();
-            prev_was_cr = false;
-            continue;
-        }
-        prev_was_cr = c == '\r';
-        if is_mandatory_break(c) {
-            let end = i + c.len_utf8();
-            out.push((start, end, true));
-            start = end;
-        }
-    }
-
-    if start < text.len() {
-        out.push((start, text.len(), false));
-    }
-    out
-}
-
 /// Break text into lines at mandatory breaks, returning detailed segments.
 pub fn break_into_lines(text: &str) -> Vec<LineSegment<'_>> {
-    mandatory_break_bounds(text)
-        .into_iter()
-        .map(|(start, end, ends_with_break)| LineSegment {
+    let mut segments = Vec::new();
+    let mut start = 0;
+
+    for (_, end) in mandatory_break_bounds(text) {
+        segments.push(LineSegment {
             text: &text[start..end],
             start,
             end,
-            ends_with_break,
-        })
-        .collect()
+            ends_with_break: true,
+        });
+        start = end;
+    }
+
+    // Add remaining text if any
+    if start < text.len() {
+        segments.push(LineSegment {
+            text: &text[start..],
+            start,
+            end: text.len(),
+            ends_with_break: false,
+        });
+    }
+
+    segments
 }
 
 #[cfg(test)]
@@ -546,75 +577,124 @@ mod tests {
 }
 
 #[cfg(test)]
-mod crlf_regression {
+mod crlf_tests {
     use super::*;
 
+    // A CRLF is ONE mandatory break, not two. Both mandatory-break splitters
+    // here walk chars individually, so they see CR and LF as separate breaks
+    // and emit a phantom empty line between them. Found by Athena on Windows
+    // (#43), reproduced on Linux by Talos, and it hits every CRLF document —
+    // which on the web is most documents served from Windows toolchains.
+
     #[test]
-    fn crlf_is_one_mandatory_break_not_two() {
-        // UAX #14 LB5. Before the fix this returned THREE segments
-        // ("a\r", "\n", "b") and rendered a spurious blank line for every
-        // hard break in a CRLF document.
+    fn break_into_lines_pairs_crlf_as_one_break() {
         let segs = break_into_lines("a\r\nb");
-        assert_eq!(segs.len(), 2, "got {:?}", segs.iter().map(|s| s.text).collect::<Vec<_>>());
+        assert_eq!(segs.len(), 2, "CRLF must yield 2 lines, not 3: {segs:?}");
         assert_eq!(segs[0].text, "a\r\n");
+        assert_eq!(segs[0].text_without_break(), "a");
         assert!(segs[0].ends_with_break);
         assert_eq!(segs[1].text, "b");
         assert!(!segs[1].ends_with_break);
     }
 
     #[test]
-    fn lone_cr_and_lone_lf_each_still_break() {
-        assert_eq!(break_into_lines("a\rb").len(), 2);
-        assert_eq!(break_into_lines("a\nb").len(), 2);
+    fn split_at_mandatory_breaks_pairs_crlf_as_one_break() {
+        let segs: Vec<&str> = split_at_mandatory_breaks("a\r\nb").collect();
+        assert_eq!(segs, vec!["a\r\n", "b"]);
+    }
+
+    // The two guards below exist because the obvious fix over-reaches. Pairing
+    // must be CR-then-LF specifically, and must consume the LF exactly once.
+
+    #[test]
+    fn lf_then_cr_is_still_two_breaks() {
+        // Reversed order is NOT a line ending pair — it is a blank line.
+        let segs = break_into_lines("a\n\rb");
+        assert_eq!(segs.len(), 3, "\\n\\r is two breaks, not one: {segs:?}");
+        assert_eq!(segs[0].text, "a\n");
+        assert_eq!(segs[1].text, "\r");
+        assert_eq!(segs[2].text, "b");
+
+        let split: Vec<&str> = split_at_mandatory_breaks("a\n\rb").collect();
+        assert_eq!(split, vec!["a\n", "\r", "b"]);
     }
 
     #[test]
-    fn lf_then_cr_is_two_breaks_not_one() {
-        // Reversed order is NOT a pair — "\n\r" is two separate breaks, so
-        // an over-eager fix that pairs any CR/LF adjacency would fail here.
-        assert_eq!(break_into_lines("a\n\rb").len(), 3);
-    }
-
-    #[test]
-    fn consecutive_crlf_pairs_produce_one_break_each() {
-        // "a\r\n\r\nb" is a blank line between two texts: 3 segments.
+    fn consecutive_crlf_pairs_are_one_break_each() {
+        // A blank line between two lines of text: 3 segments, not 5.
         let segs = break_into_lines("a\r\n\r\nb");
-        assert_eq!(segs.len(), 3, "got {:?}", segs.iter().map(|s| s.text).collect::<Vec<_>>());
+        assert_eq!(segs.len(), 3, "{segs:?}");
+        assert_eq!(segs[0].text, "a\r\n");
+        assert_eq!(segs[1].text, "\r\n");
+        assert_eq!(segs[2].text, "b");
+
+        let split: Vec<&str> = split_at_mandatory_breaks("a\r\n\r\nb").collect();
+        assert_eq!(split, vec!["a\r\n", "\r\n", "b"]);
     }
 
     #[test]
-    fn byte_offsets_stay_consistent_across_a_crlf_pair() {
-        let segs = break_into_lines("ab\r\ncd");
-        assert_eq!((segs[0].start, segs[0].end), (0, 4));
-        assert_eq!((segs[1].start, segs[1].end), (4, 6));
+    fn lone_cr_is_still_a_break() {
+        // Classic Mac line ending. Pairing must not swallow it.
+        let segs = break_into_lines("a\rb");
+        assert_eq!(segs.len(), 2, "{segs:?}");
+        assert_eq!(segs[0].text, "a\r");
+        assert!(segs[0].ends_with_break);
     }
-}
-
-#[cfg(test)]
-mod split_at_mandatory_breaks_crlf {
-    use super::*;
 
     #[test]
-    fn split_at_mandatory_breaks_pairs_crlf() {
-        // The SECOND copy of the loop. Prometheus caught that Athena's first
-        // CRLF fix touched break_into_lines only and left this one wrong -
-        // which is why both now share mandatory_break_bounds.
-        let v: Vec<&str> = split_at_mandatory_breaks("a\r\nb").collect();
-        assert_eq!(v, vec!["a\r\n", "b"], "CRLF must be one break here too");
+    fn trailing_crlf_yields_no_phantom_segment() {
+        let segs = break_into_lines("a\r\n");
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].text, "a\r\n");
+        assert!(segs[0].ends_with_break);
     }
 
+    // The test that generalises. The seven cases above pin CRLF specifically;
+    // this one pins the two public entry points to EACH OTHER, so a future
+    // mandatory-break variant cannot be added to one walker and forgotten in
+    // the other. That divergence is the defect that actually happened — twice,
+    // on two trees — and no amount of per-case unit testing prevents the next
+    // one. Mirrors Athena's both_entry_points_agree_on_segmentation on Windows.
     #[test]
     fn both_entry_points_agree_on_segmentation() {
-        // The property that makes the duplication safe: the two public
-        // functions must never disagree about where the breaks are.
-        for s in ["a\r\nb", "a\nb", "a\rb", "a\n\rb", "a\r\n\r\nb", "plain", ""] {
-            let via_split: Vec<&str> = split_at_mandatory_breaks(s).collect();
-            let via_lines: Vec<&str> = break_into_lines(s).iter().map(|x| x.text).collect();
-            // split_at_mandatory_breaks yields the whole string for empty-segment
-            // input; compare only when break_into_lines produced segments.
-            if !via_lines.is_empty() {
-                assert_eq!(via_split, via_lines, "entry points disagree on {:?}", s);
-            }
+        let cases = [
+            "",
+            "no breaks at all",
+            "a\r\nb",
+            "a\nb",
+            "a\rb",
+            "a\n\rb",
+            "a\r\n\r\nb",
+            "a\r\n",
+            "\r\n",
+            "\r\nleading",
+            "\u{2028}ls\u{2029}ps\u{0085}nel",
+            "mixed\r\nendings\nin\rone\u{2028}string\r\n",
+        ];
+        for case in cases {
+            let split: Vec<&str> = split_at_mandatory_breaks(case).collect();
+            let lines: Vec<&str> = break_into_lines(case).iter().map(|s| s.text).collect();
+            assert_eq!(
+                split, lines,
+                "entry points disagree on {case:?} — the LB5 rule has drifted \
+                 between them again"
+            );
+            // Whatever they agree on must also reconstruct the input exactly:
+            // agreement on a wrong answer is still wrong.
+            assert_eq!(split.concat(), case, "segmentation lost text on {case:?}");
         }
+    }
+
+    #[test]
+    fn segment_offsets_stay_consistent_across_a_paired_break() {
+        let text = "ab\r\ncd";
+        let segs = break_into_lines(text);
+        assert_eq!(segs[0].start, 0);
+        assert_eq!(segs[0].end, 4);
+        assert_eq!(segs[1].start, 4);
+        assert_eq!(segs[1].end, 6);
+        // Offsets must still index the original string exactly.
+        assert_eq!(&text[segs[0].start..segs[0].end], segs[0].text);
+        assert_eq!(&text[segs[1].start..segs[1].end], segs[1].text);
     }
 }

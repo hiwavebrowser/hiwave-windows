@@ -5,9 +5,13 @@ edition = "2021"
 description = "Image loading, decoding, and caching for RustKit browser engine"
 license = "MIT"
 
+[features]
+test-hooks = []
+
 [dependencies]
 # Image decoding (RustKit-owned)
 rustkit-codecs = { path = "../rustkit-codecs" }
+
 
 # Async runtime
 tokio = { version = "1", features = ["sync", "time"] }
@@ -42,5 +46,6 @@ base64 = "0.22"
 urlencoding = "2.1"
 
 [dev-dependencies]
+rustkit-image = { path = ".", features = ["test-hooks"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 

@@ -1230,7 +1230,8 @@ fn parse_font_size(font: &str) -> Option<f32> {
     None
 }
 
-/// Interpolate between two colors.
+/// Interpolate between two colors in sRGB space.
+/// Canvas 2D gradients use sRGB interpolation for browser compatibility.
 fn interpolate_color(a: &Color, b: &Color, t: f32) -> Color {
     let lerp = |a: u8, b: u8, t: f32| -> u8 {
         ((a as f32) + (b as f32 - a as f32) * t).round() as u8

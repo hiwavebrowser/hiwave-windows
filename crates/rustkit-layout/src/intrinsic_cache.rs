@@ -262,17 +262,9 @@ pub fn cache_sizes() -> (usize, usize) {
 mod tests {
     use super::*;
 
-    /// Serialises tests that touch the global cache epoch.
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn test_cache_miss_on_first_lookup() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         clear_all();
         use_epoch(1);
 
@@ -280,18 +272,34 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // Note: These tests use unique element IDs and epochs to avoid interference
-    // when tests run in parallel. The cache uses global state, so concurrent tests
-    // can interfere with each other if they use the same IDs/epochs.
+    // These tests MUST run serialised, and unique IDs/epochs do not achieve that.
+    //
+    // The comment that used to sit here said unique element IDs and epochs
+    // "avoid interference when tests run in parallel". It is the opposite:
+    // CACHE_EPOCH is a process-global AtomicUsize (line ~57) while TL_EPOCH,
+    // INLINE_CACHE and BLOCK_CACHE are thread_local. Every use_epoch(N) writes
+    // the SHARED global, and every lookup/store compares it against the calling
+    // thread's TL_EPOCH and clears that thread's caches on mismatch. So a test
+    // picking a "unique" epoch does not isolate itself — it GUARANTEES it stomps
+    // every other test thread's cache. Distinct epochs make the race certain
+    // rather than avoiding it.
+    //
+    // The race is in the test harness, not the layout model: a single-threaded
+    // layout pass with epoch = pass id is the correct production shape and is
+    // deliberately left untouched. The fix is therefore test-only.
+    //
+    // Poison-tolerant on purpose: if one test fails while holding the lock, the
+    // other nine must still report their own result rather than turning into
+    // nine misleading "poisoned mutex" failures on top of the real one.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn test_cache_hit_after_store() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         // Use unique epoch and element ID for this test
         use_epoch(1001);
         let elem_id = 100001;
@@ -304,12 +312,7 @@ mod tests {
 
     #[test]
     fn test_cache_miss_different_mode() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         use_epoch(1002);
         let elem_id = 100002;
 
@@ -321,12 +324,7 @@ mod tests {
 
     #[test]
     fn test_cache_miss_different_style() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         use_epoch(1003);
         let elem_id = 100003;
 
@@ -338,12 +336,7 @@ mod tests {
 
     #[test]
     fn test_cache_invalidation_on_epoch_change() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         use_epoch(1004);
         let elem_id = 100004;
 
@@ -360,12 +353,7 @@ mod tests {
 
     #[test]
     fn test_block_cache_separate_from_inline() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         // This test verifies inline and block caches are separate.
         // Due to global epoch state, we test each cache independently.
         let elem_id = 100006;
@@ -385,12 +373,7 @@ mod tests {
 
     #[test]
     fn test_stats_tracking() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         // Check relative changes to avoid parallel test interference
         use_epoch(1007);
         let elem_id = 100007;
@@ -413,12 +396,7 @@ mod tests {
 
     #[test]
     fn test_zero_element_id_not_cached() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         clear_all();
         use_epoch(1);
 
@@ -431,12 +409,7 @@ mod tests {
 
     #[test]
     fn test_non_finite_values_not_cached() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         clear_all();
         use_epoch(1);
 
@@ -450,12 +423,7 @@ mod tests {
 
     #[test]
     fn test_cache_sizes() {
-        // The cache epoch is process-global while the maps are
-        // thread-local, so a concurrent test's use_epoch() invalidates
-        // this test's entries. Unique epochs per test (the previous
-        // mitigation) cannot fix that -- every test still writes the
-        // same global. Serialise instead.
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = serial();
         clear_all();
         use_epoch(1);
 
