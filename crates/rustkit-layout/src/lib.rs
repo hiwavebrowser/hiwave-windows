@@ -13267,3 +13267,64 @@ mod w3_zero_width_wrap_tests {
         );
     }
 }
+
+
+// ── ported from hiwave-windows (#75): the display list emits RoundedRect for
+//    a rounded background and keeps the cheap SolidColor path otherwise. ──
+#[cfg(test)]
+mod border_radius_emit_tests {
+    use super::*;
+    use rustkit_css::{Color, ComputedStyle, Length};
+
+
+    fn box_with(radius: Length, bg: Color) -> LayoutBox {
+        let mut s = ComputedStyle::new();
+        s.background_color = bg;
+        s.border_top_left_radius = radius.clone();
+        s.border_top_right_radius = radius.clone();
+        s.border_bottom_right_radius = radius.clone();
+        s.border_bottom_left_radius = radius;
+        let mut b = LayoutBox::new(BoxType::Block, s);
+        b.dimensions.content.width = 80.0;
+        b.dimensions.content.height = 40.0;
+        b
+    }
+
+    fn kinds(b: &LayoutBox) -> Vec<String> {
+        DisplayList::build(b)
+            .commands
+            .iter()
+            .map(|c| {
+                format!("{c:?}")
+                    .chars()
+                    .take_while(|ch| ch.is_alphanumeric())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A square box must keep the cheap path. Without this, "rounded works"
+    /// could be satisfied by emitting RoundedRect unconditionally.
+    #[test]
+    fn a_square_box_still_emits_solid_color() {
+        let k = kinds(&box_with(Length::Zero, Color::new(51, 102, 204, 1.0)));
+        assert!(k.contains(&"SolidColor".to_string()), "got {k:?}");
+        assert!(!k.contains(&"RoundedRect".to_string()), "got {k:?}");
+    }
+
+    /// The product: a rounded box emits RoundedRect INSTEAD of SolidColor.
+    #[test]
+    fn a_rounded_box_emits_roundedrect_through_the_live_path() {
+        let k = kinds(&box_with(Length::Px(12.0), Color::new(51, 102, 204, 1.0)));
+        assert!(k.contains(&"RoundedRect".to_string()), "got {k:?}");
+        assert!(!k.contains(&"SolidColor".to_string()), "got {k:?}");
+    }
+
+    /// A transparent background emits nothing at all, rounded or not.
+    #[test]
+    fn a_transparent_box_emits_no_fill() {
+        let k = kinds(&box_with(Length::Px(12.0), Color::TRANSPARENT));
+        assert!(!k.contains(&"RoundedRect".to_string()), "got {k:?}");
+        assert!(!k.contains(&"SolidColor".to_string()), "got {k:?}");
+    }
+}

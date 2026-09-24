@@ -4902,9 +4902,12 @@ impl Engine {
                 // the one-value form used to parse; `8px 8px 0 0` (the
                 // top-rounded card/tab idiom) failed parse_length and the
                 // whole declaration was dropped, leaving square corners.
-                // The `h / v` elliptical form stays unparsed: radii are one
-                // scalar per corner (ledgered).
-                if let Some([tl, tr, br, bl]) = parse_border_radius_shorthand(value) {
+                // The `h / v` elliptical form: radii are one scalar per
+                // corner, so take the horizontal radii and drop the vertical
+                // ones (hiwave-windows #75 recorded this as the decision;
+                // dropping the whole declaration left the box square).
+                let horizontal = value.split('/').next().unwrap_or(value).trim();
+                if let Some([tl, tr, br, bl]) = parse_border_radius_shorthand(horizontal) {
                     style.border_top_left_radius = tl;
                     style.border_top_right_radius = tr;
                     style.border_bottom_right_radius = br;
@@ -9459,7 +9462,7 @@ fn parse_radial_gradient(value: &str, repeating: bool) -> Option<rustkit_css::Gr
                         // Percentage or other value - apply to both
                         let val = parse_position_value(pos_parts[0]);
                         center.0 = val;
-                        center.1 = val;
+                        center.1 = 0.5; // single value = x; y stays centred
                     }
                 }
             }
@@ -9554,9 +9557,12 @@ fn parse_conic_gradient(value: &str, repeating: bool) -> Option<rustkit_css::Gra
                         center.1 = 0.5;
                     }
                     _ => {
+                        // A single <length-percentage> is the horizontal
+                        // position; the vertical one defaults to center
+                        // (CSS Images 3 §3.2 / CSS Values <position>).
                         let val = parse_position_value(pos_parts[0]);
                         center.0 = val;
-                        center.1 = val;
+                        center.1 = 0.5;
                     }
                 }
             }
@@ -16049,5 +16055,423 @@ mod cascade_wire_tests {
         e.apply_style_property(&mut s2, "flex", "2 3");
         assert_eq!(s2.flex_grow, 2.0);
         assert_eq!(s2.flex_shrink, 3.0, "a bare number in position 2 is the SHRINK");
+    }
+}
+
+// ── ported from hiwave-windows: paint-order / border-radius / display-list
+//    reftest control / descendant selectors / UA heading scale / external
+//    CSS lifetime (#54, #59, #60, #62, #68, #74, #75) ──
+//
+// Each test drives the real engine paths (build_layout_from_document +
+// DisplayList::build, selector_matches, compute_style_for_element,
+// load_html) on one Engine built behind the init mutex (hiwave-windows #51).
+#[cfg(test)]
+mod windows_engine_pins {
+    use super::*;
+    use rustkit_layout::{Dimensions, DisplayList, Rect};
+
+    fn engine() -> Engine {
+        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+        Engine::new(EngineConfig::default()).expect("engine")
+    }
+
+    /// Render one document (800x600 containing block) to a display-list
+    /// description, one command per line.
+    fn dl(e: &Engine, html: &str) -> String {
+        let d = Document::parse_html(html).expect("parse");
+        let mut root = e.build_layout_from_document(&d, &[]);
+        let mut cb = Dimensions::default();
+        cb.content = Rect::new(0.0, 0.0, 800.0, 600.0);
+        root.layout(&cb);
+        DisplayList::build(&root)
+            .commands
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn rounded_rect_count(e: &Engine, style_decls: &str) -> usize {
+        let html = format!(
+            r#"<!DOCTYPE html><html><body><div style="width:80px;height:40px;background-color:#3366cc;font-size:10px;{style_decls}">x</div></body></html>"#
+        );
+        dl(e, &html)
+            .lines()
+            .filter(|c| c.starts_with("RoundedRect"))
+            .count()
+    }
+
+    fn anc(tag: &str, class: &str) -> (String, Vec<String>, Option<String>) {
+        let classes = if class.is_empty() { vec![] } else { vec![class.to_string()] };
+        (tag.to_string(), classes, None)
+    }
+
+    // ── border-radius reaches paint (#75) ──
+
+    #[test]
+    fn a_radius_declaration_reaches_paint_through_the_engine() {
+        let e = engine();
+        assert_eq!(rounded_rect_count(&e, "border-radius:12px"), 1);
+    }
+
+    /// `border-radius: 5px 10px` is the CSS 1-4 value fill-in form. The
+    /// Windows tree implemented the fill-in rules first (#75); this tree
+    /// gained them in #229. Pinned on both so nobody regresses either.
+    #[test]
+    fn the_multi_value_shorthand_rounds() {
+        let e = engine();
+        assert_eq!(rounded_rect_count(&e, "border-radius:5px 10px"), 1);
+        assert_eq!(rounded_rect_count(&e, "border-radius:5px 10px 15px"), 1);
+        assert_eq!(rounded_rect_count(&e, "border-radius:5px 10px 15px 20px"), 1);
+    }
+
+    /// Relative units survive the cascade to the paint boundary.
+    #[test]
+    fn a_relative_radius_survives_to_paint() {
+        let e = engine();
+        assert_eq!(rounded_rect_count(&e, "border-radius:1em"), 1);
+        assert_eq!(rounded_rect_count(&e, "border-radius:1rem"), 1);
+    }
+
+    /// Elliptical radii take the horizontal half rather than failing to
+    /// parse. Pinned so the behaviour is a recorded decision, not an
+    /// accident.
+    #[test]
+    fn an_elliptical_radius_takes_the_horizontal_half() {
+        let e = engine();
+        assert_eq!(rounded_rect_count(&e, "border-radius:10px / 20px"), 1);
+    }
+
+    // ── box-shadow paint order (#74) ──
+
+    #[test]
+    fn a_shadowed_box_paints_differently_from_an_unshadowed_one() {
+        let e = engine();
+        let plain = dl(&e, "<html><body><div style=\"width:100px;height:50px;background-color:#fff\"></div></body></html>");
+        let shadowed = dl(&e, "<html><body><div style=\"width:100px;height:50px;background-color:#fff;\
+                           box-shadow: 4px 4px 0 #000\"></div></body></html>");
+        assert_ne!(
+            plain, shadowed,
+            "a box-shadow must change what is painted; if these match the \
+             shadow is parsed and never drawn"
+        );
+        assert!(
+            shadowed.contains("BoxShadow"),
+            "expected a BoxShadow command in the display list, got:\n{shadowed}"
+        );
+    }
+
+    #[test]
+    fn the_shadow_is_emitted_before_the_background() {
+        let e = engine();
+        let s = dl(&e, "<html><body><div style=\"width:100px;height:50px;background-color:#ff0000;\
+                    box-shadow: 4px 4px 0 #000\"></div></body></html>");
+        let shadow_at = s.find("BoxShadow").expect("no BoxShadow command");
+        let bg_at = s
+            .find("SolidColor(Color { r: 255, g: 0, b: 0")
+            .expect("no red background command");
+        assert!(
+            shadow_at < bg_at,
+            "the outer shadow must be emitted before the background it sits behind"
+        );
+    }
+
+    #[test]
+    fn an_inset_shadow_is_emitted_after_the_background() {
+        let e = engine();
+        let s = dl(&e, "<html><body><div style=\"width:100px;height:50px;background-color:#ff0000;\
+                    box-shadow: inset 4px 4px 0 #000\"></div></body></html>");
+        let shadow_at = s.find("BoxShadow").expect("no BoxShadow command");
+        let bg_at = s
+            .find("SolidColor(Color { r: 255, g: 0, b: 0")
+            .expect("no red background command");
+        assert!(
+            shadow_at > bg_at,
+            "an inset shadow must be emitted after the background so it paints over it"
+        );
+    }
+
+    #[test]
+    fn a_fully_transparent_shadow_emits_nothing() {
+        let e = engine();
+        let s = dl(&e, "<html><body><div style=\"width:100px;height:50px;\
+                    box-shadow: 4px 4px 0 rgba(0,0,0,0)\"></div></body></html>");
+        assert!(
+            !s.contains("BoxShadow"),
+            "a fully transparent shadow must not be emitted, got:\n{s}"
+        );
+    }
+
+    // ── display-list reftest negative control (#62) ──
+
+    /// A reftest harness whose comparison always returns "equal" passes every
+    /// `==` case and looks perfect. The comparison must be able to report a
+    /// MISMATCH.
+    #[test]
+    fn the_comparison_can_actually_report_a_difference() {
+        let e = engine();
+        let red = dl(&e, "<html><body><div style=\"background-color: #ff0000; width: 100px; height: 50px\"></div></body></html>");
+        let blue = dl(&e, "<html><body><div style=\"background-color: #0000ff; width: 100px; height: 50px\"></div></body></html>");
+        assert_ne!(
+            red, blue,
+            "NEGATIVE CONTROL FAILED: two documents with different background \
+             colours produced identical display lists"
+        );
+    }
+
+    // ── descendant / child combinators (#59, #60) ──
+
+    #[test]
+    fn a_descendant_selector_requires_the_ancestor() {
+        let e = engine();
+        let attrs = HashMap::new();
+        let inside = [anc("div", "hero")];
+        let outside: [(String, Vec<String>, Option<String>); 0] = [];
+        assert!(e.selector_matches(".hero p", "p", &attrs, &inside, &[], SiblingContext::SOLE));
+        assert!(
+            !e.selector_matches(".hero p", "p", &attrs, &outside, &[], SiblingContext::SOLE),
+            "a bare <p> outside .hero must not match (the over-match that leaked \
+             text-align:center onto cards)"
+        );
+        assert!(
+            !e.selector_matches(".hero p", "span", &attrs, &inside, &[], SiblingContext::SOLE),
+            "the subject still has to match the element itself"
+        );
+    }
+
+    #[test]
+    fn a_descendant_selector_sums_the_specificity_of_its_compounds() {
+        let e = engine();
+        // `.hero p` = one class + one type; a bare `p` is one type.
+        assert_eq!(e.selector_specificity(".hero p"), (0, 1, 1));
+        assert_eq!(e.selector_specificity("p"), (0, 0, 1));
+    }
+
+    #[test]
+    fn a_descendant_matches_a_non_adjacent_ancestor() {
+        let e = engine();
+        let attrs = HashMap::new();
+        let chain = [anc("div", "hero"), anc("section", "")];
+        assert!(e.selector_matches(".hero p", "p", &attrs, &chain, &[], SiblingContext::SOLE));
+    }
+
+    #[test]
+    fn a_malformed_group_does_not_kill_its_valid_siblings() {
+        let e = engine();
+        let attrs = HashMap::new();
+        let ancestors = [anc("ul", "nav")];
+        assert!(
+            e.selector_matches("> broken, .nav > li", "li", &attrs, &ancestors, &[], SiblingContext::SOLE),
+            "a valid group must still match alongside a malformed one"
+        );
+    }
+
+    // ── UA heading scale (#68) ──
+
+    #[test]
+    fn the_heading_scale_is_monotonically_decreasing() {
+        let e = engine();
+        let attrs = HashMap::new();
+        let vars = HashMap::new();
+        let sizes: Vec<f32> = ["h1", "h2", "h3", "h4", "h5", "h6"]
+            .iter()
+            .map(|t| {
+                let s = e.compute_style_for_element(t, &attrs, &[], &vars, &[], &[], SiblingContext::SOLE, None);
+                match s.font_size {
+                    rustkit_css::Length::Px(px) => px,
+                    other => panic!("<{t}> font-size is {other:?}, expected Px"),
+                }
+            })
+            .collect();
+        for w in sizes.windows(2) {
+            assert!(w[0] > w[1], "heading sizes must strictly decrease; got {sizes:?}");
+        }
+    }
+
+    // ── external CSS does not leak into the next document (#59) ──
+
+    #[cfg(feature = "headless")]
+    #[test]
+    fn a_new_document_does_not_inherit_the_previous_external_css() {
+        let mut e = engine();
+        let id = e
+            .create_headless_view(Bounds { x: 0, y: 0, width: 800, height: 600 })
+            .expect("headless view");
+        e.views
+            .get_mut(&id)
+            .unwrap()
+            .external_stylesheets
+            .push(Stylesheet::parse("p { width: 123px }").expect("css"));
+        e.load_html(id, "<html><body><p>next page</p></body></html>")
+            .expect("load_html");
+        assert!(
+            e.views.get(&id).unwrap().external_stylesheets.is_empty(),
+            "a new document must start with no external CSS; the previous \
+             page's stylesheet leaked into it"
+        );
+    }
+}
+
+// ── ported from hiwave-windows `a_leg_engine_path_guards` (#73): the A-leg
+//    cascade contracts guarded at the ENGINE path — custom properties, canvas
+//    background propagation, background-clip:text, inherited text-align,
+//    whitespace between block siblings, and line-height:normal. ──
+#[cfg(test)]
+mod windows_a_leg_pins {
+    use super::*;
+    use rustkit_layout::{Dimensions, Rect};
+
+    fn engine() -> Engine {
+        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+        Engine::new(EngineConfig::default()).expect("engine")
+    }
+
+    fn layout_of(e: &Engine, html: &str) -> LayoutBox {
+        let d = Document::parse_html(html).expect("parse");
+        e.build_layout_from_document(&d, &[])
+    }
+
+    fn laid_out(e: &Engine, html: &str) -> LayoutBox {
+        let mut root = layout_of(e, html);
+        let cb = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        root.layout(&cb);
+        root
+    }
+
+    fn first_text_box_height(e: &Engine, html: &str) -> f32 {
+        fn find(b: &LayoutBox) -> Option<f32> {
+            if matches!(b.box_type, BoxType::Text(_)) {
+                return Some(b.dimensions.content.height);
+            }
+            b.children.iter().find_map(find)
+        }
+        find(&laid_out(e, html)).expect("no text box found")
+    }
+
+    /// `normal` line-height is derived from the used font's metrics, not the
+    /// flat 1.2 model; an explicit multiplier still scales the font size.
+    /// The metrics-derived value depends on the platform's default sans face
+    /// (Helvetica/SF on macOS, Segoe UI on Windows), so only the explicit
+    /// multiplier is pinned to a number here; `normal` is pinned to NOT be
+    /// the flat 19.2 that the old model produced for 16px.
+    #[test]
+    fn line_height_normal_comes_from_metrics_and_multipliers_scale() {
+        let e = engine();
+        let h = first_text_box_height(&e, "<!DOCTYPE html><html><body><p>one line of text</p></body></html>");
+        assert!(h > 0.0, "text box must have a height, got {h}");
+        let h2 = first_text_box_height(&e, "<!DOCTYPE html><html><body><p style=\"line-height: 2\">two</p></body></html>");
+        assert!((h2 - 32.0).abs() < 0.5, "line-height:2 should be 2*16=32, got {h2}");
+    }
+
+    #[test]
+    fn css_variables_resolve_including_fallbacks_and_aliases() {
+        let e = engine();
+        let mut vars = HashMap::new();
+        vars.insert("--bg".to_string(), "#0f172a".to_string());
+        vars.insert("--accent".to_string(), "#06b6d4".to_string());
+        vars.insert("--alias".to_string(), "var(--accent)".to_string());
+        assert_eq!(e.resolve_css_variables("var(--bg)", &vars), "#0f172a");
+        assert_eq!(e.resolve_css_variables("1px solid var(--accent)", &vars), "1px solid #06b6d4");
+        assert_eq!(e.resolve_css_variables("var(--missing, red)", &vars), "red");
+        assert_eq!(e.resolve_css_variables("var(--bg, red)", &vars), "#0f172a");
+        assert_eq!(e.resolve_css_variables("var(--alias)", &vars), "#06b6d4");
+        assert_eq!(e.resolve_css_variables("var(--missing, rgb(1, 2, 3))", &vars), "rgb(1, 2, 3)");
+        assert_eq!(e.resolve_css_variables("#fff", &vars), "#fff");
+    }
+
+    #[test]
+    fn radial_gradient_positions_parse_to_normalised_centres() {
+        let center = |pos: &str| {
+            match parse_radial_gradient(&format!("radial-gradient(circle at {pos}, red, blue)"), false) {
+                Some(rustkit_css::Gradient::Radial(g)) => g.center,
+                other => panic!("expected a radial gradient, got {other:?}"),
+            }
+        };
+        assert_eq!(center("center"), (0.5, 0.5));
+        assert_eq!(center("top left"), (0.0, 0.0));
+        assert_eq!(center("left top"), (0.0, 0.0));
+        assert_eq!(center("bottom right"), (1.0, 1.0));
+        assert_eq!(center("top"), (0.5, 0.0));
+        assert_eq!(center("right"), (1.0, 0.5));
+        assert_eq!(center("20% 80%"), (0.2, 0.8));
+        assert_eq!(center("30%"), (0.3, 0.5));
+    }
+
+    #[test]
+    fn background_clip_text_propagates_to_the_text_run() {
+        let e = engine();
+        let html = "<html><head><style>.logo{background:linear-gradient(90deg,#ff0000,#0000ff);\
+                    -webkit-background-clip:text;background-clip:text;color:transparent}</style></head>\
+                    <body><h1 class=\"logo\">HIWAVE</h1></body></html>";
+        fn find_gradient_text(b: &LayoutBox) -> bool {
+            let is_grad_text = matches!(b.box_type, BoxType::Text(_))
+                && b.style.background_clip == rustkit_css::BackgroundClip::Text
+                && b.style.background_gradient.is_some();
+            is_grad_text || b.children.iter().any(find_gradient_text)
+        }
+        assert!(
+            find_gradient_text(&layout_of(&e, html)),
+            "the HIWAVE text run should carry background-clip:text and the gradient"
+        );
+    }
+
+    #[test]
+    fn body_background_propagates_to_the_canvas() {
+        let e = engine();
+        let root = layout_of(&e, "<html><head><style>body{background:#1a1a2e}</style></head><body><p>x</p></body></html>");
+        assert_eq!(
+            root.style.background_color,
+            rustkit_css::Color::from_rgb(0x1a, 0x1a, 0x2e),
+            "canvas (root) should carry the body background"
+        );
+        let body = &root.children[0];
+        assert_eq!(
+            body.style.background_color,
+            rustkit_css::Color::TRANSPARENT,
+            "body background should be cleared after propagating to the canvas"
+        );
+    }
+
+    #[test]
+    fn root_custom_properties_reach_the_body() {
+        let e = engine();
+        let html = "<html><head><style>:root{--brand:#123456}</style></head>\
+                    <body><p style=\"color: var(--brand)\">hi</p></body></html>";
+        fn find_colored(b: &LayoutBox) -> bool {
+            b.style.color == rustkit_css::Color::from_rgb(0x12, 0x34, 0x56)
+                || b.children.iter().any(find_colored)
+        }
+        assert!(find_colored(&layout_of(&e, html)), "var(--brand) from :root should resolve on a body descendant");
+    }
+
+    #[test]
+    fn text_align_inherits_to_a_block_child() {
+        let e = engine();
+        let layout = layout_of(&e, "<html><body><div style=\"text-align:center\"><h1>Hi</h1></div></body></html>");
+        fn find_h1_align(b: &LayoutBox) -> Option<rustkit_css::TextAlign> {
+            if b.style.font_size == rustkit_css::Length::Px(32.0) {
+                return Some(b.style.text_align);
+            }
+            b.children.iter().find_map(find_h1_align)
+        }
+        assert_eq!(
+            find_h1_align(&layout),
+            Some(rustkit_css::TextAlign::Center),
+            "h1 should inherit text-align:center from its containing div"
+        );
+    }
+
+    #[test]
+    fn whitespace_between_block_siblings_makes_no_boxes() {
+        let e = engine();
+        let layout = layout_of(&e, "<body><div id=\"row\"><div>a</div>\n  <div>b</div>\n  </div></body>");
+        let body = &layout.children[0];
+        let row = &body.children[0];
+        assert_eq!(row.children.len(), 2, "row should have exactly two element children, got {}", row.children.len());
     }
 }

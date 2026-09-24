@@ -837,3 +837,158 @@ mod tests {
         assert!(doc.body().is_some(), "should have body with meta and title");
     }
 }
+
+
+// ── ported from hiwave-windows: parser robustness pins (the shell's
+//    chrome.html, ~100KB <style> blocks, <meta>/charset/title-only heads). ──
+#[cfg(test)]
+mod windows_parser_pins {
+    use super::*;
+
+
+    #[test]
+    fn test_chrome_html() {
+        // Read the actual chrome.html file
+        let html = include_str!("../../hiwave-app/src/ui/chrome.html");
+        
+        eprintln!("chrome.html length: {}", html.len());
+        
+        let doc = Document::parse_html(html).unwrap();
+        
+        // Debug: print structure
+        eprintln!("root children: {}", doc.root().children().len());
+        for (i, child) in doc.root().children().iter().enumerate() {
+            if let Some(tag) = child.tag_name() {
+                eprintln!("  root child {}: {}", i, tag);
+            } else if let NodeType::DocumentType { name, .. } = &child.node_type {
+                eprintln!("  root child {}: doctype:{}", i, name);
+            }
+        }
+        
+        if let Some(html_elem) = doc.document_element() {
+            eprintln!("html children count: {}", html_elem.children().len());
+            for (i, child) in html_elem.children().iter().take(5).enumerate() {
+                eprintln!("  html child {}: {:?}", i, child.tag_name());
+            }
+        }
+        
+        assert!(doc.document_element().is_some(), "should have html");
+        assert!(doc.head().is_some(), "should have head");
+        assert!(doc.body().is_some(), "chrome.html should have body - this is the actual issue!");
+    }
+
+    #[test]
+    fn test_very_large_style_block() {
+        // 103KB of CSS like chrome.html
+        let css = ".a{color:red;} ".repeat(6900);  // ~103KB
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html>
+<head>
+<style>{}</style>
+</head>
+<body>
+<p id="test">Hello</p>
+</body>
+</html>"#,
+            css
+        );
+        
+        eprintln!("HTML length: {}", html.len());
+        
+        let doc = Document::parse_html(&html).unwrap();
+        
+        if let Some(html_elem) = doc.document_element() {
+            eprintln!("html children count: {}", html_elem.children().len());
+            for (i, child) in html_elem.children().iter().take(5).enumerate() {
+                eprintln!("  html child {}: {:?}", i, child.tag_name());
+            }
+        }
+        
+        assert!(doc.body().is_some(), "should have body with 103KB style block");
+    }
+
+    #[test]
+    fn test_chrome_html_with_meta() {
+        // Exact structure like chrome.html
+        let css = ".a{color:red;} ".repeat(6900);  // ~103KB
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HiWave</title>
+    <style>
+        {}</style>
+</head>
+<body>
+<p id="test">Hello</p>
+</body>
+</html>"#,
+            css
+        );
+        
+        eprintln!("HTML length: {}", html.len());
+        
+        let doc = Document::parse_html(&html).unwrap();
+        
+        if let Some(html_elem) = doc.document_element() {
+            eprintln!("html children count: {}", html_elem.children().len());
+            for (i, child) in html_elem.children().iter().take(5).enumerate() {
+                eprintln!("  html child {}: {:?}", i, child.tag_name());
+            }
+        }
+        
+        assert!(doc.body().is_some(), "should have body with meta tags and style block");
+    }
+
+    #[test]
+    fn test_with_charset_meta() {
+        let html = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style>.a{color:red;}</style>
+</head>
+<body>
+<p>Test</p>
+</body>
+</html>"#;
+        
+        let doc = Document::parse_html(html).unwrap();
+        
+        if let Some(html_elem) = doc.document_element() {
+            eprintln!("html children count: {}", html_elem.children().len());
+            for (i, child) in html_elem.children().iter().take(5).enumerate() {
+                eprintln!("  html child {}: {:?}", i, child.tag_name());
+            }
+        }
+        
+        assert!(doc.body().is_some(), "should have body with charset meta");
+    }
+
+    #[test]
+    fn test_title_only() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head>
+<title>Test</title>
+</head>
+<body>
+<p>Hello</p>
+</body>
+</html>"#;
+        
+        let doc = Document::parse_html(html).unwrap();
+        
+        if let Some(html_elem) = doc.document_element() {
+            eprintln!("html children count: {}", html_elem.children().len());
+            for (i, child) in html_elem.children().iter().enumerate() {
+                eprintln!("  html child {}: {:?}", i, child.tag_name());
+            }
+        }
+        
+        assert!(doc.body().is_some(), "should have body with title");
+    }
+}

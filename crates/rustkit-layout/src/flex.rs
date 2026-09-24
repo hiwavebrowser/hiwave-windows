@@ -5093,3 +5093,271 @@ mod tests {
     }
 
 }
+
+
+// ── ported from hiwave-windows flex.rs (L1-WINDOWS-A #72 and the auto-basis /
+//    stretch / wrap pins). `layout_flex_container` has the same signature on
+//    both trees, so these are verbatim. ──
+#[cfg(test)]
+mod windows_flex_pins {
+    use super::*;
+    use crate::BoxType;
+    use rustkit_css::{ComputedStyle, FlexDirection, FlexWrap, Length};
+
+
+    // NOT ported: test_auto_basis_uses_pre_pass_measurement pinned the old
+    // Windows flex model that read an item's pre-pass content rect as its
+    // auto basis; this tree measures max-content (#184, #202), which the
+    // sibling test_auto_basis_uses_max_content_not_block_width pins.
+
+    #[test]
+    fn test_positions_land_in_absolute_frame() {
+        // Container content origin at (50, 70): first item must be placed at
+        // that origin, not at (0, 0) — flex output shares the tree's frame.
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let mut child_style = ComputedStyle::new();
+        child_style.width = Length::Px(100.0);
+        child_style.height = Length::Px(40.0);
+        container.children.push(LayoutBox::new(BoxType::Block, child_style));
+
+        let containing = Dimensions {
+            content: Rect::new(50.0, 70.0, 400.0, 300.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        assert_eq!(container.children[0].dimensions.content.x, 50.0);
+        assert_eq!(container.children[0].dimensions.content.y, 70.0);
+    }
+
+    #[test]
+    fn test_item_subtree_relaid_after_flex() {
+        // A block flex item's own children must be laid out against the
+        // item's FINAL rect (step 11) — not left with stale/zero geometry.
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let mut item_style = ComputedStyle::new();
+        item_style.width = Length::Px(300.0);
+        item_style.height = Length::Px(200.0);
+        let mut item = LayoutBox::new(BoxType::Block, item_style);
+
+        let mut grandchild_style = ComputedStyle::new();
+        grandchild_style.width = Length::Auto; // cascade default (::new() is Zero)
+        grandchild_style.height = Length::Px(50.0);
+        item.children.push(LayoutBox::new(BoxType::Block, grandchild_style));
+        container.children.push(item);
+
+        let containing = Dimensions {
+            content: Rect::new(10.0, 20.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        let item_rect = container.children[0].dimensions.content;
+        let gc = container.children[0].children[0].dimensions.content;
+        // Grandchild starts at the item's content top (normal flow), not its
+        // bottom edge, not (0,0), and spans the item's width.
+        assert_eq!(gc.y, item_rect.y);
+        assert_eq!(gc.x, item_rect.x);
+        assert_eq!(gc.height, 50.0);
+        assert!(gc.width > 0.0);
+    }
+
+    #[test]
+    fn test_column_item_width_not_corrupted_by_tall_children() {
+        // Column-direction container (cross axis = horizontal): a 200px-wide
+        // item whose children stack to 500px tall must KEEP width 200 —
+        // 11b must not write the children's height-sum into content.width
+        // (Atlas cross-seat review of PR #5).
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Column;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let mut item_style = ComputedStyle::new();
+        item_style.width = Length::Px(200.0);
+        item_style.height = Length::Px(500.0);
+        let mut item = LayoutBox::new(BoxType::Block, item_style);
+        for _ in 0..2 {
+            let mut gc_style = ComputedStyle::new();
+            gc_style.width = Length::Auto;
+            gc_style.height = Length::Px(250.0);
+            item.children.push(LayoutBox::new(BoxType::Block, gc_style));
+        }
+        container.children.push(item);
+
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        assert_eq!(container.children[0].dimensions.content.width, 200.0);
+        assert_eq!(container.children[0].dimensions.content.height, 500.0);
+    }
+
+    #[test]
+    fn test_container_auto_height_updated_from_flex_extent() {
+        // Row container with auto height: content height must reflect the
+        // tallest line after flex, not the stale pre-pass value.
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let mut child_style = ComputedStyle::new();
+        child_style.width = Length::Px(100.0);
+        child_style.height = Length::Px(120.0);
+        container.children.push(LayoutBox::new(BoxType::Block, child_style));
+
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 400.0, 0.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        assert_eq!(container.dimensions.content.height, 120.0);
+    }
+
+    #[test]
+    fn test_wrap_lines_pack_tightly_in_auto_container() {
+        // In an auto-height wrap container, wrapped lines must pack directly
+        // under each other (align-content has no free space to distribute) — not
+        // spread across the stale pre-flex stacked height, which pushed the
+        // second row far below the container (card grid lost its 2nd row).
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Row;
+        style.flex_wrap = FlexWrap::Wrap;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        // Four 300×100 items in a 650-wide row → two lines of two.
+        for _ in 0..4 {
+            let mut item_style = ComputedStyle::new();
+            item_style.width = Length::Px(300.0);
+            item_style.height = Length::Px(100.0);
+            item_style.flex_basis = rustkit_css::FlexBasis::Length(300.0);
+            let mut item = LayoutBox::new(BoxType::Block, item_style);
+            item.dimensions.content = Rect::new(0.0, 0.0, 300.0, 100.0);
+            container.children.push(item);
+        }
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 650.0, 800.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        let y0 = container.children[0].dimensions.content.y;
+        let y2 = container.children[2].dimensions.content.y; // first item of line 2
+        assert!(
+            y2 - y0 < 160.0,
+            "second wrap line should pack under the first (~100px), not be spread: dy={}",
+            y2 - y0
+        );
+        assert!(y2 > y0, "second line must be below the first: y0={y0} y2={y2}");
+    }
+
+    #[test]
+    fn test_stretch_equalizes_auto_height_row() {
+        // An auto-height row with align-items:stretch (the default) must give
+        // its children a common height equal to the tallest — the equal-height
+        // card-grid behaviour. The stale stacked container height must NOT be
+        // used as the stretch target.
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Row;
+        // align_items defaults to Stretch; container height stays Auto.
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        // Two auto-height children with different measured content heights.
+        let mut a = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+        a.dimensions.content = Rect::new(0.0, 0.0, 100.0, 40.0);
+        container.children.push(a);
+        let mut b = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+        b.dimensions.content = Rect::new(0.0, 0.0, 100.0, 90.0);
+        container.children.push(b);
+
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 400.0, 300.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        let h0 = container.children[0].dimensions.content.height;
+        let h1 = container.children[1].dimensions.content.height;
+        assert!(
+            (h0 - h1).abs() < 0.5,
+            "stretch should equalize heights: {h0} vs {h1}"
+        );
+        assert!(h0 >= 89.5, "should stretch to the taller child (90): {h0}");
+    }
+
+    #[test]
+    fn test_auto_basis_uses_max_content_not_block_width() {
+        // Two content-sized items in a wide row must stay content-sized (their
+        // max-content), leaving free space — NOT inflate to the block full-width
+        // the pre-pass stretched them to and then shrink to equal halves. With
+        // the old behaviour each item used measured_main (~container width) as
+        // its basis and landed at ~half the row (~400px).
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Row;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        for label in ["Hi", "Yo"] {
+            let mut item = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+            // Simulate the normal-flow pre-pass stretching the block to the row.
+            item.dimensions.content = Rect::new(0.0, 0.0, 700.0, 20.0);
+            item.children
+                .push(LayoutBox::new(BoxType::Text(label.to_string()), ComputedStyle::new()));
+            container.children.push(item);
+        }
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 300.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        let w0 = container.children[0].dimensions.content.width;
+        assert!(
+            w0 < 200.0,
+            "auto-basis flex item should be content-sized, not a fraction of the \
+             row (block-width basis regression): got {w0}"
+        );
+    }
+
+    #[test]
+    fn test_explicit_height_child_not_stretched() {
+        // A child with a definite cross size wins over align-items:stretch
+        // (§9.4.11) — it keeps its own height while a stretchy sibling grows.
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Row;
+        let mut container = LayoutBox::new(BoxType::Block, style);
+
+        let mut fixed_style = ComputedStyle::new();
+        fixed_style.height = Length::Px(30.0);
+        let fixed = LayoutBox::new(BoxType::Block, fixed_style);
+        container.children.push(fixed);
+
+        let mut tall = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+        tall.dimensions.content = Rect::new(0.0, 0.0, 100.0, 90.0);
+        container.children.push(tall);
+
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, 400.0, 300.0),
+            ..Default::default()
+        };
+        layout_flex_container(&mut container, &containing);
+
+        let fixed_h = container.children[0].dimensions.content.height;
+        assert!(
+            (fixed_h - 30.0).abs() < 0.5,
+            "definite-height child must not stretch: {fixed_h}"
+        );
+    }
+}

@@ -392,3 +392,34 @@ pub fn save_capture_metadata(
     std::fs::write(path, json)?;
     Ok(())
 }
+
+
+#[cfg(all(test, windows))]
+mod windows_capture_metadata_pins {
+    use super::*;
+
+    /// The JSON sidecar written next to a PNG capture names every field the
+    /// native shell reads back (ported from the Windows serde round-trip test).
+    #[test]
+    fn capture_metadata_sidecar_names_every_field() {
+        let metadata = CaptureMetadata {
+            width: 800,
+            height: 600,
+            adapter: "Test Adapter".to_string(),
+            format: "Rgba8UnormSrgb".to_string(),
+            timestamp: "2025-01-04T12:00:00Z".to_string(),
+            color_vertex_count: 100,
+            texture_vertex_count: 50,
+        };
+        let dir = std::env::temp_dir().join(format!("rk-capture-meta-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("meta.json");
+        save_capture_metadata(&path, &metadata).unwrap();
+        let json = std::fs::read_to_string(&path).unwrap();
+        for needle in ["\"width\": 800", "\"height\": 600", "Test Adapter", "Rgba8UnormSrgb",
+                       "\"color_vertex_count\": 100", "\"texture_vertex_count\": 50"] {
+            assert!(json.contains(needle), "sidecar missing {needle}: {json}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

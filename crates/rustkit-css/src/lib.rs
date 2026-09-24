@@ -3560,3 +3560,35 @@ mod object_fit_initial_value_tests {
         assert_eq!(ComputedStyle::new().object_fit, "fill");
     }
 }
+
+
+// ── ported from hiwave-windows (#37, #49): a shadow with no visible colour or
+//    no geometry is not visible, so paint never spends a command on it. ──
+#[cfg(test)]
+mod windows_shadow_pins {
+    use super::*;
+
+
+    #[test]
+    fn a_fully_transparent_shadow_is_not_visible() {
+        // Guards the alpha half of is_visible: geometry alone must not make
+        // a shadow visible, or the renderer draws invisible work.
+        let s = BoxShadow {
+            offset_x: 10.0,
+            offset_y: 10.0,
+            blur_radius: 5.0,
+            spread_radius: 2.0,
+            color: Color::TRANSPARENT,
+            inset: false,
+        };
+        assert!(!s.is_visible());
+    }
+
+    #[test]
+    fn a_zero_geometry_shadow_is_not_visible_even_when_opaque() {
+        // Guards the other half: an opaque colour with no offset, blur or
+        // spread paints nothing.
+        let s = BoxShadow { color: Color::BLACK, ..Default::default() };
+        assert!(!s.is_visible());
+    }
+}
