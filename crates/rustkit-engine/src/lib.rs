@@ -31,6 +31,8 @@ use rustkit_layout::{
 use std::cell::Cell;
 use rustkit_net::{LoaderConfig, NetError, Request, ResourceLoader};
 use rustkit_renderer::Renderer;
+#[cfg(windows)]
+pub use rustkit_renderer::{CaptureMetadata as ScreenshotMetadata, RenderStats};
 use rustkit_viewhost::{Bounds, ViewHost, ViewHostTrait, ViewId, WindowHandle};
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -149,6 +151,29 @@ struct ViewState {
     #[allow(dead_code)]
     bindings: Option<DomBindings>,
     navigation: NavigationStateMachine,
+    /// Monotonic navigation generation, bumped by `Engine::stop` and by each
+    /// new `load_url`.
+    ///
+    /// This is how STOP works, and the shape is deliberate. `load_url` is an
+    /// `async fn` that awaits the network; there is no way to reach inside a
+    /// future that is already suspended. So instead of trying to kill the
+    /// task, the load CAPTURES this counter before it awaits and re-checks it
+    /// after every await point. A `stop` (or a newer navigation) bumps the
+    /// counter, the in-flight load notices it is stale at the next boundary,
+    /// and abandons without touching view state.
+    ///
+    /// The alternative — an `AbortHandle` per load — needs the load to own a
+    /// spawned task, which it does not: `load_url` borrows `&mut self`. A
+    /// generation counter needs no task ownership and cannot leave a
+    /// half-applied navigation behind, because every mutation is gated on it.
+    ///
+    /// NOTE: this stops the ENGINE applying the result. It does not abort the
+    /// socket — `rustkit-net`'s `fetch` has no cancellation surface today, so
+    /// the request still completes in the background and its bytes are
+    /// discarded. Stated rather than implied: this is stop-as-observed, not
+    /// stop-as-transport. Closing that needs a cancel token threaded into the
+    /// loader and is a separate unit.
+    nav_generation: u64,
     #[allow(dead_code)]
     nav_event_rx: mpsc::UnboundedReceiver<LoadEvent>,
     /// Currently focused DOM node.
@@ -730,6 +755,7 @@ impl Engine {
             display_list: None,
             bindings: None,
             navigation,
+            nav_generation: 0,
             nav_event_rx: nav_rx,
             focused_node: None,
             edit_states: std::collections::HashMap::new(),
@@ -849,6 +875,7 @@ impl Engine {
             display_list: None,
             bindings: None,
             navigation,
+            nav_generation: 0,
             nav_event_rx: nav_rx,
             focused_node: None,
             edit_states: std::collections::HashMap::new(),
@@ -1360,18 +1387,50 @@ impl Engine {
 
     /// Load a URL in a view.
     pub async fn load_url(&mut self, id: EngineViewId, url: Url) -> Result<(), EngineError> {
+        self.load_url_with_disposition(id, url, false).await
+    }
+
+    /// Load a URL, optionally REPLACING the current history entry instead of
+    /// pushing a new one.
+    ///
+    /// `replace = true` is how history traversal works end to end: go_back /
+    /// go_forward / reload move the SessionHistory cursor (or keep it, for
+    /// reload) and then arrive here as a replace-load against the entry they
+    /// landed on. Replacing an entry with its own URL is a no-op that
+    /// PRESERVES the entry's state objects — which is exactly why traversal
+    /// must never come through the pushing path: pushing would truncate the
+    /// forward stack the user is trying to walk.
+    async fn load_url_with_disposition(
+        &mut self,
+        id: EngineViewId,
+        url: Url,
+        replace: bool,
+    ) -> Result<(), EngineError> {
         let view = self
             .views
             .get_mut(&id)
             .ok_or(EngineError::ViewNotFound(id))?;
 
-        info!(?id, %url, "Loading URL");
+        info!(?id, %url, replace, "Loading URL");
 
         // Start navigation
-        let request = NavigationRequest::new(url.clone());
+        let request = if replace {
+            NavigationRequest::new(url.clone()).with_replace()
+        } else {
+            NavigationRequest::new(url.clone())
+        };
         view.navigation
             .start_navigation(request)
             .map_err(|e| EngineError::NavigationError(e.to_string()))?;
+
+        // STOP support: take this load's generation BEFORE the first await.
+        // Anything that bumps the view's generation while we are suspended
+        // (Engine::stop, or a newer load) makes this load stale, and a
+        // stale load must not touch view state.
+        let generation = {
+            view.nav_generation = view.nav_generation.wrapping_add(1);
+            view.nav_generation
+        };
 
         // Emit event
         let _ = self.event_tx.send(EngineEvent::NavigationStarted {
@@ -1382,6 +1441,12 @@ impl Engine {
         // Fetch the URL
         let request = Request::get(url.clone());
         let response = self.loader.fetch(request).await?;
+
+        // First await boundary crossed — are we still the current navigation?
+        if self.nav_superseded(id, generation) {
+            debug!(?id, %url, "Navigation abandoned: superseded or stopped");
+            return Ok(());
+        }
 
         if !response.ok() {
             let error = format!("HTTP {}", response.status);
@@ -1420,6 +1485,12 @@ impl Engine {
 
         // Parse HTML
         let html = response.text().await?;
+
+        // Body fully read — still current?
+        if self.nav_superseded(id, generation) {
+            debug!(?id, %url, "Navigation abandoned after body read");
+            return Ok(());
+        }
         let document =
             Document::parse_html(&html).map_err(|e| EngineError::RenderError(e.to_string()))?;
         let document = Rc::new(document);
@@ -1469,6 +1540,13 @@ impl Engine {
             view.bindings = Some(bindings);
         }
 
+        // LAST GATE before we mutate anything visible: a stop that landed
+        // while the body was parsed must not fall through into layout.
+        if self.nav_superseded(id, generation) {
+            debug!(?id, %url, "Navigation abandoned before layout");
+            return Ok(());
+        }
+
         // Initial layout and render (inline data:-sourced faces first; the
         // remote ones arrive with the other subresources below)
         self.load_local_web_fonts(id);
@@ -1479,6 +1557,14 @@ impl Engine {
         if let Err(e) = self.load_subresources(id).await {
             warn!(?e, "Failed to load some subresources");
             // Continue even if some resources fail to load
+        }
+
+        // Subresource loading awaited the network too: a stop during a
+        // stylesheet or image fetch must not finish the navigation, push the
+        // history entry, or announce PageLoaded for a page the user cancelled.
+        if self.nav_superseded(id, generation) {
+            debug!(?id, %url, "Navigation abandoned after subresources");
+            return Ok(());
         }
 
         // Finish navigation
@@ -5440,6 +5526,123 @@ impl Engine {
         }
     }
 
+    /// Stop the in-flight navigation for a view.
+    ///
+    /// Returns `true` if the view exists. Safe and idempotent when nothing is
+    /// loading — stopping an idle view simply bumps the generation, which no
+    /// in-flight load is holding.
+    ///
+    /// WHAT THIS DOES AND DOES NOT DO, because the distinction is the whole
+    /// honesty of the feature:
+    ///  - DOES: guarantee the engine will not apply the result of the
+    ///    abandoned load. No document swap, no layout, no paint, no
+    ///    NavigationCompleted event, no history entry.
+    ///  - DOES NOT: abort the underlying socket. `rustkit-net`'s `fetch` has
+    ///    no cancellation surface today, so the request completes in the
+    ///    background and its bytes are dropped. That is a separate unit
+    ///    (thread a cancel token through the loader) and is NOT claimed here.
+    ///
+    /// This is deliberately NOT the `DownloadManager` cancel path in
+    /// rustkit-net — that one cancels FILE DOWNLOADS and has nothing to do
+    /// with page loads. Conflating them was the first wrong turn on this unit.
+    pub fn stop(&mut self, id: EngineViewId) -> bool {
+        match self.views.get_mut(&id) {
+            Some(view) => {
+                view.nav_generation = view.nav_generation.wrapping_add(1);
+                info!(?id, "Navigation stopped");
+                let _ = self.event_tx.send(EngineEvent::NavigationFailed {
+                    view_id: id,
+                    url: view.url.clone().unwrap_or_else(|| {
+                        Url::parse("about:blank").expect("about:blank parses")
+                    }),
+                    error: "stopped".to_string(),
+                });
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Has this navigation been superseded by a `stop` or a newer load?
+    ///
+    /// A view that vanished mid-load counts as superseded — the alternative is
+    /// writing into a view that no longer exists.
+    fn nav_superseded(&self, id: EngineViewId, generation: u64) -> bool {
+        match self.views.get(&id) {
+            Some(view) => view.nav_generation != generation,
+            None => true,
+        }
+    }
+
+    /// Go back one entry in the view's session history and load it.
+    ///
+    /// Returns `Ok(false)` when there is nowhere to go — pressing Back on the
+    /// first page is a no-op, not an error. The cursor moves FIRST, then the
+    /// landed-on entry is loaded as a REPLACE against itself, so the traversal
+    /// neither pushes a duplicate nor truncates the forward stack the user is
+    /// walking, and the entry's pushState state survives.
+    ///
+    /// This is the capability the hybrid shell rents from Chromium as
+    /// `evaluate_script("history.back()")`. Here it is ours: SessionHistory
+    /// cursor + our own loader, no JavaScript, no WebView2.
+    pub async fn go_back(&mut self, id: EngineViewId) -> Result<bool, EngineError> {
+        let target = {
+            let view = self.views.get_mut(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.navigation.go_back().cloned()
+        };
+        match target {
+            Some(url) => {
+                self.load_url_with_disposition(id, url, true).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Go forward one entry. Mirror of [`Engine::go_back`] in every respect.
+    pub async fn go_forward(&mut self, id: EngineViewId) -> Result<bool, EngineError> {
+        let target = {
+            let view = self.views.get_mut(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.navigation.go_forward().cloned()
+        };
+        match target {
+            Some(url) => {
+                self.load_url_with_disposition(id, url, true).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Re-load the current history entry. `Ok(false)` if the view has never
+    /// finished a navigation (nothing to reload). A reload is a REPLACE — it
+    /// must not push a duplicate of the page onto its own back stack.
+    pub async fn reload(&mut self, id: EngineViewId) -> Result<bool, EngineError> {
+        let target = {
+            let view = self.views.get(&id).ok_or(EngineError::ViewNotFound(id))?;
+            view.navigation.current_url().cloned()
+        };
+        match target {
+            Some(url) => {
+                self.load_url_with_disposition(id, url, true).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Test hook: advance a view's navigation generation and return the new
+    /// value, exactly as `load_url` does before its first await.
+    ///
+    /// Exists so the stop CONTRACT can be tested without standing up a network
+    /// fetch. Kept `cfg(test)` so it cannot become a production back door.
+    #[cfg(test)]
+    fn bump_nav_generation_for_test(&mut self, id: EngineViewId) -> u64 {
+        let view = self.views.get_mut(&id).expect("view exists");
+        view.nav_generation = view.nav_generation.wrapping_add(1);
+        view.nav_generation
+    }
+
     /// Extract CSS text from <style> elements in the document.
     fn extract_stylesheets(&self, document: &Document) -> Vec<Stylesheet> {
         let mut stylesheets = Vec::new();
@@ -8155,6 +8358,65 @@ impl Engine {
             .find(|(k, _)| k == property)
             .map(|(_, v)| serde_json::Value::String(v.clone()))
             .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// Batch sizes and stack depths of the last frame (native shell
+    /// diagnostics / screenshot harness).
+    #[cfg(windows)]
+    pub fn get_render_stats(&self) -> RenderStats {
+        self.renderer
+            .as_ref()
+            .map(|r| r.get_render_stats())
+            .unwrap_or_default()
+    }
+
+    /// Render a view's current display list to `output_path` as PNG (plus a
+    /// JSON sidecar) and return the capture metadata.
+    #[cfg(windows)]
+    pub fn capture_view_screenshot(
+        &mut self,
+        id: EngineViewId,
+        output_path: &std::path::Path,
+    ) -> Result<ScreenshotMetadata, EngineError> {
+        let view = self.views.get(&id).ok_or(EngineError::ViewNotFound(id))?;
+        let display_list = view.display_list.as_ref();
+        let viewhost_id = view.viewhost_id;
+
+        let bounds = if let Some(headless_bounds) = view.headless_bounds {
+            headless_bounds
+        } else {
+            self.viewhost
+                .get_bounds(viewhost_id)
+                .map_err(|e| EngineError::ViewError(e.to_string()))?
+        };
+
+        if bounds.width == 0 || bounds.height == 0 {
+            return Err(EngineError::RenderError(format!(
+                "Cannot capture screenshot of zero-sized view: {}x{}",
+                bounds.width, bounds.height
+            )));
+        }
+
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_viewport_size(bounds.width, bounds.height);
+            let commands = display_list
+                .map(|dl| dl.commands.as_slice())
+                .unwrap_or(&[]);
+            renderer
+                .execute_and_capture(commands, output_path)
+                .map_err(|e| EngineError::RenderError(e.to_string()))
+        } else {
+            Err(EngineError::RenderError("No renderer available".to_string()))
+        }
+    }
+
+    /// Get the native window handle (HWND) for a view.
+    #[cfg(windows)]
+    pub fn get_view_hwnd(&self, id: EngineViewId) -> Result<HWND, EngineError> {
+        let view = self.views.get(&id).ok_or(EngineError::ViewNotFound(id))?;
+        self.viewhost
+            .get_hwnd(view.viewhost_id)
+            .map_err(|e| EngineError::ViewError(e.to_string()))
     }
 
     /// Render a view (internal).
@@ -15402,5 +15664,164 @@ mod rule_prefilter_tests {
         assert!(!engine.rule_may_match(".z", "div", &attrs(&[("class", "a")])));
         assert!(!engine.rule_may_match("p.a", "div", &attrs(&[("class", "a")])));
         assert!(!engine.rule_may_match("#nope", "div", &attrs(&[("id", "main")])));
+    }
+}
+
+#[cfg(test)]
+mod history_traversal_tests {
+    //! Engine-level contract for go_back / go_forward / reload.
+    //!
+    //! The full round trip (load A, load B, go_back lands on A) requires the
+    //! network and lives at the core layer, where the NSM tests drive
+    //! start/commit/finish directly. What the ENGINE owns — and what these
+    //! pin — is the edge contract: traversal on a view with nowhere to go is
+    //! Ok(false), never an error and never a panic, because mashing Back on
+    //! the first page is a user gesture, not a fault.
+    use super::*;
+
+    fn engine_with_view() -> (Engine, EngineViewId) {
+        let mut e = Engine::new(EngineConfig::default()).expect("engine");
+        let id = e
+            .create_headless_view(Bounds { x: 0, y: 0, width: 800, height: 600 })
+            .expect("headless view");
+        (e, id)
+    }
+
+    #[tokio::test]
+    async fn back_on_a_fresh_view_is_a_quiet_no_op() {
+        let (mut e, id) = engine_with_view();
+        assert_eq!(e.go_back(id).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn forward_on_a_fresh_view_is_a_quiet_no_op() {
+        let (mut e, id) = engine_with_view();
+        assert_eq!(e.go_forward(id).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn reload_with_no_history_is_a_quiet_no_op() {
+        let (mut e, id) = engine_with_view();
+        assert_eq!(e.reload(id).await.unwrap(), false);
+    }
+
+    #[tokio::test]
+    async fn traversal_on_a_missing_view_is_an_error_not_a_panic() {
+        let (mut e, _id) = engine_with_view();
+        let ghost = EngineViewId::new();
+        assert!(e.go_back(ghost).await.is_err());
+        assert!(e.go_forward(ghost).await.is_err());
+        assert!(e.reload(ghost).await.is_err());
+    }
+
+    /// NON-VACUITY: prove the no-op result is reachable as TRUE too — after
+    /// load_html (which pushes about:blank... no, load_html does not push) —
+    /// instead: reload becomes Ok(true)-capable once history has an entry.
+    /// We seed history through the NSM directly, no network.
+    #[tokio::test]
+    async fn reload_fires_once_history_has_an_entry() {
+        let (mut e, id) = engine_with_view();
+        // Seed one committed entry through the canonical stack.
+        {
+            let view = e.views.get_mut(&id).unwrap();
+            let url = Url::parse("https://seeded.example/").unwrap();
+            view.navigation.start_navigation(
+                rustkit_core::NavigationRequest::new(url)).unwrap();
+            view.navigation.commit_navigation().unwrap();
+            view.navigation.finish_navigation().unwrap();
+        }
+        // Reload now attempts a real load of the seeded URL. The fetch will
+        // fail (no such host in tests) — the CONTRACT here is only that the
+        // engine took the Ok(true) path, i.e. it found an entry and tried.
+        let r = e.reload(id).await;
+        assert!(
+            !matches!(r, Ok(false)),
+            "with history present, reload must not report nothing-to-do"
+        );
+    }
+}
+
+#[cfg(test)]
+mod stop_navigation_tests {
+    //! STOP: cancel an in-flight navigation.
+    //!
+    //! The load path is an `async fn` holding `&mut self`, so there is no task
+    //! to abort and no handle to cancel. Stop therefore works by GENERATION:
+    //! a load captures the view's counter before its first await and re-checks
+    //! it after every await; `stop` bumps the counter, and the stale load
+    //! abandons without touching view state.
+    //!
+    //! These tests pin the CONTRACT, not the mechanism, so a future switch to
+    //! a real cancel token does not have to rewrite them.
+    use super::*;
+
+    fn engine_with_view() -> (Engine, EngineViewId) {
+        let mut e = Engine::new(EngineConfig::default()).expect("engine");
+        let id = e
+            .create_headless_view(Bounds { x: 0, y: 0, width: 800, height: 600 })
+            .expect("headless view");
+        (e, id)
+    }
+
+    /// Stopping a view that exists reports success and is idempotent — a user
+    /// mashing Stop on an idle page must not error.
+    #[test]
+    fn stop_is_safe_and_idempotent_on_an_idle_view() {
+        let (mut e, id) = engine_with_view();
+        assert!(e.stop(id), "first stop");
+        assert!(e.stop(id), "second stop");
+        assert!(e.stop(id), "third stop");
+    }
+
+    /// Stopping a view that does not exist is false, not a panic.
+    #[test]
+    fn stop_on_a_missing_view_is_false_not_a_panic() {
+        let (mut e, _id) = engine_with_view();
+        assert!(!e.stop(EngineViewId::new()));
+    }
+
+    /// THE PRODUCT: after a stop, a navigation that captured the earlier
+    /// generation is superseded and must abandon.
+    #[test]
+    fn a_stop_supersedes_an_in_flight_navigation() {
+        let (mut e, id) = engine_with_view();
+        // Simulate a load that captured its generation before awaiting.
+        let captured = e.bump_nav_generation_for_test(id);
+        assert!(!e.nav_superseded(id, captured), "not stale before stop");
+        e.stop(id);
+        assert!(e.nav_superseded(id, captured), "MUST be stale after stop");
+    }
+
+    /// A NEWER NAVIGATION also supersedes an older one. Without this, two
+    /// rapid navigations race and the slower response wins — the classic
+    /// back-button-shows-the-wrong-page defect.
+    #[test]
+    fn a_newer_navigation_supersedes_an_older_one() {
+        let (mut e, id) = engine_with_view();
+        let first = e.bump_nav_generation_for_test(id);
+        let second = e.bump_nav_generation_for_test(id);
+        assert_ne!(first, second);
+        assert!(e.nav_superseded(id, first), "older load must be stale");
+        assert!(!e.nav_superseded(id, second), "newest load must be live");
+    }
+
+    /// A vanished view counts as superseded — the alternative is writing into
+    /// a view that no longer exists.
+    #[test]
+    fn a_destroyed_view_supersedes_its_own_in_flight_load() {
+        let (mut e, id) = engine_with_view();
+        let g = e.bump_nav_generation_for_test(id);
+        e.destroy_view(id).ok();
+        assert!(e.nav_superseded(id, g));
+    }
+
+    /// NON-VACUITY: the helper must actually move the counter, or every test
+    /// above passes against a no-op.
+    #[test]
+    fn the_generation_actually_advances() {
+        let (mut e, id) = engine_with_view();
+        let a = e.bump_nav_generation_for_test(id);
+        let b = e.bump_nav_generation_for_test(id);
+        assert_eq!(b, a + 1, "generation must advance by one");
     }
 }

@@ -9,6 +9,8 @@ use rustkit_text::{
     FontCollection as RkFontCollection, FontStretch as RkFontStretch, FontStyle as RkFontStyle,
     FontWeight as RkFontWeight,
 };
+#[cfg(windows)]
+use windows::Win32::Graphics::DirectWrite::*;
 
 /// Key for identifying a specific glyph.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -399,30 +401,37 @@ impl GlyphCache {
 
         #[cfg(windows)]
         let raster_result = {
-            // Windows fallback - use simple placeholder
-            let (glyph_width, glyph_height) = estimate_glyph_size(key.codepoint, font_size);
-            let glyph_width = glyph_width.max(1).min(256);
-            let glyph_height = glyph_height.max(1).min(256);
+            // DirectWrite rasterization (ported from hiwave-windows glyph.rs,
+            // including the July-2026 ClearType fallback: NATURAL rendering
+            // mode reports EMPTY aliased bounds for most glyphs, which used to
+            // turn every glyph into a tofu box). The bordered-box placeholder
+            // below is the last resort when DirectWrite cannot produce a
+            // bitmap for this glyph.
+            rasterize_glyph_directwrite(key, font_size).or_else(|| {
+                let (glyph_width, glyph_height) = estimate_glyph_size(key.codepoint, font_size);
+                let glyph_width = glyph_width.max(1).min(256);
+                let glyph_height = glyph_height.max(1).min(256);
 
-            let mut bitmap = vec![0u8; (glyph_width * glyph_height) as usize];
-            if key.codepoint.is_ascii_graphic() || key.codepoint.is_alphabetic() {
-                for y in 0..glyph_height {
-                    for x in 0..glyph_width {
-                        let idx = (y * glyph_width + x) as usize;
-                        let border =
-                            x == 0 || x == glyph_width - 1 || y == 0 || y == glyph_height - 1;
-                        bitmap[idx] = if border { 255 } else { 200 };
+                let mut bitmap = vec![0u8; (glyph_width * glyph_height) as usize];
+                if key.codepoint.is_ascii_graphic() || key.codepoint.is_alphabetic() {
+                    for y in 0..glyph_height {
+                        for x in 0..glyph_width {
+                            let idx = (y * glyph_width + x) as usize;
+                            let border =
+                                x == 0 || x == glyph_width - 1 || y == 0 || y == glyph_height - 1;
+                            bitmap[idx] = if border { 255 } else { 200 };
+                        }
                     }
                 }
-            }
-            Some((
-                bitmap,
-                glyph_width,
-                glyph_height,
-                glyph_width as f32,
-                0.0f32,
-                font_size * 0.8,
-            ))
+                Some((
+                    bitmap,
+                    glyph_width,
+                    glyph_height,
+                    glyph_width as f32,
+                    0.0f32,
+                    font_size * 0.8,
+                ))
+            })
         };
 
         #[cfg(not(any(target_os = "macos", windows)))]
@@ -584,6 +593,212 @@ fn estimate_glyph_size(ch: char, font_size: f32) -> (u32, u32) {
 
     let width = (font_size * width_factor).ceil() as u32;
     (width.max(1), height.max(1))
+}
+
+/// Rasterize one glyph with DirectWrite into an 8-bit coverage bitmap.
+///
+/// Returns `(bitmap, width, height, advance, bearing_x, bearing_y)` in the
+/// same BASELINE-relative contract the macOS path uses: `bearing_y` is the
+/// distance from the baseline UP to the bitmap's top row, so the shared
+/// upload code below sets `offset[1] = -bearing_y`. DirectWrite reports the
+/// texture bounds relative to a baseline origin of (0, 0) with y down, so
+/// `bearing_y = -bounds.top` and `bearing_x = bounds.left`.
+///
+/// The rendering-mode dance is the load-bearing part (hiwave-windows #7,
+/// 2026-07-10): `CreateGlyphRunAnalysis` in NATURAL mode returns SUCCESS with
+/// an EMPTY rect from `GetAlphaTextureBounds(ALIASED_1x1)` for most glyphs;
+/// only the CLEARTYPE_3x1 texture is populated, and the alpha texture must
+/// be read in the SAME mode the bounds came from (an aliased read of a
+/// ClearType analysis returns success-but-zeros, i.e. invisible text).
+///
+/// Subpixel phase is not applied on this path: production is frozen at
+/// phase 0 (see `GlyphKey::subpixel_phase`), and DirectWrite already
+/// positions at the integer baseline origin we pass.
+#[cfg(windows)]
+fn rasterize_glyph_directwrite(
+    key: &GlyphKey,
+    font_size: f32,
+) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+
+    unsafe {
+        // COM must be initialised on this thread; a repeat call is harmless.
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+
+        let factory: IDWriteFactory =
+            match DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!("Failed to create DWrite factory: {:?}", e);
+                    return None;
+                }
+            };
+
+        let mut collection: Option<IDWriteFontCollection> = None;
+        if factory.GetSystemFontCollection(&mut collection, false).is_err() {
+            return None;
+        }
+        let collection = collection?;
+
+        // Family lookup with the same fallback ladder the Windows tree used.
+        let family_wide: Vec<u16> =
+            key.font_family.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut index: u32 = 0;
+        let mut exists = windows::core::BOOL(0);
+        let direct = !key.font_family.is_empty()
+            && collection
+                .FindFamilyName(PCWSTR(family_wide.as_ptr()), &mut index, &mut exists)
+                .is_ok()
+            && exists.as_bool();
+        if !direct {
+            let mut found = false;
+            for fallback in ["Segoe UI", "Arial", "Tahoma"] {
+                let fb_wide: Vec<u16> =
+                    fallback.encode_utf16().chain(std::iter::once(0)).collect();
+                if collection
+                    .FindFamilyName(PCWSTR(fb_wide.as_ptr()), &mut index, &mut exists)
+                    .is_ok()
+                    && exists.as_bool()
+                {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return None;
+            }
+        }
+
+        let family = collection.GetFontFamily(index).ok()?;
+        let dw_weight = DWRITE_FONT_WEIGHT(key.font_weight as i32);
+        let dw_stretch = DWRITE_FONT_STRETCH(5); // Normal
+        let dw_style = if key.font_style == 1 {
+            DWRITE_FONT_STYLE_ITALIC
+        } else {
+            DWRITE_FONT_STYLE_NORMAL
+        };
+        let font = family
+            .GetFirstMatchingFont(dw_weight, dw_stretch, dw_style)
+            .ok()?;
+        let face = font.CreateFontFace().ok()?;
+
+        let codepoint = key.codepoint as u32;
+        let mut glyph_indices = [0u16; 1];
+        if face
+            .GetGlyphIndices(&codepoint as *const u32, 1, glyph_indices.as_mut_ptr())
+            .is_err()
+        {
+            return None;
+        }
+        let glyph_index = glyph_indices[0];
+        if glyph_index == 0 {
+            return None;
+        }
+
+        let mut font_metrics = DWRITE_FONT_METRICS::default();
+        face.GetMetrics(&mut font_metrics);
+        let design_units_per_em = font_metrics.designUnitsPerEm as f32;
+        if design_units_per_em <= 0.0 {
+            return None;
+        }
+
+        let mut glyph_metrics = [DWRITE_GLYPH_METRICS::default()];
+        if face
+            .GetDesignGlyphMetrics(&glyph_index, 1, glyph_metrics.as_mut_ptr(), false)
+            .is_err()
+        {
+            return None;
+        }
+        let advance_width = glyph_metrics[0].advanceWidth as f32 * font_size / design_units_per_em;
+
+        // Whitespace has an advance but no ink: a 1x1 empty bitmap keeps the
+        // shared upload path happy and paints nothing.
+        if key.codepoint.is_whitespace() {
+            return Some((vec![0u8; 1], 1, 1, advance_width, 0.0, 0.0));
+        }
+
+        let glyph_run = DWRITE_GLYPH_RUN {
+            fontFace: std::mem::ManuallyDrop::new(Some(face.clone())),
+            fontEmSize: font_size,
+            glyphCount: 1,
+            glyphIndices: &glyph_index,
+            glyphAdvances: std::ptr::null(),
+            glyphOffsets: std::ptr::null(),
+            isSideways: windows::core::BOOL(0),
+            bidiLevel: 0,
+        };
+        // Every early return below must release the ManuallyDrop face.
+        let release = |run: DWRITE_GLYPH_RUN| {
+            std::mem::ManuallyDrop::into_inner(run.fontFace);
+        };
+
+        let analysis: IDWriteGlyphRunAnalysis = match factory.CreateGlyphRunAnalysis(
+            &glyph_run,
+            1.0, // pixels per DIP
+            None,
+            DWRITE_RENDERING_MODE_NATURAL,
+            DWRITE_MEASURING_MODE_NATURAL,
+            0.0, // baseline origin x
+            0.0, // baseline origin y
+        ) {
+            Ok(a) => a,
+            Err(_) => {
+                release(glyph_run);
+                return None;
+            }
+        };
+
+        let non_empty =
+            |b: &windows::Win32::Foundation::RECT| b.right > b.left && b.bottom > b.top;
+        let (bounds, use_cleartype) =
+            match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1) {
+                Ok(b) if non_empty(&b) => (b, false),
+                _ => match analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1) {
+                    Ok(b) if non_empty(&b) => (b, true),
+                    _ => {
+                        release(glyph_run);
+                        return None;
+                    }
+                },
+            };
+
+        let tex_width = (bounds.right - bounds.left) as u32;
+        let tex_height = (bounds.bottom - bounds.top) as u32;
+        if tex_width == 0 || tex_height == 0 || tex_width > 256 || tex_height > 256 {
+            release(glyph_run);
+            return None;
+        }
+
+        let mut alpha_values = vec![0u8; (tex_width * tex_height) as usize];
+        let tex_ok = if use_cleartype {
+            let mut ct_values = vec![0u8; (tex_width * tex_height * 3) as usize];
+            let ok = analysis
+                .CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, ct_values.as_mut_slice())
+                .is_ok();
+            if ok {
+                for i in 0..(tex_width * tex_height) as usize {
+                    let r = ct_values[i * 3] as u32;
+                    let g = ct_values[i * 3 + 1] as u32;
+                    let b = ct_values[i * 3 + 2] as u32;
+                    alpha_values[i] = ((r + g + b) / 3) as u8;
+                }
+            }
+            ok
+        } else {
+            analysis
+                .CreateAlphaTexture(DWRITE_TEXTURE_ALIASED_1x1, &bounds, alpha_values.as_mut_slice())
+                .is_ok()
+        };
+        release(glyph_run);
+        if !tex_ok {
+            return None;
+        }
+
+        let bearing_x = bounds.left as f32;
+        let bearing_y = -(bounds.top as f32);
+        Some((alpha_values, tex_width, tex_height, advance_width, bearing_x, bearing_y))
+    }
 }
 
 #[cfg(test)]

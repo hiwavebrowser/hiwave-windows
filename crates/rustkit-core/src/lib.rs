@@ -174,8 +174,13 @@ impl NavigationRequest {
 pub struct NavigationStateMachine {
     state: NavigationState,
     current_navigation: Option<NavigationRequest>,
-    history: Vec<Url>,
-    history_index: usize,
+    /// THE canonical history. Per the 2026-08-05 design pin: this machine
+    /// previously carried its own `Vec<Url>` + index while the spec-shaped
+    /// `SessionHistory` sat test-only — two stacks, one orphaned. The Vec is
+    /// deleted AS A DATA OWNER; every history question delegates here. No
+    /// dual-write, ever: a second stack is how back/forward silently diverges
+    /// from what pushState thinks happened.
+    session: SessionHistory,
     event_sender: mpsc::UnboundedSender<LoadEvent>,
 }
 
@@ -185,10 +190,20 @@ impl NavigationStateMachine {
         Self {
             state: NavigationState::Idle,
             current_navigation: None,
-            history: Vec::new(),
-            history_index: 0,
+            session: SessionHistory::new(),
             event_sender,
         }
+    }
+
+    /// Direct access to the session history (History API surface —
+    /// pushState/replaceState land here when the JS binding is wired).
+    pub fn session_history(&self) -> &SessionHistory {
+        &self.session
+    }
+
+    /// Mutable access for History API operations.
+    pub fn session_history_mut(&mut self) -> &mut SessionHistory {
+        &mut self.session
     }
 
     /// Start a new navigation.
@@ -269,14 +284,28 @@ impl NavigationStateMachine {
 
         info!(navigation_id = ?nav.id, elapsed_ms = ?nav.started_at.elapsed().as_millis(), "Navigation finished");
 
-        // Update history
+        // Update history — SUCCESS PATH ONLY. This is the single place a
+        // navigation enters the session history: never on provisional start,
+        // never on fail_navigation. Push-on-start would put failed loads in
+        // the back stack.
         if !nav.replace_history {
-            // Truncate forward history if navigating from middle
-            self.history.truncate(self.history_index + 1);
-            self.history.push(nav.url.clone());
-            self.history_index = self.history.len() - 1;
-        } else if let Some(entry) = self.history.get_mut(self.history_index) {
-            *entry = nav.url.clone();
+            // SessionHistory::push truncates forward entries itself.
+            self.session
+                .push(HistoryEntry::new(nav.url.clone(), String::new()));
+        } else if let Some(entry) = self.session.current_entry_mut() {
+            // Replace: swap the URL in place, PRESERVING state/scroll/type on
+            // the entry. (A traversal load — back/forward/reload — arrives as
+            // a replace against an identical URL, making it a true no-op that
+            // keeps pushState state objects intact.)
+            entry.url = nav.url.clone();
+        } else {
+            // Replace with nothing to replace: the old Vec code silently
+            // DROPPED the entry here, leaving current_url() == None after a
+            // successful load. That was a defect, not a semantic — a
+            // location.replace() on a fresh view still creates the entry
+            // (HTML session history: replace on empty behaves as push).
+            self.session
+                .push(HistoryEntry::new(nav.url.clone(), String::new()));
         }
 
         self.state = NavigationState::Finished;
@@ -328,39 +357,34 @@ impl NavigationStateMachine {
         )
     }
 
+    // History accessors — thin delegates to the one canonical stack. The
+    // signatures are unchanged from the Vec era so every caller (Engine,
+    // tests) keeps working; only the data owner moved.
+
     /// Get current URL.
     pub fn current_url(&self) -> Option<&Url> {
-        self.history.get(self.history_index)
+        self.session.current_url()
     }
 
     /// Check if can go back.
     pub fn can_go_back(&self) -> bool {
-        self.history_index > 0
+        self.session.can_go_back()
     }
 
     /// Check if can go forward.
     pub fn can_go_forward(&self) -> bool {
-        self.history_index + 1 < self.history.len()
+        self.session.can_go_forward()
     }
 
-    /// Go back in history.
+    /// Go back in history. Moves the cursor only — the caller is responsible
+    /// for actually loading the returned URL (Engine::go_back does).
     pub fn go_back(&mut self) -> Option<&Url> {
-        if self.can_go_back() {
-            self.history_index -= 1;
-            self.history.get(self.history_index)
-        } else {
-            None
-        }
+        self.session.back().map(|entry| &entry.url)
     }
 
-    /// Go forward in history.
+    /// Go forward in history. Cursor move only, as with `go_back`.
     pub fn go_forward(&mut self) -> Option<&Url> {
-        if self.can_go_forward() {
-            self.history_index += 1;
-            self.history.get(self.history_index)
-        } else {
-            None
-        }
+        self.session.forward().map(|entry| &entry.url)
     }
 }
 
@@ -537,6 +561,73 @@ mod tests {
         // Check events
         let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(events.len() >= 3);
+    }
+
+    /// The canonical-stack pin, tested at its edges. The pre-existing
+    /// history tests cover push/back/forward; these pin what CHANGED.
+    #[test]
+    fn a_failed_navigation_never_enters_history() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut nav = NavigationStateMachine::new(tx);
+        let good = Url::parse("https://ok.example/").unwrap();
+        let bad = Url::parse("https://bad.example/").unwrap();
+
+        nav.start_navigation(NavigationRequest::new(good.clone())).unwrap();
+        nav.commit_navigation().unwrap();
+        nav.finish_navigation().unwrap();
+
+        nav.start_navigation(NavigationRequest::new(bad)).unwrap();
+        nav.fail_navigation("boom".into()).unwrap();
+
+        // Push happens on the SUCCESS path only: the failed load must not be
+        // in the back stack, and the good page is still current.
+        assert_eq!(nav.current_url(), Some(&good));
+        assert!(!nav.can_go_back(), "failed load must not create an entry");
+    }
+
+    /// Replace-with-nothing-to-replace creates the entry. The old Vec code
+    /// silently DROPPED it, leaving current_url()==None after a successful
+    /// replace-load on a fresh view. That was a defect; this pins the fix.
+    #[test]
+    fn replace_on_empty_history_creates_the_entry() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut nav = NavigationStateMachine::new(tx);
+        let url = Url::parse("https://first.example/").unwrap();
+
+        nav.start_navigation(NavigationRequest::new(url.clone()).with_replace()).unwrap();
+        nav.commit_navigation().unwrap();
+        nav.finish_navigation().unwrap();
+
+        assert_eq!(nav.current_url(), Some(&url), "the entry must exist");
+    }
+
+    /// A replace-load preserves the entry's state object. This is WHY
+    /// SessionHistory is canonical: traversal arrives as a replace against an
+    /// identical URL, and pushState state must survive that round trip. A
+    /// Vec<Url> cannot represent this test at all.
+    #[test]
+    fn a_replace_load_preserves_the_state_object() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut nav = NavigationStateMachine::new(tx);
+        let url = Url::parse("https://app.example/page").unwrap();
+
+        nav.start_navigation(NavigationRequest::new(url.clone())).unwrap();
+        nav.commit_navigation().unwrap();
+        nav.finish_navigation().unwrap();
+
+        // Simulate pushState attaching a state object to the current entry.
+        nav.session_history_mut()
+            .current_entry_mut()
+            .expect("entry exists")
+            .state = Some(HistoryState::string("scroll=42"));
+
+        // Traversal-shaped load: replace against the same URL.
+        nav.start_navigation(NavigationRequest::new(url.clone()).with_replace()).unwrap();
+        nav.commit_navigation().unwrap();
+        nav.finish_navigation().unwrap();
+
+        let state = nav.session_history().current_state();
+        assert!(state.is_some(), "state object must survive a traversal load");
     }
 
     #[test]

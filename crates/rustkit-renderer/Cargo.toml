@@ -16,6 +16,8 @@ rustkit-common = { path = "../rustkit-common" }
 # GPU rendering
 wgpu = "24"
 bytemuck = { version = "1", features = ["derive"] }
+# Screenshot PNG encoding (Windows capture path)
+png = "0.17"
 
 # Text rendering
 rustkit-text = { path = "../rustkit-text" }
@@ -26,6 +28,15 @@ tracing = "0.1"
 
 # Collections
 hashbrown = "0.14"
+
+# DirectWrite glyph rasterization + COM init (Windows only)
+[target.'cfg(windows)'.dependencies]
+# Needed for DirectWrite-based glyph rasterization in `src/glyph.rs`.
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_DirectWrite",
+  "Win32_System_Com",
+] }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

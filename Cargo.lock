@@ -5208,6 +5208,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "hashbrown 0.14.5",
+ "png",
  "rustkit-common",
  "rustkit-css",
  "rustkit-layout",
@@ -5216,6 +5217,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu 24.0.5",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -5290,6 +5292,7 @@ dependencies = [
  "core-foundation 0.9.4",
  "objc",
  "objc2 0.5.2",
+ "png",
  "raw-window-handle",
  "rustkit-core",
  "thiserror 1.0.69",

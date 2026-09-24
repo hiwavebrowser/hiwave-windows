@@ -310,3 +310,85 @@ mod tests {
     }
 }
 
+// ── Windows capture path (native shell screenshot harness) ─────────────────
+//
+// The PPM `ScreenshotMetadata` above belongs to the parity-capture
+// instrument. The native-win32 shell captures a view to PNG with a JSON
+// sidecar and reads the vertex counts and adapter back out of it; that is
+// this type. Windows-only so the crate is behaviour-identical on macOS.
+
+/// Metadata written next to a PNG capture by `Renderer::execute_and_capture`.
+#[cfg(windows)]
+#[derive(Debug, Clone)]
+pub struct CaptureMetadata {
+    pub width: u32,
+    pub height: u32,
+    /// GPU adapter name.
+    pub adapter: String,
+    /// Texture format used.
+    pub format: String,
+    /// Timestamp of capture.
+    pub timestamp: String,
+    /// Number of color vertices rendered.
+    pub color_vertex_count: usize,
+    /// Number of texture vertices rendered (text/images).
+    pub texture_vertex_count: usize,
+}
+
+/// Save RGBA8 pixels as a PNG.
+#[cfg(windows)]
+pub fn save_png(
+    path: impl AsRef<Path>,
+    width: u32,
+    height: u32,
+    rgba_data: &[u8],
+) -> Result<(), ScreenshotError> {
+    use std::fs::File;
+    use std::io::BufWriter;
+
+    let file = File::create(path)?;
+    let writer = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut png_writer = encoder
+        .write_header()
+        .map_err(|e| ScreenshotError::ImageEncoding(e.to_string()))?;
+    png_writer
+        .write_image_data(rgba_data)
+        .map_err(|e| ScreenshotError::ImageEncoding(e.to_string()))?;
+    Ok(())
+}
+
+/// Save capture metadata as a small JSON document (no serde dependency).
+#[cfg(windows)]
+pub fn save_capture_metadata(
+    path: impl AsRef<Path>,
+    metadata: &CaptureMetadata,
+) -> Result<(), ScreenshotError> {
+    fn esc(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+    let json = format!(
+        concat!(
+            "{{\n",
+            "  \"width\": {},\n",
+            "  \"height\": {},\n",
+            "  \"adapter\": \"{}\",\n",
+            "  \"format\": \"{}\",\n",
+            "  \"timestamp\": \"{}\",\n",
+            "  \"color_vertex_count\": {},\n",
+            "  \"texture_vertex_count\": {}\n",
+            "}}\n"
+        ),
+        metadata.width,
+        metadata.height,
+        esc(&metadata.adapter),
+        esc(&metadata.format),
+        esc(&metadata.timestamp),
+        metadata.color_vertex_count,
+        metadata.texture_vertex_count,
+    );
+    std::fs::write(path, json)?;
+    Ok(())
+}

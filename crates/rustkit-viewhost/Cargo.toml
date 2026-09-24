@@ -16,6 +16,9 @@ thiserror = "1.0"
 # Tracing
 tracing = "0.1"
 
+# Screenshot support (Windows GPU readback -> PNG)
+png = "0.17"
+
 # Windows API bindings (conditional)
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [

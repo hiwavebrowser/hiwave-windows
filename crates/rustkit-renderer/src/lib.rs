@@ -52,6 +52,8 @@ pub mod dither;
 mod glyph;
 mod pipeline;
 pub mod screenshot;
+#[cfg(windows)]
+pub use screenshot::CaptureMetadata;
 mod shaders;
 
 pub use glyph::*;
@@ -645,6 +647,77 @@ impl Renderer {
     }
 
     /// Set the viewport size.
+    /// Render `commands` to an offscreen target and save it as PNG plus a
+    /// JSON sidecar. The native-win32 shell's screenshot harness and
+    /// hiwave-smoke drive this; parity-capture uses the PPM path instead.
+    #[cfg(windows)]
+    pub fn execute_and_capture(
+        &mut self,
+        commands: &[DisplayCommand],
+        output_path: impl AsRef<std::path::Path>,
+    ) -> Result<CaptureMetadata, RendererError> {
+        let (width, height) = self.viewport_size;
+        let capture_format = self.surface_format;
+
+        let (texture, view) =
+            screenshot::create_offscreen_target(&self.device, width, height, capture_format);
+        self.execute(commands, &view)?;
+
+        let readback = screenshot::GpuReadbackBuffer::new(&self.device, width, height);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Screenshot Copy Encoder"),
+            });
+        readback.copy_from_texture(&mut encoder, &texture);
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let mut pixels = readback
+            .read_data_sync(&self.device)
+            .map_err(|e| RendererError::TextureUpload(e.to_string()))?;
+
+        // A BGRA capture target is swizzled to RGBA for PNG encoding.
+        match capture_format {
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => {
+                for px in pixels.chunks_exact_mut(4) {
+                    px.swap(0, 2);
+                }
+            }
+            _ => {}
+        }
+
+        screenshot::save_png(&output_path, width, height, &pixels)
+            .map_err(|e| RendererError::TextureUpload(e.to_string()))?;
+
+        let metadata = CaptureMetadata {
+            width,
+            height,
+            adapter: "Unknown".to_string(),
+            format: format!("{:?}", capture_format),
+            timestamp: chrono_lite_timestamp(),
+            color_vertex_count: self.color_vertices.len(),
+            texture_vertex_count: self.texture_vertices.len(),
+        };
+        let metadata_path = output_path.as_ref().with_extension("json");
+        screenshot::save_capture_metadata(&metadata_path, &metadata)
+            .map_err(|e| RendererError::TextureUpload(e.to_string()))?;
+        Ok(metadata)
+    }
+
+    /// Batch sizes and stack depths of the last executed frame (native shell
+    /// diagnostics).
+    #[cfg(windows)]
+    pub fn get_render_stats(&self) -> RenderStats {
+        RenderStats {
+            color_vertex_count: self.color_vertices.len(),
+            color_index_count: self.color_indices.len(),
+            texture_vertex_count: self.texture_vertices.len(),
+            texture_index_count: self.texture_indices.len(),
+            clip_stack_depth: self.clip_stack.len(),
+            stacking_context_depth: self.stacking_contexts.len(),
+        }
+    }
+
     pub fn set_viewport_size(&mut self, width: u32, height: u32) {
         self.viewport_size = (width, height);
 
@@ -7447,4 +7520,39 @@ mod form_text_seat_tests {
         assert!(((ascent + descent) - content_h).abs() <= 1.5,
             "line box {} vs composed content {}", ascent + descent, content_h);
     }
+}
+
+/// Statistics about the last render pass (native-win32 shell diagnostics).
+#[cfg(windows)]
+#[derive(Debug, Clone, Default)]
+pub struct RenderStats {
+    pub color_vertex_count: usize,
+    pub color_index_count: usize,
+    pub texture_vertex_count: usize,
+    pub texture_index_count: usize,
+    pub clip_stack_depth: usize,
+    pub stacking_context_depth: usize,
+}
+
+/// ISO8601-ish timestamp without a chrono dependency (approximate calendar;
+/// good enough for a capture sidecar).
+#[cfg(windows)]
+fn chrono_lite_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = secs / 86400;
+    let years = 1970 + days / 365;
+    let remaining = (days % 365) as u32;
+    let month = remaining / 30 + 1;
+    let day = remaining % 30 + 1;
+    let hours = (secs % 86400) / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        years, month, day, hours, minutes, seconds
+    )
 }
