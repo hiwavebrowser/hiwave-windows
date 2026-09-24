@@ -811,6 +811,7 @@ impl Engine {
             display_list: None,
             bindings: None,
             navigation,
+            nav_generation: 0,
             nav_event_rx: nav_rx,
             focused_node: None,
             edit_states: std::collections::HashMap::new(),
@@ -5549,14 +5550,24 @@ impl Engine {
         match self.views.get_mut(&id) {
             Some(view) => {
                 view.nav_generation = view.nav_generation.wrapping_add(1);
-                info!(?id, "Navigation stopped");
-                let _ = self.event_tx.send(EngineEvent::NavigationFailed {
-                    view_id: id,
-                    url: view.url.clone().unwrap_or_else(|| {
-                        Url::parse("about:blank").expect("about:blank parses")
-                    }),
-                    error: "stopped".to_string(),
-                });
+                // Only a load that was actually in flight has anything to
+                // report: the state machine must leave Provisional/Committed
+                // (or `is_loading` stays true until the next start), and UI
+                // listeners must not see "stopped" spam from a Stop mash on
+                // an idle view.
+                if view.navigation.is_loading() {
+                    info!(?id, "Navigation stopped");
+                    let _ = view.navigation.fail_navigation("stopped".to_string());
+                    let _ = self.event_tx.send(EngineEvent::NavigationFailed {
+                        view_id: id,
+                        url: view.url.clone().unwrap_or_else(|| {
+                            Url::parse("about:blank").expect("about:blank parses")
+                        }),
+                        error: "stopped".to_string(),
+                    });
+                } else {
+                    trace!(?id, "Stop on an idle view: generation bumped, nothing to cancel");
+                }
                 true
             }
             None => false,
