@@ -4723,30 +4723,38 @@ impl Engine {
                 }
             }
             "flex" => {
-                // Shorthand: flex: <grow> [<shrink>] [<basis>]
+                // Shorthand: flex: <grow> [<shrink>] [<basis>].
+                //
+                // Two rules the naive positional read got wrong (hiwave-windows
+                // #66): `flex: <number>` sets basis to 0, not auto — that is
+                // what makes `flex: 1` divide the container instead of sizing
+                // to content — and CSS allows `flex: <grow> <basis>`, so a
+                // second value that does NOT parse as a bare number is the
+                // basis, not a shrink of 200.
                 let parts: Vec<&str> = value.split_whitespace().collect();
-                if parts.len() >= 1 {
-                    if let Ok(grow) = parts[0].parse::<f32>() {
+                if let Some(first) = parts.first() {
+                    if let Ok(grow) = first.parse::<f32>() {
                         style.flex_grow = grow;
+                        if parts.len() == 1 {
+                            style.flex_shrink = 1.0;
+                            style.flex_basis = rustkit_css::FlexBasis::Length(0.0);
+                        }
                     }
                 }
                 if parts.len() >= 2 {
-                    if let Ok(shrink) = parts[1].parse::<f32>() {
-                        style.flex_shrink = shrink;
+                    match parts[1].parse::<f32>() {
+                        Ok(shrink) => {
+                            style.flex_shrink = shrink;
+                            style.flex_basis = rustkit_css::FlexBasis::Length(0.0);
+                        }
+                        Err(_) => {
+                            style.flex_shrink = 1.0;
+                            style.flex_basis = parse_flex_basis(parts[1]);
+                        }
                     }
                 }
                 if parts.len() >= 3 {
-                    if let Some(length) = parse_length(parts[2]) {
-                        match length {
-                            rustkit_css::Length::Px(px) => {
-                                style.flex_basis = rustkit_css::FlexBasis::Length(px)
-                            }
-                            rustkit_css::Length::Percent(pct) => {
-                                style.flex_basis = rustkit_css::FlexBasis::Percent(pct)
-                            }
-                            _ => {}
-                        }
-                    }
+                    style.flex_basis = parse_flex_basis(parts[2]);
                 }
             }
             "flex-direction" => {
@@ -5062,30 +5070,36 @@ impl Engine {
                 }
             }
             "text-decoration" | "text-decoration-line" => {
-                match value.trim().to_lowercase().as_str() {
-                    "none" => style.text_decoration_line = rustkit_css::TextDecorationLine::NONE,
-                    "underline" => {
-                        style.text_decoration_line = rustkit_css::TextDecorationLine::UNDERLINE
-                    }
-                    "overline" => {
-                        style.text_decoration_line = rustkit_css::TextDecorationLine::OVERLINE
-                    }
-                    "line-through" => {
-                        style.text_decoration_line = rustkit_css::TextDecorationLine::LINE_THROUGH
-                    }
-                    _ => {
-                        // Handle combined values like "underline line-through"
-                        let mut decoration = rustkit_css::TextDecorationLine::NONE;
-                        for part in value.split_whitespace() {
-                            match part.to_lowercase().as_str() {
-                                "underline" => decoration.underline = true,
-                                "overline" => decoration.overline = true,
-                                "line-through" => decoration.line_through = true,
-                                _ => {}
-                            }
+                // `text-decoration` is a shorthand and may carry a colour and
+                // a style as well as the line. Only the line is read here; a
+                // value naming no line keyword at all (a colour on its own)
+                // leaves the existing line alone instead of clearing it
+                // (hiwave-windows #64).
+                let mut line = rustkit_css::TextDecorationLine::NONE;
+                let mut saw_line_keyword = false;
+                for part in value.split_whitespace() {
+                    match part.to_lowercase().as_str() {
+                        "underline" => {
+                            line.underline = true;
+                            saw_line_keyword = true;
                         }
-                        style.text_decoration_line = decoration;
+                        "overline" => {
+                            line.overline = true;
+                            saw_line_keyword = true;
+                        }
+                        "line-through" => {
+                            line.line_through = true;
+                            saw_line_keyword = true;
+                        }
+                        "none" => {
+                            line = rustkit_css::TextDecorationLine::NONE;
+                            saw_line_keyword = true;
+                        }
+                        _ => {}
                     }
+                }
+                if saw_line_keyword {
+                    style.text_decoration_line = line;
                 }
             }
             "text-decoration-color" => {
@@ -10289,6 +10303,22 @@ fn parse_time(value: &str) -> Option<f32> {
 }
 
 /// Parse a CSS timing function.
+/// `flex-basis` value: `auto`, `content`, a length, or a percentage.
+fn parse_flex_basis(value: &str) -> rustkit_css::FlexBasis {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case("auto") {
+        return rustkit_css::FlexBasis::Auto;
+    }
+    if v.eq_ignore_ascii_case("content") {
+        return rustkit_css::FlexBasis::Content;
+    }
+    match parse_length(v) {
+        Some(rustkit_css::Length::Px(px)) => rustkit_css::FlexBasis::Length(px),
+        Some(rustkit_css::Length::Percent(pct)) => rustkit_css::FlexBasis::Percent(pct),
+        _ => rustkit_css::FlexBasis::Auto,
+    }
+}
+
 fn parse_timing_function(value: &str) -> rustkit_css::TimingFunction {
     let value = value.trim();
     match value {
@@ -15862,5 +15892,162 @@ mod stop_navigation_tests {
         let a = e.bump_nav_generation_for_test(id);
         let b = e.bump_nav_generation_for_test(id);
         assert_eq!(b, a + 1, "generation must advance by one");
+    }
+}
+
+// ── ported from hiwave-windows (transform/animation/position/overflow/
+//    text-decoration/flex wiring tests, #48-#50, #62, #64, #66) ──
+//
+// The Windows tree called a receiver-less `Engine::apply_declaration`; here
+// the production path is `Engine::apply_style_property(&self, ..)`, so each
+// test builds one Engine behind the init mutex (Compositor::new performs
+// wgpu adapter init, which must not run concurrently — hiwave-windows #51).
+#[cfg(test)]
+mod cascade_wire_tests {
+    use super::*;
+
+    fn engine() -> Engine {
+        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+        Engine::new(EngineConfig::default()).expect("engine")
+    }
+
+    fn find<'a>(b: &'a LayoutBox, pred: &dyn Fn(&LayoutBox) -> bool) -> Option<&'a LayoutBox> {
+        if pred(b) {
+            return Some(b);
+        }
+        b.children.iter().find_map(|c| find(c, pred))
+    }
+
+    // transform (#48)
+    #[test]
+    fn an_invalid_transform_leaves_the_previous_value_untouched() {
+        let e = engine();
+        let mut style = ComputedStyle::default();
+        e.apply_style_property(&mut style, "transform", "scale(2)");
+        let before = style.transform.ops.len();
+        e.apply_style_property(&mut style, "transform", "!!!garbage!!!");
+        assert_eq!(
+            style.transform.ops.len(),
+            before,
+            "invalid value must not clobber the computed transform"
+        );
+    }
+
+    // animation (#50)
+    #[test]
+    fn an_unknown_timing_function_falls_back_to_the_css_initial() {
+        assert_eq!(
+            parse_timing_function("not-a-function"),
+            rustkit_css::TimingFunction::Ease
+        );
+    }
+
+    // position (#62)
+    #[test]
+    fn an_unknown_keyword_falls_back_to_static_rather_than_keeping_the_old_value() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "position", "absolute");
+        e.apply_style_property(&mut s, "position", "notakeyword");
+        assert_eq!(
+            s.position,
+            rustkit_css::Position::Static,
+            "an invalid keyword must reset to the CSS initial, not silently \
+             leave the element absolutely positioned"
+        );
+    }
+
+    #[test]
+    fn a_percentage_offset_is_refused_rather_than_approximated() {
+        let e = engine();
+        let html = "<html><body><div style=\"position: absolute; top: 50%\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d, &[]);
+        let positioned = find(&layout, &|b| b.position == rustkit_layout::Position::Absolute)
+            .expect("element should still be absolutely positioned");
+        assert_eq!(
+            positioned.offsets.top, None,
+            "a percentage offset must resolve to None, not an invented pixel value"
+        );
+    }
+
+    // overflow / text-decoration (#64)
+    #[test]
+    fn the_overflow_shorthand_sets_both_axes() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "overflow", "hidden");
+        assert_eq!(s.overflow_x, rustkit_css::Overflow::Hidden);
+        assert_eq!(s.overflow_y, rustkit_css::Overflow::Hidden);
+    }
+
+    #[test]
+    fn the_axis_longhands_are_independent() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "overflow-x", "scroll");
+        e.apply_style_property(&mut s, "overflow-y", "hidden");
+        assert_eq!(s.overflow_x, rustkit_css::Overflow::Scroll);
+        assert_eq!(
+            s.overflow_y,
+            rustkit_css::Overflow::Hidden,
+            "setting one axis must not clobber the other"
+        );
+    }
+
+    #[test]
+    fn a_shorthand_carrying_a_colour_still_sets_the_line() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "text-decoration", "underline red");
+        assert!(
+            s.text_decoration_line.underline,
+            "a shorthand naming a colour as well as a line must still set the line"
+        );
+    }
+
+    #[test]
+    fn a_value_naming_no_line_keyword_leaves_the_line_alone() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "text-decoration", "underline");
+        e.apply_style_property(&mut s, "text-decoration", "red");
+        assert!(
+            s.text_decoration_line.underline,
+            "a colour-only value must not clear an already-set line"
+        );
+    }
+
+    // flex item properties (#66)
+    #[test]
+    fn the_single_number_shorthand_zeroes_the_basis() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "flex", "1");
+        assert_eq!(s.flex_grow, 1.0);
+        assert_eq!(s.flex_shrink, 1.0);
+        assert_eq!(
+            s.flex_basis,
+            rustkit_css::FlexBasis::Length(0.0),
+            "flex: 1 must zero the basis or the container is not divided"
+        );
+    }
+
+    #[test]
+    fn a_two_value_shorthand_distinguishes_shrink_from_basis() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "flex", "1 200px");
+        assert_eq!(s.flex_grow, 1.0);
+        assert_eq!(
+            s.flex_basis,
+            rustkit_css::FlexBasis::Length(200.0),
+            "a length in position 2 is the BASIS"
+        );
+        let mut s2 = ComputedStyle::default();
+        e.apply_style_property(&mut s2, "flex", "2 3");
+        assert_eq!(s2.flex_grow, 2.0);
+        assert_eq!(s2.flex_shrink, 3.0, "a bare number in position 2 is the SHRINK");
     }
 }
