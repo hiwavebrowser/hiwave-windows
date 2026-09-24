@@ -15678,7 +15678,10 @@ mod rule_prefilter_tests {
     }
 }
 
-#[cfg(test)]
+// Needs Engine::create_headless_view, which only exists with the
+// `headless` feature (cargo test --workspace enables it via parity-capture;
+// a bare `-p rustkit-engine` does not).
+#[cfg(all(test, feature = "headless"))]
 mod history_traversal_tests {
     //! Engine-level contract for go_back / go_forward / reload.
     //!
@@ -15752,7 +15755,10 @@ mod history_traversal_tests {
     }
 }
 
-#[cfg(test)]
+// Needs Engine::create_headless_view, which only exists with the
+// `headless` feature (cargo test --workspace enables it via parity-capture;
+// a bare `-p rustkit-engine` does not).
+#[cfg(all(test, feature = "headless"))]
 mod stop_navigation_tests {
     //! STOP: cancel an in-flight navigation.
     //!
