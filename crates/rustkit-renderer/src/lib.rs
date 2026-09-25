@@ -704,9 +704,8 @@ impl Renderer {
         Ok(metadata)
     }
 
-    /// Batch sizes and stack depths of the last executed frame (native shell
+    /// Batch sizes and stack depths of the last executed frame (shell
     /// diagnostics).
-    #[cfg(windows)]
     pub fn get_render_stats(&self) -> RenderStats {
         RenderStats {
             color_vertex_count: self.color_vertices.len(),
@@ -7522,8 +7521,7 @@ mod form_text_seat_tests {
     }
 }
 
-/// Statistics about the last render pass (native-win32 shell diagnostics).
-#[cfg(windows)]
+/// Statistics about the last render pass (shell diagnostics).
 #[derive(Debug, Clone, Default)]
 pub struct RenderStats {
     pub color_vertex_count: usize,

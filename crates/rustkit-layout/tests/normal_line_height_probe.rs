@@ -19,6 +19,10 @@
 //!
 //! cargo test -p rustkit-layout --test normal_line_height_probe -- --nocapture
 
+// This probe measures Core Text faces (-apple-system, SF Pro) against Chrome-on-macOS
+// rects; on other platforms the families do not exist and the table is meaningless.
+#![cfg(target_os = "macos")]
+
 use rustkit_css::{FontStyle, FontWeight};
 use rustkit_layout::measure_text_advanced;
 

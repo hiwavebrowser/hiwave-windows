@@ -287,17 +287,7 @@ impl Tokenizer {
             Some('/') => {
                 self.state = State::SelfClosingStartTag;
             }
-            Some('>') => {
-                self.emit_current_tag();
-                // Check if we need to switch to special parsing mode
-                self.check_special_mode();
-                // Use the special mode if set, otherwise Data
-                if let Some(special_state) = self.return_state.take() {
-                    self.state = special_state;
-                } else {
-                    self.state = State::Data;
-                }
-            }
+            Some('>') => self.finish_start_tag(),
             Some(ch) => {
                 self.current_tag_name.push(ch.to_ascii_lowercase());
             }
@@ -306,6 +296,20 @@ impl Tokenizer {
                 self.state = State::Data;
             }
         }
+    }
+
+    /// Emit the start tag closed by the `>` just consumed, and enter the
+    /// state its content is tokenized in: script data for `<script>`,
+    /// RAWTEXT / RCDATA for the other text-only elements, Data otherwise.
+    ///
+    /// Every `>` that ends a start tag must come through here, whatever
+    /// attribute state it was consumed in. When only the bare-name path did,
+    /// `<script nonce="...">` fell back to Data and `a<b.length` inside it
+    /// was read as a tag, truncating the script and injecting elements.
+    fn finish_start_tag(&mut self) {
+        self.emit_current_tag();
+        self.check_special_mode();
+        self.state = self.return_state.take().unwrap_or(State::Data);
     }
 
     fn check_special_mode(&mut self) {
@@ -425,10 +429,7 @@ impl Tokenizer {
             Some('=') => {
                 self.state = State::AttributeValue;
             }
-            Some('>') => {
-                self.emit_current_tag();
-                self.state = State::Data;
-            }
+            Some('>') => self.finish_start_tag(),
             Some(ch) => {
                 self.current_attr_name.clear();
                 self.current_attr_value.clear();
@@ -453,8 +454,7 @@ impl Tokenizer {
             }
             Some('>') => {
                 self.emit_current_attr();
-                self.emit_current_tag();
-                self.state = State::Data;
+                self.finish_start_tag();
             }
             Some(ch) => {
                 self.current_attr_value.push(ch);
@@ -525,8 +525,7 @@ impl Tokenizer {
             Some('>') => {
                 self.consume();
                 self.emit_current_attr();
-                self.emit_current_tag();
-                self.state = State::Data;
+                self.finish_start_tag();
             }
             Some(ch) => {
                 self.consume();
@@ -1263,6 +1262,57 @@ mod tests {
         } else {
             panic!("Expected StartTag");
         }
+    }
+
+    /// The text between a start tag and `</name>`, and the tag names seen.
+    fn content_and_tags(html: &str) -> (String, Vec<String>) {
+        let tokens = tokenize(html).unwrap();
+        let text = tokens
+            .iter()
+            .filter_map(|t| match t {
+                Token::Character(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        let tags = tokens
+            .iter()
+            .filter_map(|t| match t {
+                Token::StartTag { name, .. } => Some(name.clone()),
+                Token::EndTag { name } => Some(format!("/{name}")),
+                _ => None,
+            })
+            .collect();
+        (text, tags)
+    }
+
+    #[test]
+    fn a_script_with_attributes_is_script_data() {
+        // google.com's first inline script: `a<w.length` read as a tag cut
+        // it to 73 of 303 bytes.
+        let js = "for(var a=0;a<w.length;a+=2)x='</div><b>'+a";
+        for open in [
+            r#"<script nonce="cx5R">"#,
+            "<script nonce='cx5R'>",
+            "<script nonce=cx5R>",
+            "<script async>",
+            "<script async >",
+            "<script type=\"text/javascript\" defer>",
+        ] {
+            let (text, tags) = content_and_tags(&format!("{open}{js}</script><p>"));
+            assert_eq!(text, js, "{open}");
+            assert_eq!(tags, vec!["script", "/script", "p"], "{open}");
+        }
+    }
+
+    #[test]
+    fn rawtext_and_rcdata_with_attributes() {
+        let (text, tags) = content_and_tags("<style media=\"all\">a<b{}</style>");
+        assert_eq!(text, "a<b{}");
+        assert_eq!(tags, vec!["style", "/style"]);
+
+        let (text, tags) = content_and_tags("<textarea name=q><b>&amp;</textarea>");
+        assert_eq!(text, "<b>&", "RCDATA decodes entities but makes no tags");
+        assert_eq!(tags, vec!["textarea", "/textarea"]);
     }
 }
 

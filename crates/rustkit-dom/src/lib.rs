@@ -838,7 +838,6 @@ mod tests {
     }
 }
 
-
 // ── ported from hiwave-windows: parser robustness pins (the shell's
 //    chrome.html, ~100KB <style> blocks, <meta>/charset/title-only heads). ──
 #[cfg(test)]

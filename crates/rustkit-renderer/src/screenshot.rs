@@ -393,7 +393,6 @@ pub fn save_capture_metadata(
     Ok(())
 }
 
-
 #[cfg(all(test, windows))]
 mod windows_capture_metadata_pins {
     use super::*;

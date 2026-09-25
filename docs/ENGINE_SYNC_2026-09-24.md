@@ -60,6 +60,22 @@ the 52k-line diff against Windows develop.
 Everything in S1–S4 is `#[cfg(windows)]`-gated, so the crates stay
 behaviour-identical on macOS and can be re-synced by diff.
 
+**2026-09-25:** the seam is gone. S0–S4 and the fixes S6 found were upstreamed
+to hiwave-macos as #233, #234, #235, #236, #238, #239, #240 (all merged, all in
+release V1.1.0) and #242 (open, next release). The crates in this tree are now
+a verbatim copy of hiwave-macos tag `V1.1.0` (`2c17931`, develop `6e508fd`),
+plus only what V1.1.0 does not yet carry:
+
+- the #242 test modules (`windows_engine_pins`, `windows_a_leg_pins`,
+  `windows_flex_pins`, `border_radius_emit_tests`, `windows_parser_pins`,
+  `windows_shadow_pins`) and its two parser fixes (elliptical `border-radius`
+  takes the horizontal radii; a single-value gradient position keeps y centred);
+- `windows_capture_metadata_pins` in `rustkit-renderer/src/screenshot.rs`
+  (the capture-sidecar pin; `cfg(windows)`).
+
+When #242 lands, the next re-sync drops the first bullet and this tree becomes
+`hiwave-macos develop` byte-for-byte except the sidecar pin.
+
 ## Gates for this PR
 
 - Windows develop baseline (36c3b75, rustc 1.90): 73 test binaries,
@@ -69,6 +85,21 @@ behaviour-identical on macOS and can be re-synced by diff.
 - The native shell renders `https://example.com` and the about page with
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
+
+## Gate results (2026-09-25, this tree, rustc 1.90)
+
+| gate | result |
+|---|---|
+| full suite (`cargo test --workspace --no-fail-fast`, 43 test binaries + 34 doc-test targets) | **1387 passed / 4 failed / 5 ignored** (baseline 1012 / 0 / 5) |
+| the 4 reds | `rustkit-layout` `tests::{a_line_sums_whole_pixel_ascents_like_blink, baseline_aligned_atomic_still_extends_strut, textarea_alone_on_a_line_hangs_the_strut_descent_below_it, wrapped_inline_block_hangs_the_line_off_its_last_line}` — pixel expectations calibrated on the macOS system font; identical reds on hiwave-macos develop when run on Windows. Decision pending (gate to macOS now, Windows expectations later) |
+| `cargo build -p hiwave-app` (WebView2) | ✅ |
+| `cargo build -p hiwave-app --no-default-features --features native-win32` | ✅ |
+| `cargo build --release -p parity-capture` | ✅ |
+| native-win32 render-test `https://example.com` | real glyphs (DirectWrite); the GPU content PNG is pixel-identical to the 2026-09-24 seam-tree capture (0 differing pixels of 1060×800) |
+| native-win32 render-test, dark page (`#1a1a2e` body, `#5a5a76` / `#ff0000` boxes) | reads back (26,26,46), (90,90,118), (255,0,0) — exact; the Windows sRGB re-encode fix is not needed on the linear render targets |
+
+Receipts: `P:epos\hiwave-renders\engine-sync-2026-09-25\` (PNGs + sidecars),
+attached to the PR. Not committed (macOS #220).
 
 ## What comes after
 

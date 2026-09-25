@@ -31,8 +31,9 @@ use rustkit_layout::{
 use std::cell::Cell;
 use rustkit_net::{LoaderConfig, NetError, Request, ResourceLoader};
 use rustkit_renderer::Renderer;
+pub use rustkit_renderer::RenderStats;
 #[cfg(windows)]
-pub use rustkit_renderer::{CaptureMetadata as ScreenshotMetadata, RenderStats};
+pub use rustkit_renderer::CaptureMetadata as ScreenshotMetadata;
 use rustkit_viewhost::{Bounds, ViewHost, ViewHostTrait, ViewId, WindowHandle};
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -6301,26 +6302,38 @@ impl Engine {
             }
         }
 
-        let mut loaded = 0;
-        for (key, family, url) in targets {
+        // Fetch concurrently. One at a time, YouTube's 135 declared faces
+        // took 23s — most of the page's 31s and past the real-site board's
+        // 30s LOADS budget. `buffered` (not unordered) keeps results in rule
+        // order, so the cache is filled exactly as the sequential loop did.
+        use futures::stream::{self, StreamExt};
+        const MAX_IN_FLIGHT: usize = 16;
+        let loader = &self.loader;
+        let fetched: Vec<_> = stream::iter(targets.into_iter().map(|(key, family, url)| async move {
             info!(%family, %url, "Loading web font");
-            match self.loader.fetch(Request::get(url.clone())).await {
+            let outcome = match loader.fetch(Request::get(url.clone())).await {
                 Ok(response) if response.ok() => match response.bytes().await {
-                    Ok(bytes) => {
-                        self.font_loader.insert_loaded(key, bytes.to_vec());
-                        loaded += 1;
-                    }
-                    Err(e) => {
-                        warn!(%family, %url, ?e, "Failed to read web font body");
-                        self.font_loader.mark_failed(key);
-                    }
+                    Ok(bytes) => Ok(bytes.to_vec()),
+                    Err(e) => Err(format!("Failed to read web font body: {e:?}")),
                 },
-                Ok(response) => {
-                    warn!(%family, %url, status = %response.status, "Failed to fetch web font");
-                    self.font_loader.mark_failed(key);
+                Ok(response) => Err(format!("Failed to fetch web font: status {}", response.status)),
+                Err(e) => Err(format!("Failed to fetch web font: {e:?}")),
+            };
+            (key, family, url, outcome)
+        }))
+        .buffered(MAX_IN_FLIGHT)
+        .collect()
+        .await;
+
+        let mut loaded = 0;
+        for (key, family, url, outcome) in fetched {
+            match outcome {
+                Ok(bytes) => {
+                    self.font_loader.insert_loaded(key, bytes);
+                    loaded += 1;
                 }
-                Err(e) => {
-                    warn!(%family, %url, ?e, "Failed to fetch web font");
+                Err(reason) => {
+                    warn!(%family, %url, %reason, "Web font not loaded");
                     self.font_loader.mark_failed(key);
                 }
             }
@@ -8391,9 +8404,8 @@ impl Engine {
             .unwrap_or(serde_json::Value::Null)
     }
 
-    /// Batch sizes and stack depths of the last frame (native shell
-    /// diagnostics / screenshot harness).
-    #[cfg(windows)]
+    /// Batch sizes and stack depths of the last frame (shell diagnostics /
+    /// screenshot harness).
     pub fn get_render_stats(&self) -> RenderStats {
         self.renderer
             .as_ref()
@@ -9557,12 +9569,9 @@ fn parse_conic_gradient(value: &str, repeating: bool) -> Option<rustkit_css::Gra
                         center.1 = 0.5;
                     }
                     _ => {
-                        // A single <length-percentage> is the horizontal
-                        // position; the vertical one defaults to center
-                        // (CSS Images 3 §3.2 / CSS Values <position>).
                         let val = parse_position_value(pos_parts[0]);
                         center.0 = val;
-                        center.1 = 0.5;
+                        center.1 = 0.5; // single value = x; y stays centred
                     }
                 }
             }
@@ -15736,6 +15745,163 @@ mod rule_prefilter_tests {
     }
 }
 
+// ── ported from hiwave-windows (transform/animation/position/overflow/
+//    text-decoration/flex wiring tests, #48-#50, #62, #64, #66) ──
+//
+// The Windows tree called a receiver-less `Engine::apply_declaration`; here
+// the production path is `Engine::apply_style_property(&self, ..)`, so each
+// test builds one Engine behind the init mutex (Compositor::new performs
+// wgpu adapter init, which must not run concurrently — hiwave-windows #51).
+#[cfg(test)]
+mod cascade_wire_tests {
+    use super::*;
+
+    fn engine() -> Engine {
+        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+        Engine::new(EngineConfig::default()).expect("engine")
+    }
+
+    fn find<'a>(b: &'a LayoutBox, pred: &dyn Fn(&LayoutBox) -> bool) -> Option<&'a LayoutBox> {
+        if pred(b) {
+            return Some(b);
+        }
+        b.children.iter().find_map(|c| find(c, pred))
+    }
+
+    // transform (#48)
+    #[test]
+    fn an_invalid_transform_leaves_the_previous_value_untouched() {
+        let e = engine();
+        let mut style = ComputedStyle::default();
+        e.apply_style_property(&mut style, "transform", "scale(2)");
+        let before = style.transform.ops.len();
+        e.apply_style_property(&mut style, "transform", "!!!garbage!!!");
+        assert_eq!(
+            style.transform.ops.len(),
+            before,
+            "invalid value must not clobber the computed transform"
+        );
+    }
+
+    // animation (#50)
+    #[test]
+    fn an_unknown_timing_function_falls_back_to_the_css_initial() {
+        assert_eq!(
+            parse_timing_function("not-a-function"),
+            rustkit_css::TimingFunction::Ease
+        );
+    }
+
+    // position (#62)
+    #[test]
+    fn an_unknown_keyword_falls_back_to_static_rather_than_keeping_the_old_value() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "position", "absolute");
+        e.apply_style_property(&mut s, "position", "notakeyword");
+        assert_eq!(
+            s.position,
+            rustkit_css::Position::Static,
+            "an invalid keyword must reset to the CSS initial, not silently \
+             leave the element absolutely positioned"
+        );
+    }
+
+    #[test]
+    fn a_percentage_offset_is_refused_rather_than_approximated() {
+        let e = engine();
+        let html = "<html><body><div style=\"position: absolute; top: 50%\">x</div></body></html>";
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d, &[]);
+        let positioned = find(&layout, &|b| b.position == rustkit_layout::Position::Absolute)
+            .expect("element should still be absolutely positioned");
+        assert_eq!(
+            positioned.offsets.top, None,
+            "a percentage offset must resolve to None, not an invented pixel value"
+        );
+    }
+
+    // overflow / text-decoration (#64)
+    #[test]
+    fn the_overflow_shorthand_sets_both_axes() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "overflow", "hidden");
+        assert_eq!(s.overflow_x, rustkit_css::Overflow::Hidden);
+        assert_eq!(s.overflow_y, rustkit_css::Overflow::Hidden);
+    }
+
+    #[test]
+    fn the_axis_longhands_are_independent() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "overflow-x", "scroll");
+        e.apply_style_property(&mut s, "overflow-y", "hidden");
+        assert_eq!(s.overflow_x, rustkit_css::Overflow::Scroll);
+        assert_eq!(
+            s.overflow_y,
+            rustkit_css::Overflow::Hidden,
+            "setting one axis must not clobber the other"
+        );
+    }
+
+    #[test]
+    fn a_shorthand_carrying_a_colour_still_sets_the_line() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "text-decoration", "underline red");
+        assert!(
+            s.text_decoration_line.underline,
+            "a shorthand naming a colour as well as a line must still set the line"
+        );
+    }
+
+    #[test]
+    fn a_value_naming_no_line_keyword_leaves_the_line_alone() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "text-decoration", "underline");
+        e.apply_style_property(&mut s, "text-decoration", "red");
+        assert!(
+            s.text_decoration_line.underline,
+            "a colour-only value must not clear an already-set line"
+        );
+    }
+
+    // flex item properties (#66)
+    #[test]
+    fn the_single_number_shorthand_zeroes_the_basis() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "flex", "1");
+        assert_eq!(s.flex_grow, 1.0);
+        assert_eq!(s.flex_shrink, 1.0);
+        assert_eq!(
+            s.flex_basis,
+            rustkit_css::FlexBasis::Length(0.0),
+            "flex: 1 must zero the basis or the container is not divided"
+        );
+    }
+
+    #[test]
+    fn a_two_value_shorthand_distinguishes_shrink_from_basis() {
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "flex", "1 200px");
+        assert_eq!(s.flex_grow, 1.0);
+        assert_eq!(
+            s.flex_basis,
+            rustkit_css::FlexBasis::Length(200.0),
+            "a length in position 2 is the BASIS"
+        );
+        let mut s2 = ComputedStyle::default();
+        e.apply_style_property(&mut s2, "flex", "2 3");
+        assert_eq!(s2.flex_grow, 2.0);
+        assert_eq!(s2.flex_shrink, 3.0, "a bare number in position 2 is the SHRINK");
+    }
+}
+
 // Needs Engine::create_headless_view, which only exists with the
 // `headless` feature (cargo test --workspace enables it via parity-capture;
 // a bare `-p rustkit-engine` does not).
@@ -15901,160 +16067,72 @@ mod stop_navigation_tests {
     }
 }
 
-// ── ported from hiwave-windows (transform/animation/position/overflow/
-//    text-decoration/flex wiring tests, #48-#50, #62, #64, #66) ──
-//
-// The Windows tree called a receiver-less `Engine::apply_declaration`; here
-// the production path is `Engine::apply_style_property(&self, ..)`, so each
-// test builds one Engine behind the init mutex (Compositor::new performs
-// wgpu adapter init, which must not run concurrently — hiwave-windows #51).
-#[cfg(test)]
-mod cascade_wire_tests {
+// Needs a headless view: `cargo test -p rustkit-engine --features headless`.
+#[cfg(all(test, target_os = "macos", feature = "headless"))]
+mod remote_font_tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::time::{Duration, Instant};
 
-    fn engine() -> Engine {
-        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
-        Engine::new(EngineConfig::default()).expect("engine")
+    /// Serve every request after `delay`, one thread per connection.
+    fn slow_font_server(delay: Duration) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let mut stream = stream;
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf);
+                    std::thread::sleep(delay);
+                    let body = b"not-a-real-font";
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Type: font/ttf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(body);
+                });
+            }
+        });
+        port
     }
 
-    fn find<'a>(b: &'a LayoutBox, pred: &dyn Fn(&LayoutBox) -> bool) -> Option<&'a LayoutBox> {
-        if pred(b) {
-            return Some(b);
+    #[test]
+    fn remote_web_fonts_are_fetched_concurrently() {
+        // YouTube declares 135 faces; fetched one at a time they took 23s of
+        // a 31s load (real-site board LOADS budget: 30s).
+        const FACES: usize = 8;
+        let delay = Duration::from_millis(300);
+        let port = slow_font_server(delay);
+
+        let mut css = String::new();
+        for i in 0..FACES {
+            css.push_str(&format!(
+                "@font-face {{ font-family: f{i}; src: url(http://127.0.0.1:{port}/f{i}.ttf); }}\n"
+            ));
         }
-        b.children.iter().find_map(|c| find(c, pred))
-    }
+        let html = format!("<html><head><style>{css}</style></head><body>x</body></html>");
 
-    // transform (#48)
-    #[test]
-    fn an_invalid_transform_leaves_the_previous_value_untouched() {
-        let e = engine();
-        let mut style = ComputedStyle::default();
-        e.apply_style_property(&mut style, "transform", "scale(2)");
-        let before = style.transform.ops.len();
-        e.apply_style_property(&mut style, "transform", "!!!garbage!!!");
-        assert_eq!(
-            style.transform.ops.len(),
-            before,
-            "invalid value must not clobber the computed transform"
-        );
-    }
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        engine.load_html(view, &html).expect("load");
 
-    // animation (#50)
-    #[test]
-    fn an_unknown_timing_function_falls_back_to_the_css_initial() {
-        assert_eq!(
-            parse_timing_function("not-a-function"),
-            rustkit_css::TimingFunction::Ease
-        );
-    }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let started = Instant::now();
+        let loaded = rt.block_on(engine.load_remote_web_fonts(view));
+        let elapsed = started.elapsed();
 
-    // position (#62)
-    #[test]
-    fn an_unknown_keyword_falls_back_to_static_rather_than_keeping_the_old_value() {
-        let e = engine();
-        let mut s = ComputedStyle::default();
-        e.apply_style_property(&mut s, "position", "absolute");
-        e.apply_style_property(&mut s, "position", "notakeyword");
-        assert_eq!(
-            s.position,
-            rustkit_css::Position::Static,
-            "an invalid keyword must reset to the CSS initial, not silently \
-             leave the element absolutely positioned"
-        );
-    }
-
-    #[test]
-    fn a_percentage_offset_is_refused_rather_than_approximated() {
-        let e = engine();
-        let html = "<html><body><div style=\"position: absolute; top: 50%\">x</div></body></html>";
-        let d = Document::parse_html(html).expect("parse");
-        let layout = e.build_layout_from_document(&d, &[]);
-        let positioned = find(&layout, &|b| b.position == rustkit_layout::Position::Absolute)
-            .expect("element should still be absolutely positioned");
-        assert_eq!(
-            positioned.offsets.top, None,
-            "a percentage offset must resolve to None, not an invented pixel value"
-        );
-    }
-
-    // overflow / text-decoration (#64)
-    #[test]
-    fn the_overflow_shorthand_sets_both_axes() {
-        let e = engine();
-        let mut s = ComputedStyle::default();
-        e.apply_style_property(&mut s, "overflow", "hidden");
-        assert_eq!(s.overflow_x, rustkit_css::Overflow::Hidden);
-        assert_eq!(s.overflow_y, rustkit_css::Overflow::Hidden);
-    }
-
-    #[test]
-    fn the_axis_longhands_are_independent() {
-        let e = engine();
-        let mut s = ComputedStyle::default();
-        e.apply_style_property(&mut s, "overflow-x", "scroll");
-        e.apply_style_property(&mut s, "overflow-y", "hidden");
-        assert_eq!(s.overflow_x, rustkit_css::Overflow::Scroll);
-        assert_eq!(
-            s.overflow_y,
-            rustkit_css::Overflow::Hidden,
-            "setting one axis must not clobber the other"
-        );
-    }
-
-    #[test]
-    fn a_shorthand_carrying_a_colour_still_sets_the_line() {
-        let e = engine();
-        let mut s = ComputedStyle::default();
-        e.apply_style_property(&mut s, "text-decoration", "underline red");
+        assert_eq!(loaded, FACES, "every face should be fetched");
         assert!(
-            s.text_decoration_line.underline,
-            "a shorthand naming a colour as well as a line must still set the line"
+            elapsed < delay * (FACES as u32) / 2,
+            "{FACES} faces at {delay:?} each took {elapsed:?}: fetched sequentially"
         );
-    }
-
-    #[test]
-    fn a_value_naming_no_line_keyword_leaves_the_line_alone() {
-        let e = engine();
-        let mut s = ComputedStyle::default();
-        e.apply_style_property(&mut s, "text-decoration", "underline");
-        e.apply_style_property(&mut s, "text-decoration", "red");
-        assert!(
-            s.text_decoration_line.underline,
-            "a colour-only value must not clear an already-set line"
-        );
-    }
-
-    // flex item properties (#66)
-    #[test]
-    fn the_single_number_shorthand_zeroes_the_basis() {
-        let e = engine();
-        let mut s = ComputedStyle::default();
-        e.apply_style_property(&mut s, "flex", "1");
-        assert_eq!(s.flex_grow, 1.0);
-        assert_eq!(s.flex_shrink, 1.0);
-        assert_eq!(
-            s.flex_basis,
-            rustkit_css::FlexBasis::Length(0.0),
-            "flex: 1 must zero the basis or the container is not divided"
-        );
-    }
-
-    #[test]
-    fn a_two_value_shorthand_distinguishes_shrink_from_basis() {
-        let e = engine();
-        let mut s = ComputedStyle::default();
-        e.apply_style_property(&mut s, "flex", "1 200px");
-        assert_eq!(s.flex_grow, 1.0);
-        assert_eq!(
-            s.flex_basis,
-            rustkit_css::FlexBasis::Length(200.0),
-            "a length in position 2 is the BASIS"
-        );
-        let mut s2 = ComputedStyle::default();
-        e.apply_style_property(&mut s2, "flex", "2 3");
-        assert_eq!(s2.flex_grow, 2.0);
-        assert_eq!(s2.flex_shrink, 3.0, "a bare number in position 2 is the SHRINK");
     }
 }
 

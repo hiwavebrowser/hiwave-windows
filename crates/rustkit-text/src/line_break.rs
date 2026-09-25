@@ -403,6 +403,36 @@ mod tests {
     }
 
     #[test]
+    fn break_all_adds_normal_opportunities_between_letters() {
+        let normal = LineBreaker::new(WordBreak::Normal, OverflowWrap::Normal);
+        assert!(!normal.can_break_at("ab", 1));
+
+        let break_all = LineBreaker::new(WordBreak::BreakAll, OverflowWrap::Normal);
+        let opportunity = break_all
+            .break_opportunities("ab")
+            .find(|op| op.offset == 1)
+            .expect("break-all should allow a break between adjacent letters");
+
+        assert_eq!(opportunity.kind, BreakKind::Allowed);
+    }
+
+    #[test]
+    fn break_all_preserves_grapheme_clusters() {
+        let breaker = LineBreaker::new(WordBreak::BreakAll, OverflowWrap::Normal);
+        let text = "a\u{0301}b";
+        let offsets = breaker.break_offsets(text);
+
+        assert!(
+            offsets.contains(&3),
+            "break-all should allow a break after the combined grapheme: {offsets:?}"
+        );
+        assert!(
+            !offsets.contains(&1) && !offsets.contains(&2),
+            "break-all must not split a base character from its combining mark: {offsets:?}"
+        );
+    }
+
+    #[test]
     fn test_mandatory_breaks() {
         let breaker = LineBreaker::default();
         let text = "Line1\nLine2";

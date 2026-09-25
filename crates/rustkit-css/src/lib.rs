@@ -3561,7 +3561,6 @@ mod object_fit_initial_value_tests {
     }
 }
 
-
 // ── ported from hiwave-windows (#37, #49): a shadow with no visible colour or
 //    no geometry is not visible, so paint never spends a command on it. ──
 #[cfg(test)]

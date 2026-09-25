@@ -13268,7 +13268,6 @@ mod w3_zero_width_wrap_tests {
     }
 }
 
-
 // ── ported from hiwave-windows (#75): the display list emits RoundedRect for
 //    a rounded background and keeps the cheap SolidColor path otherwise. ──
 #[cfg(test)]

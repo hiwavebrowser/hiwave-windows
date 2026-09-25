@@ -28,8 +28,8 @@ Fixes the reds found (all upstream to hiwave-macos):
 |---|---|---|
 | `the_single_number_shorthand_zeroes_the_basis`, `a_two_value_shorthand_distinguishes_shrink_from_basis` | `flex: <n>` sets shrink 1 / basis 0; a non-numeric 2nd value is the basis | #240 |
 | `a_value_naming_no_line_keyword_leaves_the_line_alone` | colour-only `text-decoration` leaves the line alone | #240 |
-| `an_elliptical_radius_takes_the_horizontal_half` | `border-radius: h / v` takes the horizontal radii instead of dropping the declaration | H |
-| `radial_gradient_positions_parse_to_normalised_centres` | single-value `at 30%` keeps y at center (both axes were set) | H |
+| `an_elliptical_radius_takes_the_horizontal_half` | `border-radius: h / v` takes the horizontal radii instead of dropping the declaration | #242 |
+| `radial_gradient_positions_parse_to_normalised_centres` | single-value `at 30%` keeps y at center (both axes were set) | #242 |
 
 ## rustkit-engine (38)
 
@@ -37,13 +37,13 @@ Fixes the reds found (all upstream to hiwave-macos):
 |---|---:|---|
 | stop_navigation_tests / history_traversal_tests | 4 | carried in **#234** with the navigation port |
 | transform / animation / position / overflow-decoration / flex wiring | 10 | ported as `cascade_wire_tests` (**#240**): `Engine::new` behind the init mutex driving `apply_style_property`; 3 were red → fixes in #240 |
-| border_radius_engine_path | 4 | ported in `windows_engine_pins` (H); elliptical form was red → fix in H |
-| box_shadow_paint_tests | 4 | ported in `windows_engine_pins` (H) |
-| display_list_reftests (negative control) | 1 | ported in `windows_engine_pins` (H) |
-| descendant selector ×3, child_combinator malformed group | 4 | ported in `windows_engine_pins` (H) against `selector_matches(&self, ..) -> bool` + `selector_specificity`; the Windows `Option<specificity>` return no longer exists |
-| ua_default_gap_tests (heading scale) | 1 | ported in `windows_engine_pins` (H) via `compute_style_for_element` |
-| external_css_lifetime_tests | 1 | ported in `windows_engine_pins` (H) against `ViewState.external_stylesheets` |
-| a_leg_engine_path_guards | 8 | ported as `windows_a_leg_pins` (H); `line-height: normal` pinned to be metrics-derived and multiplier-scaled rather than to the macOS-font number 18.4; radial single-value position was red → fix in H |
+| border_radius_engine_path | 4 | ported in `windows_engine_pins` (#242); elliptical form was red → fix in #242 |
+| box_shadow_paint_tests | 4 | ported in `windows_engine_pins` (#242) |
+| display_list_reftests (negative control) | 1 | ported in `windows_engine_pins` (#242) |
+| descendant selector ×3, child_combinator malformed group | 4 | ported in `windows_engine_pins` (#242) against `selector_matches(&self, ..) -> bool` + `selector_specificity`; the Windows `Option<specificity>` return no longer exists |
+| ua_default_gap_tests (heading scale) | 1 | ported in `windows_engine_pins` (#242) via `compute_style_for_element` |
+| external_css_lifetime_tests | 1 | ported in `windows_engine_pins` (#242) against `ViewState.external_stylesheets` |
+| a_leg_engine_path_guards | 8 | ported as `windows_a_leg_pins` (#242); `line-height: normal` pinned to be metrics-derived and multiplier-scaled rather than to the macOS-font number 18.4; radial single-value position was red → fix in #242 |
 | `test_compositor` | 1 | a helper, not a test |
 
 ## rustkit-layout (16)
@@ -52,18 +52,18 @@ Fixes the reds found (all upstream to hiwave-macos):
 |---|---|
 | flex.rs: positions in absolute frame, subtree relaid, column width, container auto height, wrap packing, stretch equalises, explicit height not stretched, auto basis uses max-content | ported verbatim as `windows_flex_pins` (8) — `layout_flex_container` has the same signature |
 | flex.rs: `test_auto_basis_uses_pre_pass_measurement` | **dropped**: pinned the old Windows flex model (pre-pass rect as auto basis); this tree measures max-content (#184, #202), pinned by the sibling test |
-| lib.rs: `border_radius_emit_tests` ×3 | ported verbatim (H) |
+| lib.rs: `border_radius_emit_tests` ×3 | ported verbatim (#242) |
 | lib.rs: `wrap_text` ×4 (breaks on words, single line fits, long word overflows, nowrap/pre suppress) | **dropped**: `wrap_text` is a Windows-only API replaced by the inline line-box model; behaviours are pinned by `test_text_wraps_into_line_boxes`, `test_text_nowrap_stays_single_line` and the `line_break` tests |
 
 ## rustkit-dom (5)
 
 Parser robustness pins (the shell's `chrome.html`, ~100 KB `<style>` blocks,
 `<meta>` / charset / title-only heads): ported verbatim as
-`windows_parser_pins` (H).
+`windows_parser_pins` (#242).
 
 ## rustkit-css (2)
 
-`BoxShadow::is_visible` pins: ported verbatim as `windows_shadow_pins` (H);
+`BoxShadow::is_visible` pins: ported verbatim as `windows_shadow_pins` (#242);
 the method exists on this tree.
 
 ## rustkit-renderer (3)
