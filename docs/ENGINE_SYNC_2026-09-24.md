@@ -72,6 +72,8 @@ plus only what V1.1.0 does not yet carry:
   takes the horizontal radii; a single-value gradient position keeps y centred);
 - `windows_capture_metadata_pins` in `rustkit-renderer/src/screenshot.rs`
   (the capture-sidecar pin; `cfg(windows)`).
+- the `cfg(target_os = "macos")` gate on the four strut pixel tests in
+  `rustkit-layout/src/lib.rs` (hiwave-macos #264, open).
 
 When #242 lands, the next re-sync drops the first bullet and this tree becomes
 `hiwave-macos develop` byte-for-byte except the sidecar pin.
@@ -91,14 +93,16 @@ When #242 lands, the next re-sync drops the first bullet and this tree becomes
 | gate | result |
 |---|---|
 | full suite (`cargo test --workspace --no-fail-fast`, 43 test binaries + 34 doc-test targets) | **1387 passed / 4 failed / 5 ignored** (baseline 1012 / 0 / 5) |
-| the 4 reds | `rustkit-layout` `tests::{a_line_sums_whole_pixel_ascents_like_blink, baseline_aligned_atomic_still_extends_strut, textarea_alone_on_a_line_hangs_the_strut_descent_below_it, wrapped_inline_block_hangs_the_line_off_its_last_line}` — pixel expectations calibrated on the macOS system font; identical reds on hiwave-macos develop when run on Windows. Decision pending (gate to macOS now, Windows expectations later) |
+| the 4 reds | `rustkit-layout` `tests::{a_line_sums_whole_pixel_ascents_like_blink, baseline_aligned_atomic_still_extends_strut, textarea_alone_on_a_line_hangs_the_strut_descent_below_it, wrapped_inline_block_hangs_the_line_off_its_last_line}` — pixel expectations calibrated on the macOS system font; identical reds on hiwave-macos develop when run on Windows. **Decided (Prometheus, 2026-09-25): gated `cfg(target_os = "macos")`** — upstream hiwave-macos #264; the same four-line gate is carried here as a Windows-side extra until #264 lands. After the gate: `rustkit-layout` 488 / 0 |
+| full suite after the gate | **1387 passed / 0 failed / 5 ignored** (the four are compiled out on Windows) |
 | `cargo build -p hiwave-app` (WebView2) | ✅ |
 | `cargo build -p hiwave-app --no-default-features --features native-win32` | ✅ |
 | `cargo build --release -p parity-capture` | ✅ |
 | native-win32 render-test `https://example.com` | real glyphs (DirectWrite); the GPU content PNG is pixel-identical to the 2026-09-24 seam-tree capture (0 differing pixels of 1060×800) |
 | native-win32 render-test, dark page (`#1a1a2e` body, `#5a5a76` / `#ff0000` boxes) | reads back (26,26,46), (90,90,118), (255,0,0) — exact; the Windows sRGB re-encode fix is not needed on the linear render targets |
 
-Receipts: `P:epos\hiwave-renders\engine-sync-2026-09-25\` (PNGs + sidecars),
+Receipts: `P:
+epos\hiwave-renders\engine-sync-2026-09-25\` (PNGs + sidecars),
 attached to the PR. Not committed (macOS #220).
 
 ## What comes after
