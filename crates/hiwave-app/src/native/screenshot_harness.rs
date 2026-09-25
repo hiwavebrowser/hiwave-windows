@@ -185,21 +185,38 @@ pub fn list_test_scenes() -> &'static [&'static str] {
 /// Generate ISO8601 timestamp.
 fn timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now()
+    let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    let days = secs / 86400;
-    let years = 1970 + days / 365;
-    let remaining = (days % 365) as u32;
-    let month = remaining / 30 + 1;
-    let day = remaining % 30 + 1;
-    let hours = (secs % 86400) / 3600;
-    let minutes = (secs % 3600) / 60;
+        .unwrap_or_default()
+        .as_secs();
+    utc_timestamp_from_secs(secs)
+}
+
+/// Render seconds since the Unix epoch as `YYYY-MM-DDTHH:MM:SSZ`.
+///
+/// The previous version counted 365-day years and 30-day months, so every
+/// sidecar written in 2026 was stamped 17 days into the future (and the
+/// drift grows by ~5 days a year). This is the proleptic-Gregorian
+/// days-to-civil conversion (Howard Hinnant's algorithm), exact for every
+/// date the `u64` can express; no dependency, no leap-second handling
+/// (neither does `SystemTime`).
+pub fn utc_timestamp_from_secs(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let z = days + 719_468; // shift the epoch from 1970-01-01 to 0000-03-01
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097); // day of era [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // year of era [0, 399]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year, March-based [0, 365]
+    let mp = (5 * doy + 2) / 153; // March = 0 ... February = 11
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + if month <= 2 { 1 } else { 0 };
+    let hours = (secs % 86_400) / 3_600;
+    let minutes = (secs % 3_600) / 60;
     let seconds = secs % 60;
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        years, month, day, hours, minutes, seconds
+        year, month, day, hours, minutes, seconds
     )
 }
 
@@ -522,6 +539,20 @@ mod tests {
     fn test_get_scene_html() {
         assert!(get_test_scene_html("text_basic").is_some());
         assert!(get_test_scene_html("invalid_scene").is_none());
+    }
+    #[test]
+    fn sidecar_timestamp_is_a_real_civil_date() {
+        // Values cross-checked against Python's datetime.fromtimestamp(..., UTC).
+        assert_eq!(utc_timestamp_from_secs(0), "1970-01-01T00:00:00Z");
+        // The capture that exposed the bug: the old helper stamped this
+        // 2026-10-12T18:35:17Z, seventeen days late.
+        assert_eq!(utc_timestamp_from_secs(1_790_361_317), "2026-09-25T18:35:17Z");
+        // Leap day.
+        assert_eq!(utc_timestamp_from_secs(1_709_208_000), "2024-02-29T12:00:00Z");
+        // Leap day in a century year that IS a leap year.
+        assert_eq!(utc_timestamp_from_secs(951_782_400), "2000-02-29T00:00:00Z");
+        // Last second of 2099.
+        assert_eq!(utc_timestamp_from_secs(4_102_444_799), "2099-12-31T23:59:59Z");
     }
 }
 
