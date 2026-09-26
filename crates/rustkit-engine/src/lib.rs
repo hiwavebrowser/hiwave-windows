@@ -2590,6 +2590,27 @@ impl Engine {
             // App. E needs here, and the context pipeline is still gated.
             layout_box.z_index = style.z_index;
         }
+        // float / clear were parsed nowhere, so every float laid out as a
+        // block and every clearfix was a no-op.
+        // CSS 2.1 §9.7: an absolutely positioned box does not float, and a
+        // float is blockified.
+        layout_box.float = match layout_box.position {
+            Position::Absolute | Position::Fixed => rustkit_css::Float::None,
+            _ => style.float,
+        };
+        layout_box.clear = style.clear;
+        if layout_box.float != rustkit_css::Float::None {
+            if matches!(layout_box.box_type, BoxType::Inline) {
+                layout_box.box_type = BoxType::Block;
+            }
+            use rustkit_css::Display;
+            layout_box.style.display = match layout_box.style.display {
+                Display::Inline | Display::InlineBlock => Display::Block,
+                Display::InlineFlex => Display::Flex,
+                Display::InlineGrid => Display::Grid,
+                d => d,
+            };
+        }
     }
 
     /// Build a layout tree FOR A SPECIFIC VIEW.
@@ -5506,6 +5527,25 @@ impl Engine {
                     _ => rustkit_css::Position::Static,
                 };
             }
+            // Logical values resolve for horizontal LTR text.
+            // An invalid value is ignored.
+            "float" => {
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "none" => style.float = rustkit_css::Float::None,
+                    "left" | "inline-start" => style.float = rustkit_css::Float::Left,
+                    "right" | "inline-end" => style.float = rustkit_css::Float::Right,
+                    _ => {}
+                }
+            }
+            "clear" => {
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "none" => style.clear = rustkit_css::Clear::None,
+                    "left" | "inline-start" => style.clear = rustkit_css::Clear::Left,
+                    "right" | "inline-end" => style.clear = rustkit_css::Clear::Right,
+                    "both" => style.clear = rustkit_css::Clear::Both,
+                    _ => {}
+                }
+            }
             "visibility" => {
                 // Before this arm, `visibility: hidden` painted: closed menus,
                 // dialogs and skip links showed on nearly every site.
@@ -6073,6 +6113,8 @@ impl Engine {
             "display" => style.display = rustkit_css::Display::Block,
             "opacity" => style.opacity = 1.0,
             "object-fit" => style.object_fit = "fill".to_string(),
+            "float" => style.float = rustkit_css::Float::None,
+            "clear" => style.clear = rustkit_css::Clear::None,
             _ => {
                 // Unknown property, do nothing
             }
@@ -6929,8 +6971,12 @@ impl Engine {
 
         for stylesheet in stylesheets {
             for rule in &stylesheet.rules {
-                // Check for :root selector
-                if rule.selector.trim() == ":root" {
+                // Custom properties are collected document-wide, from rules
+                // that select the root element. A selector list counts when
+                // any of its items is `:root` or `html`: facebook declares
+                // its whole palette on `:root, .__fb-light-mode:root,
+                // .__fb-light-mode`, which an exact `== ":root"` test skipped.
+                if selects_the_root(&rule.selector) {
                     for decl in &rule.declarations {
                         // CSS custom properties start with --
                         if decl.property.starts_with("--") {
@@ -10231,6 +10277,15 @@ fn split_by_comma(value: &str) -> Vec<&str> {
     }
 
     parts
+}
+
+/// Whether a selector (list) has an item that selects the root element
+/// unconditionally: `:root` or `html`.
+fn selects_the_root(selector: &str) -> bool {
+    split_by_comma(selector).into_iter().any(|item| {
+        let item = item.trim();
+        item == ":root" || item.eq_ignore_ascii_case("html")
+    })
 }
 
 // ==================== Background Layer Parsing ====================
@@ -18318,6 +18373,41 @@ mod windows_a_leg_pins {
     }
 
     #[test]
+    fn a_selector_list_naming_the_root_contributes_custom_properties() {
+        // facebook: `:root, .__fb-light-mode:root, .__fb-light-mode {--...}`.
+        // Only a bare `:root` rule was read, so its whole palette was unset.
+        let e = engine();
+        let html = "<html><head><style>\
+                    :root, .__fb-light-mode:root, .__fb-light-mode {--a:#123456}\
+                    html {--b:#654321}\
+                    .theme, :is(.x, .y) {--c:#abcdef}\
+                    </style></head><body>\
+                    <p style=\"color: var(--a)\">a</p>\
+                    <p style=\"color: var(--b)\">b</p>\
+                    <p style=\"color: var(--c, #010203)\">c</p></body></html>";
+        fn color_of(b: &LayoutBox, text: &str) -> Option<rustkit_css::Color> {
+            if matches!(&b.box_type, BoxType::Text(t) if t.trim() == text) {
+                return Some(b.style.color);
+            }
+            b.children.iter().find_map(|c| color_of(c, text))
+        }
+        let layout = layout_of(&e, html);
+        assert_eq!(
+            color_of(&layout, "a"),
+            Some(rustkit_css::Color::from_rgb(0x12, 0x34, 0x56))
+        );
+        assert_eq!(
+            color_of(&layout, "b"),
+            Some(rustkit_css::Color::from_rgb(0x65, 0x43, 0x21))
+        );
+        assert_eq!(
+            color_of(&layout, "c"),
+            Some(rustkit_css::Color::from_rgb(1, 2, 3)),
+            "a list with no root item is not collected document-wide"
+        );
+    }
+
+    #[test]
     fn text_align_inherits_to_a_block_child() {
         let e = engine();
         let layout = layout_of(&e, "<html><body><div style=\"text-align:center\"><h1>Hi</h1></div></body></html>");
@@ -18400,5 +18490,135 @@ mod logical_property_tests {
         // Three values is not a valid two-value shorthand: ignored.
         e.apply_style_property(&mut style, "margin-inline", "1px 2px 3px");
         assert_eq!(style.margin_left, ComputedStyle::new().margin_left);
+    }
+}
+
+// ── float / clear (realsite B3). Nothing parsed the two properties, and
+//    the main flow loop never placed a float, so every float laid out as a
+//    block and every clearfix did nothing. ──
+#[cfg(test)]
+mod float_clear_tests {
+    use super::*;
+    use rustkit_layout::{Dimensions, Rect};
+
+    /// The tree laid out through both entry points: `layout()` (flex and
+    /// grid items, tests) and `layout_with_collapse` (what `relayout` runs
+    /// for the page). Each path has its own flow loop, and floats must be
+    /// placed by both.
+    fn laid_out(html: &str) -> Vec<LayoutBox> {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let d = Document::parse_html(html).expect("parse");
+
+        // Height 0, as the engine lays out the root: a block's containing
+        // block height is the flow cursor.
+        let cb = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 0.0),
+            ..Default::default()
+        };
+        let mut plain = e.build_layout_from_document(&d, &[]);
+        plain.layout(&cb);
+        let mut engine_path = e.build_layout_from_document(&d, &[]);
+        engine_path.layout_with_collapse(
+            &cb,
+            &mut rustkit_layout::MarginCollapseContext::new(),
+            &mut rustkit_layout::FloatContext::new(),
+        );
+        vec![plain, engine_path]
+    }
+
+    fn by_id<'a>(b: &'a LayoutBox, id: &str) -> Option<&'a LayoutBox> {
+        if b.identity.as_ref().is_some_and(|i| i.selector == format!("#{id}")) {
+            return Some(b);
+        }
+        b.children.iter().find_map(|c| by_id(c, id))
+    }
+
+    fn origin(root: &LayoutBox, id: &str) -> (f32, f32) {
+        let b = by_id(root, id).unwrap_or_else(|| panic!("no box #{id}"));
+        let border = b.dimensions.border_box();
+        (border.x, border.y)
+    }
+
+    #[test]
+    fn floats_share_a_row_and_clear_drops_below_them() {
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="width:400px">"#,
+            r#"<div id="l" style="float:left;width:100px;height:50px"></div>"#,
+            r#"<span id="r" style="float:right;width:100px;height:30px"></span>"#,
+            r#"<div id="c" style="clear:both;height:10px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            let (lx, ly) = origin(&root, "l");
+            let (rx, ry) = origin(&root, "r");
+            let (_, cy) = origin(&root, "c");
+            assert_eq!((lx, ly), (0.0, 0.0), "left float at the container's start");
+            // A floated <span> is blockified, so its width applies.
+            assert_eq!((rx, ry), (300.0, 0.0), "right float on the same row, at the far edge");
+            assert_eq!(cy, 50.0, "clear:both starts below the taller float");
+        }
+    }
+
+    #[test]
+    fn floats_in_an_offset_container_are_placed_in_its_coordinates() {
+        // The old collapse-path placement measured absolute exclusion
+        // edges against a relative width: in a container at x=200 the
+        // second float landed 200px too far right.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="margin-left:200px;width:400px">"#,
+            r#"<div id="a" style="float:left;width:100px;height:20px"></div>"#,
+            r#"<div id="b" style="float:left;width:100px;height:20px"></div>"#,
+            r#"<div id="r" style="float:right;width:50px;height:20px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(origin(&root, "a"), (200.0, 0.0));
+            assert_eq!(origin(&root, "b"), (300.0, 0.0));
+            assert_eq!(origin(&root, "r"), (550.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn auto_width_floats_shrink_and_a_formatting_root_contains_them() {
+        // A nav row: `li { float:left }` with auto width inside an
+        // `overflow:hidden` list, the pre-clearfix idiom.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><ul id="u" style="overflow:hidden;margin:0;padding:0;width:600px">"#,
+            r#"<li id="a" style="float:left;display:block;padding:0 10px;height:20px"><span style="display:inline-block;width:50px;height:10px"></span></li>"#,
+            r#"<li id="b" style="float:left;display:block;padding:0 10px;height:30px"><span style="display:inline-block;width:70px;height:10px"></span></li>"#,
+            r#"</ul><div id="after" style="height:5px"></div></body>"#,
+        )) {
+            let a = by_id(&root, "a").unwrap().dimensions.border_box();
+            let b = by_id(&root, "b").unwrap().dimensions.border_box();
+            assert_eq!((a.x, a.width), (0.0, 70.0), "shrink-to-fit, not the list's 600px");
+            assert_eq!((b.x, b.y), (70.0, a.y), "second item beside the first");
+            let u = by_id(&root, "u").unwrap().dimensions.border_box();
+            assert_eq!(u.height, 30.0, "overflow:hidden grows to the tallest float");
+            assert_eq!(origin(&root, "after").1, u.y + 30.0);
+        }
+    }
+
+    #[test]
+    fn a_formatting_root_sits_beside_a_float_not_under_it() {
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="width:500px">"#,
+            r#"<div id="f" style="float:left;width:120px;height:80px"></div>"#,
+            r#"<div id="m" style="overflow:hidden;height:40px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            let m = by_id(&root, "m").unwrap().dimensions.border_box();
+            assert_eq!((m.x, m.y, m.width), (120.0, 0.0, 380.0));
+        }
+    }
+
+    #[test]
+    fn float_parse_ignores_invalid_values_and_absolute_boxes_do_not_float() {
+        for root in laid_out(concat!(
+            r#"<body style="margin:0">"#,
+            r#"<div id="a" style="float:left;float:sideways;width:10px;height:10px"></div>"#,
+            r#"<div id="p" style="float:left;position:absolute;width:10px;height:10px"></div>"#,
+            r#"</body>"#,
+        )) {
+            assert_eq!(by_id(&root, "a").unwrap().float, rustkit_css::Float::Left);
+            assert_eq!(by_id(&root, "p").unwrap().float, rustkit_css::Float::None);
+        }
     }
 }
