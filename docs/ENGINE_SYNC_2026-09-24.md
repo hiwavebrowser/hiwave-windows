@@ -117,6 +117,22 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-09-26 (refresh #3, after #91 merged):** crates now verbatim from
+hiwave-macos develop `8f8b53d` (Merge #280); adds #263, #276 (float/clear
+placement), #279 (grid item child width, revived) and #280 (`:root` custom
+property lists). Residual against the tip: still the one sidecar-pin file.
+Gates: workspace minus `rustkit-engine` **1299 / 0 / 5**; `rustkit-engine`
+**131 / 0** with `--test-threads=1`; the parallel engine run stalled once
+(10-min cap) and then, re-run alone twice with `--nocapture`, passed in
+8.5 s and stalled again after 37 tests — a ~50 % local reproducer. When it
+stalls, every unfinished test is one that constructs an `Engine` (headless
+view → compositor → wgpu device), and libtest prints no 60-second warnings,
+so the runner thread is blocked too: concurrent device creation on this
+box, not a test. Serial has never failed. Proposed upstream mitigation: a
+test-only mutex around `Engine::new` in the engine tests. Both shells and
+release `parity-capture` build; example.com capture pixel-identical to the
+refresh-2 capture; dark smoke exact; sidecars dated correctly.
+
 ## Gate results (2026-09-25, this tree, rustc 1.90)
 
 | gate | result |

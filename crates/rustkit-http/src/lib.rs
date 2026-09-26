@@ -933,6 +933,57 @@ mod tests {
     }
 
     #[test]
+    fn requests_chunked_gzip_and_decodes_after_reassembling_chunks() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+
+            let body = gzip(b"<p>chunked and compressed</p>");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\
+                      Content-Encoding: gzip\r\n\r\n",
+                )
+                .unwrap();
+            for chunk in body.chunks(7) {
+                write!(stream, "{:x};part=test\r\n", chunk.len()).unwrap();
+                stream.write_all(chunk).unwrap();
+                stream.write_all(b"\r\n").unwrap();
+            }
+            stream.write_all(b"0\r\n\r\n").unwrap();
+        });
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = Client::builder().build().unwrap();
+        let response = rt
+            .block_on(client.request(
+                Method::GET,
+                &format!("http://127.0.0.1:{port}/"),
+                HeaderMap::new(),
+                None,
+            ))
+            .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(response.text().unwrap(), "<p>chunked and compressed</p>");
+        assert!(response.headers.get("content-encoding").is_none());
+    }
+
+    #[test]
     fn content_encoding_decodes_deflate_both_ways_and_keeps_a_truncated_prefix() {
         let decode = |encoding: &str, body: Vec<u8>| {
             let mut headers = HeaderMap::new();
