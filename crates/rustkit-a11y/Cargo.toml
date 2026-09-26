@@ -2,7 +2,7 @@
 name = "rustkit-a11y"
 version = "0.1.0"
 edition = "2021"
-description = "Cross-platform accessibility implementation for RustKit browser engine"
+description = "Accessibility implementation for RustKit browser engine"
 authors = ["HiWave Team"]
 license = "MIT"
 
@@ -18,22 +18,13 @@ tracing = "0.1"
 # Collections
 hashbrown = "0.14"
 
-# Windows (UI Automation)
+# Windows
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_UI_Accessibility",
     "Win32_Foundation",
     "Win32_System_Com",
 ] }
-
-# macOS (NSAccessibility)
-[target.'cfg(target_os = "macos")'.dependencies]
-cocoa = "0.25"
-objc = "0.2"
-
-# Linux (AT-SPI2)
-[target.'cfg(target_os = "linux")'.dependencies]
-atspi = { version = "0.22", optional = true }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

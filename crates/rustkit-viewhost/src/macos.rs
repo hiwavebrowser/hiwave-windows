@@ -1,416 +1,600 @@
-//! macOS ViewHost implementation using Cocoa/AppKit.
+//! macOS ViewHost implementation using NSView and Cocoa
 //!
-//! This module provides a native macOS window hosting layer using NSWindow and NSView.
-//! It translates Cocoa events to platform-agnostic RustKit events.
-//!
-//! ## Architecture
-//!
-//! - `NSWindow` for top-level windows
-//! - `NSView` subclass for each view
-//! - `CAMetalLayer` for wgpu surface integration
-//! - Event responder chain for input handling
+//! This module provides the macOS-specific implementation of ViewHost,
+//! using NSView for rendering surfaces and TAO window handles.
 
-#![cfg(target_os = "macos")]
-
-use crate::{Bounds, EventCallback, MainWindowConfig, ViewEvent, ViewHostError, ViewId};
-use cocoa::appkit::{
-    NSApp, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent,
-    NSEventMask, NSEventType, NSWindow, NSWindowStyleMask,
-};
-use cocoa::base::{id, nil, NO, YES};
-use cocoa::foundation::{NSAutoreleasePool, NSPoint, NSRect, NSSize, NSString};
-use core_foundation::runloop::{CFRunLoopGetMain, CFRunLoopRunInMode, kCFRunLoopDefaultMode};
-use core_graphics::display::CGDisplay;
-use objc::declare::ClassDecl;
-use objc::runtime::{Class, Object, Sel};
-use objc::{msg_send, sel, sel_impl};
-use rustkit_core::{
-    FocusEvent, FocusEventType, InputEvent, KeyCode, KeyEvent, KeyEventType, KeyboardState,
-    Modifiers, MouseButton, MouseEvent, MouseEventType, MouseState, Point,
-};
+use crate::{Bounds, ViewHostError, ViewId};
+use raw_window_handle::RawWindowHandle;
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::sync::{Arc, Mutex, RwLock};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, warn};
 
-/// View state for macOS (stores NSView reference).
+#[cfg(target_os = "macos")]
+use cocoa::{
+    base::{id, nil},
+};
+#[cfg(target_os = "macos")]
+use objc::{msg_send, sel, sel_impl};
+
+/// macOS-specific view state
+#[cfg(target_os = "macos")]
 struct MacOSViewState {
-    id: ViewId,
-    view: id,       // NSView
+    _id: ViewId,
+    view: id, // NSView
     bounds: Bounds,
+    dpi: u32,
     visible: bool,
-    focused: bool,
-    scale_factor: f64,
-    keyboard_state: KeyboardState,
-    mouse_state: MouseState,
+    _focused: bool,
 }
 
-/// macOS ViewHost implementation.
+/// macOS ViewHost implementation
+#[cfg(target_os = "macos")]
 pub struct MacOSViewHost {
     views: RwLock<HashMap<ViewId, Arc<Mutex<MacOSViewState>>>>,
-    main_window: RwLock<Option<id>>,
-    event_callback: RwLock<Option<EventCallback>>,
-    app_initialized: bool,
 }
 
+/// A content-view click, in VIEW-LOCAL TOP-LEFT coordinates — exactly the
+/// viewport space the engine's hit testing speaks, no chrome/sidebar math.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy)]
+pub struct PendingClick {
+    pub x: f64,
+    pub y: f64,
+    pub down: bool,
+}
+
+/// Clicks captured by the RustKit NSView, drained by the app each loop turn.
+///
+/// A queue, not a callback: the handlers run inside AppKit's event dispatch,
+/// and calling back into app/engine state from there is the re-entrancy trap
+/// #108 exists to prevent. Push under a short lock, drain on the main loop.
+#[cfg(target_os = "macos")]
+static PENDING_CLICKS: Mutex<Vec<PendingClick>> = Mutex::new(Vec::new());
+
+#[cfg(target_os = "macos")]
+pub fn drain_pending_clicks() -> Vec<PendingClick> {
+    PENDING_CLICKS.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
+}
+
+/// A key event captured by the content view while it is first responder.
+///
+/// `text` carries the typed characters (empty for pure control keys);
+/// `mac_keycode` is the hardware-independent macOS keyCode for specials.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone)]
+pub struct PendingKey {
+    pub text: String,
+    pub mac_keycode: u16,
+    pub ctrl: bool,
+    pub cmd: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+#[cfg(target_os = "macos")]
+static PENDING_KEYS: Mutex<Vec<PendingKey>> = Mutex::new(Vec::new());
+
+#[cfg(target_os = "macos")]
+pub fn drain_pending_keys() -> Vec<PendingKey> {
+    PENDING_KEYS.lock().map(|mut v| std::mem::take(&mut *v)).unwrap_or_default()
+}
+
+/// The NSView subclass that hosts RustKit content.
+///
+/// A stock NSView was measured to be a dead end for input: hitTest correctly
+/// routes clicks to it, but events delivered to it NEVER surface as tao
+/// window events — a synthetic mouseDown through `window sendEvent:` produced
+/// nothing at the event loop (2026-08-07 probe). So the view records clicks
+/// itself. Wheel is left alone: scroll DOES reach the window loop (verified
+/// live 2026-08-05) via a different AppKit forwarding path.
+#[cfg(target_os = "macos")]
+pub fn rustkit_content_view_class() -> &'static objc::runtime::Class {
+    use objc::declare::ClassDecl;
+    use objc::runtime::{Class, Object, Sel};
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| {
+        let superclass = Class::get("NSView").expect("NSView class");
+        let mut decl =
+            ClassDecl::new("RustKitContentView", superclass).expect("register RustKitContentView");
+
+        extern "C" fn record(this: &Object, event: id, down: bool) {
+            tracing::info!(down, "RustKitContentView mouse event handler entered");
+            unsafe {
+                // locationInWindow is window coords (bottom-left origin);
+                // convertPoint gives view-local, then flip to top-left.
+                let wpt: cocoa::foundation::NSPoint = msg_send![event, locationInWindow];
+                let lpt: cocoa::foundation::NSPoint =
+                    msg_send![this, convertPoint: wpt fromView: nil];
+                let frame: cocoa::foundation::NSRect = msg_send![this, frame];
+                let click = PendingClick {
+                    x: lpt.x,
+                    y: frame.size.height - lpt.y,
+                    down,
+                };
+                if let Ok(mut q) = PENDING_CLICKS.lock() {
+                    q.push(click);
+                }
+            }
+        }
+        extern "C" fn mouse_down(this: &Object, _sel: Sel, event: id) {
+            record(this, event, true);
+        }
+        extern "C" fn mouse_up(this: &Object, _sel: Sel, event: id) {
+            record(this, event, false);
+        }
+        extern "C" fn accepts_first_responder(_this: &Object, _sel: Sel) -> bool {
+            // Without this, makeFirstResponder: refuses the view and macOS
+            // keeps routing keys to whoever held focus before — observed
+            // live 2026-08-07: click focused a page textarea (engine-side)
+            // while typed characters went to the chrome URL bar, because
+            // ENGINE focus and APPKIT first-responder are different systems
+            // and only one was wired.
+            true
+        }
+        extern "C" fn key_down(this: &Object, _sel: Sel, event: id) {
+            unsafe {
+                let chars: id = msg_send![event, characters];
+                let text = if chars != nil {
+                    let utf8: *const std::os::raw::c_char = msg_send![chars, UTF8String];
+                    if utf8.is_null() {
+                        String::new()
+                    } else {
+                        std::ffi::CStr::from_ptr(utf8).to_string_lossy().into_owned()
+                    }
+                } else {
+                    String::new()
+                };
+                let keycode: u16 = msg_send![event, keyCode];
+                let flags: u64 = msg_send![event, modifierFlags];
+                let key = PendingKey {
+                    text,
+                    mac_keycode: keycode,
+                    ctrl: flags & (1 << 18) != 0,   // NSEventModifierFlagControl
+                    cmd: flags & (1 << 20) != 0,    // NSEventModifierFlagCommand
+                    shift: flags & (1 << 17) != 0,  // NSEventModifierFlagShift
+                    alt: flags & (1 << 19) != 0,    // NSEventModifierFlagOption
+                };
+                if let Ok(mut q) = PENDING_KEYS.lock() {
+                    q.push(key);
+                }
+            }
+            let _ = this;
+            // Deliberately NOT calling super: consuming here is what keeps a
+            // keystroke from ALSO reaching whatever else might interpret it.
+            // Cmd-shortcuts still work: the menu system sees key equivalents
+            // before the responder chain does.
+        }
+        extern "C" fn accepts_first_mouse(_this: &Object, _sel: Sel, _event: id) -> bool {
+            // A click on an inactive window should reach the page (this is
+            // what browsers do for links), and the synthetic probe runs
+            // before the window is ever key.
+            true
+        }
+        unsafe {
+            decl.add_method(
+                sel!(acceptsFirstMouse:),
+                accepts_first_mouse as extern "C" fn(&Object, Sel, id) -> bool,
+            );
+            decl.add_method(
+                sel!(acceptsFirstResponder),
+                accepts_first_responder as extern "C" fn(&Object, Sel) -> bool,
+            );
+            decl.add_method(sel!(keyDown:), key_down as extern "C" fn(&Object, Sel, id));
+            decl.add_method(
+                sel!(mouseDown:),
+                mouse_down as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(sel!(mouseUp:), mouse_up as extern "C" fn(&Object, Sel, id));
+        }
+        decl.register();
+    });
+    Class::get("RustKitContentView").expect("RustKitContentView registered")
+}
+
+#[cfg(target_os = "macos")]
 impl MacOSViewHost {
-    /// Create a new macOS ViewHost.
     pub fn new() -> Self {
-        info!("Initializing macOS ViewHost");
-        
         Self {
             views: RwLock::new(HashMap::new()),
-            main_window: RwLock::new(None),
-            event_callback: RwLock::new(None),
-            app_initialized: false,
         }
     }
 
-    /// Initialize the NSApplication if not already done.
-    fn ensure_app_initialized(&mut self) {
-        if self.app_initialized {
-            return;
-        }
-
-        unsafe {
-            let _pool = NSAutoreleasePool::new(nil);
-            let app = NSApp();
-            app.setActivationPolicy_(NSApplicationActivationPolicy::NSApplicationActivationPolicyRegular);
-            self.app_initialized = true;
-            debug!("NSApplication initialized");
-        }
+    /// Convert top-left origin bounds to Cocoa's bottom-left origin coordinate system.
+    ///
+    /// HiWave/Wry uses top-left origin (y=0 at top, increasing downward).
+    /// Cocoa uses bottom-left origin (y=0 at bottom, increasing upward).
+    ///
+    /// Formula: y_cocoa = parent_height - bounds.y - bounds.height
+    fn convert_to_cocoa_frame(bounds: Bounds, parent_height: f64) -> cocoa::foundation::NSRect {
+        let y_cocoa = parent_height - bounds.y as f64 - bounds.height as f64;
+        cocoa::foundation::NSRect::new(
+            cocoa::foundation::NSPoint::new(bounds.x as f64, y_cocoa),
+            cocoa::foundation::NSSize::new(bounds.width as f64, bounds.height as f64),
+        )
     }
 
-    /// Create a top-level main window.
-    pub fn create_main_window(&mut self, config: MainWindowConfig) -> Result<id, ViewHostError> {
-        self.ensure_app_initialized();
-
-        info!(?config, "Creating macOS main window");
-
-        unsafe {
-            let _pool = NSAutoreleasePool::new(nil);
-
-            // Calculate frame
-            let (x, y) = if config.centered {
-                let screen = CGDisplay::main();
-                let screen_width = screen.pixels_wide() as f64;
-                let screen_height = screen.pixels_high() as f64;
-                (
-                    (screen_width - config.width as f64) / 2.0,
-                    (screen_height - config.height as f64) / 2.0,
-                )
-            } else {
-                (100.0, 100.0) // Default position
-            };
-
-            let frame = NSRect::new(
-                NSPoint::new(x, y),
-                NSSize::new(config.width as f64, config.height as f64),
-            );
-
-            // Window style
-            let mut style = NSWindowStyleMask::NSTitledWindowMask
-                | NSWindowStyleMask::NSClosableWindowMask
-                | NSWindowStyleMask::NSMiniaturizableWindowMask;
-
-            if config.resizable {
-                style |= NSWindowStyleMask::NSResizableWindowMask;
-            }
-
-            // Create window
-            let window: id = msg_send![
-                NSWindow::alloc(nil),
-                initWithContentRect:frame
-                styleMask:style
-                backing:NSBackingStoreType::NSBackingStoreBuffered
-                defer:NO
-            ];
-
-            if window == nil {
-                error!("Failed to create NSWindow");
-                return Err(ViewHostError::WindowCreation("NSWindow creation failed".into()));
-            }
-
-            // Set title
-            let title = NSString::alloc(nil).init_str(&config.title);
-            let _: () = msg_send![window, setTitle: title];
-
-            // Make key and order front
-            let _: () = msg_send![window, makeKeyAndOrderFront: nil];
-
-            // Activate the app
-            let app = NSApp();
-            let _: () = msg_send![app, activateIgnoringOtherApps: YES];
-
-            // Store the main window
-            *self.main_window.write().unwrap() = Some(window);
-
-            info!("macOS main window created successfully");
-            Ok(window)
-        }
-    }
-
-    /// Create a child view in the given parent.
-    pub fn create_view(&self, parent: id, bounds: Bounds) -> Result<ViewId, ViewHostError> {
+    /// Create a view from a TAO window handle
+    pub fn create_view_from_window(
+        &self,
+        window_handle: RawWindowHandle,
+        bounds: Bounds,
+    ) -> Result<ViewId, ViewHostError> {
         let view_id = ViewId::new();
         debug!(?view_id, ?bounds, "Creating macOS view");
 
-        unsafe {
-            let _pool = NSAutoreleasePool::new(nil);
-
-            let frame = NSRect::new(
-                NSPoint::new(bounds.x as f64, bounds.y as f64),
-                NSSize::new(bounds.width as f64, bounds.height as f64),
-            );
-
-            // Create NSView
-            let view: id = msg_send![class!(NSView), alloc];
-            let view: id = msg_send![view, initWithFrame: frame];
-
-            if view == nil {
-                error!(?view_id, "Failed to create NSView");
-                return Err(ViewHostError::WindowCreation("NSView creation failed".into()));
+        // Extract NSWindow from raw window handle
+        // In raw-window-handle 0.6, AppKitHandle contains ns_view, not ns_window
+        // We need to get the window from the view
+        let ns_view = match window_handle {
+            RawWindowHandle::AppKit(handle) => {
+                handle.ns_view.as_ptr() as id
             }
-
-            // Add as subview
-            let content_view: id = msg_send![parent, contentView];
-            if content_view != nil {
-                let _: () = msg_send![content_view, addSubview: view];
+            _ => {
+                return Err(ViewHostError::InvalidParent);
             }
-
-            // Get scale factor
-            let window: id = msg_send![view, window];
-            let scale_factor: f64 = if window != nil {
-                msg_send![window, backingScaleFactor]
-            } else {
-                1.0
-            };
-
-            // Create state
-            let state = MacOSViewState {
-                id: view_id,
-                view,
-                bounds,
-                visible: true,
-                focused: false,
-                scale_factor,
-                keyboard_state: KeyboardState::default(),
-                mouse_state: MouseState::default(),
-            };
-
-            self.views
-                .write()
-                .unwrap()
-                .insert(view_id, Arc::new(Mutex::new(state)));
-
-            debug!(?view_id, scale_factor, "macOS view created");
-            Ok(view_id)
+        };
+        
+        if ns_view == nil {
+            return Err(ViewHostError::InvalidParent);
         }
+        
+        // Get the window from the view
+        let ns_window: id = unsafe { msg_send![ns_view, window] };
+
+        if ns_window == nil {
+            return Err(ViewHostError::InvalidParent);
+        }
+
+        // Get the content view of the window
+        let content_view: id = unsafe { msg_send![ns_window, contentView] };
+        if content_view == nil {
+            return Err(ViewHostError::WindowCreation(
+                "Window has no content view".to_string(),
+            ));
+        }
+
+        // Get the content view's frame to get parent height for coordinate conversion
+        let parent_frame: cocoa::foundation::NSRect = unsafe { msg_send![content_view, frame] };
+        let parent_height = parent_frame.size.height;
+
+        debug!(parent_height, "Got parent content view height");
+
+        // Create a new NSView for our content
+        // Convert from top-left origin (HiWave/Wry) to bottom-left origin (Cocoa)
+        let frame = Self::convert_to_cocoa_frame(bounds, parent_height);
+        debug!(?bounds, cocoa_y = frame.origin.y, "Converted bounds to Cocoa coordinates");
+
+        let view: id = unsafe {
+            let view_class = rustkit_content_view_class();
+            let view: id = msg_send![view_class, alloc];
+            msg_send![view, initWithFrame: frame]
+        };
+
+        if view == nil {
+            return Err(ViewHostError::WindowCreation(
+                "Failed to create NSView".to_string(),
+            ));
+        }
+
+        // Configure the view for layer-backed rendering
+        // NOTE: Don't manually create CAMetalLayer - let wgpu manage it
+        // wgpu will create and configure its own Metal layer when the surface is created
+        unsafe {
+            // Enable layer-backed rendering (required for wgpu)
+            let wants_layer: bool = true;
+            let _: () = msg_send![view, setWantsLayer: wants_layer];
+        }
+
+        // Add view to content view
+        unsafe {
+            let _: () = msg_send![content_view, addSubview: view];
+            debug!(?view_id, "Added RustKit view as subview");
+        }
+
+        // Get DPI (backing scale factor)
+        let dpi = unsafe {
+            let scale: f64 = msg_send![ns_window, backingScaleFactor];
+            (scale * 96.0) as u32
+        };
+
+        let state = Arc::new(Mutex::new(MacOSViewState {
+            _id: view_id,
+            view,
+            bounds,
+            dpi,
+            visible: true,
+            _focused: false,
+        }));
+
+        {
+            let mut views = self.views.write().map_err(|e| {
+                tracing::error!("Views RwLock poisoned in create_view_from_window: {}", e);
+                ViewHostError::LockPoisoned
+            })?;
+            views.insert(view_id, state);
+        }
+
+        info!(?view_id, dpi, "macOS view created");
+        Ok(view_id)
     }
 
-    /// Resize a view to new bounds.
-    pub fn resize_view(&self, view_id: ViewId, bounds: Bounds) -> Result<(), ViewHostError> {
-        let views = self.views.read().unwrap();
+    /// Get the NSView for a view ID
+    pub fn get_view(&self, view_id: ViewId) -> Result<id, ViewHostError> {
+        let state_arc = {
+            let views = self.views.read().map_err(|e| {
+                tracing::error!("Views RwLock poisoned in get_view: {}", e);
+                ViewHostError::LockPoisoned
+            })?;
+            views
+                .get(&view_id)
+                .ok_or(ViewHostError::ViewNotFound(view_id))?
+                .clone() // Clone the Arc to extend lifetime
+        }; // views lock is released here
+        let view = state_arc.lock().map_err(|e| {
+            tracing::error!("ViewState lock poisoned in get_view: {}", e);
+            ViewHostError::LockPoisoned
+        })?.view;
+        Ok(view)
+    }
+
+    /// Get the raw window handle for a view
+    pub fn get_raw_window_handle(&self, view_id: ViewId) -> Result<RawWindowHandle, ViewHostError> {
+        let views = self.views.read().map_err(|e| {
+            tracing::error!("Views RwLock poisoned in get_raw_window_handle: {}", e);
+            ViewHostError::LockPoisoned
+        })?;
+        let state = views
+            .get(&view_id)
+            .ok_or(ViewHostError::ViewNotFound(view_id))?;
+        let view = state.lock().map_err(|e| {
+            tracing::error!("ViewState lock poisoned in get_raw_window_handle: {}", e);
+            ViewHostError::LockPoisoned
+        })?.view;
+
+        // Get the window from the view
+        let window: id = unsafe { msg_send![view, window] };
+        if window == nil {
+            warn!(?view_id, "View has no window attached");
+            return Err(ViewHostError::ViewNotFound(view_id));
+        }
+
+        // Verify view state
+        unsafe {
+            let is_hidden: bool = msg_send![view, isHidden];
+            let superview: id = msg_send![view, superview];
+            let has_superview = superview != nil;
+            let frame: cocoa::foundation::NSRect = msg_send![view, frame];
+            info!(
+                ?view_id,
+                is_hidden,
+                has_superview,
+                frame_x = frame.origin.x,
+                frame_y = frame.origin.y,
+                frame_w = frame.size.width,
+                frame_h = frame.size.height,
+                "Getting raw window handle - view state"
+            );
+        }
+
+        // Create raw window handle
+        // AppKitWindowHandle::new() expects NonNull<c_void>
+        use std::ptr::NonNull;
+        let handle = RawWindowHandle::AppKit(
+            raw_window_handle::AppKitWindowHandle::new(
+                NonNull::new(view as *mut std::ffi::c_void)
+                    .expect("View pointer is null")
+            )
+        );
+
+        Ok(handle)
+    }
+
+    /// Set view bounds
+    pub fn set_bounds(&self, view_id: ViewId, bounds: Bounds) -> Result<(), ViewHostError> {
+        let views = self.views.read().map_err(|e| {
+            tracing::error!("Views RwLock poisoned in set_bounds: {}", e);
+            ViewHostError::LockPoisoned
+        })?;
         let state = views
             .get(&view_id)
             .ok_or(ViewHostError::ViewNotFound(view_id))?;
 
-        let mut state = state.lock().unwrap();
-        state.bounds = bounds;
+        // Record the new bounds under the lock, then release it before any
+        // AppKit call: `setFrame:` runs layout callbacks synchronously on a
+        // subclassed view. See `focus` for the full rationale.
+        let view: id = {
+            let mut guard = state.lock().map_err(|e| {
+                tracing::error!("ViewState lock poisoned in set_bounds: {}", e);
+                ViewHostError::LockPoisoned
+            })?;
+            guard.bounds = bounds;
+            guard.view
+        };
 
         unsafe {
-            let frame = NSRect::new(
-                NSPoint::new(bounds.x as f64, bounds.y as f64),
-                NSSize::new(bounds.width as f64, bounds.height as f64),
-            );
-            let _: () = msg_send![state.view, setFrame: frame];
+            // Get the superview to determine parent height for coordinate conversion
+            let superview: id = msg_send![view, superview];
+            let parent_height = if superview != nil {
+                let parent_frame: cocoa::foundation::NSRect = msg_send![superview, frame];
+                parent_frame.size.height
+            } else {
+                // Fallback: try to get window content view height
+                let window: id = msg_send![view, window];
+                if window != nil {
+                    let content_view: id = msg_send![window, contentView];
+                    if content_view != nil {
+                        let content_frame: cocoa::foundation::NSRect = msg_send![content_view, frame];
+                        content_frame.size.height
+                    } else {
+                        bounds.height as f64 + bounds.y as f64 // Fallback
+                    }
+                } else {
+                    bounds.height as f64 + bounds.y as f64 // Fallback
+                }
+            };
+
+            // Convert from top-left origin to Cocoa's bottom-left origin
+            let frame = Self::convert_to_cocoa_frame(bounds, parent_height);
+            let _: () = msg_send![view, setFrame: frame];
         }
 
-        trace!(?view_id, ?bounds, "View resized");
+        debug!(?view_id, ?bounds, "View bounds updated");
         Ok(())
     }
 
-    /// Destroy a view.
-    pub fn destroy_view(&self, view_id: ViewId) -> Result<(), ViewHostError> {
-        let state = self
-            .views
-            .write()
-            .unwrap()
-            .remove(&view_id)
+    /// Get view bounds
+    pub fn get_bounds(&self, view_id: ViewId) -> Result<Bounds, ViewHostError> {
+        let state_arc = {
+            let views = self.views.read().map_err(|e| {
+                tracing::error!("Views RwLock poisoned in get_bounds: {}", e);
+                ViewHostError::LockPoisoned
+            })?;
+            views
+                .get(&view_id)
+                .ok_or(ViewHostError::ViewNotFound(view_id))?
+                .clone() // Clone the Arc to extend lifetime
+        }; // views lock is released here
+        let bounds = state_arc.lock().map_err(|e| {
+            tracing::error!("ViewState lock poisoned in get_bounds: {}", e);
+            ViewHostError::LockPoisoned
+        })?.bounds;
+        Ok(bounds)
+    }
+
+    /// Set view visibility
+    pub fn set_visible(&self, view_id: ViewId, visible: bool) -> Result<(), ViewHostError> {
+        let views = self.views.read().map_err(|e| {
+            tracing::error!("Views RwLock poisoned in set_visible: {}", e);
+            ViewHostError::LockPoisoned
+        })?;
+        let state = views
+            .get(&view_id)
             .ok_or(ViewHostError::ViewNotFound(view_id))?;
 
-        let state = state.lock().unwrap();
+        // Mutate state under the lock, then release before AppKit:
+        // `setHidden:` runs viewDidHide/viewDidUnhide synchronously on a
+        // subclassed view. See `focus` for the full rationale.
+        let view: id = {
+            let mut guard = state.lock().map_err(|e| {
+                tracing::error!("ViewState lock poisoned in set_visible: {}", e);
+                ViewHostError::LockPoisoned
+            })?;
+            guard.visible = visible;
+            guard.view
+        };
+
         unsafe {
-            let _: () = msg_send![state.view, removeFromSuperview];
+            let hidden: bool = !visible;
+            let _: () = msg_send![view, setHidden: hidden];
         }
 
-        debug!(?view_id, "macOS view destroyed");
+        debug!(?view_id, visible, "View visibility changed");
         Ok(())
     }
 
-    /// Set the event callback.
-    pub fn set_event_callback(&self, callback: EventCallback) {
-        *self.event_callback.write().unwrap() = Some(callback);
-    }
-
-    /// Pump events from the macOS event loop (non-blocking).
+    /// Focus a view
     ///
-    /// Returns `true` if the app should continue, `false` if it should quit.
-    pub fn pump_messages(&self) -> bool {
+    /// COPY THE VIEW POINTER, DROP EVERY LOCK, *THEN* CALL APPKIT.
+    ///
+    /// `makeFirstResponder:` is synchronous and re-enters the responder
+    /// chain — `resignFirstResponder` / `becomeFirstResponder` and any focus
+    /// notification run before it returns. The moment this NSView gains
+    /// responder overrides that call back into the ViewHost (the next unit:
+    /// content keyboard input), holding the per-view `Mutex` across that call
+    /// would deadlock the process forever on a non-reentrant lock, with no
+    /// error and no log past this line.
+    ///
+    /// Athena hit exactly this on Windows (`SetFocus` dispatching
+    /// `WM_SETFOCUS` into our own wnd_proc, hiwave-windows#85): every focus
+    /// call hung the process from the day it was written, and nothing found
+    /// it because nothing ever called it. An unused API is not a working API,
+    /// it is an untested one — this method has zero callers here too.
+    pub fn focus(&self, view_id: ViewId) -> Result<(), ViewHostError> {
+        let view: id = {
+            let views = self.views.read().map_err(|e| {
+                tracing::error!("Views RwLock poisoned in focus: {}", e);
+                ViewHostError::LockPoisoned
+            })?;
+            let state = views
+                .get(&view_id)
+                .ok_or(ViewHostError::ViewNotFound(view_id))?;
+            let guard = state.lock().map_err(|e| {
+                tracing::error!("ViewState lock poisoned in focus: {}", e);
+                ViewHostError::LockPoisoned
+            })?;
+            guard.view
+        }; // both guards released here, before any AppKit call
+
         unsafe {
-            let _pool = NSAutoreleasePool::new(nil);
-
-            // Process all pending events
-            loop {
-                let event: id = msg_send![
-                    NSApp(),
-                    nextEventMatchingMask: NSEventMask::NSAnyEventMask.bits()
-                    untilDate: nil
-                    inMode: NSString::alloc(nil).init_str("kCFRunLoopDefaultMode")
-                    dequeue: YES
-                ];
-
-                if event == nil {
-                    break;
-                }
-
-                let event_type: NSEventType = msg_send![event, type];
-
-                // Check for app termination
-                if event_type == NSEventType::NSApplicationDefined {
-                    // Application is terminating
-                    return false;
-                }
-
-                // Dispatch the event
-                let _: () = msg_send![NSApp(), sendEvent: event];
+            let window: id = msg_send![view, window];
+            if window != nil {
+                let _: () = msg_send![window, makeFirstResponder: view];
             }
         }
 
+        debug!(?view_id, "View focused");
+        Ok(())
+    }
+
+    /// Get DPI for a view
+    pub fn get_dpi(&self, view_id: ViewId) -> Result<u32, ViewHostError> {
+        let state_arc = {
+            let views = self.views.read().map_err(|e| {
+                tracing::error!("Views RwLock poisoned in get_dpi: {}", e);
+                ViewHostError::LockPoisoned
+            })?;
+            views
+                .get(&view_id)
+                .ok_or(ViewHostError::ViewNotFound(view_id))?
+                .clone() // Clone the Arc to extend lifetime
+        }; // views lock is released here
+        let dpi = state_arc.lock().map_err(|e| {
+            tracing::error!("ViewState lock poisoned in get_dpi: {}", e);
+            ViewHostError::LockPoisoned
+        })?.dpi;
+        Ok(dpi)
+    }
+
+    /// Destroy a view
+    pub fn destroy_view(&self, view_id: ViewId) -> Result<(), ViewHostError> {
+        let state_arc = {
+            let mut views = self.views.write().map_err(|e| {
+                tracing::error!("Views RwLock poisoned in destroy_view: {}", e);
+                ViewHostError::LockPoisoned
+            })?;
+            views
+                .remove(&view_id)
+                .ok_or(ViewHostError::ViewNotFound(view_id))?
+        }; // views lock is released here
+
+        let view = state_arc.lock().map_err(|e| {
+            tracing::error!("ViewState lock poisoned in destroy_view: {}", e);
+            ViewHostError::LockPoisoned
+        })?.view;
+
+        unsafe {
+            let _: () = msg_send![view, removeFromSuperview];
+        }
+
+        debug!(?view_id, "View destroyed");
+        Ok(())
+    }
+
+    /// Pump macOS event loop (stub for now)
+    pub fn pump_messages(&self) -> bool {
+        // TODO: Implement proper event loop pumping
+        // For now, this is a no-op as TAO handles the event loop
         true
     }
-
-    /// Get the scale factor for a view.
-    pub fn get_scale_factor(&self, view_id: ViewId) -> f64 {
-        self.views
-            .read()
-            .unwrap()
-            .get(&view_id)
-            .map(|s| s.lock().unwrap().scale_factor)
-            .unwrap_or(1.0)
-    }
-
-    /// Emit an event via the callback.
-    fn emit_event(&self, event: ViewEvent) {
-        if let Some(ref callback) = *self.event_callback.read().unwrap() {
-            callback(event);
-        }
-    }
 }
 
-impl Default for MacOSViewHost {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[cfg(not(target_os = "macos"))]
+pub struct MacOSViewHost;
 
-/// Convert NSEvent key code to RustKit KeyCode.
-fn translate_key_code(key_code: u16) -> KeyCode {
-    // macOS virtual key codes
-    match key_code {
-        0x00 => KeyCode::KeyA,
-        0x0B => KeyCode::KeyB,
-        0x08 => KeyCode::KeyC,
-        0x02 => KeyCode::KeyD,
-        0x0E => KeyCode::KeyE,
-        0x03 => KeyCode::KeyF,
-        0x05 => KeyCode::KeyG,
-        0x04 => KeyCode::KeyH,
-        0x22 => KeyCode::KeyI,
-        0x26 => KeyCode::KeyJ,
-        0x28 => KeyCode::KeyK,
-        0x25 => KeyCode::KeyL,
-        0x2E => KeyCode::KeyM,
-        0x2D => KeyCode::KeyN,
-        0x1F => KeyCode::KeyO,
-        0x23 => KeyCode::KeyP,
-        0x0C => KeyCode::KeyQ,
-        0x0F => KeyCode::KeyR,
-        0x01 => KeyCode::KeyS,
-        0x11 => KeyCode::KeyT,
-        0x20 => KeyCode::KeyU,
-        0x09 => KeyCode::KeyV,
-        0x0D => KeyCode::KeyW,
-        0x07 => KeyCode::KeyX,
-        0x10 => KeyCode::KeyY,
-        0x06 => KeyCode::KeyZ,
-        0x12 => KeyCode::Digit1,
-        0x13 => KeyCode::Digit2,
-        0x14 => KeyCode::Digit3,
-        0x15 => KeyCode::Digit4,
-        0x17 => KeyCode::Digit5,
-        0x16 => KeyCode::Digit6,
-        0x1A => KeyCode::Digit7,
-        0x1C => KeyCode::Digit8,
-        0x19 => KeyCode::Digit9,
-        0x1D => KeyCode::Digit0,
-        0x24 => KeyCode::Enter,
-        0x35 => KeyCode::Escape,
-        0x33 => KeyCode::Backspace,
-        0x30 => KeyCode::Tab,
-        0x31 => KeyCode::Space,
-        0x7E => KeyCode::ArrowUp,
-        0x7D => KeyCode::ArrowDown,
-        0x7B => KeyCode::ArrowLeft,
-        0x7C => KeyCode::ArrowRight,
-        _ => KeyCode::Unknown,
-    }
-}
-
-/// Convert NSEvent modifier flags to RustKit Modifiers.
-fn translate_modifiers(flags: u64) -> Modifiers {
-    let mut mods = Modifiers::empty();
-    
-    // macOS modifier flag constants
-    const NSEventModifierFlagShift: u64 = 1 << 17;
-    const NSEventModifierFlagControl: u64 = 1 << 18;
-    const NSEventModifierFlagOption: u64 = 1 << 19;
-    const NSEventModifierFlagCommand: u64 = 1 << 20;
-
-    if flags & NSEventModifierFlagShift != 0 {
-        mods |= Modifiers::SHIFT;
-    }
-    if flags & NSEventModifierFlagControl != 0 {
-        mods |= Modifiers::CTRL;
-    }
-    if flags & NSEventModifierFlagOption != 0 {
-        mods |= Modifiers::ALT;
-    }
-    if flags & NSEventModifierFlagCommand != 0 {
-        mods |= Modifiers::META;
-    }
-
-    mods
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_translate_key_code() {
-        assert_eq!(translate_key_code(0x00), KeyCode::KeyA);
-        assert_eq!(translate_key_code(0x24), KeyCode::Enter);
-        assert_eq!(translate_key_code(0x35), KeyCode::Escape);
-    }
-
-    #[test]
-    fn test_translate_modifiers() {
-        let mods = translate_modifiers(1 << 17); // Shift
-        assert!(mods.contains(Modifiers::SHIFT));
-        
-        let mods = translate_modifiers(1 << 20); // Command
-        assert!(mods.contains(Modifiers::META));
+#[cfg(not(target_os = "macos"))]
+impl MacOSViewHost {
+    pub fn new() -> Self {
+        Self
     }
 }
 

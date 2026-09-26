@@ -345,6 +345,8 @@ impl rustkit_html::TreeSink for DocumentSink {
         parent.append_child(node.clone());
 
         // Push onto stack for nested elements (but not void/self-closing elements)
+        // CRITICAL: Void elements like <meta>, <br>, <img> must not stay on the stack
+        // or they will corrupt the DOM tree by becoming incorrect parents
         if !self_closing {
             self.open_elements.push(node.clone());
         }
@@ -507,10 +509,22 @@ impl Document {
 
     /// Get the <body> element.
     pub fn body(&self) -> Option<Rc<Node>> {
-        self.document_element()?
-            .children()
-            .into_iter()
-            .find(|n| n.tag_name() == Some("body"))
+        // First try to find body as a direct child of the document element (html)
+        // This is the correct DOM structure per spec
+        if let Some(html_element) = self.document_element() {
+            if let Some(body) = html_element
+                .children()
+                .into_iter()
+                .find(|n| n.tag_name() == Some("body"))
+            {
+                return Some(body);
+            }
+        }
+
+        // Fallback: search the entire document for a body element
+        // This handles cases where the parser might incorrectly place the body
+        // (e.g., as a sibling of html or nested incorrectly)
+        self.get_elements_by_tag_name("body").into_iter().next()
     }
 
     /// Get element by ID.
@@ -518,31 +532,39 @@ impl Document {
         self.elements_by_id.get(id).cloned()
     }
 
-    /// Get elements by tag name.
+    /// Get elements by tag name, in document order.
+    ///
+    /// Iterating `self.nodes` (a HashMap) here returned a RANDOM order per
+    /// process, and callers that cascade stylesheets (`<style>`/`<link>`
+    /// extraction) silently depend on document order — CSS rule order breaks
+    /// ties, so random sheet order made identical renders differ run-to-run.
     pub fn get_elements_by_tag_name(&self, tag_name: &str) -> Vec<Rc<Node>> {
         let tag_name_lower = tag_name.to_lowercase();
-        self.nodes
-            .values()
-            .filter(|n| {
-                n.tag_name()
-                    .map(|t| t.to_lowercase() == tag_name_lower)
-                    .unwrap_or(false)
-            })
-            .cloned()
-            .collect()
+        let mut result = Vec::new();
+        self.traverse(|n| {
+            if n.tag_name()
+                .map(|t| t.to_lowercase() == tag_name_lower)
+                .unwrap_or(false)
+            {
+                result.push(n.clone());
+            }
+        });
+        result
     }
 
-    /// Get elements by class name.
+    /// Get elements by class name, in document order (see
+    /// `get_elements_by_tag_name` for why traversal, not `nodes`, is used).
     pub fn get_elements_by_class_name(&self, class_name: &str) -> Vec<Rc<Node>> {
-        self.nodes
-            .values()
-            .filter(|n| {
-                n.get_attribute("class")
-                    .map(|c| c.split_whitespace().any(|cls| cls == class_name))
-                    .unwrap_or(false)
-            })
-            .cloned()
-            .collect()
+        let mut result = Vec::new();
+        self.traverse(|n| {
+            if n.get_attribute("class")
+                .map(|c| c.split_whitespace().any(|cls| cls == class_name))
+                .unwrap_or(false)
+            {
+                result.push(n.clone());
+            }
+        });
+        result
     }
 
     /// Get node by ID.
@@ -637,6 +659,38 @@ mod tests {
     }
 
     #[test]
+    fn test_get_elements_by_tag_name_document_order() {
+        // Regression: HashMap-backed lookup returned styles in random order
+        // per process, which randomized the CSS cascade (rule order breaks
+        // specificity ties). Order must be document order, deterministically.
+        let html = r#"<html>
+<head>
+    <style>/*first*/</style>
+    <style>/*second*/</style>
+</head>
+<body>
+    <style>/*third*/</style>
+    <p class="x">a</p>
+    <p class="x">b</p>
+</body>
+</html>"#;
+
+        for _ in 0..8 {
+            let doc = Document::parse_html(html).unwrap();
+            let styles = doc.get_elements_by_tag_name("style");
+            let contents: Vec<String> = styles
+                .iter()
+                .map(|s| s.text_content().trim().to_string())
+                .collect();
+            assert_eq!(contents, vec!["/*first*/", "/*second*/", "/*third*/"]);
+
+            let ps = doc.get_elements_by_class_name("x");
+            let texts: Vec<String> = ps.iter().map(|p| p.text_content()).collect();
+            assert_eq!(texts, vec!["a", "b"]);
+        }
+    }
+
+    #[test]
     fn test_query_selector() {
         let html = r#"<html>
 <body>
@@ -703,7 +757,36 @@ mod tests {
             Some("A".to_string())
         );
     }
-}
+
+    #[test]
+    fn test_void_elements_not_on_stack() {
+        // CRITICAL: Void elements like <meta>, <br>, <img> must not stay on the stack
+        // or they will corrupt the DOM tree
+        let html = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test</title>
+</head>
+<body>
+<p id="test">Hello</p>
+</body>
+</html>"#;
+
+        let doc = Document::parse_html(html).unwrap();
+
+        assert!(doc.document_element().is_some(), "should have html");
+        assert!(doc.head().is_some(), "should have head");
+        assert!(doc.body().is_some(), "should have body - void elements must not corrupt DOM");
+
+        let body = doc.body().unwrap();
+        let p = body
+            .children()
+            .into_iter()
+            .find(|n| n.tag_name() == Some("p"));
+        assert!(p.is_some(), "should have p in body");
+    }
 
     #[test]
     fn test_large_style_block() {
@@ -721,25 +804,46 @@ mod tests {
 </html>"#,
             css
         );
-        
+
         let doc = Document::parse_html(&html).unwrap();
-        
-        // Debug: print structure
-        if let Some(html_elem) = doc.document_element() {
-            eprintln!("html children count: {}", html_elem.children().len());
-            for (i, child) in html_elem.children().iter().enumerate() {
-                eprintln!("  child {}: {:?}", i, child.tag_name());
-            }
-        }
-        
+
         assert!(doc.document_element().is_some(), "should have html");
         assert!(doc.head().is_some(), "should have head");
         assert!(doc.body().is_some(), "should have body");
-        
+
         let body = doc.body().unwrap();
-        let p = body.children().into_iter().find(|n| n.tag_name() == Some("p"));
+        let p = body
+            .children()
+            .into_iter()
+            .find(|n| n.tag_name() == Some("p"));
         assert!(p.is_some(), "should have p in body");
     }
+
+    #[test]
+    fn test_meta_and_title() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Test</title>
+</head>
+<body>
+<p>Hello</p>
+</body>
+</html>"#;
+
+        let doc = Document::parse_html(html).unwrap();
+
+        assert!(doc.body().is_some(), "should have body with meta and title");
+    }
+}
+
+// ── ported from hiwave-windows: parser robustness pins (the shell's
+//    chrome.html, ~100KB <style> blocks, <meta>/charset/title-only heads). ──
+#[cfg(test)]
+mod windows_parser_pins {
+    use super::*;
+
 
     #[test]
     fn test_chrome_html() {
@@ -886,35 +990,4 @@ mod tests {
         
         assert!(doc.body().is_some(), "should have body with title");
     }
-
-    #[test]
-    fn test_meta_and_title() {
-        let html = r#"<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>Test</title>
-</head>
-<body>
-<p>Hello</p>
-</body>
-</html>"#;
-        
-        let doc = Document::parse_html(html).unwrap();
-        
-        if let Some(html_elem) = doc.document_element() {
-            eprintln!("html children count: {}", html_elem.children().len());
-            for (i, child) in html_elem.children().iter().enumerate() {
-                eprintln!("  html child {}: {:?}", i, child.tag_name());
-            }
-        }
-        
-        if let Some(head) = doc.head() {
-            eprintln!("head children: {}", head.children().len());
-            for (i, child) in head.children().iter().enumerate() {
-                eprintln!("  head child {}: {:?}", i, child.tag_name());
-            }
-        }
-        
-        assert!(doc.body().is_some(), "should have body with meta and title");
-    }
+}

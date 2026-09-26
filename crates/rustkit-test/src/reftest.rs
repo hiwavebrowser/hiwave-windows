@@ -3,23 +3,18 @@
 //! Reference tests compare rendered output against reference images
 //! or reference HTML that should produce identical output.
 //!
-//! # THIS RUNNER DOES NOT RENDER - see rustkit-engine instead
+//! # This path does not render. Do not report it as conformance.
 //!
-//! `run_single` below compares NORMALIZED HTML TEXT, not rendered output.
-//! That is inverted from what a reference test is for: the point of a reftest
-//! is that two DIFFERENT source documents produce the SAME rendering, so a
-//! genuine pair FAILS this comparison while a trivially identical pair passes.
-//! The checked-in `color-red` pair (`color: red` vs `color: #ff0000`) is
-//! exactly such a genuine pair.
+//! [`RefTestRunner::run_comparison`] normalises two HTML strings and compares them. It does not parse,
+//! style, lay out, or paint — so it cannot detect a rendering difference, and two documents that render
+//! identically from different markup are reported as a FAIL. [`crate::layout`] has the mirror problem:
+//! with no `.expected` file it passes unconditionally.
 //!
-//! Nothing in the workspace depends on this crate, so it is not run.
+//! `.ai/work_orders/wpt-harness.json` is labelled `status: completed` (2026-01-02). Its gates only checked
+//! that this crate builds. **No WPT pass-rate may be quoted from this module.**
 //!
-//! The working Tier 1 harness is `display_list_reftests` in
-//! `crates/rustkit-engine/src/lib.rs`. It compares DISPLAY LISTS, needs no GPU,
-//! runs in CI, and carries a negative control that aborts the run if the
-//! comparison is inert. Use that. This module is left in place rather than
-//! deleted because removing a public API is a separate decision, but do not
-//! mistake it for coverage.
+//! The real conformance lane renders through the same headless `parity-capture` path the campaign uses:
+//! see `trench/wpt/README.md` and `trench/forensics/2026-07-15-wpt-phase05-GATE-OPEN.md` (path P0).
 
 use crate::{TestError, TestResult, TestSummary};
 use std::fs;

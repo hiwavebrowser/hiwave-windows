@@ -34,6 +34,7 @@ pub fn render_image(
     object_fit: ObjectFit,
     object_position: (f32, f32),
     opacity: f32,
+    current_color: Color,
 ) -> DisplayCommand {
     let draw_rect = object_fit.compute_rect(container, natural_width, natural_height, object_position);
 
@@ -43,6 +44,7 @@ pub fn render_image(
         dest_rect: draw_rect.dest,
         object_fit,
         opacity,
+        current_color,
     }
 }
 
@@ -66,8 +68,53 @@ pub fn render_background_image(
     }
 
     // Calculate the starting position
-    let start_x = container.x + (container.width - bg_width) * position.0;
-    let start_y = container.y + (container.height - bg_height) * position.1;
+    let mut start_x = container.x + (container.width - bg_width) * position.0;
+    let mut start_y = container.y + (container.height - bg_height) * position.1;
+
+    // Adjust size and spacing for space/round modes
+    let mut adjusted_bg_width = bg_width;
+    let mut adjusted_bg_height = bg_height;
+    let mut spacing_x = 0.0_f32;
+    let mut spacing_y = 0.0_f32;
+
+    match repeat {
+        BackgroundRepeat::Space => {
+            // Calculate how many full images fit
+            let fit_count_x = (container.width / bg_width).floor().max(1.0);
+            let fit_count_y = (container.height / bg_height).floor().max(1.0);
+
+            // Calculate spacing to evenly distribute
+            if fit_count_x > 1.0 {
+                let total_image_width = fit_count_x * bg_width;
+                let remaining_space_x = container.width - total_image_width;
+                spacing_x = remaining_space_x / (fit_count_x - 1.0);
+            }
+
+            if fit_count_y > 1.0 {
+                let total_image_height = fit_count_y * bg_height;
+                let remaining_space_y = container.height - total_image_height;
+                spacing_y = remaining_space_y / (fit_count_y - 1.0);
+            }
+
+            // Start at container edge for space mode
+            start_x = container.x;
+            start_y = container.y;
+        }
+        BackgroundRepeat::Round => {
+            // Calculate integer repetitions by rounding
+            let repetitions_x = (container.width / bg_width).round().max(1.0);
+            let repetitions_y = (container.height / bg_height).round().max(1.0);
+
+            // Scale image to fit exactly
+            adjusted_bg_width = container.width / repetitions_x;
+            adjusted_bg_height = container.height / repetitions_y;
+
+            // Start at container edge for round mode
+            start_x = container.x;
+            start_y = container.y;
+        }
+        _ => {}
+    }
 
     // Determine tiling
     let (tile_x, tile_y) = match repeat {
@@ -75,8 +122,8 @@ pub fn render_background_image(
         BackgroundRepeat::RepeatX => (true, false),
         BackgroundRepeat::RepeatY => (false, true),
         BackgroundRepeat::NoRepeat => (false, false),
-        BackgroundRepeat::Space => (true, true), // TODO: proper spacing
-        BackgroundRepeat::Round => (true, true), // TODO: proper rounding
+        BackgroundRepeat::Space => (true, true),
+        BackgroundRepeat::Round => (true, true),
     };
 
     // Generate tile positions
@@ -87,8 +134,8 @@ pub fn render_background_image(
             rect: Rect {
                 x: start_x,
                 y: start_y,
-                width: bg_width,
-                height: bg_height,
+                width: adjusted_bg_width,
+                height: adjusted_bg_height,
             },
             size: size.clone(),
             position,
@@ -96,17 +143,17 @@ pub fn render_background_image(
         });
     } else {
         // Tiled images
-        let x_start = if tile_x {
-            // Find the leftmost position that's visible
-            let tiles_left = ((start_x - container.x) / bg_width).ceil() as i32;
-            start_x - (tiles_left as f32 * bg_width)
+        let x_start = if tile_x && repeat != BackgroundRepeat::Space && repeat != BackgroundRepeat::Round {
+            // Find the leftmost position that's visible (for repeat mode)
+            let tiles_left = ((start_x - container.x) / adjusted_bg_width).ceil() as i32;
+            start_x - (tiles_left as f32 * adjusted_bg_width)
         } else {
             start_x
         };
 
-        let y_start = if tile_y {
-            let tiles_up = ((start_y - container.y) / bg_height).ceil() as i32;
-            start_y - (tiles_up as f32 * bg_height)
+        let y_start = if tile_y && repeat != BackgroundRepeat::Space && repeat != BackgroundRepeat::Round {
+            let tiles_up = ((start_y - container.y) / adjusted_bg_height).ceil() as i32;
+            start_y - (tiles_up as f32 * adjusted_bg_height)
         } else {
             start_y
         };
@@ -119,8 +166,8 @@ pub fn render_background_image(
                 let tile_rect = Rect {
                     x,
                     y,
-                    width: bg_width,
-                    height: bg_height,
+                    width: adjusted_bg_width,
+                    height: adjusted_bg_height,
                 };
 
                 // Only emit if visible
@@ -139,14 +186,14 @@ pub fn render_background_image(
                 }
 
                 if tile_x {
-                    x += bg_width;
+                    x += adjusted_bg_width + spacing_x;
                 } else {
                     break;
                 }
             }
 
             if tile_y {
-                y += bg_height;
+                y += adjusted_bg_height + spacing_y;
             } else {
                 break;
             }
@@ -193,8 +240,8 @@ pub fn render_broken_image(
                 font_family: "sans-serif".to_string(),
                 font_weight: 400,
                 font_style: 0,
-                gradient: None,
-                gradient_rect: Rect::default(),
+                advances: None,
+                ascent: None,
             });
         }
     }
@@ -309,6 +356,7 @@ mod tests {
             ObjectFit::Contain,
             (0.5, 0.5),
             1.0,
+            Color::BLACK,
         );
 
         if let DisplayCommand::Image { dest_rect, .. } = cmd {
@@ -318,6 +366,40 @@ mod tests {
             assert!((dest_rect.y - 50.0).abs() < 0.001); // Centered vertically
         } else {
             panic!("Expected Image command");
+        }
+    }
+
+    #[test]
+    fn test_image_command_carries_the_boxes_css_color() {
+        // An inline <svg> icon is painted through the Image command, and
+        // its `currentColor` shapes need the box's computed CSS color at
+        // paint time — the command is the only thing that crosses from
+        // layout to the vector splice, so it has to carry the color.
+        let container = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 14.0,
+            height: 14.0,
+        };
+        let css = Color::new(148, 163, 184, 1.0);
+        let cmd = render_image(
+            "inline-svg:abc",
+            container,
+            14.0,
+            14.0,
+            ObjectFit::Fill,
+            (0.5, 0.5),
+            1.0,
+            css,
+        );
+        match cmd {
+            DisplayCommand::Image { current_color, .. } => {
+                assert_eq!(
+                    (current_color.r, current_color.g, current_color.b),
+                    (148, 163, 184)
+                );
+            }
+            other => panic!("Expected Image command, got {other:?}"),
         }
     }
 

@@ -299,7 +299,7 @@ pub struct DomBindings {
     event_listeners: RefCell<Vec<EventListener>>,
     node_map: RefCell<HashMap<u64, Rc<Node>>>,
     /// Queue of IPC messages from JavaScript
-    ipc_queue: RefCell<Vec<IpcMessage>>,
+    _ipc_queue: RefCell<Vec<IpcMessage>>,
 }
 
 impl DomBindings {
@@ -315,7 +315,7 @@ impl DomBindings {
             window: RefCell::new(WindowState::default()),
             event_listeners: RefCell::new(Vec::new()),
             node_map: RefCell::new(HashMap::new()),
-            ipc_queue: RefCell::new(Vec::new()),
+            _ipc_queue: RefCell::new(Vec::new()),
         })
     }
 

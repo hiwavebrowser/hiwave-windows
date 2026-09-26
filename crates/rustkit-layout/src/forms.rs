@@ -241,8 +241,8 @@ pub fn render_input(
                 rustkit_css::FontStyle::Italic => 1,
                 rustkit_css::FontStyle::Oblique => 2,
             },
-            gradient: None,
-            gradient_rect: Rect::default(),
+            advances: None,
+            ascent: None,
         });
     }
 
@@ -316,8 +316,8 @@ pub fn render_button(
             rustkit_css::FontStyle::Italic => 1,
             rustkit_css::FontStyle::Oblique => 2,
         },
-        gradient: None,
-        gradient_rect: Rect::default(),
+        advances: None,
+        ascent: None,
     });
 
     commands

@@ -155,6 +155,11 @@ pub fn establishes_bfc(style: &ComputedStyle, float: Float) -> bool {
         return true;
     }
 
+    // Multi-column containers establish a BFC (css-multicol-1 §2)
+    if style.column_count.is_some_and(|n| n > 1) {
+        return true;
+    }
+
     false
 }
 

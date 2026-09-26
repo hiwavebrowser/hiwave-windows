@@ -1,12 +1,6 @@
 //! # RustKit Accessibility
 //!
-//! Cross-platform accessibility (A11y) implementation for the RustKit browser engine.
-//!
-//! ## Platform Support
-//!
-//! - **Windows**: UI Automation (UIA)
-//! - **macOS**: NSAccessibility
-//! - **Linux**: AT-SPI2 (future)
+//! Accessibility (A11y) implementation for the RustKit browser engine.
 //!
 //! ## Features
 //!
@@ -14,6 +8,7 @@
 //! - **Accessibility Tree**: Parallel tree structure
 //! - **Focus Management**: Tab order, focus trap
 //! - **Live Regions**: aria-live announcements
+//! - **UI Automation**: Windows accessibility API
 //!
 //! ## Architecture
 //!
@@ -29,10 +24,6 @@
 //!     └── Events ───────────────►└── Live Regions
 //!                                         └── Announcements
 //! ```
-
-// Platform-specific backends
-#[cfg(target_os = "macos")]
-pub mod macos;
 
 use hashbrown::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1000,7 +991,7 @@ mod tests {
         
         let mut btn1 = AccessibleNode::new(Role::Button);
         btn1.tab_index = Some(2);
-        let id1 = tree.add_node(btn1);
+        let _id1 = tree.add_node(btn1);
         
         let mut btn2 = AccessibleNode::new(Role::Button);
         btn2.tab_index = Some(1);

@@ -19,6 +19,8 @@
 //! println!("Passed: {}/{}", results.passed, results.total);
 //! ```
 
+#![allow(dead_code, unused_imports)]
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;

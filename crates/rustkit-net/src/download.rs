@@ -162,7 +162,7 @@ impl DownloadManager {
         &self,
         request: Request,
         destination: PathBuf,
-        client: &HttpClient,
+        _client: &HttpClient,
     ) -> Result<DownloadId, NetError> {
         let id = DownloadId::new();
         let url = request.url.to_string();

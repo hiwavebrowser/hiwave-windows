@@ -1151,7 +1151,7 @@ mod tests {
             EventListenerOptions { capture: false, ..Default::default() },
         );
         
-        let id2 = dispatcher.add_listener(
+        let _id2 = dispatcher.add_listener(
             node,
             "click",
             "handleClickCapture()",
