@@ -75,8 +75,37 @@ plus only what V1.1.0 does not yet carry:
 - the `cfg(target_os = "macos")` gate on the four strut pixel tests in
   `rustkit-layout/src/lib.rs` (hiwave-macos #264, open).
 
-When #242 lands, the next re-sync drops the first bullet and this tree becomes
-`hiwave-macos develop` byte-for-byte except the sidecar pin.
+**2026-09-26 (refresh #2, after #89 and #90 merged):** #242, #264 and #265
+landed upstream, so all of the above dropped out. Every `crates/rustkit-*`
+crate and `parity-capture` is now a verbatim copy of hiwave-macos develop
+`bf806c5` (Merge #278). The residual against that tip is **one file**:
+`rustkit-renderer/src/screenshot.rs`, the 29-line `cfg(all(test, windows))`
+`windows_capture_metadata_pins` module. This refresh brings hiwave-macos
+#245–#278 to Windows: page scripts on the load path with a fetch-inclusive
+budget, per-phase subresource deadlines, CSS escapes in selectors and
+cssparser, @media evaluation, `object-fit`, `visibility` (+ the `:defined`
+stopgap), logical margin/padding/inset, `display` keywords, justify-items /
+justify-self, image percentage heights, and the selector / cascade /
+text-measure / shape memoisation work.
+
+Gate results (Windows, rustc 1.90, this tree):
+
+| gate | result |
+|---|---|
+| `cargo test --workspace --no-fail-fast --exclude rustkit-engine` | **1298 passed / 0 failed / 5 ignored** |
+| `cargo test -p rustkit-engine` (parallel, and again with `--test-threads=1`) | **125 passed / 0 failed** both ways |
+| total | **1423 passed / 0 failed / 5 ignored** (refresh #1 was 1387 / 0 / 5) |
+| both shells, release `parity-capture` | build |
+| native-win32 render-test `https://example.com` | GPU content PNG pixel-identical to the 2026-09-25 capture (0 of 1060×800 differ); all three sidecars now carry the real date (#265 + #90) |
+| native-win32 dark-page smoke | (26,26,46), (90,90,118), (255,0,0) — exact |
+
+Why the engine crate is listed separately: on this box the `rustkit-engine`
+test binary has hung intermittently (100 % CPU, no progress) in three
+workspace runs across two days, once with nothing else running; the same
+binary passes alone in 8–17 s, serial or parallel, and Windows CI (no GPU)
+has never seen it. It is a local GPU/device-init interaction between
+parallel headless-view tests, not a tree problem; the split keeps the
+receipt honest and points at the flake if it recurs.
 
 ## Gates for this PR
 

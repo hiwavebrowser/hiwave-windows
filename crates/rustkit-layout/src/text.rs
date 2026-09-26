@@ -995,6 +995,14 @@ impl TextShaper {
     }
 
     /// Shape text using Core Text on macOS.
+    ///
+    /// Results are memoised per thread. Layout shapes the same strings over
+    /// and over: every flex/grid measuring pass re-wraps its text, and each
+    /// wrap probes a prefix per break opportunity. On cnn, line wrapping was
+    /// 29% of the main thread, spread over thousands of small repeated
+    /// shapes. The answer depends only on the arguments and on the installed
+    /// `@font-face` set, so entries are dropped whenever that set changes
+    /// (the rule `create_ct_font_with_traits` uses).
     #[cfg(target_os = "macos")]
     pub fn shape(
         &self,
@@ -1005,6 +1013,69 @@ impl TextShaper {
         stretch: FontStretch,
         size: f32,
     ) -> Result<ShapedRun, TextError> {
+        use std::cell::RefCell;
+
+        type Key = (String, String, Vec<String>, u16, u8, u8, u32);
+        struct Memo {
+            generation: u64,
+            runs: HashMap<Key, ShapedRun>,
+        }
+        // Bounds memory on a text-heavy page; refilling costs one shape per
+        // entry, which is what every call cost before the memo.
+        const MAX_ENTRIES: usize = 16384;
+        thread_local! {
+            static MEMO: RefCell<Memo> = RefCell::new(Memo {
+                generation: 0,
+                runs: HashMap::new(),
+            });
+        }
+
+        let generation = rustkit_text::webfonts::generation();
+        let key: Key = (
+            text.to_string(),
+            font_chain.primary.clone(),
+            font_chain.fallbacks.clone(),
+            weight.0,
+            style as u8,
+            stretch as u8,
+            size.to_bits(),
+        );
+        let cached = MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.generation != generation {
+                m.runs.clear();
+                m.generation = generation;
+            }
+            m.runs.get(&key).cloned()
+        });
+        if let Some(run) = cached {
+            return Ok(run);
+        }
+        let run = self.shape_uncached(text, font_chain, weight, style, stretch, size)?;
+        MEMO.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.runs.len() >= MAX_ENTRIES {
+                m.runs.clear();
+            }
+            m.runs.insert(key, run.clone());
+        });
+        Ok(run)
+    }
+
+    /// Shape text using Core Text on macOS (uncached; see `shape`).
+    #[cfg(target_os = "macos")]
+    fn shape_uncached(
+        &self,
+        text: &str,
+        font_chain: &FontFamilyChain,
+        weight: FontWeight,
+        style: FontStyle,
+        stretch: FontStretch,
+        size: f32,
+    ) -> Result<ShapedRun, TextError> {
+        #[cfg(test)]
+        font_resolve_tests::SHAPES.with(|n| n.set(n.get() + 1));
+
         if text.is_empty() {
             return Ok(ShapedRun {
                 text: String::new(),
@@ -1363,7 +1434,16 @@ impl TextShaper {
         None
     }
 
-    /// Create a Core Text font with specific traits.
+    /// Create a Core Text font with specific traits, memoized.
+    ///
+    /// Every `shape` and `get_metrics` call resolves its font here, once per
+    /// family in the chain until one hits. Resolution is Core Text
+    /// descriptor matching plus up to eight name guesses for a family that
+    /// doesn't exist, and nothing cached it: a text-heavy page (wikipedia,
+    /// facebook) spent 6-10s per relayout re-resolving the same handful of
+    /// fonts. The answer depends only on the arguments and on which
+    /// `@font-face` set is installed, so results (misses too) are kept per
+    /// thread and dropped whenever the installed set changes.
     #[cfg(target_os = "macos")]
     fn create_ct_font_with_traits(
         family: &str,
@@ -1371,6 +1451,62 @@ impl TextShaper {
         weight: u16,
         italic: bool,
     ) -> Result<core_text::font::CTFont, TextError> {
+        use std::cell::RefCell;
+
+        type Key = (String, u32, u16, bool);
+        struct Resolved {
+            generation: u64,
+            fonts: HashMap<Key, Option<core_text::font::CTFont>>,
+        }
+        // Bounds memory on a page with unusually many sizes; refilling is
+        // cheap next to resolving on every call.
+        const MAX_ENTRIES: usize = 4096;
+        thread_local! {
+            static RESOLVED: RefCell<Resolved> = RefCell::new(Resolved {
+                generation: 0,
+                fonts: HashMap::new(),
+            });
+        }
+
+        let generation = rustkit_text::webfonts::generation();
+        let key: Key = (family.to_string(), size.to_bits(), weight, italic);
+        let cached = RESOLVED.with(|r| {
+            let mut r = r.borrow_mut();
+            if r.generation != generation {
+                r.fonts.clear();
+                r.generation = generation;
+            }
+            r.fonts.get(&key).cloned()
+        });
+        let font = match cached {
+            Some(font) => font,
+            None => {
+                let font = Self::resolve_ct_font_with_traits(family, size, weight, italic).ok();
+                RESOLVED.with(|r| {
+                    let mut r = r.borrow_mut();
+                    if r.fonts.len() >= MAX_ENTRIES {
+                        r.fonts.clear();
+                    }
+                    r.fonts.insert(key, font.clone());
+                });
+                font
+            }
+        };
+        font.ok_or_else(|| TextError::FontNotFound(family.to_string()))
+    }
+
+    /// Resolve a Core Text font with specific traits (uncached; see
+    /// `create_ct_font_with_traits`).
+    #[cfg(target_os = "macos")]
+    fn resolve_ct_font_with_traits(
+        family: &str,
+        size: f32,
+        weight: u16,
+        italic: bool,
+    ) -> Result<core_text::font::CTFont, TextError> {
+        #[cfg(test)]
+        font_resolve_tests::RESOLUTIONS.with(|n| n.set(n.get() + 1));
+
         // A face the document registered via @font-face outranks every
         // platform lookup — the family may exist nowhere else. The engine
         // installs the current view's faces before each layout.
@@ -3397,5 +3533,150 @@ mod measure_side_font_chain_tests {
         let sum: f32 = run.glyphs.iter().map(|g| g.advance).sum();
         assert!((sum - run.metrics.width).abs() < 0.01);
         assert_eq!(run.glyphs.len(), "CSS Specificity Test".chars().count());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod font_resolve_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Uncached font resolutions on this thread.
+        pub(super) static RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
+        /// Uncached shapes on this thread.
+        pub(super) static SHAPES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[test]
+    fn rewrapping_the_same_text_shapes_nothing_new() {
+        // Every flex measuring pass re-wraps its text. The second wrap of
+        // the same paragraph at the same width must come from the memo and
+        // give the same lines.
+        let shaper = TextShaper::new();
+        let chain = FontFamilyChain::new("Helvetica");
+        let text = (0..60).map(|i| format!("w{}rd", "o".repeat(i % 7))).collect::<Vec<_>>().join(" ");
+        let wrap = || {
+            shaper
+                .wrap_text(
+                    &text,
+                    &chain,
+                    FontWeight(400),
+                    FontStyle::Normal,
+                    FontStretch::Normal,
+                    16.0,
+                    300.0,
+                    CssWordBreak::Normal,
+                    CssOverflowWrap::Normal,
+                )
+                .unwrap()
+        };
+        let first = wrap();
+        let before = SHAPES.with(Cell::get);
+        let second = wrap();
+        // 0; a few more if another test's web-font install bumps the
+        // generation mid-wrap.
+        let shaped = SHAPES.with(Cell::get) - before;
+        assert!(shaped <= 8, "{shaped} new shapes re-wrapping the same text");
+        assert!(first.len() > 3);
+        let offsets = |lines: &[WrappedLine]| {
+            lines
+                .iter()
+                .map(|l| (l.start_offset, l.end_offset, l.width.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(offsets(&first), offsets(&second));
+    }
+
+    #[test]
+    fn a_new_web_font_set_invalidates_shaped_runs() {
+        let chain = FontFamilyChain::new("Helvetica");
+        let shape = || {
+            TextShaper::new()
+                .shape("memo", &chain, FontWeight(400), FontStyle::Normal, FontStretch::Normal, 16.0)
+                .unwrap()
+        };
+        // Other tests install web-font sets on their own threads, and the
+        // generation is process-wide: only judge a hit when it held still.
+        let mut judged = false;
+        for _ in 0..20 {
+            let generation = rustkit_text::webfonts::generation();
+            shape();
+            let before = SHAPES.with(Cell::get);
+            shape();
+            if rustkit_text::webfonts::generation() == generation {
+                assert_eq!(SHAPES.with(Cell::get), before, "second shape is a hit");
+                judged = true;
+                break;
+            }
+        }
+        assert!(judged, "the web-font generation never held still");
+        let before = SHAPES.with(Cell::get);
+        rustkit_text::webfonts::install(
+            "shape-memo-test",
+            &[rustkit_text::webfonts::WebFontFace {
+                family: "ShapeMemoTestFace".into(),
+                weight: 400,
+                italic: false,
+                data: std::sync::Arc::new(vec![0u8; 64]),
+            }],
+        );
+        shape();
+        assert!(SHAPES.with(Cell::get) > before, "re-shaped after the set changed");
+    }
+
+    #[test]
+    fn a_font_is_resolved_once_not_once_per_shape() {
+        // A missing first family (every site's web-font name the platform
+        // lacks) and a real fallback: 200 shapes, 2 resolutions.
+        let shaper = TextShaper::new();
+        let chain = FontFamilyChain::new("NoSuchFamilyForTheResolveCache").with_fallback("Helvetica");
+        let before = RESOLUTIONS.with(Cell::get);
+        let mut widths = Vec::new();
+        for _ in 0..200 {
+            let run = shaper
+                .shape("resolve me once", &chain, FontWeight(400), FontStyle::Normal, FontStretch::Normal, 16.0)
+                .unwrap();
+            widths.push(run.metrics.width);
+        }
+        // 2 per shape uncached (400). Cached: 2, plus 2 more if the other
+        // test's install bumps the web-font generation mid-loop.
+        let resolved = RESOLUTIONS.with(Cell::get) - before;
+        assert!(resolved <= 4, "{resolved} resolutions for 200 identical shapes");
+        assert!(widths.iter().all(|w| *w == widths[0] && *w > 0.0), "{:?}", &widths[..3]);
+        assert_eq!(
+            shaper
+                .shape("x", &chain, FontWeight(400), FontStyle::Normal, FontStretch::Normal, 16.0)
+                .unwrap()
+                .font_family,
+            "Helvetica"
+        );
+    }
+
+    #[test]
+    fn a_new_web_font_set_invalidates_the_cache() {
+        let chain = FontFamilyChain::new("Helvetica");
+        let shape = || {
+            TextShaper::new()
+                .shape("x", &chain, FontWeight(400), FontStyle::Normal, FontStretch::Normal, 16.0)
+                .unwrap()
+        };
+        shape();
+        let before = RESOLUTIONS.with(Cell::get);
+        shape();
+        assert_eq!(RESOLUTIONS.with(Cell::get), before, "second shape is a cache hit");
+        rustkit_text::webfonts::install(
+            "font-resolve-cache-test",
+            &[rustkit_text::webfonts::WebFontFace {
+                family: "FontResolveCacheTestFace".into(),
+                weight: 400,
+                italic: false,
+                // Rejected by Core Graphics (as in rustkit-text's own
+                // garbage-bytes test); the set still changed.
+                data: std::sync::Arc::new(vec![0u8; 64]),
+            }],
+        );
+        shape();
+        assert_eq!(RESOLUTIONS.with(Cell::get), before + 1, "re-resolved after the set changed");
     }
 }

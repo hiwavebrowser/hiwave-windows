@@ -297,6 +297,12 @@ impl Client {
         writeln!(request, "Host: {}\r", host)?;
         writeln!(request, "User-Agent: {}\r", self.config.user_agent)?;
         writeln!(request, "Accept: */*\r")?;
+        // Every browser sends this, and some sites treat a client that
+        // doesn't as a bot (microsoft.com serves an "automated process"
+        // page). Only encodings decode_content_encoding can undo.
+        if !headers.contains_key("accept-encoding") {
+            writeln!(request, "Accept-Encoding: {}\r", ACCEPT_ENCODING)?;
+        }
         writeln!(request, "Connection: close\r")?;
 
         // Add custom headers
@@ -351,6 +357,7 @@ impl Client {
 
         // Read body
         let body = read_body(&mut reader, &response_headers).await?;
+        let body = decode_content_encoding(body, &mut response_headers)?;
 
         trace!(status = %status, body_len = body.len(), "Response received");
 
@@ -456,6 +463,60 @@ fn parse_status_line(line: &str) -> Result<(Version, StatusCode), HttpError> {
         .map_err(|_| HttpError::InvalidResponse("Invalid status code".to_string()))?;
 
     Ok((version, status))
+}
+
+/// The `Accept-Encoding` sent on requests: what `decode_content_encoding`
+/// can undo.
+const ACCEPT_ENCODING: &str = "gzip, deflate";
+
+/// Undo the response's `Content-Encoding`, so callers always see the
+/// resource's bytes. A decoded body drops `Content-Encoding` and
+/// `Content-Length` (which described the encoded bytes).
+///
+/// A body cut off mid-stream keeps what decoded, as a truncated chunked
+/// body does. An encoding we never advertised is passed through untouched.
+fn decode_content_encoding(body: Bytes, headers: &mut HeaderMap) -> Result<Bytes, HttpError> {
+    use std::io::Read;
+
+    let Some(encoding) = headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_ascii_lowercase())
+    else {
+        return Ok(body);
+    };
+    if body.is_empty() || encoding.is_empty() || encoding == "identity" {
+        return Ok(body);
+    }
+
+    let mut out = Vec::new();
+    let result = match encoding.as_str() {
+        "gzip" | "x-gzip" => flate2::read::MultiGzDecoder::new(&body[..]).read_to_end(&mut out),
+        // "deflate" is zlib-wrapped per RFC 9110, but some servers send raw
+        // deflate; browsers accept both.
+        "deflate" => match flate2::read::ZlibDecoder::new(&body[..]).read_to_end(&mut out) {
+            Ok(n) => Ok(n),
+            Err(_) if out.is_empty() => {
+                flate2::read::DeflateDecoder::new(&body[..]).read_to_end(&mut out)
+            }
+            Err(e) => Err(e),
+        },
+        other => {
+            warn!(encoding = other, "Unsupported Content-Encoding; body left encoded");
+            return Ok(body);
+        }
+    };
+    if let Err(e) = result {
+        if out.is_empty() {
+            return Err(HttpError::InvalidResponse(format!(
+                "Content-Encoding {encoding}: {e}"
+            )));
+        }
+        warn!(%encoding, error = %e, decoded = out.len(), "Encoded body cut off; keeping what decoded");
+    }
+    headers.remove("content-encoding");
+    headers.remove("content-length");
+    Ok(Bytes::from(out))
 }
 
 /// Read response body based on headers.
@@ -811,6 +872,92 @@ mod tests {
             decode_chunked(b"zz\r\nhello\r\n0\r\n\r\n"),
             Err(HttpError::InvalidResponse(_))
         ));
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut enc, data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn requests_gzip_and_decodes_it() {
+        // Serves gzip only to a client that asks for it, as real sites do;
+        // anything else gets the page a bot gets.
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            if request.contains("\r\naccept-encoding: gzip") {
+                let body = gzip(b"<p>the real page</p>");
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            } else {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nautomated bot")
+                    .unwrap();
+            }
+        });
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = Client::builder().build().unwrap();
+        let response = rt
+            .block_on(client.request(
+                Method::GET,
+                &format!("http://127.0.0.1:{port}/"),
+                HeaderMap::new(),
+                None,
+            ))
+            .unwrap();
+        assert_eq!(response.text().unwrap(), "<p>the real page</p>");
+        assert!(response.headers.get("content-encoding").is_none());
+        assert!(response.headers.get("content-length").is_none());
+    }
+
+    #[test]
+    fn content_encoding_decodes_deflate_both_ways_and_keeps_a_truncated_prefix() {
+        let decode = |encoding: &str, body: Vec<u8>| {
+            let mut headers = HeaderMap::new();
+            headers.insert("content-encoding", HeaderValue::from_str(encoding).unwrap());
+            decode_content_encoding(Bytes::from(body), &mut headers)
+        };
+        let text = b"hello hello hello hello world".repeat(50);
+
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut zlib, &text).unwrap();
+        assert_eq!(&decode("deflate", zlib.finish().unwrap()).unwrap()[..], &text[..]);
+
+        let mut raw = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut raw, &text).unwrap();
+        assert_eq!(&decode("deflate", raw.finish().unwrap()).unwrap()[..], &text[..]);
+
+        let big: Vec<u8> = (0..200_000u32).flat_map(|i| i.to_le_bytes()).collect();
+        let mut cut = gzip(&big);
+        cut.truncate(cut.len() / 2);
+        let partial = decode("gzip", cut).unwrap();
+        assert!(!partial.is_empty() && big.starts_with(&partial));
+
+        // Never advertised: left alone.
+        assert_eq!(&decode("br", b"xyz".to_vec()).unwrap()[..], b"xyz");
+        assert!(decode("gzip", b"not gzip".to_vec()).is_err());
     }
 
     #[test]

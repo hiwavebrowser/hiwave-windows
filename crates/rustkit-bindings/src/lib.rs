@@ -292,6 +292,134 @@ pub struct IpcMessage {
 /// IPC callback type for handling messages from JavaScript.
 pub type IpcCallback = Box<dyn Fn(IpcMessage) + Send + Sync>;
 
+/// Event targets for `window` and `document`, timers on a virtual clock, and
+/// the sink for exceptions nothing catches.
+///
+/// An exception thrown inside an event listener or a timer callback does
+/// not propagate to whoever fired it (in a browser it goes to
+/// `window.onerror`), so those are caught here and queued in
+/// `__rustkit_errors` for the engine to collect. The one thing that does
+/// propagate is Boa's loop-iteration limit, which a script cannot catch.
+///
+/// Timers run on a virtual clock the engine advances (`__rustkit_run_timers`),
+/// so a page's `setTimeout(f, 2000)` runs without the load waiting 2s of wall
+/// time. Promise reactions run when the enclosing evaluation returns, not
+/// between two timer callbacks.
+const PAGE_LIFECYCLE_JS: &str = r#"
+(function () {
+    var errors = [];
+    window.__rustkit_errors = errors;
+    function report(e) {
+        var msg;
+        try { msg = String(e); } catch (_) { msg = '<unprintable exception>'; }
+        errors.push(msg);
+    }
+
+    function makeEventTarget(target) {
+        var listeners = {};
+        target.addEventListener = function (type, cb) {
+            if (typeof cb !== 'function' && !(cb && typeof cb.handleEvent === 'function')) return;
+            var list = listeners[type] || (listeners[type] = []);
+            if (list.indexOf(cb) < 0) list.push(cb);
+        };
+        target.removeEventListener = function (type, cb) {
+            var list = listeners[type];
+            if (!list) return;
+            var i = list.indexOf(cb);
+            if (i >= 0) list.splice(i, 1);
+        };
+        target.dispatchEvent = function (event) {
+            if (!event.target) event.target = target;
+            event.currentTarget = target;
+            var list = (listeners[event.type] || []).slice();
+            var handler = target['on' + event.type];
+            if (typeof handler === 'function') list.push(handler);
+            for (var i = 0; i < list.length; i++) {
+                try {
+                    var cb = list[i];
+                    if (typeof cb === 'function') cb.call(target, event); else cb.handleEvent(event);
+                } catch (e) { report(e); }
+            }
+            return !event.defaultPrevented;
+        };
+    }
+    makeEventTarget(window);
+    makeEventTarget(document);
+
+    var now = 0, nextId = 1, timers = [];
+    window.__rustkit_fire = function (targetName, type) {
+        var target = targetName === 'document' ? document : window;
+        target.dispatchEvent({
+            type: type, bubbles: false, cancelable: false, defaultPrevented: false,
+            target: target, currentTarget: null, timeStamp: now, isTrusted: true,
+            preventDefault: function () { this.defaultPrevented = true; },
+            stopPropagation: function () {}, stopImmediatePropagation: function () {}
+        });
+    };
+
+    function schedule(cb, ms, args, repeat) {
+        var delay = Number(ms) || 0;
+        if (delay < 0) delay = 0;
+        var id = nextId++;
+        timers.push({ id: id, seq: id, due: now + delay, cb: cb, args: args,
+                      every: repeat ? Math.max(delay, 1) : 0 });
+        return id;
+    }
+    function clearTimer(id) {
+        for (var i = 0; i < timers.length; i++) {
+            if (timers[i].id === id) { timers.splice(i, 1); return; }
+        }
+    }
+    window.setTimeout = function (cb, ms) {
+        return schedule(cb, ms, Array.prototype.slice.call(arguments, 2), false);
+    };
+    window.setInterval = function (cb, ms) {
+        return schedule(cb, ms, Array.prototype.slice.call(arguments, 2), true);
+    };
+    window.clearTimeout = clearTimer;
+    window.clearInterval = clearTimer;
+    window.requestAnimationFrame = function (cb) {
+        return schedule(function () { cb(now); }, 16, [], false);
+    };
+    window.cancelAnimationFrame = clearTimer;
+    window.queueMicrotask = function (cb) {
+        Promise.resolve().then(function () { try { cb(); } catch (e) { report(e); } });
+    };
+
+    // Run due timers in (due, scheduling) order until the virtual clock
+    // would pass `horizon` ms or `max` callbacks have run.
+    window.__rustkit_run_timers = function (horizon, max) {
+        var ran = 0;
+        while (ran < max) {
+            var best = -1;
+            for (var i = 0; i < timers.length; i++) {
+                var t = timers[i];
+                if (best < 0 || t.due < timers[best].due ||
+                    (t.due === timers[best].due && t.seq < timers[best].seq)) best = i;
+            }
+            if (best < 0 || timers[best].due > horizon) break;
+            var timer = timers[best];
+            now = timer.due;
+            if (timer.every) { timer.due += timer.every; timer.seq = nextId++; }
+            else timers.splice(best, 1);
+            ran++;
+            try {
+                if (typeof timer.cb === 'function') timer.cb.apply(window, timer.args);
+                else (0, eval)(String(timer.cb));
+            } catch (e) { report(e); }
+        }
+        return ran;
+    };
+})();
+"#;
+
+/// Which object a page lifecycle event is fired at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleTarget {
+    Window,
+    Document,
+}
+
 /// DOM bindings context.
 pub struct DomBindings {
     runtime: RefCell<JsRuntime>,
@@ -321,9 +449,13 @@ impl DomBindings {
 
     /// Inject global JavaScript objects.
     fn inject_globals(runtime: &mut JsRuntime) -> Result<(), BindingError> {
-        // Window object stub
+        // Window object stub. `window` IS the global object, as in every
+        // browser: page bundles write `window.x = ...` and read bare `x`
+        // (webpack's `self.webpackChunk*`), and that only works if the two
+        // are the same object.
         let window_js = r#"
-            var window = {
+            var window = globalThis;
+            Object.assign(window, {
                 innerWidth: 800,
                 innerHeight: 600,
                 outerWidth: 800,
@@ -388,7 +520,7 @@ impl DomBindings {
                 alert: function(msg) { console.log('[alert]', msg); },
                 confirm: function(msg) { console.log('[confirm]', msg); return false; },
                 prompt: function(msg, def) { console.log('[prompt]', msg); return def || null; }
-            };
+            });
 
             // Alias
             var self = window;
@@ -769,6 +901,7 @@ impl DomBindings {
         "#;
 
         runtime.evaluate_script(input_element_js)?;
+        runtime.evaluate_script(PAGE_LIFECYCLE_JS)?;
 
         debug!("Global objects injected");
         Ok(())
@@ -861,6 +994,67 @@ impl DomBindings {
             .borrow_mut()
             .evaluate_script(script)
             .map_err(Into::into)
+    }
+
+    /// Bound every loop a page script runs (see
+    /// [`JsRuntime::set_loop_iteration_limit`]).
+    pub fn set_loop_iteration_limit(&self, max_iterations: u64) {
+        self.runtime
+            .borrow_mut()
+            .set_loop_iteration_limit(max_iterations);
+    }
+
+    /// Set `document.readyState` (`loading` / `interactive` / `complete`).
+    pub fn set_ready_state(&self, state: &str) -> Result<(), BindingError> {
+        self.runtime
+            .borrow_mut()
+            .evaluate_script(&format!("document.readyState = {:?};", state))?;
+        Ok(())
+    }
+
+    /// Fire a lifecycle event (`DOMContentLoaded`, `load`) at `window` or
+    /// `document`. Listener exceptions are queued, not returned; see
+    /// [`Self::take_reported_errors`].
+    pub fn fire_lifecycle_event(
+        &self,
+        target: LifecycleTarget,
+        event_type: &str,
+    ) -> Result<(), BindingError> {
+        let target = match target {
+            LifecycleTarget::Window => "window",
+            LifecycleTarget::Document => "document",
+        };
+        self.runtime.borrow_mut().evaluate_script(&format!(
+            "window.__rustkit_fire({:?}, {:?});",
+            target, event_type
+        ))?;
+        Ok(())
+    }
+
+    /// Run the page's timers on the virtual clock up to `horizon_ms`, at
+    /// most `max_callbacks` of them. Returns how many ran.
+    pub fn run_timers(&self, horizon_ms: u64, max_callbacks: u32) -> Result<u32, BindingError> {
+        let ran = self.runtime.borrow_mut().evaluate_script(&format!(
+            "window.__rustkit_run_timers({}, {})",
+            horizon_ms, max_callbacks
+        ))?;
+        Ok(match ran {
+            JsValue::Number(n) => n as u32,
+            _ => 0,
+        })
+    }
+
+    /// Exceptions thrown in listeners and timer callbacks since the last
+    /// call, as `String(error)` (`TypeError: x is not a function`).
+    pub fn take_reported_errors(&self) -> Vec<String> {
+        let drained = self
+            .runtime
+            .borrow_mut()
+            .evaluate_script("JSON.stringify(window.__rustkit_errors.splice(0))");
+        match drained {
+            Ok(JsValue::String(json)) => serde_json::from_str(&json).unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 
     /// Drain the IPC message queue.
@@ -1287,5 +1481,81 @@ mod tests {
 
         let method = bindings.evaluate("form.method").unwrap();
         assert!(matches!(method, JsValue::String(s) if s == "post"));
+    }
+
+    fn eval_string(bindings: &DomBindings, script: &str) -> String {
+        match bindings.evaluate(script).unwrap() {
+            JsValue::String(s) => s,
+            other => panic!("{script} evaluated to {other:?}"),
+        }
+    }
+
+    #[test]
+    fn window_is_the_global_object() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        bindings
+            .evaluate("window.fromWindow = 'w'; var fromVar = 'v';")
+            .unwrap();
+        assert_eq!(eval_string(&bindings, "fromWindow + window.fromVar"), "wv");
+        assert!(matches!(
+            bindings.evaluate("window === globalThis && self === window").unwrap(),
+            JsValue::Boolean(true)
+        ));
+    }
+
+    #[test]
+    fn lifecycle_listeners_fire_and_their_errors_are_reported() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        bindings
+            .evaluate(
+                r#"
+                var seen = [];
+                document.addEventListener('DOMContentLoaded', function () { seen.push('dcl'); });
+                window.addEventListener('load', function () { undefinedFn(); });
+                window.onload = function () { seen.push('onload'); };
+                "#,
+            )
+            .unwrap();
+        bindings
+            .fire_lifecycle_event(LifecycleTarget::Document, "DOMContentLoaded")
+            .unwrap();
+        bindings
+            .fire_lifecycle_event(LifecycleTarget::Window, "load")
+            .unwrap();
+
+        // The throwing listener does not stop the next one.
+        assert_eq!(eval_string(&bindings, "seen.join(',')"), "dcl,onload");
+        let errors = bindings.take_reported_errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("undefinedFn"), "{errors:?}");
+        assert!(bindings.take_reported_errors().is_empty(), "drained");
+    }
+
+    #[test]
+    fn timers_run_in_due_order_on_a_virtual_clock() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        bindings
+            .evaluate(
+                r#"
+                var order = [];
+                setTimeout(function () { order.push('b200'); }, 200);
+                setTimeout(function (x) { order.push(x); }, 0, 'a0');
+                var ticks = 0;
+                var iv = setInterval(function () {
+                    order.push('i' + (++ticks));
+                    if (ticks === 2) clearInterval(iv);
+                }, 150);
+                setTimeout(function () { order.push('late'); }, 60000);
+                "#,
+            )
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let ran = bindings.run_timers(5_000, 1_000).unwrap();
+        assert!(started.elapsed().as_millis() < 1_000, "virtual, not wall-clock");
+        assert_eq!(ran, 4);
+        // Past the horizon stays queued.
+        assert_eq!(eval_string(&bindings, "order.join(',')"), "a0,i1,b200,i2");
+        assert_eq!(bindings.run_timers(120_000, 1_000).unwrap(), 1);
     }
 }

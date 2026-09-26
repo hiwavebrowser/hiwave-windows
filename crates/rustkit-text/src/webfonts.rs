@@ -21,7 +21,21 @@
 //! wrappers around the same tables and need a decoder this workspace does not
 //! carry yet; they install as nothing and are reported as rejected.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Changes whenever the installed face set does (an install of a different
+/// set, or a clear). Anything that caches a family-name resolution keys it
+/// on this, because the same name can resolve to a different face after.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Acquire)
+}
+
+fn bump_generation() {
+    GENERATION.fetch_add(1, Ordering::AcqRel);
+}
 
 /// One face as the engine hands it over: raw bytes plus the descriptors the
 /// `@font-face` rule declared for them.
@@ -83,6 +97,10 @@ mod imp {
         let mut families: HashMap<String, Vec<Face>> = HashMap::new();
         let mut accepted = 0usize;
         for face in faces {
+            // An sfnt container starts with a 12-byte table directory.
+            if face.data.len() < 12 {
+                continue;
+            }
             let provider = CGDataProvider::from_buffer(face.data.clone());
             let Ok(cgfont) = CGFont::from_data_provider(provider) else {
                 continue;
@@ -97,12 +115,16 @@ mod imp {
         let mut active = slot().write().unwrap();
         active.tag = tag.to_string();
         active.families = families;
+        super::bump_generation();
         accepted
     }
 
     /// Drop the active set. After this no family resolves through the registry.
     pub fn clear() {
         let mut active = slot().write().unwrap();
+        if !active.tag.is_empty() || !active.families.is_empty() {
+            super::bump_generation();
+        }
         active.tag.clear();
         active.families.clear();
     }
@@ -285,6 +307,19 @@ mod tests {
             partial.len(),
             &partial[..partial.len().min(12)]
         );
+    }
+
+    #[test]
+    fn a_face_shorter_than_a_table_directory_is_rejected() {
+        let _slot = slot_guard();
+        let short = |n: usize| WebFontFace {
+            family: "WebfontsTestShort".to_string(),
+            weight: 400,
+            italic: false,
+            data: Arc::new(vec![0u8; n]),
+        };
+        assert_eq!(install("t6", &[short(0), short(11)]), 0);
+        assert!(!is_installed("WebfontsTestShort"));
     }
 
     #[test]

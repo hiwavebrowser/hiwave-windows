@@ -190,6 +190,10 @@ impl JsRuntime {
             use boa_engine::Source;
 
             let result = self.context.eval(Source::from_bytes(source));
+            // Promise reactions (`.then`, `await`) are jobs Boa queues but
+            // does not run on its own; a page's async code never resumes
+            // without this.
+            self.context.run_jobs();
 
             match result {
                 Ok(value) => {
@@ -208,6 +212,19 @@ impl JsRuntime {
         {
             Err(JsError::NotInitialized)
         }
+    }
+
+    /// Bound how long any one loop may run: past `max_iterations` it throws
+    /// an error the script cannot catch. Page scripts are untrusted, and
+    /// Boa has no wall-clock interrupt, so this is what stops a
+    /// `while (true) {}` from hanging the engine.
+    pub fn set_loop_iteration_limit(&mut self, max_iterations: u64) {
+        #[cfg(feature = "boa")]
+        self.context
+            .runtime_limits_mut()
+            .set_loop_iteration_limit(max_iterations);
+        #[cfg(not(feature = "boa"))]
+        let _ = max_iterations;
     }
 
     /// Flush console logs and call handler.
@@ -438,6 +455,27 @@ mod tests {
 
         let result = runtime.evaluate_script("[1, 2, 3]").unwrap();
         assert!(matches!(result, JsValue::Array));
+    }
+
+    #[test]
+    fn a_runaway_loop_throws_instead_of_hanging() {
+        let mut runtime = JsRuntime::new().unwrap();
+        runtime.set_loop_iteration_limit(10_000);
+        let result = runtime.evaluate_script("try { while (true) {} } catch (e) {} 'caught'");
+        assert!(result.is_err(), "the limit must not be catchable: {result:?}");
+        // The runtime is still usable afterwards.
+        let after = runtime.evaluate_script("1 + 1").unwrap();
+        assert!(matches!(after, JsValue::Number(n) if n == 2.0));
+    }
+
+    #[test]
+    fn promise_reactions_run() {
+        let mut runtime = JsRuntime::new().unwrap();
+        runtime
+            .evaluate_script("var done = false; Promise.resolve().then(function() { done = true; });")
+            .unwrap();
+        let done = runtime.evaluate_script("done").unwrap();
+        assert!(matches!(done, JsValue::Boolean(true)));
     }
 
     #[test]
