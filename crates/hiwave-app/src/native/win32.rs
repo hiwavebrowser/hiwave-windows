@@ -1039,21 +1039,10 @@ fn run_screenshot_mode(config: super::screenshot_harness::ScreenshotConfig) -> R
 /// Simple timestamp without chrono dependency.
 fn chrono_lite_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now()
+    let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    let days = secs / 86400;
-    let years = 1970 + days / 365;
-    let remaining = (days % 365) as u32;
-    let month = remaining / 30 + 1;
-    let day = remaining % 30 + 1;
-    let hours = (secs % 86400) / 3600;
-    let minutes = (secs % 3600) / 60;
-    let seconds = secs % 60;
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        years, month, day, hours, minutes, seconds
-    )
+        .unwrap_or_default()
+        .as_secs();
+    super::screenshot_harness::utc_timestamp_from_secs(secs)
 }
 
