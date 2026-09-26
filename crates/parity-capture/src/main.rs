@@ -8,7 +8,7 @@
 //! Unlike hiwave-smoke, this does NOT require a display and can run in CI.
 
 use clap::Parser;
-use rustkit_engine::{EngineBuilder, EngineConfig};
+use rustkit_engine::{EngineBuilder, EngineConfig, ScriptOutcome, ScriptRecord};
 use rustkit_viewhost::Bounds;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -39,6 +39,11 @@ struct Args {
     /// Output path for display-list JSON (paint commands, including text runs)
     #[arg(long)]
     dump_display_list: Option<String>,
+
+    /// Output path for the page's script log (URL mode: one record per
+    /// `<script>`, plus exceptions from lifecycle listeners and timers)
+    #[arg(long)]
+    dump_scripts: Option<String>,
 
     /// Viewport width
     #[arg(long, default_value = "1280")]
@@ -75,6 +80,8 @@ struct CaptureResult {
     display_list_path: Option<String>,
     layout_stats: Option<LayoutStats>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    script_stats: Option<ScriptStats>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     elapsed_ms: Option<u64>,
     error: Option<String>,
 }
@@ -91,6 +98,7 @@ impl CaptureResult {
             layout_path: None,
             display_list_path: None,
             layout_stats: None,
+            script_stats: None,
             elapsed_ms: None,
             error: None,
         }
@@ -101,6 +109,18 @@ impl CaptureResult {
         self.error = Some(error);
         self
     }
+}
+
+/// Totals over a URL capture's script log.
+#[derive(Serialize, Deserialize)]
+struct ScriptStats {
+    ran: u32,
+    threw: u32,
+    skipped: u32,
+    fetch_failed: u32,
+    over_budget: u32,
+    bytes: u64,
+    elapsed_ms: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -184,7 +204,8 @@ fn run_capture(args: &Args) -> CaptureResult {
 
     // Create engine with parity testing config (animations disabled).
     // Fixture mode keeps its historical test-tool UA; URL mode sends the
-    // product's.
+    // product's. URL mode runs the page's scripts, as the browser does;
+    // fixture mode does not (the campaign fixtures are static pages).
     let user_agent = if url.is_some() {
         PRODUCT_USER_AGENT
     } else {
@@ -193,7 +214,7 @@ fn run_capture(args: &Args) -> CaptureResult {
     let engine_result = EngineBuilder::new()
         .with_config(EngineConfig::for_parity_testing())
         .user_agent(user_agent)
-        .javascript_enabled(false)
+        .javascript_enabled(url.is_some())
         .build();
 
     let mut engine = match engine_result {
@@ -229,6 +250,14 @@ fn run_capture(args: &Args) -> CaptureResult {
         };
         if let Err(e) = rt.block_on(engine.load_url(view_id, url)) {
             return result.failed("error", format!("Failed to load URL: {:?}", e));
+        }
+        if let Some(log) = engine.script_log(view_id) {
+            result.script_stats = Some(script_stats(log));
+            if let Some(ref path) = args.dump_scripts {
+                if let Err(e) = fs::write(path, script_log_json(log).to_string()) {
+                    error!("Failed to write script log: {:?}", e);
+                }
+            }
         }
     } else if let Some(html) = html_content {
         if let Err(e) = engine.load_html(view_id, &html) {
@@ -277,6 +306,53 @@ fn run_capture(args: &Args) -> CaptureResult {
     let _ = engine.destroy_view(view_id);
 
     result
+}
+
+fn script_stats(log: &[ScriptRecord]) -> ScriptStats {
+    let mut stats = ScriptStats {
+        ran: 0,
+        threw: 0,
+        skipped: 0,
+        fetch_failed: 0,
+        over_budget: 0,
+        bytes: 0,
+        elapsed_ms: 0,
+    };
+    for record in log {
+        match record.outcome {
+            ScriptOutcome::Ran => stats.ran += 1,
+            ScriptOutcome::Threw(_) => stats.threw += 1,
+            ScriptOutcome::Skipped(_) => stats.skipped += 1,
+            ScriptOutcome::FetchFailed(_) => stats.fetch_failed += 1,
+            ScriptOutcome::OverBudget => stats.over_budget += 1,
+        }
+        stats.bytes += record.bytes as u64;
+        stats.elapsed_ms += record.elapsed_ms;
+    }
+    stats
+}
+
+fn script_log_json(log: &[ScriptRecord]) -> serde_json::Value {
+    let records: Vec<_> = log
+        .iter()
+        .map(|r| {
+            let (outcome, detail) = match &r.outcome {
+                ScriptOutcome::Ran => ("ran", None),
+                ScriptOutcome::Threw(m) => ("threw", Some(m.clone())),
+                ScriptOutcome::Skipped(why) => ("skipped", Some(why.to_string())),
+                ScriptOutcome::FetchFailed(m) => ("fetch_failed", Some(m.clone())),
+                ScriptOutcome::OverBudget => ("over_budget", None),
+            };
+            serde_json::json!({
+                "source": r.source,
+                "bytes": r.bytes,
+                "elapsed_ms": r.elapsed_ms,
+                "outcome": outcome,
+                "detail": detail,
+            })
+        })
+        .collect();
+    serde_json::json!({ "scripts": records })
 }
 
 /// Mirror the Chrome capture pipeline's CSS inputs for a file loaded via

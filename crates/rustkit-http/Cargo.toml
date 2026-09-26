@@ -32,5 +32,8 @@ futures = "0.3"
 # Base64 for auth
 base64 = "0.22"
 
+# Content-Encoding: gzip / deflate
+flate2 = "1"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

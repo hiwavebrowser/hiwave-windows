@@ -1318,6 +1318,34 @@ impl TextLine {
         }
         shape_line_advances(trimmed, style, font_size).map(|adv| adv.iter().sum())
     }
+
+    /// The page-space rect of visual line `index` of a wrapped text box.
+    ///
+    /// ONE definition of where a line fragment sits, so paint and the layout
+    /// export cannot drift apart about it. `render_text` seats its per-line
+    /// commands at `x + l.x_offset` and `content_y + i * line_height`; this is
+    /// that rule, and `render_text` calls it rather than restating it.
+    ///
+    /// `justify_space` is folded into the width the way paint folds it: a
+    /// justified line's ink reaches past `TextLine::width` by one expansion
+    /// per word separator, and a rect that ignored it would be short of the
+    /// glyphs it is supposed to bound.
+    pub fn fragment_rect(
+        &self,
+        index: usize,
+        content_x: f32,
+        content_y: f32,
+        line_height: f32,
+    ) -> Rect {
+        let expansion =
+            self.justify_space * Self::justification_opportunities(self.text.trim_end()) as f32;
+        Rect {
+            x: content_x + self.x_offset,
+            y: content_y + index as f32 * line_height,
+            width: self.width + expansion,
+            height: line_height,
+        }
+    }
 }
 
 /// Identity of the DOM element a layout box was generated from.
@@ -1501,6 +1529,164 @@ impl LayoutBox {
         self.identity.as_deref()
     }
 
+    /// The page-space rects of this text box's visual lines, or `None` when
+    /// this box is not a wrapped text box.
+    ///
+    /// A single-run text box has no `text_lines` and its content rect already
+    /// IS its one fragment, so there is nothing to enumerate; returning an
+    /// empty vec for it would let a caller union zero rects and call the
+    /// result an answer.
+    ///
+    /// The line height is recovered as `content.height / line_count` rather
+    /// than re-derived from the style: both wrap paths SET the height as
+    /// `line_count * line_height`, so the division returns the height that
+    /// was actually used, including the metrics-dependent `normal` case that
+    /// `resolve_line_height` alone does not see.
+    pub fn text_line_fragments(&self) -> Option<Vec<Rect>> {
+        let lines = match (&self.box_type, self.text_lines.as_ref()) {
+            (BoxType::Text(_), Some(lines)) if !lines.is_empty() => lines,
+            _ => return None,
+        };
+        let content = self.dimensions.content;
+        let line_height = content.height / lines.len() as f32;
+        Some(
+            lines
+                .iter()
+                .enumerate()
+                .map(|(i, l)| l.fragment_rect(i, content.x, content.y, line_height))
+                .collect(),
+        )
+    }
+
+    /// The union of this inline's border box with every line fragment of the
+    /// text inside it — the quantity Chrome's `getBoundingClientRect()`
+    /// reports for an inline whose text wrapped across several line boxes.
+    ///
+    /// RustKit has no inline fragment model: an inline box is ONE box, one
+    /// line tall, and the per-line records live on its text child. Chrome's
+    /// rect for such an inline is the union of its fragments, so the two are
+    /// not the same quantity and the difference is not a layout defect.
+    /// Measured on the 26-case set, `article-typography`'s `pre > code`
+    /// exported a height of 16.32 against Chrome's 148.38 while its text was
+    /// laid out over 152.06 — a 132px geometry "failure" on content that is
+    /// in the right place. This is the same class of error as the
+    /// post-transform rect, and it is answered the same way: emit the
+    /// corresponding quantity ALONGSIDE the layout rect and let the oracle
+    /// prefer it. `border_box` keeps its meaning for every other reader.
+    ///
+    /// `None` unless this is an inline box with a text descendant that
+    /// actually occupies more than one line. That condition is STRUCTURAL,
+    /// not a magnitude threshold: a single-line inline's text child is a line
+    /// box and so is routinely taller than the inline's content area, and a
+    /// "union is bigger than the box" test would sweep all of those in and
+    /// invent a second rect for elements that have exactly one fragment.
+    ///
+    /// Only multi-line descendants contribute. A single-line sibling run is
+    /// already inside the inline's own fragment, and adding its line box
+    /// would grow the union by that run's leading rather than by anything
+    /// Chrome measures.
+    ///
+    /// VERTICALLY the union is the inline's OWN box stepped down the line
+    /// boxes, not the line boxes themselves. A non-replaced inline's fragment
+    /// rect is its content area (font ascent + descent) plus its padding and
+    /// border; it is NOT line-height tall, which is why `about`'s
+    /// `span.highlight` measures 17.00 in Chrome under a 28.16px line box.
+    /// The first cut of this function unioned the text child's line boxes and
+    /// the 26-case board caught it: the union started a half-leading ABOVE
+    /// the element (`article-typography` 1249.52 against the box's 1254.03),
+    /// so the `y` axis of both affected elements got WORSE while their
+    /// `height` got better. Anchoring at the box and stepping by the line
+    /// height keeps `y` exact and leaves a residual that is line-height
+    /// disagreement — a real defect, in P4's family.
+    pub fn inline_fragment_union(&self) -> Option<Rect> {
+        if !matches!(self.box_type, BoxType::Inline) {
+            return None;
+        }
+
+        // `drop` is how far BELOW this inline's own fragment the last line
+        // box starts: `(line_count - 1) * line_height`, the largest over the
+        // wrapped descendants. `reach` is the bottom of the last line box.
+        // `frags` collects the horizontal extents only.
+        fn collect(b: &LayoutBox, frags: &mut Vec<Rect>, drop: &mut f32, reach: &mut f32) {
+            if let Some(f) = b.text_line_fragments() {
+                if f.len() > 1 {
+                    let content = b.dimensions.content;
+                    let line_height = content.height / f.len() as f32;
+                    *drop = drop.max((f.len() as f32 - 1.0) * line_height);
+                    *reach = reach.max(content.y + content.height);
+                    frags.extend(f);
+                }
+            }
+            // Descend through inline formatting only. A block descendant has
+            // a correct border box of its own and its overflow is not part of
+            // an ancestor's client rect, so unioning into it would invent a
+            // too-wide rect instead of removing a too-small one.
+            for c in &b.children {
+                if matches!(c.box_type, BoxType::Inline | BoxType::Text(_)) {
+                    collect(c, frags, drop, reach);
+                }
+            }
+        }
+
+        let mut frags = Vec::new();
+        let mut drop = 0.0f32;
+        let mut reach = f32::NEG_INFINITY;
+        collect(self, &mut frags, &mut drop, &mut reach);
+        if frags.is_empty() {
+            return None;
+        }
+
+        let bb = self.dimensions.border_box();
+
+        // RustKit does not size wrapped inlines one way. `article-typography`'s
+        // `pre > code` is 16.32 tall against 152.06 of text — one fragment,
+        // the case this whole function is for. But `about`'s and `new_tab`'s
+        // wrapped `span`s are ALREADY as tall as their text (28.00 against
+        // 28.00 of two 14px lines), i.e. their one box already spans both
+        // line boxes. Stepping those down by another line is not a
+        // correction, it is a second copy of a fragment the box already has,
+        // and the 26-case board measured exactly that: `about` +54.00,
+        // `new_tab` +10.00, `gradient-radius-only` +40.80 of geometry error
+        // that nothing in the engine had got wrong.
+        //
+        // So the trigger is that the element's box does not REACH the text
+        // inside it. When it does, there is no missing fragment and no second
+        // rect to emit.
+        if bb.bottom() >= reach - 0.01 {
+            return None;
+        }
+
+        // An axis the fragments do not extend is copied from the border box
+        // VERBATIM, not re-derived as `right - left`. Recomputing it moved
+        // `pre > code`'s width by 1.5e-5px — nothing, but a second rect whose
+        // unextended axes are merely almost the first one gives every reader
+        // a difference to explain, and this one is avoidable.
+        let mut left = bb.x;
+        let mut right = bb.right();
+        let mut widened = false;
+        for f in &frags {
+            if f.x < left {
+                left = f.x;
+                widened = true;
+            }
+            if f.right() > right {
+                right = f.right();
+                widened = true;
+            }
+        }
+        let (x, width) = if widened {
+            (left, right - left)
+        } else {
+            (bb.x, bb.width)
+        };
+        Some(Rect {
+            x,
+            y: bb.y,
+            width,
+            height: bb.height + drop,
+        })
+    }
+
     /// Set position offsets.
     pub fn set_offsets(
         &mut self,
@@ -1654,7 +1840,12 @@ impl LayoutBox {
                 ..
             } => {
                 // Replaced element: use intrinsic dimensions or explicit sizing
-                self.layout_image(*natural_width, *natural_height, containing_block);
+                self.layout_image_in(
+                    *natural_width,
+                    *natural_height,
+                    containing_block,
+                    definite_height,
+                );
             }
             BoxType::FormControl(ref control) => {
                 // Form controls are replaced elements with intrinsic sizing
@@ -2156,12 +2347,35 @@ impl LayoutBox {
         (line_count, last_width)
     }
 
-    /// Layout a replaced element (image).
+    /// Layout a replaced element (image), resolving percentage heights
+    /// against `containing_block.content.height`.
     fn layout_image(
         &mut self,
         natural_width: f32,
         natural_height: f32,
         containing_block: &Dimensions,
+    ) {
+        self.layout_image_in(
+            natural_width,
+            natural_height,
+            containing_block,
+            Some(containing_block.content.height),
+        );
+    }
+
+    /// Layout a replaced element (image). `percent_height_base` is the
+    /// containing block's DEFINITE content height; `None` means it has none.
+    /// On the flow path `containing_block.content.height` is the parent's
+    /// cursor, not its height, so a percentage read from it resolved against
+    /// the line position: google's logo (`max-height: 100%`, first in its
+    /// block) came out 0x0. A percentage of an indefinite height is `auto`
+    /// for `height` and `none` for `max-height` (CSS 2.1 §10.5, §10.7).
+    fn layout_image_in(
+        &mut self,
+        natural_width: f32,
+        natural_height: f32,
+        containing_block: &Dimensions,
+        percent_height_base: Option<f32>,
     ) {
         // A replaced element carries its own box decoration. Until 2026-08-22
         // this function left margin/border/padding at zero, so `border_box()`
@@ -2215,7 +2429,7 @@ impl LayoutBox {
         let explicit_height = replaced_content_size(
             match self.style.height {
                 Length::Px(px) => Some(px),
-                Length::Percent(pct) => Some(pct / 100.0 * containing_block.content.height),
+                Length::Percent(pct) => percent_height_base.map(|base| pct / 100.0 * base),
                 _ => None,
             },
             vertical_decoration,
@@ -2271,7 +2485,7 @@ impl LayoutBox {
         let max_height = replaced_content_size(
             match self.style.max_height {
                 Length::Px(px) => Some(px),
-                Length::Percent(pct) => Some(pct / 100.0 * containing_block.content.height),
+                Length::Percent(pct) => percent_height_base.map(|base| pct / 100.0 * base),
                 _ => None,
             },
             vertical_decoration,
@@ -2789,7 +3003,12 @@ impl LayoutBox {
                 natural_height,
                 ..
             } => {
-                self.layout_image(*natural_width, *natural_height, containing_block);
+                self.layout_image_in(
+                    *natural_width,
+                    *natural_height,
+                    containing_block,
+                    percent_height_base,
+                );
             }
             BoxType::FormControl(ref control) => {
                 self.layout_form_control(control.clone(), containing_block);
@@ -6286,6 +6505,11 @@ impl DisplayList {
 
     /// Render a layout box's own content (shadows, background, borders, text, images).
     fn render_box_content(&mut self, layout_box: &LayoutBox) {
+        // `visibility: hidden` hides the box's own painting only; its
+        // children are still visited and may be `visible` again.
+        if layout_box.style.visibility != rustkit_css::Visibility::Visible {
+            return;
+        }
         // A text run is not an element (CSS 2.1 §14.2: backgrounds, borders
         // and shadows belong to elements), so it paints glyphs only. Its
         // style can still carry box decorations: the engine copies
@@ -7065,15 +7289,17 @@ impl DisplayList {
                     .enumerate()
                     .filter(|(_, l)| !l.text.is_empty())
                     .map(|(i, l)| {
-                        let top = content_y + i as f32 * line_height;
-                        let expansion = l.justify_space
-                            * TextLine::justification_opportunities(l.text.trim_end()) as f32;
+                        // ONE definition of where a fragment sits, shared with
+                        // the layout export's inline union (TextLine::
+                        // fragment_rect). `x`/`content_y` are this box's
+                        // content origin, which is what that rule takes.
+                        let frag = l.fragment_rect(i, x, content_y, line_height);
                         (
                             apply_text_transform(&l.text, style.text_transform),
-                            x + l.x_offset,
-                            top + half_leading,
-                            l.width + expansion,
-                            top,
+                            frag.x,
+                            frag.y + half_leading,
+                            frag.width,
+                            frag.y,
                             l.justify_space,
                         )
                     })
@@ -7629,6 +7855,14 @@ pub fn measure_text_advanced(
 ///
 /// This provides accurate text measurement using DirectWrite on Windows,
 /// with support for CSS letter-spacing and word-spacing properties.
+///
+/// Results are memoised per thread. Intrinsic sizing (flex and grid
+/// min/max-content, shrink-to-fit) walks the same subtree once per ancestor
+/// that asks, so a deep flex page measures each word dozens of times:
+/// netflix spent 17 s of its first layout in Core Text shaping, reached
+/// from `own_min_content_width` / `own_max_content_width` again and again.
+/// The answer depends only on the arguments and on the installed
+/// `@font-face` set, so entries are dropped whenever that set changes.
 pub fn measure_text_with_spacing(
     text: &str,
     font_family: &str,
@@ -7638,6 +7872,84 @@ pub fn measure_text_with_spacing(
     letter_spacing: f32,
     word_spacing: f32,
 ) -> TextMetrics {
+    use std::cell::RefCell;
+
+    type Key = (String, String, u32, u16, u8, u32, u32);
+    struct Memo {
+        generation: u64,
+        metrics: std::collections::HashMap<Key, TextMetrics>,
+    }
+    // Bounds memory on a text-heavy page; refilling costs one shape per
+    // entry, which is what every call cost before the memo.
+    const MAX_ENTRIES: usize = 16384;
+    thread_local! {
+        static MEMO: RefCell<Memo> = RefCell::new(Memo {
+            generation: 0,
+            metrics: std::collections::HashMap::new(),
+        });
+    }
+
+    let generation = rustkit_text::webfonts::generation();
+    let key: Key = (
+        text.to_string(),
+        font_family.to_string(),
+        font_size.to_bits(),
+        font_weight.0,
+        font_style as u8,
+        letter_spacing.to_bits(),
+        word_spacing.to_bits(),
+    );
+    let cached = MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.generation != generation {
+            m.metrics.clear();
+            m.generation = generation;
+        }
+        m.metrics.get(&key).cloned()
+    });
+    if let Some(metrics) = cached {
+        return metrics;
+    }
+    let metrics = shape_text_metrics(
+        text,
+        font_family,
+        font_size,
+        font_weight,
+        font_style,
+        letter_spacing,
+        word_spacing,
+    );
+    MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.metrics.len() >= MAX_ENTRIES {
+            m.metrics.clear();
+        }
+        m.metrics.insert(key, metrics.clone());
+    });
+    metrics
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Uncached text measurements on this thread (see
+    /// `measure_text_with_spacing`).
+    static TEXT_SHAPES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Shape `text` and return its metrics (uncached; see
+/// `measure_text_with_spacing`).
+fn shape_text_metrics(
+    text: &str,
+    font_family: &str,
+    font_size: f32,
+    font_weight: rustkit_css::FontWeight,
+    font_style: rustkit_css::FontStyle,
+    letter_spacing: f32,
+    word_spacing: f32,
+) -> TextMetrics {
+    #[cfg(test)]
+    TEXT_SHAPES.with(|n| n.set(n.get() + 1));
+
     let shaper = TextShaper::new();
     let chain = FontFamilyChain::from_css_value(font_family);
 
@@ -9032,6 +9344,105 @@ mod tests {
         assert_eq!(r.bottom(), 70.0);
         assert!(r.contains(50.0, 30.0));
         assert!(!r.contains(0.0, 0.0));
+    }
+
+    #[test]
+    fn a_text_measurement_is_shaped_once_not_once_per_call() {
+        // Intrinsic sizing re-measures the same word once per asking
+        // ancestor. 200 identical measurements must shape once, and give
+        // the uncached answer every time.
+        let measure = |letter_spacing: f32| {
+            measure_text_with_spacing(
+                "shaped once per page",
+                "Helvetica, sans-serif",
+                17.0,
+                rustkit_css::FontWeight(700),
+                rustkit_css::FontStyle::Normal,
+                letter_spacing,
+                0.0,
+            )
+            .width
+        };
+        let uncached = shape_text_metrics(
+            "shaped once per page",
+            "Helvetica, sans-serif",
+            17.0,
+            rustkit_css::FontWeight(700),
+            rustkit_css::FontStyle::Normal,
+            0.0,
+            0.0,
+        )
+        .width;
+        let before = TEXT_SHAPES.with(std::cell::Cell::get);
+        let widths: Vec<f32> = (0..200).map(|_| measure(0.0)).collect();
+        // 1 shape; 2 if another test's web-font install bumps the
+        // generation mid-loop.
+        let shaped = TEXT_SHAPES.with(std::cell::Cell::get) - before;
+        assert!(
+            shaped <= 2,
+            "{shaped} shapes for 200 identical measurements"
+        );
+        assert!(uncached > 0.0);
+        assert!(
+            widths.iter().all(|w| *w == uncached),
+            "{} vs {uncached}",
+            widths[0]
+        );
+        // Every argument is part of the key: spacing is not served from the
+        // unspaced entry.
+        assert!(measure(2.0) > uncached + 30.0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_new_web_font_set_invalidates_text_measurements() {
+        // The same family name can measure differently once the document's
+        // @font-face set changes, so the memo must not outlive it.
+        let measure = || {
+            measure_text_with_spacing(
+                "x",
+                "Helvetica",
+                16.0,
+                rustkit_css::FontWeight(400),
+                rustkit_css::FontStyle::Normal,
+                0.0,
+                0.0,
+            )
+        };
+        // Other tests install web-font sets on their own threads, and the
+        // generation is process-wide: only judge a hit when it held still.
+        let mut judged = false;
+        for _ in 0..20 {
+            let generation = rustkit_text::webfonts::generation();
+            measure();
+            let before = TEXT_SHAPES.with(std::cell::Cell::get);
+            measure();
+            if rustkit_text::webfonts::generation() == generation {
+                assert_eq!(
+                    TEXT_SHAPES.with(std::cell::Cell::get),
+                    before,
+                    "second measure is a hit"
+                );
+                judged = true;
+                break;
+            }
+        }
+        assert!(judged, "the web-font generation never held still");
+        let before = TEXT_SHAPES.with(std::cell::Cell::get);
+        rustkit_text::webfonts::install(
+            "text-measure-memo-test",
+            &[rustkit_text::webfonts::WebFontFace {
+                family: "TextMeasureMemoTestFace".into(),
+                weight: 400,
+                italic: false,
+                data: std::sync::Arc::new(vec![0u8; 64]),
+            }],
+        );
+        measure();
+        assert!(
+            TEXT_SHAPES.with(std::cell::Cell::get) > before,
+            "re-shaped after the set changed"
+        );
     }
 
     #[test]
@@ -12188,6 +12599,54 @@ mod tests {
         );
     }
 
+    /// google's logo: an image first in its block with `max-height: 100%`.
+    /// The percentage read the parent's flow cursor (0 at the top of the
+    /// block), so the image came out 0x0 whatever the parent's height was.
+    #[test]
+    fn an_image_max_height_percentage_resolves_against_the_parent_not_its_cursor() {
+        for (parent_height, expected) in [
+            // Definite 50px parent: 100% is 50px, the ratio gives the width.
+            (Length::Px(50.0), (50.0 * 272.0 / 92.0, 50.0)),
+            // Auto-height parent: the percentage has no base and constrains
+            // nothing, so the natural size stands.
+            (Length::Auto, (272.0, 92.0)),
+        ] {
+            let mut parent_style = ComputedStyle::new();
+            parent_style.width = Length::Px(1000.0);
+            parent_style.height = parent_height.clone();
+            let mut parent = LayoutBox::new(BoxType::Block, parent_style);
+
+            let mut image_style = ComputedStyle::new();
+            image_style.max_height = Length::Percent(100.0);
+            parent.children.push(LayoutBox::new(
+                BoxType::Image {
+                    url: String::new(),
+                    natural_width: 272.0,
+                    natural_height: 92.0,
+                },
+                image_style,
+            ));
+            parent.set_viewport(1280.0, 800.0);
+
+            let viewport = Dimensions {
+                content: Rect::new(0.0, 0.0, 1280.0, 800.0),
+                ..Default::default()
+            };
+            parent.layout(&viewport);
+
+            let image = &parent.children[0].dimensions.content;
+            assert!(
+                (image.width - expected.0).abs() < 0.01
+                    && (image.height - expected.1).abs() < 0.01,
+                "parent height {parent_height:?}: image {}x{}, expected {}x{}",
+                image.width,
+                image.height,
+                expected.0,
+                expected.1
+            );
+        }
+    }
+
     /// The percentage half and the absolute half must take the SAME base a
     /// bare percentage would. An `auto`-height parent hands no definite base,
     /// and the viewport fallback stands — the behaviour `Length::Percent`
@@ -13285,6 +13744,484 @@ mod w3_zero_width_wrap_tests {
              (19 is the bare blob: the rem was dropped)",
             rem.dimensions.content.height
         );
+    }
+}
+
+/// Guards for the inline fragment union — the rect an oracle must use in place
+/// of a wrapped inline's single box. See `LayoutBox::inline_fragment_union`.
+#[cfg(test)]
+mod inline_fragment_union_tests {
+    use super::*;
+    use rustkit_css::ComputedStyle;
+
+    fn text_box(text: &str, content: Rect, lines: &[(f32, f32)]) -> LayoutBox {
+        let mut b = LayoutBox::new(BoxType::Text(text.to_string()), ComputedStyle::new());
+        b.dimensions.content = content;
+        b.text_lines = Some(
+            lines
+                .iter()
+                .map(|(width, x_offset)| TextLine {
+                    text: "x".into(),
+                    width: *width,
+                    x_offset: *x_offset,
+                    justify_space: 0.0,
+                })
+                .collect(),
+        );
+        b
+    }
+
+    fn inline_box(content: Rect) -> LayoutBox {
+        let mut b = LayoutBox::new(BoxType::Inline, ComputedStyle::new());
+        b.dimensions.content = content;
+        b
+    }
+
+    /// The line height is recovered from the box, not re-derived from the
+    /// style: both wrap paths set `height = line_count * line_height`, and the
+    /// `normal` case depends on measured metrics that `resolve_line_height`
+    /// cannot see. A fragment list built from the style would be right only
+    /// where the style already agreed with the metrics.
+    #[test]
+    fn line_fragments_stack_at_the_height_the_box_was_actually_given() {
+        let t = text_box("abc", Rect::new(10.0, 100.0, 90.0, 60.0), &[(90.0, 0.0); 3]);
+        let frags = t
+            .text_line_fragments()
+            .expect("a wrapped text box has fragments");
+        assert_eq!(frags.len(), 3);
+        assert_eq!(frags[0].y, 100.0);
+        assert_eq!(
+            frags[1].y, 120.0,
+            "60 / 3 lines = 20px, not the 16px default"
+        );
+        assert_eq!(frags[2].y, 140.0);
+        assert!(frags.iter().all(|f| f.height == 20.0));
+    }
+
+    /// `x_offset` is per-line (alignment, and the phase-5 mid-line flow
+    /// offset). A union that ignored it would be left-anchored at the box
+    /// origin and would miss a centred or right-aligned run's right edge.
+    #[test]
+    fn a_fragment_sits_at_its_own_line_offset() {
+        let t = text_box(
+            "abc",
+            Rect::new(10.0, 0.0, 90.0, 40.0),
+            &[(50.0, 40.0), (90.0, 0.0)],
+        );
+        let frags = t.text_line_fragments().unwrap();
+        assert_eq!((frags[0].x, frags[0].right()), (50.0, 100.0));
+        assert_eq!((frags[1].x, frags[1].right()), (10.0, 100.0));
+    }
+
+    /// A justified line's ink reaches past `TextLine::width` by one expansion
+    /// per word separator; paint folds that in and so must the rect, or the
+    /// two disagree about where the same glyphs are.
+    #[test]
+    fn a_justified_fragment_is_as_wide_as_the_ink_paint_emits() {
+        let line = TextLine {
+            text: "a b c".into(),
+            width: 50.0,
+            x_offset: 0.0,
+            justify_space: 4.0,
+        };
+        // "a b c" has two separators, so the line spans 50 + 2 * 4.
+        assert_eq!(line.fragment_rect(0, 0.0, 0.0, 20.0).width, 58.0);
+    }
+
+    /// A single-run text box has no `text_lines`; its content rect already IS
+    /// its one fragment. Returning an empty list would let a caller union
+    /// nothing and call the result an answer.
+    #[test]
+    fn an_unwrapped_text_box_has_no_fragment_list() {
+        let mut b = LayoutBox::new(BoxType::Text("abc".into()), ComputedStyle::new());
+        b.dimensions.content = Rect::new(0.0, 0.0, 40.0, 20.0);
+        assert!(b.text_line_fragments().is_none());
+    }
+
+    /// The measurement this whole unit exists for, with the real numbers off
+    /// `article-typography`'s `pre > code`: a 16.32px-tall box, a text child
+    /// of 152.06 over six lines, and Chrome reporting 148.38. Note the text
+    /// child starts 4.51px ABOVE the element — that is the line box's
+    /// half-leading, and it is the trap the first cut of this function fell
+    /// into.
+    #[test]
+    fn a_wrapped_inline_spans_the_line_boxes_its_text_occupies() {
+        let mut code = inline_box(Rect::new(280.0, 1254.03, 253.44, 16.32));
+        code.children.push(text_box(
+            "fn main",
+            Rect::new(280.0, 1249.52, 253.44, 152.06),
+            &[(253.44, 0.0); 6],
+        ));
+        let u = code
+            .inline_fragment_union()
+            .expect("a wrapped inline has a union");
+        assert_eq!(
+            u.y, 1254.03,
+            "the union must start at the ELEMENT, not at the line box"
+        );
+        // 16.32 + 5 * (152.06 / 6)
+        assert!(
+            (u.height - 143.04).abs() < 0.01,
+            "union height {} is not six of this element's fragments",
+            u.height
+        );
+    }
+
+    /// The board caught this and the unit tests did not, so it gets its own
+    /// guard. A non-replaced inline's fragment rect is its CONTENT AREA (font
+    /// ascent + descent) plus padding and border — it is not line-height
+    /// tall, which is why `about`'s `span.highlight` measures 17.00 in Chrome
+    /// under a 28.16px line box. Unioning the line boxes instead put the
+    /// union's top a half-leading above the element and made the `y` axis of
+    /// both affected elements WORSE while their `height` got better — one
+    /// change improving one number by breaking another, on the same box.
+    #[test]
+    fn the_union_starts_at_the_element_not_at_the_line_box_above_it() {
+        // 4.51px of half-leading: the line box is 25.34 tall, the element
+        // 16.32.
+        let mut code = inline_box(Rect::new(0.0, 1254.03, 100.0, 16.32));
+        code.children.push(text_box(
+            "fn main",
+            Rect::new(0.0, 1249.52, 100.0, 152.06),
+            &[(100.0, 0.0); 6],
+        ));
+        let u = code.inline_fragment_union().unwrap();
+        assert_eq!(u.y, 1254.03);
+        assert!(
+            u.bottom() > 1390.0,
+            "the union still has to reach the last line: {u:?}"
+        );
+    }
+
+    /// STRUCTURAL, not a magnitude threshold. A single-line inline's text
+    /// child is a LINE BOX and is routinely taller than the inline's content
+    /// area — `about`'s `span.highlight` is 18.13 against a text child of
+    /// 28.16 — so a "union is bigger than the box" test would invent a second
+    /// rect for elements that have exactly one fragment and report the
+    /// leading as a defect.
+    #[test]
+    fn a_single_line_inline_gets_no_union_however_tall_its_text_child_is() {
+        let mut span = inline_box(Rect::new(0.0, 0.0, 60.0, 18.13));
+        let mut text = LayoutBox::new(BoxType::Text("hi".into()), ComputedStyle::new());
+        text.dimensions.content = Rect::new(0.0, 0.0, 60.0, 28.16);
+        span.children.push(text);
+        assert!(span.inline_fragment_union().is_none());
+
+        // One recorded line is still one fragment.
+        let mut one = inline_box(Rect::new(0.0, 0.0, 60.0, 18.13));
+        one.children.push(text_box(
+            "hi",
+            Rect::new(0.0, 0.0, 60.0, 28.16),
+            &[(60.0, 0.0)],
+        ));
+        assert!(one.inline_fragment_union().is_none());
+    }
+
+    /// RustKit does not size wrapped inlines one way, and the 26-case board
+    /// is what found it. `about`'s and `new_tab`'s wrapped `span`s are
+    /// already as tall as their text (28.00 against two 14px lines), so their
+    /// one box ALREADY spans both line boxes; stepping them down by another
+    /// line added 54.00 + 10.00 + 40.80 of geometry error across three cases
+    /// that nothing in the engine had got wrong. The trigger is a missing
+    /// fragment, and an element that reaches its own text is not missing one.
+    #[test]
+    fn an_inline_already_as_tall_as_its_text_gets_no_union() {
+        let mut span = inline_box(Rect::new(0.0, 835.0, 200.0, 28.0));
+        span.children.push(text_box(
+            "Shield - Native ad/tracker blocking",
+            Rect::new(0.0, 835.0, 200.0, 28.0),
+            &[(200.0, 0.0); 2],
+        ));
+        assert!(
+            span.inline_fragment_union().is_none(),
+            "an element that already reaches its last line has no missing \
+             fragment to add"
+        );
+
+        // Padding and border count toward the reach: gradient-radius-only's
+        // span is 40.80 of content inside a 52.80 border box and its two
+        // lines end at 373.40, above the box's own 379.40.
+        let mut padded = inline_box(Rect::new(0.0, 332.60, 100.0, 40.80));
+        padded.dimensions.padding.top = 6.0;
+        padded.dimensions.padding.bottom = 6.0;
+        padded.children.push(text_box(
+            "Purple 1",
+            Rect::new(0.0, 332.60, 100.0, 40.80),
+            &[(100.0, 0.0); 2],
+        ));
+        assert_eq!(padded.dimensions.border_box().y, 326.60);
+        assert!(padded.inline_fragment_union().is_none());
+    }
+
+    /// An axis the union does not extend must be BIT-IDENTICAL to the border
+    /// box's, not merely equal to within float noise. Deriving the unextended
+    /// width as `right - left` moved `pre > code`'s by 1.5e-5px on the real
+    /// board — harmless in itself, and exactly the kind of unexplained
+    /// difference between two rects that costs a later night an hour.
+    #[test]
+    fn an_axis_the_fragments_do_not_extend_is_the_border_boxs_verbatim() {
+        // x = 280.03 rather than the real 280.00 ON PURPOSE: at 280.00 the
+        // f32 round trip `(x + width) - x` happens to land back on `width`
+        // exactly, so the first version of this guard passed with the
+        // re-derivation still in place. The board's drift was real; the
+        // fixture could not see it. 280.03 + 253.44 - 280.03 = 253.43997.
+        let mut code = inline_box(Rect::new(280.03, 1254.03, 253.44, 16.32));
+        code.children.push(text_box(
+            "fn main",
+            Rect::new(280.03, 1249.52, 253.44, 152.06),
+            &[(253.44, 0.0); 6],
+        ));
+        let bb = code.dimensions.border_box();
+        let u = code.inline_fragment_union().unwrap();
+        assert!(
+            u.x.to_bits() == bb.x.to_bits() && u.width.to_bits() == bb.width.to_bits(),
+            "horizontal axes were re-derived: {} x {} against {} x {}",
+            u.x,
+            u.width,
+            bb.x,
+            bb.width
+        );
+
+        // …and a fragment that DOES stick out still widens it.
+        let mut wide = inline_box(Rect::new(280.03, 1254.03, 100.0, 16.32));
+        wide.children.push(text_box(
+            "fn main",
+            Rect::new(280.03, 1249.52, 100.0, 152.06),
+            &[(253.44, 0.0); 6],
+        ));
+        let w = wide.inline_fragment_union().unwrap();
+        assert!(
+            (w.width - 253.44).abs() < 0.001,
+            "a fragment wider than the box must still widen the union: {}",
+            w.width
+        );
+    }
+
+    /// Only inlines. A block's border box is already the rect Chrome reports,
+    /// and its text's overflow is NOT part of it — unioning there would swap a
+    /// too-small rect for a too-large one.
+    #[test]
+    fn a_block_never_grows_to_its_overflowing_text() {
+        let mut div = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+        div.dimensions.content = Rect::new(0.0, 0.0, 100.0, 20.0);
+        div.children.push(text_box(
+            "long",
+            Rect::new(0.0, 0.0, 400.0, 60.0),
+            &[(400.0, 0.0); 3],
+        ));
+        assert!(div.inline_fragment_union().is_none());
+    }
+
+    /// The walk stops at anything that is not inline formatting, for the same
+    /// reason: a block descendant owns its own rect and its overflow is not
+    /// its ancestor's.
+    #[test]
+    fn the_walk_does_not_descend_into_a_block_descendant() {
+        let mut outer = inline_box(Rect::new(0.0, 0.0, 100.0, 20.0));
+        let mut block = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+        block.dimensions.content = Rect::new(0.0, 0.0, 400.0, 60.0);
+        block.children.push(text_box(
+            "long",
+            Rect::new(0.0, 0.0, 400.0, 60.0),
+            &[(400.0, 0.0); 3],
+        ));
+        outer.children.push(block);
+        assert!(outer.inline_fragment_union().is_none());
+    }
+
+    /// A nested inline's wrapped text is part of the outer inline's rect in
+    /// Chrome, so the walk must reach it.
+    #[test]
+    fn the_walk_reaches_a_nested_inline() {
+        let mut outer = inline_box(Rect::new(0.0, 0.0, 100.0, 20.0));
+        let mut inner = inline_box(Rect::new(0.0, 0.0, 100.0, 20.0));
+        inner.children.push(text_box(
+            "wrapped",
+            Rect::new(0.0, 0.0, 100.0, 60.0),
+            &[(100.0, 0.0); 3],
+        ));
+        outer.children.push(inner);
+        let u = outer
+            .inline_fragment_union()
+            .expect("nested wrap reaches the union");
+        assert_eq!(u.height, 60.0);
+    }
+
+    /// THE RULE, not an example of it: paint and the export must agree about
+    /// where a fragment is because they call the same function, not because
+    /// two restatements of the rule happen to match today. Four mutation
+    /// sweeps in a row (09-12, 09-21, 09-23, 09-24) found survivors of
+    /// exactly this shape — a guard written against the example while the
+    /// rule stayed unasserted — and "two instruments restated the same rule
+    /// and one drifted" is the class that produced the phantom 400px defect.
+    ///
+    /// So this asserts the display list against `text_line_fragments`
+    /// directly. It goes red if `render_text` stops calling `fragment_rect`
+    /// and open-codes the arithmetic again, even if the open-coded version is
+    /// correct on the day it is written.
+    #[test]
+    fn a_hidden_box_paints_nothing_of_its_own_but_a_visible_child_does() {
+        // `visibility: hidden` had no field at all, so closed menus, dialogs
+        // and skip links painted on nearly every real site.
+        use rustkit_css::Visibility;
+        let red = Color::new(255, 0, 0, 1.0);
+        let blue = Color::new(0, 0, 255, 1.0);
+        let block = |visibility: Visibility, bg: Color, y: f32| {
+            let mut style = ComputedStyle::new();
+            style.visibility = visibility;
+            style.background_color = bg;
+            let mut b = LayoutBox::new(BoxType::Block, style.clone());
+            b.dimensions.content = Rect::new(0.0, y, 200.0, 20.0);
+            let mut text = LayoutBox::new(BoxType::Text("menu".into()), ComputedStyle::inherit_from(&style));
+            text.dimensions.content = Rect::new(0.0, y, 40.0, 20.0);
+            b.children.push(text);
+            b
+        };
+        let mut root = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+        root.dimensions.content = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut hidden = block(Visibility::Hidden, red, 0.0);
+        hidden.children.push(block(Visibility::Visible, blue, 40.0));
+        root.children.push(hidden);
+        root.children.push(block(Visibility::Collapse, red, 80.0));
+
+        let list = DisplayList::build(&root);
+        let fills: Vec<Color> = list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                DisplayCommand::SolidColor(color, _) => Some(*color),
+                _ => None,
+            })
+            .collect();
+        let texts: Vec<f32> = list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                DisplayCommand::Text { y, .. } => Some(*y),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fills, vec![blue], "only the visible child's background paints");
+        assert_eq!(texts.len(), 1, "only the visible child's text paints: {texts:?}");
+        // The child's run, at y 40 less a little half-leading (hidden: 0, collapse: 80).
+        assert!((30.0..60.0).contains(&texts[0]), "{texts:?}");
+    }
+
+    #[test]
+    fn paint_seats_every_line_where_the_fragment_rule_puts_it() {
+        let mut root = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+        root.dimensions.content = Rect::new(0.0, 0.0, 800.0, 600.0);
+        // An EXPLICIT line-height, and a content height of exactly three of
+        // them. The two sides get their line height from different places —
+        // paint re-derives it from the style and the measured metrics, the
+        // fragment list recovers it as `content.height / line_count` — and
+        // they agree only because layout SETS the height to `line_count *
+        // that same number`. A fixture whose height contradicts its style
+        // would be asserting a coupling the engine does not have; one under
+        // `LineHeight::Normal` would be asserting the seat's font metrics.
+        let mut style = ComputedStyle::new();
+        style.font_size = Length::Px(16.0);
+        style.line_height = rustkit_css::LineHeight::Number(1.25);
+        let mut text = LayoutBox::new(BoxType::Text("abc".into()), style);
+        text.dimensions.content = Rect::new(10.0, 100.0, 90.0, 60.0);
+        text.text_lines = Some(vec![
+            TextLine {
+                text: "one".into(),
+                width: 50.0,
+                x_offset: 40.0,
+                justify_space: 0.0,
+            },
+            TextLine {
+                text: "two".into(),
+                width: 90.0,
+                x_offset: 0.0,
+                justify_space: 0.0,
+            },
+            TextLine {
+                text: "three".into(),
+                width: 70.0,
+                x_offset: 20.0,
+                justify_space: 0.0,
+            },
+        ]);
+        let frags = text.text_line_fragments().expect("wrapped text has fragments");
+        root.children.push(text);
+
+        let list = DisplayList::build(&root);
+        let seats: Vec<(f32, f32)> = list
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                DisplayCommand::Text { x, y, .. } => Some((*x, *y)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seats.len(), frags.len(), "one Text command per fragment");
+
+        let xs: Vec<f32> = seats.iter().map(|(x, _)| *x).collect();
+        assert_eq!(
+            xs,
+            frags.iter().map(|f| f.x).collect::<Vec<_>>(),
+            "paint seated a line somewhere the fragment rule does not put it"
+        );
+        // The command`s y carries the half-leading, which is a paint concern
+        // and not part of the fragment rect. The SPACING is the shared part.
+        for i in 1..seats.len() {
+            assert!(
+                ((seats[i].1 - seats[i - 1].1) - (frags[i].y - frags[i - 1].y)).abs() < 0.001,
+                "line {i} is {} below its predecessor, the rule says {}",
+                seats[i].1 - seats[i - 1].1,
+                frags[i].y - frags[i - 1].y
+            );
+        }
+    }
+
+    /// The behavioural guard above goes red when a restatement DRIFTS. It
+    /// stays green when a restatement is correct on the day it is written,
+    /// and that is the survivor 09-24's sweep found in the seat control
+    /// (probe M2 there: "import dropped, extraction restated CORRECTLY as a
+    /// local copy"). A correct copy is the state every drifted rule was in
+    /// once, so it is the thing to refuse, not the drift.
+    ///
+    /// So: the paint path must CALL the shared rule, not agree with it.
+    #[test]
+    fn paint_calls_the_fragment_rule_rather_than_restating_it() {
+        let src = include_str!("lib.rs");
+        let start = src
+            .find("fn render_text(&mut self, layout_box: &LayoutBox)")
+            .expect("render_text moved or was renamed; this guard must follow it");
+        // The per-line list is built near the top of render_text; bound the
+        // search at the next item so an unrelated later call cannot satisfy
+        // this.
+        let body = &src[start..];
+        let end = body[1..].find("\n    fn ").map(|i| i + 1).unwrap_or(body.len());
+        assert!(
+            body[..end].contains("fragment_rect("),
+            "render_text no longer calls TextLine::fragment_rect — paint and \
+             the layout export are back to two statements of one rule, which \
+             is the class of drift that produced a phantom 400px defect"
+        );
+    }
+
+    /// The union CONTAINS the box; it never shrinks it. The inline's own
+    /// border box carries padding and border that no text fragment knows
+    /// about, and a union that replaced rather than extended would drop them.
+    #[test]
+    fn the_union_never_shrinks_the_inlines_own_border_box() {
+        let mut code = inline_box(Rect::new(20.0, 100.0, 100.0, 16.0));
+        code.dimensions.padding.left = 20.0;
+        code.dimensions.border.left = 4.0;
+        code.children.push(text_box(
+            "wrapped",
+            Rect::new(20.0, 100.0, 100.0, 48.0),
+            &[(100.0, 0.0); 3],
+        ));
+        let bb = code.dimensions.border_box();
+        let u = code.inline_fragment_union().unwrap();
+        assert_eq!(bb.x, -4.0);
+        assert_eq!(u.x, bb.x, "the union dropped the inline's own left edge");
+        assert_eq!(u.right(), 120.0);
+        assert_eq!(u.height, 48.0);
     }
 }
 
