@@ -1642,6 +1642,25 @@ pub enum Position {
     Sticky,
 }
 
+/// CSS float property values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Float {
+    #[default]
+    None,
+    Left,
+    Right,
+}
+
+/// CSS clear property values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Clear {
+    #[default]
+    None,
+    Left,
+    Right,
+    Both,
+}
+
 /// Font weight values.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FontWeight(pub u16);
@@ -2244,6 +2263,8 @@ pub struct ComputedStyle {
     // Box model
     pub display: Display,
     pub position: Position,
+    pub float: Float,
+    pub clear: Clear,
     pub width: Length,
     pub height: Length,
     pub min_width: Length,

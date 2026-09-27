@@ -6782,8 +6782,6 @@ mod tests {
     // each, on a card that was itself exactly right.
     // ---------------------------------------------------------------
 
-    /// A grid item's GRANDchildren size against the item, not against the
-    /// grid container the pre-pass measured them with.
     #[test]
     fn a_grid_items_children_keep_their_own_width_in_the_item() {
         // Phase 9 gave every child of a grid item the item's full width: a
@@ -6842,6 +6840,8 @@ mod tests {
         );
     }
 
+    /// A grid item's GRANDchildren size against the item, not against the
+    /// grid container the pre-pass measured them with.
     #[test]
     fn a_grid_items_grandchildren_resize_with_the_item_not_the_container() {
         const CONTAINER_WIDTH: f32 = 1000.0;
