@@ -2446,6 +2446,12 @@ pub struct ComputedStyle {
     // Background clip for gradient text
     pub background_clip: BackgroundClip,
     pub webkit_text_fill_color: Option<Color>,
+
+    /// Custom properties (`--*`) in effect on this element, with `var()`
+    /// already substituted (CSS Variables 1 §2: they inherit, and resolve at
+    /// computed-value time on the element that declares them). Shared with
+    /// the parent until this element declares a `--*` whose value differs.
+    pub custom_properties: std::sync::Arc<std::collections::HashMap<String, String>>,
 }
 
 impl ComputedStyle {
@@ -2962,6 +2968,21 @@ pub fn parse_length(value: &str) -> Option<Length> {
         return parse_calc_sum(inner).map(CalcSum::into_length);
     }
 
+    // css-values-4 §6.1.2: the small / large / dynamic viewport units. The
+    // suffix arms below would read `100dvh` as `vh` with a number of "100d",
+    // fail, and drop the whole declaration (x.com's `min-height: 100dvh`).
+    if let Some((num, unit)) = split_number_and_unit(value) {
+        let base = viewport_unit_alias(unit);
+        if base != unit {
+            return Some(match base {
+                "vw" => Length::Vw(num),
+                "vh" => Length::Vh(num),
+                "vmin" => Length::Vmin(num),
+                _ => Length::Vmax(num),
+            });
+        }
+    }
+
     if value.ends_with("px") {
         let num = value.trim_end_matches("px").parse::<f32>().ok()?;
         return Some(Length::Px(num));
@@ -3107,7 +3128,7 @@ fn parse_calc_unit(input: &str) -> Option<CalcSum> {
     }
     let mut sum = CalcSum::default();
     let (num, unit) = split_number_and_unit(s)?;
-    match unit {
+    match viewport_unit_alias(unit) {
         "px" | "" => sum.px = num,
         "%" => sum.percent = num,
         "em" => sum.em = num,
@@ -3128,6 +3149,20 @@ fn parse_plain_number(input: &str) -> Option<f32> {
     match split_number_and_unit(s) {
         Some((num, "")) => Some(num),
         _ => None,
+    }
+}
+
+/// The `s`/`l`/`d` viewport units (`svh`, `lvh`, `dvh`, …) as their plain
+/// `v` unit; anything else unchanged. On a desktop window no UI retracts, so
+/// the small, large and dynamic viewports are all the layout viewport — the
+/// same numbers Chrome 148 gives on macOS (css-values-4 §6.1.2).
+fn viewport_unit_alias(unit: &str) -> &str {
+    match unit {
+        "svw" | "lvw" | "dvw" => "vw",
+        "svh" | "lvh" | "dvh" => "vh",
+        "svmin" | "lvmin" | "dvmin" => "vmin",
+        "svmax" | "lvmax" | "dvmax" => "vmax",
+        other => other,
     }
 }
 
@@ -3485,6 +3520,28 @@ mod tests {
         assert_eq!(parse_length("50vw"), Some(Length::Vw(50.0)));
         assert_eq!(parse_length("10vmin"), Some(Length::Vmin(10.0)));
         assert_eq!(parse_length("20vmax"), Some(Length::Vmax(20.0)));
+    }
+
+    /// `100dvh` was dropped outright (the `vh` arm parsed "100d"), taking
+    /// x.com's `min-height: 100dvh` page column with it. On a desktop
+    /// window the small, large and dynamic viewports are the layout
+    /// viewport, so each is its `v` unit.
+    #[test]
+    fn test_parse_length_small_large_dynamic_viewport_units() {
+        for p in ["s", "l", "d"] {
+            assert_eq!(parse_length(&format!("100{p}vh")), Some(Length::Vh(100.0)), "{p}vh");
+            assert_eq!(parse_length(&format!("50{p}vw")), Some(Length::Vw(50.0)), "{p}vw");
+            assert_eq!(parse_length(&format!("10{p}vmin")), Some(Length::Vmin(10.0)), "{p}vmin");
+            assert_eq!(parse_length(&format!("20{p}vmax")), Some(Length::Vmax(20.0)), "{p}vmax");
+        }
+        // Inside calc() the same units are terms of the sum.
+        assert_eq!(
+            parse_length("calc(100dvh - 20px)"),
+            parse_length("calc(100vh - 20px)")
+        );
+        assert!(parse_length("calc(100dvh - 20px)").is_some());
+        // An unknown unit is still rejected.
+        assert_eq!(parse_length("100xvh"), None);
     }
 
     #[test]

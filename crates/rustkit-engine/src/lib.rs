@@ -19,6 +19,22 @@ use rustkit_bindings::DomBindings;
 // Re-export IpcMessage for external use
 pub use rustkit_bindings::IpcMessage;
 use rustkit_compositor::Compositor;
+
+/// Test-only: create a `Compositor` with GPU device creation serialised across
+/// this crate's unit tests.
+///
+/// `Compositor::new` builds a wgpu instance, requests an adapter and a device.
+/// Run from many test threads at once on a machine with a real GPU (seen on
+/// Windows/DX12 with an RTX 4090), those calls can stall the whole process:
+/// the parallel test binary stops making progress with no slow-test warnings,
+/// while `--test-threads=1` always passes. Tests only; `Engine::new` and every
+/// test that builds an engine by hand go through this.
+#[cfg(test)]
+pub(crate) fn test_compositor() -> Result<Compositor, rustkit_compositor::CompositorError> {
+    static GPU_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _gpu_init = GPU_INIT.lock().unwrap_or_else(|e| e.into_inner());
+    Compositor::new()
+}
 use rustkit_core::{LoadEvent, NavigationRequest, NavigationStateMachine};
 use rustkit_css::{css_ident, parse_display, ComputedStyle, Rule, Stylesheet};
 use rustkit_dom::{Document, Node, NodeType};
@@ -29,7 +45,7 @@ use rustkit_layout::{
     BoxType, Dimensions, DisplayList, ElementIdentity, LayoutBox, Position, Rect,
 };
 use std::cell::Cell;
-use rustkit_net::{LoaderConfig, NetError, Request, ResourceLoader};
+use rustkit_net::{LoaderConfig, NetError, ReferrerPolicy, Request, ResourceLoader};
 use rustkit_renderer::Renderer;
 pub use rustkit_renderer::RenderStats;
 #[cfg(windows)]
@@ -139,6 +155,25 @@ pub enum EngineEvent {
 
 /// View state.
 #[allow(dead_code)]
+/// The document side of a subresource request (see
+/// [`Engine::subresource_referrer`]).
+#[derive(Debug, Clone, Default)]
+struct SubresourceReferrer {
+    url: Option<Url>,
+    policy: ReferrerPolicy,
+}
+
+impl SubresourceReferrer {
+    /// A GET for `url` that carries this referrer and policy.
+    fn get(&self, url: Url) -> Request {
+        let request = Request::get(url).referrer_policy(self.policy);
+        match &self.url {
+            Some(referrer) => request.referrer(referrer.clone()),
+            None => request,
+        }
+    }
+}
+
 struct ViewState {
     id: EngineViewId,
     viewhost_id: ViewId,
@@ -205,6 +240,8 @@ struct ViewState {
     headless_bounds: Option<Bounds>,
     /// What the current document's scripts did on load (see [`ScriptRecord`]).
     script_log: Vec<ScriptRecord>,
+    /// The document response's `Referrer-Policy` header, if it had a valid one.
+    header_referrer_policy: Option<ReferrerPolicy>,
 }
 
 /// Engine configuration.
@@ -507,6 +544,79 @@ fn resolve_font_source(base: Option<&Url>, src: &str) -> FontSource {
 
 /// `data:[<mediatype>][;base64],<payload>` → bytes. Fonts ship base64; the
 /// percent-encoded form is decoded too so a valid URI never fails here.
+/// Resolve every relative `url(...)` in an EXTERNAL stylesheet against the
+/// stylesheet's own URL, returning CSS in which those references are absolute.
+///
+/// CSS Values 4 §4.2: a relative URL in a style sheet resolves against the
+/// sheet's URL, not the document's. The engine resolves `@font-face` sources,
+/// background images and the rest against the view's URL later, so a sheet on
+/// a CDN (`github.githubassets.com/assets/x.css` → `url(MonaSans.woff2)`) was
+/// fetched from the page's origin and 404ed. Absolutising at load time fixes
+/// every consumer at once. Comments and quoted strings outside `url(` are
+/// copied untouched; `data:`, already-absolute and fragment-only (`#id`)
+/// references are left as written.
+fn absolutize_css_urls(css: &str, sheet_url: &Url) -> String {
+    let b = css.as_bytes();
+    let mut out = String::with_capacity(css.len() + 64);
+    let mut i = 0;
+    let mut copied = 0;
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i = css[i + 2..].find("*/").map_or(b.len(), |e| i + 2 + e + 2);
+            }
+            q @ (b'"' | b'\'') => {
+                let mut j = i + 1;
+                while j < b.len() && b[j] != q {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                i = (j + 1).min(b.len());
+            }
+            b'u' | b'U'
+                if b.len() >= i + 4
+                    && css[i..i + 4].eq_ignore_ascii_case("url(")
+                    && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'-' || b[i - 1] == b'_')) =>
+            {
+                let arg_start = i + 4;
+                let Some(close) = css[arg_start..].find(')').map(|e| arg_start + e) else {
+                    break;
+                };
+                let raw = css[arg_start..close].trim();
+                let (quote, inner) = match raw.as_bytes().first() {
+                    Some(&q @ (b'"' | b'\'')) if raw.len() >= 2 && raw.as_bytes()[raw.len() - 1] == q => {
+                        (Some((q as char).to_string()), &raw[1..raw.len() - 1])
+                    }
+                    _ => (None, raw),
+                };
+                if let Some(abs) = absolutize_one(inner, sheet_url) {
+                    out.push_str(&css[copied..arg_start]);
+                    let q = quote.unwrap_or_else(|| "\"".to_string());
+                    out.push_str(&q);
+                    out.push_str(&abs.replace('\\', "\\\\").replace(&q, &format!("\\{q}")));
+                    out.push_str(&q);
+                    copied = close;
+                }
+                i = close + 1;
+            }
+            _ => i += 1,
+        }
+    }
+    out.push_str(&css[copied.min(css.len())..]);
+    out
+}
+
+fn absolutize_one(reference: &str, base: &Url) -> Option<String> {
+    let r = reference.trim();
+    if r.is_empty() || r.starts_with('#') {
+        return None;
+    }
+    // Already absolute (any scheme, incl. data:) — leave exactly as written.
+    if Url::parse(r).is_ok() {
+        return None;
+    }
+    base.join(r).ok().map(|u| u.to_string())
+}
+
 fn decode_data_url(src: &str) -> Option<Vec<u8>> {
     let rest = src.get(5..)?;
     let (meta, payload) = rest.split_once(',')?;
@@ -752,8 +862,13 @@ impl Engine {
         // Initialize ViewHost
         let viewhost = ViewHost::new();
 
-        // Initialize Compositor
-        let compositor = Compositor::new().map_err(|e| EngineError::RenderError(e.to_string()))?;
+        // Initialize Compositor (unit tests serialise device creation; see
+        // `test_compositor`)
+        #[cfg(test)]
+        let compositor = test_compositor();
+        #[cfg(not(test))]
+        let compositor = Compositor::new();
+        let compositor = compositor.map_err(|e| EngineError::RenderError(e.to_string()))?;
 
         // Initialize ResourceLoader
         let loader_config = LoaderConfig {
@@ -879,6 +994,7 @@ impl Engine {
             external_stylesheets: Vec::new(),
             headless_bounds: None,
             script_log: Vec::new(),
+            header_referrer_policy: None,
         };
 
         self.views.insert(id, view_state);
@@ -936,6 +1052,7 @@ impl Engine {
             external_stylesheets: Vec::new(),
             headless_bounds: None,
             script_log: Vec::new(),
+            header_referrer_policy: None,
         };
 
         let id = view_state.id;
@@ -1002,6 +1119,7 @@ impl Engine {
             external_stylesheets: Vec::new(),
             headless_bounds: Some(bounds),
             script_log: Vec::new(),
+            header_referrer_policy: None,
         };
 
         self.views.insert(id, view_state);
@@ -1573,16 +1691,18 @@ impl Engine {
         use futures::{stream::StreamExt, FutureExt};
         const MAX_CONCURRENT_SCRIPT_LOADS: usize = 8;
         let loader = self.loader.clone();
+        let referrer = self.subresource_referrer(id);
         Some(
             futures::stream::iter(entries.into_iter().map(move |(label, entry)| {
                 let loader = loader.clone();
+                let referrer = referrer.clone();
                 async move {
                     let result = match entry {
                         Err(reason) => Err(ScriptOutcome::Skipped(reason)),
                         Ok((timing, Body::Inline(text))) => Ok((timing, text)),
                         Ok((timing, Body::External(url))) => {
                             let fetch = async {
-                                match loader.fetch(Request::get(url)).await {
+                                match loader.fetch(referrer.get(url)).await {
                                     Ok(response) if response.ok() => match response.text().await {
                                         Ok(text) => Ok((timing, text)),
                                         Err(e) => Err(ScriptOutcome::FetchFailed(format!("{e}"))),
@@ -1859,6 +1979,12 @@ impl Engine {
             url: url.clone(),
         });
 
+        let header_referrer_policy = response
+            .headers
+            .get("referrer-policy")
+            .and_then(|v| v.to_str().ok())
+            .and_then(ReferrerPolicy::parse_header);
+
         // Parse HTML
         let html = response.text().await?;
 
@@ -1882,6 +2008,7 @@ impl Engine {
         view.url = Some(url.clone());
         view.document = Some(document.clone());
         view.title = title.clone();
+        view.header_referrer_policy = header_referrer_policy;
         // A new document invalidates every per-node side table. NodeId is
         // PER-DOCUMENT (each Document restarts its counter at 1), so a
         // surviving entry keyed by raw id 4 would be read as the NEW page's
@@ -2089,6 +2216,7 @@ impl Engine {
         view.url = Some(url.clone());
         view.document = Some(document.clone());
         view.title = title.clone();
+        view.header_referrer_policy = None;
         // A new document invalidates every per-node side table. NodeId is
         // PER-DOCUMENT (each Document restarts its counter at 1), so a
         // surviving entry keyed by raw id 4 would be read as the NEW page's
@@ -2776,6 +2904,14 @@ impl Engine {
                 }
             }
             root_box.children.push(body_box);
+            // Percentage heights on body resolve against html's height
+            // (CSS 2.1 §10.5), which the anonymous root stands in for.
+            root_box.root_element_height = Some(
+                html_style
+                    .as_ref()
+                    .map(|s| s.height.clone())
+                    .unwrap_or(rustkit_css::Length::Auto),
+            );
         } else if let Some(html) = document.document_element() {
             // Fallback: use html element if no body
             debug!("No body found, using html element");
@@ -3061,6 +3197,39 @@ impl Engine {
                         rustkit_css::Length::Px(pct / 100.0 * parent_font_px)
                     }
                     rustkit_css::Length::Rem(rem) => rustkit_css::Length::Px(rem * 16.0),
+                    // Viewport units and math functions (`4.1vw`,
+                    // `calc(2vw + 4px)`, `clamp(2rem, 5vw, 4rem)`) absolutize
+                    // here too, against this view's viewport: left alone they
+                    // hit the same 16px layout fallback. facebook's headline
+                    // is `font-size: 4.1vw`. With no view (ad-hoc builds) the
+                    // viewport is unknown, so they stay as they were.
+                    other @ (rustkit_css::Length::Vw(_)
+                    | rustkit_css::Length::Vh(_)
+                    | rustkit_css::Length::Vmin(_)
+                    | rustkit_css::Length::Vmax(_)
+                    | rustkit_css::Length::Min(_)
+                    | rustkit_css::Length::Max(_)
+                    | rustkit_css::Length::Clamp(_)
+                    | rustkit_css::Length::Calc(_)) => {
+                        let viewport = self
+                            .building_view
+                            .get()
+                            .and_then(|id| self.view_viewport(id));
+                        match viewport {
+                            Some((vw, vh)) => rustkit_css::Length::Px(
+                                other
+                                    .to_px_with_viewport(
+                                        parent_font_px,
+                                        16.0,
+                                        parent_font_px,
+                                        vw,
+                                        vh,
+                                    )
+                                    .max(0.0),
+                            ),
+                            None => other,
+                        }
+                    }
                     other => other,
                 };
 
@@ -3207,21 +3376,49 @@ impl Engine {
                             .get(name)
                             .and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
                     };
+                    let key = Self::inline_svg_key(&Self::serialize_svg_subtree(node));
+                    let cached = self.svg_cache.get(&key);
+                    // A viewBox gives the SVG a ratio but no natural size.
+                    // Such a replaced element is not 300×150: with both
+                    // axes auto it takes the containing block's width
+                    // (CSS 2.1 §10.3.2), and a missing axis follows the
+                    // other across the ratio (§10.6.2). google's apps
+                    // button (`<svg viewbox="0 0 24 24">`, no size, in a
+                    // 24px box) painted its nine dots across 150px.
+                    let ratio = cached
+                        .and_then(|svg| svg.view_box)
+                        .filter(|vb| vb.width > 0.0 && vb.height > 0.0);
+                    let (width_attr, height_attr) = (attr_px("width"), attr_px("height"));
+                    let height_is_auto =
+                        matches!(style.height, rustkit_css::Length::Auto) && height_attr.is_none();
                     if matches!(style.width, rustkit_css::Length::Auto) {
-                        style.width = rustkit_css::Length::Px(attr_px("width").unwrap_or(300.0));
+                        style.width = match (width_attr, ratio) {
+                            (Some(w), _) => rustkit_css::Length::Px(w),
+                            (None, Some(_)) if height_is_auto => rustkit_css::Length::Percent(100.0),
+                            (None, Some(_)) => rustkit_css::Length::Auto,
+                            (None, None) => rustkit_css::Length::Px(300.0),
+                        };
                     }
                     if matches!(style.height, rustkit_css::Length::Auto) {
-                        style.height = rustkit_css::Length::Px(attr_px("height").unwrap_or(150.0));
+                        style.height = match (height_attr, ratio) {
+                            (Some(h), _) => rustkit_css::Length::Px(h),
+                            (None, Some(_)) => rustkit_css::Length::Auto,
+                            (None, None) => rustkit_css::Length::Px(150.0),
+                        };
                     }
                     if style.display == rustkit_css::Display::Inline {
                         style.display = rustkit_css::Display::InlineBlock;
                     }
-                    let key = Self::inline_svg_key(&Self::serialize_svg_subtree(node));
-                    if let Some(svg) = self.svg_cache.get(&key) {
-                        let (natural_width, natural_height) = svg.get_size(
-                            attr_px("width").unwrap_or(300.0),
-                            attr_px("height").unwrap_or(150.0),
-                        );
+                    if let Some(svg) = cached {
+                        // With a ratio, the natural size IS the ratio: an
+                        // auto axis is derived from it in layout_image.
+                        let (natural_width, natural_height) = match ratio {
+                            Some(vb) => (vb.width, vb.height),
+                            None => svg.get_size(
+                                width_attr.unwrap_or(300.0),
+                                height_attr.unwrap_or(150.0),
+                            ),
+                        };
                         let mut svg_box = LayoutBox::new(
                             BoxType::Image {
                                 url: key,
@@ -4423,6 +4620,53 @@ impl Engine {
             a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2))
         });
 
+        // Custom properties first: every `var()` below resolves against THIS
+        // element's map. Winners come from the same matched, sorted rules as
+        // everything else, in the same importance order as the loop below,
+        // so the cost is the element's own `--*` declarations. A parentless
+        // element (html, ad-hoc builds) starts from the document's root
+        // custom properties.
+        let inherited_vars = match parent_style {
+            Some(p) => p.custom_properties.clone(),
+            None => Arc::new(css_vars.clone()),
+        };
+        let inline_style = attributes.get("style");
+        let mut declared_vars: Vec<(&str, Option<&str>)> = Vec::new();
+        for important_pass in [false, true] {
+            for (rule, _, _) in &matching_rules {
+                for decl in &rule.declarations {
+                    if decl.important != important_pass || !decl.property.starts_with("--") {
+                        continue;
+                    }
+                    match &decl.value {
+                        rustkit_css::PropertyValue::Specified(s) => {
+                            declared_vars.push((decl.property.as_str(), Some(s.as_str())))
+                        }
+                        rustkit_css::PropertyValue::Initial => {
+                            declared_vars.push((decl.property.as_str(), None))
+                        }
+                        rustkit_css::PropertyValue::Inherit => {}
+                    }
+                }
+            }
+            if let Some(style_attr) = inline_style {
+                for declaration in style_attr.split(';') {
+                    if let Some((property, value)) = declaration.split_once(':') {
+                        let property = property.trim();
+                        if !property.starts_with("--") {
+                            continue;
+                        }
+                        let (value, important) = split_important(value.trim());
+                        if important == important_pass {
+                            declared_vars.push((property, Some(value)));
+                        }
+                    }
+                }
+            }
+        }
+        let vars = Self::element_custom_properties(&inherited_vars, &declared_vars);
+        let css_vars: &HashMap<String, String> = &vars;
+
         // Provenance is recorded from INSIDE this loop rather than by a
         // separate pass, so "which rule won" is answered by the same code
         // that decided it. A recorder that walked the rules again could
@@ -4455,6 +4699,10 @@ impl Engine {
                         rustkit_css::PropertyValue::Inherit => continue, // Skip inherit for now
                         rustkit_css::PropertyValue::Initial => continue, // Skip initial for now
                     };
+                    if decl.property.starts_with("--") {
+                        // Already applied to `vars` above.
+                        continue;
+                    }
                     let resolved_value = self.resolve_css_variables(&value_str, css_vars);
                     if value_str != resolved_value {
                         trace!(
@@ -4512,6 +4760,8 @@ impl Engine {
         // and style was declared last (`border: 5px solid; border-style: none`
         // used to keep the 5px frame).
         zero_width_of_borderless_sides(&mut style);
+
+        style.custom_properties = vars;
 
         if recording {
             let id = attributes.get("id").cloned();
@@ -6524,16 +6774,18 @@ impl Engine {
 
         let loader = self.loader.clone();
         let deadline = self.subresource_deadline();
+        let referrer = self.subresource_referrer(id);
+        let referrer = &referrer;
         let fetched: Vec<Option<Stylesheet>> = futures::stream::iter(urls.into_iter().map(|url| {
             let loader = loader.clone();
             async move {
                 info!(%url, "Loading external stylesheet");
                 let load = async {
-                    match loader.fetch(Request::get(url.clone())).await {
+                    match loader.fetch(referrer.get(url.clone())).await {
                         Ok(response) => {
                             if response.ok() {
                                 match response.text().await {
-                                    Ok(css_text) => match Stylesheet::parse(&css_text) {
+                                    Ok(css_text) => match Stylesheet::parse(&absolutize_css_urls(&css_text, &url)) {
                                         Ok(stylesheet) => {
                                             debug!(rules = stylesheet.rules.len(), %url, "Parsed external stylesheet");
                                             Some(stylesheet)
@@ -6604,9 +6856,9 @@ impl Engine {
             }
             // SVG is vector content: ImageManager's raster decode rejects it
             // ("Unknown image format", every Wikipedia logo in the live
-            // session). Routed by URL extension; SVG served from
-            // extensionless URLs still falls through to the raster lane
-            // (content-type routing is the named follow-up).
+            // session). Routed by URL extension here; SVG served from an
+            // extensionless URL goes to the raster lane, which hands it
+            // back by its `image/svg+xml` type (ImageError::Svg).
             if url.path().to_ascii_lowercase().ends_with(".svg") {
                 svg_urls.push(url);
             } else {
@@ -6620,15 +6872,17 @@ impl Engine {
         // &mut self cannot be held across them.
         let budget = std::time::Duration::from_millis(self.config.subresource_budget_ms);
         let deadline = self.subresource_deadline();
+        let referrer = self.subresource_referrer(id);
         {
             use futures::stream::StreamExt;
             let loader = self.loader.clone();
+            let referrer = &referrer;
             let parsed: Vec<Option<(String, rustkit_svg::SvgDocument)>> =
                 futures::stream::iter(svg_urls.into_iter().map(|url| {
                     let loader = loader.clone();
                     async move {
                         info!(%url, "Loading SVG image");
-                        let fetched = tokio::time::timeout_at(deadline, loader.fetch(Request::get(url.clone())))
+                        let fetched = tokio::time::timeout_at(deadline, loader.fetch(referrer.get(url.clone())))
                             .await
                             .unwrap_or(Err(NetError::Timeout(budget)));
                         match fetched {
@@ -6666,13 +6920,16 @@ impl Engine {
             }
         }
 
-        let results: Vec<bool> = futures::stream::iter(pending.into_iter().map(|url| {
+        // Each raster load is loaded (true), failed (false), or turned out to
+        // be SVG by its type and parsed here for the SVG cache.
+        type RasterOutcome = (bool, Option<(String, rustkit_svg::SvgDocument)>);
+        let results: Vec<RasterOutcome> = futures::stream::iter(pending.into_iter().map(|url| {
             let image_manager = image_manager.clone();
             async move {
                 info!(%url, "Loading image via ImageManager");
                 let Ok(loaded) = tokio::time::timeout_at(deadline, image_manager.load(url.clone())).await else {
                     warn!(%url, "Image over the subresource budget; rendering without it");
-                    return false;
+                    return (false, None);
                 };
                 match loaded {
                     Ok(image) => {
@@ -6682,11 +6939,23 @@ impl Engine {
                             height = image.natural_height,
                             "Image loaded and cached"
                         );
-                        true
+                        (true, None)
+                    }
+                    Err(rustkit_image::ImageError::Svg(xml)) => {
+                        match rustkit_svg::SvgDocument::parse(&xml) {
+                            Ok(doc) => {
+                                info!(%url, "Image served as image/svg+xml; using the SVG lane");
+                                (true, Some((url.to_string(), doc)))
+                            }
+                            Err(e) => {
+                                warn!(?e, %url, "Failed to parse SVG image");
+                                (false, None)
+                            }
+                        }
                     }
                     Err(e) => {
                         warn!(?e, %url, "Failed to load image");
-                        false
+                        (false, None)
                     }
                 }
             }
@@ -6695,9 +6964,46 @@ impl Engine {
         .collect()
         .await;
 
-        loaded += results.into_iter().filter(|ok| *ok).count();
+        for (ok, svg) in results {
+            if let Some((url, doc)) = svg {
+                self.svg_cache.insert(url, doc);
+            }
+            loaded += usize::from(ok);
+        }
 
         Ok(loaded)
+    }
+
+    /// Who a subresource request comes from: the document URL and the
+    /// referrer policy in force. The policy is the last valid
+    /// `<meta name="referrer">` in the document, else the response's
+    /// `Referrer-Policy` header, else Chrome's default
+    /// (strict-origin-when-cross-origin). The loader turns this into the
+    /// `Referer` header; the URL itself is never sent as-is.
+    fn subresource_referrer(&self, id: EngineViewId) -> SubresourceReferrer {
+        let Some(view) = self.views.get(&id) else {
+            return SubresourceReferrer::default();
+        };
+        let meta_policy = view.document.as_ref().and_then(|document| {
+            document
+                .get_elements_by_tag_name("meta")
+                .iter()
+                .filter_map(|meta| match &meta.node_type {
+                    NodeType::Element { attributes, .. }
+                        if attributes
+                            .get("name")
+                            .is_some_and(|n| n.eq_ignore_ascii_case("referrer")) =>
+                    {
+                        attributes.get("content").and_then(|c| c.trim().parse().ok())
+                    }
+                    _ => None,
+                })
+                .last()
+        });
+        SubresourceReferrer {
+            url: view.url.clone(),
+            policy: meta_policy.or(view.header_referrer_policy).unwrap_or_default(),
+        }
     }
 
     /// When a subresource phase starting now must be done by
@@ -6905,10 +7211,12 @@ impl Engine {
         const MAX_IN_FLIGHT: usize = 16;
         let loader = &self.loader;
         let deadline = self.subresource_deadline();
+        let referrer = self.subresource_referrer(id);
+        let referrer = &referrer;
         let fetched: Vec<_> = stream::iter(targets.into_iter().map(|(key, family, url)| async move {
             info!(%family, %url, "Loading web font");
             let load = async {
-                match loader.fetch(Request::get(url.clone())).await {
+                match loader.fetch(referrer.get(url.clone())).await {
                     Ok(response) if response.ok() => match response.bytes().await {
                         Ok(bytes) => Ok(bytes.to_vec()),
                         Err(e) => Err(format!("Failed to read web font body: {e:?}")),
@@ -6998,45 +7306,105 @@ impl Engine {
     }
 
     /// Resolve CSS variable references in a value.
+    ///
+    /// Substitution is recursive (a variable's value may itself use `var()`)
+    /// and cycle-safe: a variable that is already being resolved higher up
+    /// the chain is treated as missing, so its `var()` falls back (CSS
+    /// Variables 1 §2.3, cycles make the property invalid at computed-value
+    /// time). The previous loop re-scanned its own output, so a
+    /// self-reference such as carvana.com's
+    /// `--spacing-xs: var(--spacing-xs, .125rem)` substituted forever and hung
+    /// the first style pass. Fallbacks are delimited by balanced parentheses,
+    /// and the expanded length is capped so fan-out chains cannot grow without
+    /// bound.
     fn resolve_css_variables(&self, value: &str, css_vars: &HashMap<String, String>) -> String {
-        let mut result = value.to_string();
+        if !value.contains("var(") {
+            return value.to_string();
+        }
+        let mut stack: Vec<&str> = Vec::new();
+        let mut budget = VAR_EXPANSION_BUDGET;
+        substitute_css_vars(value, &[css_vars], &mut stack, &mut budget, &mut false)
+    }
 
-        // Look for var(--name) or var(--name, fallback)
-        while let Some(start) = result.find("var(") {
-            let after_var = &result[start + 4..];
-            if let Some(end) = after_var.find(')') {
-                let var_content = &after_var[..end];
-
-                // Parse variable name and optional fallback
-                let (var_name, fallback) = if let Some(comma_pos) = var_content.find(',') {
-                    (
-                        var_content[..comma_pos].trim(),
-                        Some(var_content[comma_pos + 1..].trim()),
-                    )
-                } else {
-                    (var_content.trim(), None)
-                };
-
-                // Look up variable value
-                let replacement = css_vars
-                    .get(var_name)
-                    .map(|s| s.as_str())
-                    .or(fallback)
-                    .unwrap_or("");
-
-                // Replace var(...) with the resolved value
-                result = format!(
-                    "{}{}{}",
-                    &result[..start],
-                    replacement,
-                    &after_var[end + 1..]
-                );
-            } else {
-                break; // Malformed var(), stop processing
+    /// The custom properties in effect on one element: the inherited map
+    /// with this element's winning `--*` declarations applied, each resolved
+    /// here, at computed-value time, against this element's own map (so a
+    /// child that redefines `--base` does not change an inherited
+    /// `--c: var(--base)`). `declared` is in cascade order, last one wins;
+    /// `None` is `initial`. A property in a reference cycle is invalid at
+    /// computed-value time (CSS Variables 1 §2.3) and is dropped, so a use
+    /// site's own fallback applies. The inherited Arc is shared unless some
+    /// resolved value actually differs from it: Tailwind sets ~30 `--tw-*`
+    /// on every element via `*`, and those must not copy the map each time.
+    fn element_custom_properties(
+        inherited: &Arc<HashMap<String, String>>,
+        declared: &[(&str, Option<&str>)],
+    ) -> Arc<HashMap<String, String>> {
+        if declared.is_empty() {
+            return inherited.clone();
+        }
+        let mut own: HashMap<String, String> = HashMap::new();
+        let mut unset: Vec<&str> = Vec::new();
+        for &(name, value) in declared {
+            match value {
+                Some(v) => {
+                    own.insert(name.to_string(), v.to_string());
+                    unset.retain(|n| *n != name);
+                }
+                None => {
+                    own.remove(name);
+                    unset.push(name);
+                }
             }
         }
-
-        result
+        // `initial` names are hidden from the inherited layer while
+        // resolving the others.
+        let mut visible = inherited.as_ref();
+        let masked;
+        if !unset.is_empty() {
+            let mut m = inherited.as_ref().clone();
+            for n in &unset {
+                m.remove(*n);
+            }
+            masked = m;
+            visible = &masked;
+        }
+        let mut resolved: Vec<(String, Option<String>)> = Vec::with_capacity(own.len());
+        for (name, raw) in &own {
+            let value = if raw.contains("var(") {
+                let mut stack: Vec<&str> = vec![name.as_str()];
+                let mut budget = VAR_EXPANSION_BUDGET;
+                let mut cycle = false;
+                let v = substitute_css_vars(raw, &[&own, visible], &mut stack, &mut budget, &mut cycle);
+                (!cycle).then_some(v)
+            } else {
+                Some(raw.clone())
+            };
+            resolved.push((name.clone(), value));
+        }
+        let changes = unset.iter().any(|n| inherited.contains_key(*n))
+            || resolved
+                .iter()
+                .any(|(n, v)| inherited.get(n).map(String::as_str) != v.as_deref());
+        if !changes {
+            return inherited.clone();
+        }
+        let mut map = inherited.clone();
+        let m = Arc::make_mut(&mut map);
+        for n in unset {
+            m.remove(n);
+        }
+        for (n, v) in resolved {
+            match v {
+                Some(v) => {
+                    m.insert(n, v);
+                }
+                None => {
+                    m.remove(&n);
+                }
+            }
+        }
+        map
     }
 
     /// Check if a selector matches an element.
@@ -11886,7 +12254,7 @@ mod tests {
     /// that as a pass on a platform where an adapter is guaranteed — see
     /// `a_replaced_element_is_built_with_its_element_identity`.
     fn layout_only_engine() -> Option<Engine> {
-        let compositor = Compositor::new().ok()?;
+        let compositor = crate::test_compositor().ok()?;
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         Some(Engine {
             config: EngineConfig::default(),
@@ -12041,7 +12409,7 @@ mod tests {
         assert!(document.body().is_some(), "Document should have a body");
 
         // Create a dummy engine - skip test if GPU is not available
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -12116,7 +12484,7 @@ mod tests {
         let document = Document::parse_html(html).expect("Failed to parse HTML");
         let document = Rc::new(document);
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -12207,7 +12575,7 @@ mod tests {
             </html>"#;
         let document = Rc::new(Document::parse_html(html).expect("Failed to parse HTML"));
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -12392,7 +12760,7 @@ mod tests {
         let document = Document::parse_html(html).expect("Failed to parse HTML");
         let document = Rc::new(document);
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -12488,7 +12856,7 @@ mod tests {
         let document = Rc::new(document);
 
         // Skip test if GPU is not available
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -12605,7 +12973,7 @@ mod tests {
         let document = Document::parse_html(html).expect("Failed to parse HTML");
         let document = Rc::new(document);
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -12685,7 +13053,7 @@ mod tests {
         let document = Document::parse_html(html).expect("Failed to parse HTML");
         let document = Rc::new(document);
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -12759,7 +13127,7 @@ mod tests {
             </body></html>"#;
         let document = Rc::new(Document::parse_html(html).expect("Failed to parse HTML"));
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -12847,7 +13215,7 @@ mod tests {
             </body></html>"#;
         let document = Rc::new(Document::parse_html(html).expect("Failed to parse HTML"));
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -12959,7 +13327,7 @@ mod tests {
                 </body></html>"#
             );
             let document = Rc::new(Document::parse_html(&html).expect("Failed to parse HTML"));
-            let compositor = Compositor::new().expect("compositor");
+            let compositor = crate::test_compositor().expect("compositor");
             let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
             let engine = Engine {
                 config: EngineConfig::default(),
@@ -12998,7 +13366,7 @@ mod tests {
             h
         };
 
-        if Compositor::new().is_err() {
+        if crate::test_compositor().is_err() {
             eprintln!("Skipping test: GPU not available");
             return;
         }
@@ -13059,7 +13427,7 @@ mod tests {
             </body></html>"#;
         let document = Rc::new(Document::parse_html(html).expect("Failed to parse HTML"));
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -13142,7 +13510,7 @@ mod tests {
             </body></html>"#;
         let document = Rc::new(Document::parse_html(html).expect("Failed to parse HTML"));
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -13228,7 +13596,7 @@ mod tests {
             </body></html>"#;
         let document = Rc::new(Document::parse_html(html).expect("Failed to parse HTML"));
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -13314,7 +13682,7 @@ mod tests {
             </body></html>"#;
         let document = Rc::new(Document::parse_html(html).expect("Failed to parse HTML"));
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -13392,7 +13760,7 @@ mod tests {
             </body></html>"##;
         let document = Rc::new(Document::parse_html(html).expect("Failed to parse HTML"));
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -13473,7 +13841,7 @@ mod tests {
             </html>"#;
         let document = Rc::new(Document::parse_html(html).expect("Failed to parse HTML"));
 
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -13955,7 +14323,7 @@ mod tests {
     #[test]
     fn test_selector_specificity() {
         // Create a minimal engine for testing
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(_) => {
                 eprintln!("Skipping test: GPU not available");
@@ -15052,7 +15420,7 @@ mod web_font_tests {
 
     fn test_engine() -> Option<LockedEngine> {
         let guard = WEB_FONT_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        let compositor = match Compositor::new() {
+        let compositor = match crate::test_compositor() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Skipping test: GPU not available ({:?})", e);
@@ -15763,6 +16131,48 @@ mod form_typing_tests {
             "the <input>'s FormControl box must carry a node_id; without it a \
              hit test finds a rectangle with no element and focus cannot resolve"
         );
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", feature = "headless"))]
+    fn viewport_relative_font_sizes_resolve_against_the_views_viewport() {
+        // Layout reads font-size only as Px and falls back to 16px on
+        // anything else, so `font-size: 4.1vw` (facebook's headline) and
+        // every calc()/clamp() over vw painted at 16px.
+        let (engine, id) = engine_with_html(
+            r#"<html><body>
+            <p style="font-size: 5vw">vw</p>
+            <p style="font-size: 10vh">vh</p>
+            <p style="font-size: 5vmin">vmin</p>
+            <p style="font-size: calc(2vw + 4px)">calc</p>
+            <p style="font-size: clamp(10px, 4vw, 100px)">clamp</p>
+            <p style="font-size: min(5vw, 30px)">min</p>
+            <div style="font-size: 20px"><p style="font-size: calc(50% + 1vw)">pct</p></div>
+            </body></html>"#,
+        );
+        let layout = engine.views.get(&id).unwrap().layout.as_ref().unwrap();
+        fn size_of(b: &LayoutBox, text: &str) -> Option<rustkit_css::Length> {
+            if matches!(&b.box_type, BoxType::Text(t) if t.trim() == text) {
+                return Some(b.style.font_size.clone());
+            }
+            b.children.iter().find_map(|c| size_of(c, text))
+        }
+        // The view is 800x600.
+        for (text, px) in [
+            ("vw", 40.0),
+            ("vh", 60.0),
+            ("vmin", 30.0),
+            ("calc", 20.0),
+            ("clamp", 32.0),
+            ("min", 30.0),
+            ("pct", 18.0),
+        ] {
+            assert_eq!(
+                size_of(layout, text),
+                Some(rustkit_css::Length::Px(px)),
+                "font-size of {text:?}"
+            );
+        }
     }
 
     #[test]
@@ -17482,6 +17892,15 @@ mod page_script_tests {
     }
 
     fn load(config: EngineConfig, port: u16) -> (Engine, EngineViewId) {
+        let (engine, view, _) = load_timed(config, port);
+        (engine, view)
+    }
+
+    /// Like `load`, plus how long the navigation itself took. Engine and view
+    /// construction are outside the timed span: under parallel tests they wait
+    /// on `crate::test_compositor`'s GPU-init lock, and that wait is not page
+    /// load time.
+    fn load_timed(config: EngineConfig, port: u16) -> (Engine, EngineViewId, std::time::Duration) {
         let mut engine = Engine::new(config).expect("engine");
         let view = engine
             .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
@@ -17491,8 +17910,10 @@ mod page_script_tests {
             .enable_all()
             .build()
             .unwrap();
+        let started = std::time::Instant::now();
         rt.block_on(engine.load_url(view, url)).expect("load_url");
-        (engine, view)
+        let took = started.elapsed();
+        (engine, view, took)
     }
 
     #[test]
@@ -17565,12 +17986,10 @@ window.addEventListener('load', function () {
             script_budget_ms: 500,
             ..EngineConfig::default()
         };
-        let started = std::time::Instant::now();
-        let (mut engine, view) = load(config, port);
+        let (mut engine, view, took) = load_timed(config, port);
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(2_500),
-            "waited for the slow script: {:?}",
-            started.elapsed()
+            took < std::time::Duration::from_millis(2_500),
+            "waited for the slow script: {took:?}"
         );
         let log = engine.script_log(view).unwrap();
         assert_eq!(log[0].outcome, ScriptOutcome::OverBudget, "{log:#?}");
@@ -17593,12 +18012,10 @@ window.addEventListener('load', function () {
             ("/slow.css", "text/css", "body { color: red }".into()),
             ("/slow.js", "text/javascript", "var slow = true;".into()),
         ]);
-        let started = std::time::Instant::now();
-        let (mut engine, view) = load(EngineConfig::default(), port);
+        let (mut engine, view, took) = load_timed(EngineConfig::default(), port);
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(5_000),
-            "script fetch waited for the stylesheet: {:?}",
-            started.elapsed()
+            took < std::time::Duration::from_millis(5_000),
+            "script fetch waited for the stylesheet: {took:?}"
         );
         let log = engine.script_log(view).unwrap();
         assert_eq!(log[0].outcome, ScriptOutcome::Ran, "{log:#?}");
@@ -17622,12 +18039,10 @@ window.addEventListener('load', function () {
             subresource_budget_ms: 500,
             ..EngineConfig::default()
         };
-        let started = std::time::Instant::now();
-        let (engine, view) = load(config, port);
+        let (engine, view, took) = load_timed(config, port);
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(2_500),
-            "waited for the stalled subresources: {:?}",
-            started.elapsed()
+            took < std::time::Duration::from_millis(2_500),
+            "waited for the stalled subresources: {took:?}"
         );
         // The sheet that did arrive still applies.
         assert_eq!(engine.views[&view].external_stylesheets.len(), 1);
@@ -17665,9 +18080,8 @@ window.addEventListener('load', function () {
             script_loop_iteration_limit: 100_000,
             ..EngineConfig::default()
         };
-        let started = std::time::Instant::now();
-        let (mut engine, view) = load(config, port);
-        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        let (mut engine, view, took) = load_timed(config, port);
+        assert!(took < std::time::Duration::from_secs(20), "{took:?}");
 
         // The next script still ran, and the listener's error was recorded.
         assert_eq!(engine.execute_script(view, "after").unwrap(), "Boolean(true)");
@@ -17752,6 +18166,11 @@ struct AncestorCompound {
     /// `:checked` / `:disabled` / `:enabled`. Checked against a sibling's
     /// state; an ancestor carries none, so it stays permissive there.
     state: Vec<StatePseudo>,
+    /// One entry per `:is()`/`:where()` in the compound: some alternative
+    /// must match. A member with its own combinator needs an ancestor chain
+    /// this tuple does not carry and is left out (under-match, the same as
+    /// the subject path's `any_compound_in_list_matches`).
+    any_of: Vec<Vec<AncestorCompound>>,
 }
 
 impl AncestorCompound {
@@ -17811,28 +18230,80 @@ impl AncestorCompound {
                             end += 1;
                         }
                         let name = text(start, end).to_ascii_lowercase();
-                        // Form state is decidable for a sibling (wikipedia's
-                        // dropdowns: `.checkbox:checked ~ .content`). Keep
-                        // scanning: more of the compound may follow.
-                        let state = match name.as_str() {
-                            "checked" => Some(StatePseudo::Checked),
-                            "disabled" => Some(StatePseudo::Disabled),
-                            "enabled" => Some(StatePseudo::Enabled),
-                            _ => None,
-                        };
-                        if let Some(state) = state {
-                            if end == chars.len() || is_delimiter(chars[end]) {
-                                out.state.push(state);
-                                i = end;
-                                current_start = end;
-                                continue;
+                        // A functional pseudo-class's argument runs to the
+                        // matching paren. Scanning resumes after it: this
+                        // used to stop at the first pseudo-class, so
+                        // `:is(.a):focus-visible > div` put no constraint on
+                        // the parent at all and styled every div (github's
+                        // TreeView focus ring covered the whole page).
+                        let mut next = end;
+                        let mut arg = None;
+                        if chars.get(end) == Some(&'(') {
+                            let mut depth = 0usize;
+                            let mut j = end;
+                            while j < chars.len() {
+                                match chars[j] {
+                                    '(' => depth += 1,
+                                    ')' => {
+                                        depth -= 1;
+                                        if depth == 0 {
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                j += 1;
                             }
+                            arg = Some(text(end + 1, j.min(chars.len())));
+                            next = (j + 1).min(chars.len());
                         }
-                        out.never = Engine::pseudo_class_is_static_false(&name);
-                        break;
+                        match (name.as_str(), &arg) {
+                            // Form state is decidable for a sibling
+                            // (wikipedia's dropdowns: `.checkbox:checked ~
+                            // .content`).
+                            ("checked", None) => out.state.push(StatePseudo::Checked),
+                            ("disabled", None) => out.state.push(StatePseudo::Disabled),
+                            ("enabled", None) => out.state.push(StatePseudo::Enabled),
+                            ("is" | "where" | "matches" | "-webkit-any", Some(a)) => {
+                                out.any_of.push(
+                                    Engine::split_top_level_commas(a)
+                                        .into_iter()
+                                        .filter(|m| !Engine::selector_has_combinator(m))
+                                        .map(AncestorCompound::parse)
+                                        .collect(),
+                                );
+                            }
+                            // Relational: the subject path under-matches it
+                            // too.
+                            ("has", _) => out.never = true,
+                            (n, _) if Engine::pseudo_class_is_static_false(n) => out.never = true,
+                            // Structural and the rest need context the tuple
+                            // does not carry: permissive.
+                            _ => {}
+                        }
+                        i = next;
+                        current_start = next;
+                        continue;
                     } else {
-                        // Skip attribute selectors for ancestor matching
-                        break;
+                        // Attribute selectors: the ancestor tuple carries no
+                        // attributes, so they stay permissive. Skip to the
+                        // closing bracket and keep reading the compound.
+                        let mut j = i;
+                        let mut quote = None;
+                        while j < chars.len() {
+                            let c = chars[j];
+                            match quote {
+                                Some(q) if c == q => quote = None,
+                                Some(_) => {}
+                                None if c == '"' || c == '\'' => quote = Some(c),
+                                None if c == ']' => break,
+                                None => {}
+                            }
+                            j += 1;
+                        }
+                        i = (j + 1).min(chars.len());
+                        current_start = i;
+                        continue;
                     }
                 }
             }
@@ -17846,6 +18317,10 @@ impl AncestorCompound {
             && self.tag.as_deref().map_or(true, |t| t.eq_ignore_ascii_case(tag_name))
             && self.classes.iter().all(|req| classes.iter().any(|c| c == req))
             && self.id.as_deref().map_or(true, |req| id.is_some_and(|el| el == req))
+            && self
+                .any_of
+                .iter()
+                .all(|alts| alts.iter().any(|a| a.matches(tag_name, classes, id)))
     }
 
     /// [`Self::matches`] for an earlier sibling, whose form state is known.
@@ -18266,6 +18741,47 @@ mod windows_a_leg_pins {
         root
     }
 
+    /// An inline `<svg>` with a viewBox but no width=/height= has a ratio and
+    /// no natural size: it fills its containing block's width, and an auto
+    /// axis follows the other across the ratio. Only an svg with neither is
+    /// 300×150. Every size is Chrome 148's for the same markup. google's apps
+    /// button (`viewbox`, lowercase, in a 40px border-box with 8px padding)
+    /// was 150×150.
+    #[test]
+    fn an_inline_svg_with_only_a_viewbox_is_sized_by_its_ratio() {
+        let mut e = engine();
+        let html = r#"<!DOCTYPE html><html><body style="margin:0">
+            <style>.btn{display:inline-block;box-sizing:border-box;width:40px;height:40px;padding:8px}</style>
+            <div style="width:24px"><svg viewBox="0 0 24 24"><rect width="24" height="24"/></svg></div>
+            <div style="width:100px"><svg viewBox="0 0 48 24"><rect width="48" height="24"/></svg></div>
+            <div><svg width="96" viewBox="0 0 48 24"><rect width="48" height="24"/></svg></div>
+            <div><svg style="height:12px" viewBox="0 0 48 24"><rect width="48" height="24"/></svg></div>
+            <div><svg><rect width="10" height="10"/></svg></div>
+            <div><a class="btn"><svg viewbox="0 0 24 24"><rect width="24" height="24"/></svg></a></div>
+            </body></html>"#;
+        let d = Document::parse_html(html).expect("parse");
+        e.cache_inline_svgs(&d);
+        let mut root = e.build_layout_from_document(&d, &[]);
+        root.layout(&Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 600.0),
+            ..Default::default()
+        });
+        fn sizes(b: &LayoutBox, out: &mut Vec<(f32, f32)>) {
+            if matches!(b.box_type, BoxType::Image { .. }) {
+                out.push((b.dimensions.content.width, b.dimensions.content.height));
+            }
+            for c in &b.children {
+                sizes(c, out);
+            }
+        }
+        let mut got = Vec::new();
+        sizes(&root, &mut got);
+        assert_eq!(
+            got,
+            vec![(24.0, 24.0), (100.0, 50.0), (96.0, 48.0), (24.0, 12.0), (300.0, 150.0), (24.0, 24.0)]
+        );
+    }
+
     fn first_text_box_height(e: &Engine, html: &str) -> f32 {
         fn find(b: &LayoutBox) -> Option<f32> {
             if matches!(b.box_type, BoxType::Text(_)) {
@@ -18305,6 +18821,77 @@ mod windows_a_leg_pins {
         assert_eq!(e.resolve_css_variables("var(--alias)", &vars), "#06b6d4");
         assert_eq!(e.resolve_css_variables("var(--missing, rgb(1, 2, 3))", &vars), "rgb(1, 2, 3)");
         assert_eq!(e.resolve_css_variables("#fff", &vars), "#fff");
+    }
+
+    #[test]
+    fn a_self_referencing_css_variable_falls_back_instead_of_looping() {
+        // carvana.com ships `--spacing-xs: var(--spacing-xs, .125rem)` (13
+        // such declarations). The old resolver re-scanned its own output and
+        // substituted that forever, hanging the first style pass.
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let mut vars = HashMap::new();
+        vars.insert("--spacing-xs".to_string(), "var(--spacing-xs, .125rem)".to_string());
+        vars.insert("--a".to_string(), "var(--b)".to_string());
+        vars.insert("--b".to_string(), "var(--a, 7px)".to_string());
+        vars.insert("--gap".to_string(), "4px".to_string());
+        let r = |v: &str| resolve_bounded(&e, v, &vars);
+        assert_eq!(r("var(--spacing-xs)"), ".125rem");
+        assert_eq!(r("var(--spacing-xs, 9px)"), ".125rem");
+        // A two-variable cycle takes the inner fallback, and terminates.
+        assert_eq!(r("var(--a)"), "7px");
+        // Nested var() inside a fallback resolves; parentheses balance.
+        assert_eq!(r("var(--missing, calc(var(--gap) * 2))"), "calc(4px * 2)");
+        assert_eq!(r("0 var(--missing, rgba(0, 0, 0, var(--missing2, .5)))"), "0 rgba(0, 0, 0, .5)");
+    }
+
+    #[test]
+    fn css_variable_fan_out_is_bounded() {
+        // Each level doubles: 40 levels would be 2^40 copies unbounded.
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let mut vars = HashMap::new();
+        vars.insert("--v0".to_string(), "x".to_string());
+        for i in 1..40 {
+            vars.insert(format!("--v{i}"), format!("var(--v{p}) var(--v{p})", p = i - 1));
+        }
+        let out = resolve_bounded(&e, "var(--v39)", &vars);
+        assert!(out.len() <= 2 * VAR_EXPANSION_BUDGET, "len {}", out.len());
+    }
+
+    #[test]
+    fn a_page_with_a_self_referencing_variable_lays_out() {
+        // End to end, carvana's shape: the self-reference sits on `:host,:root`,
+        // so it lands in the document-wide variable map.
+        let html = concat!(
+            "<html><head><style>",
+            ":host,:root{--spacing-xs:var(--spacing-xs,.125rem)}",
+            ".btn{padding:var(--spacing-xs)}",
+            "</style></head><body><div class=\"btn\">buy</div></body></html>"
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let e = Engine::new(EngineConfig::default()).expect("engine");
+            let d = Document::parse_html(html).expect("parse");
+            let _ = e.build_layout_from_document(&d, &[]);
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(),
+            "style/layout did not finish: var() self-reference loops"
+        );
+    }
+
+    /// Runs the resolver on a worker thread so a regression fails the test
+    /// instead of hanging the suite.
+    fn resolve_bounded(e: &Engine, v: &str, vars: &HashMap<String, String>) -> String {
+        let _ = e;
+        let (v, vars) = (v.to_string(), vars.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let e = Engine::new(EngineConfig::default()).expect("engine");
+            let _ = tx.send(e.resolve_css_variables(&v, &vars));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("resolve_css_variables did not terminate")
     }
 
     #[test]
@@ -18404,6 +18991,180 @@ mod windows_a_leg_pins {
             color_of(&layout, "c"),
             Some(rustkit_css::Color::from_rgb(1, 2, 3)),
             "a list with no root item is not collected document-wide"
+        );
+    }
+
+    fn text_color(b: &LayoutBox, text: &str) -> Option<rustkit_css::Color> {
+        if matches!(&b.box_type, BoxType::Text(t) if t.trim() == text) {
+            return Some(b.style.color);
+        }
+        b.children.iter().find_map(|c| text_color(c, text))
+    }
+
+    #[test]
+    fn element_scoped_custom_properties_inherit_down_their_subtree() {
+        // github: foreground vars sit on `[data-color-mode=dark]`, not :root.
+        let e = engine();
+        let html = "<html><head><style>\
+                    :root{--bg:#111111;--fg:#222222}\
+                    .theme{--fg:#333333}\
+                    [data-theme=dark]{--fg:#444444}\
+                    p{color:var(--fg)}\
+                    </style></head><body>\
+                    <p>root</p>\
+                    <div class=\"theme\"><section><p>themed</p></section></div>\
+                    <div data-theme=\"dark\"><div><p>dark</p></div></div>\
+                    <p>after</p></body></html>";
+        let layout = layout_of(&e, html);
+        let rgb = |v: u8| Some(rustkit_css::Color::from_rgb(v, v, v));
+        assert_eq!(text_color(&layout, "root"), rgb(0x22));
+        assert_eq!(text_color(&layout, "themed"), rgb(0x33), ".theme {{--fg}} reaches a descendant");
+        assert_eq!(text_color(&layout, "dark"), rgb(0x44), "[data-theme=dark] overrides the subtree");
+        assert_eq!(text_color(&layout, "after"), rgb(0x22), "a scoped --fg does not leak to siblings");
+    }
+
+    #[test]
+    fn custom_properties_resolve_on_the_element_that_declares_them() {
+        // CSS Variables 1 §2: `--c: var(--base)` is substituted on :root, so
+        // a descendant that redefines --base does not change the inherited --c.
+        let e = engine();
+        let html = "<html><head><style>\
+                    :root{--base:#111111;--c:var(--base)}\
+                    .t{--base:#222222;--own:var(--base)}\
+                    .c{color:var(--c)} .o{color:var(--own)}\
+                    </style></head><body><div class=\"t\">\
+                    <p class=\"c\">inherited</p><p class=\"o\">own</p></div></body></html>";
+        let layout = layout_of(&e, html);
+        let rgb = |v: u8| Some(rustkit_css::Color::from_rgb(v, v, v));
+        assert_eq!(text_color(&layout, "inherited"), rgb(0x11));
+        assert_eq!(text_color(&layout, "own"), rgb(0x22));
+    }
+
+    #[test]
+    fn custom_property_cycles_and_missing_vars_fall_back() {
+        let e = engine();
+        let html = "<html><head><style>\
+                    .cyc{--a:var(--b);--b:var(--a);color:var(--a, #0a0b0c)}\
+                    .self{--x:var(--x, #ffffff);color:var(--x, #0d0e0f)}\
+                    .miss{color:var(--missing, red)}\
+                    </style></head><body>\
+                    <p class=\"cyc\">cycle</p><p class=\"self\">self</p>\
+                    <p class=\"miss\">missing</p></body></html>";
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let e2 = Engine::new(EngineConfig::default()).expect("engine");
+            let layout = layout_of(&e2, html);
+            let _ = tx.send((
+                text_color(&layout, "cycle"),
+                text_color(&layout, "self"),
+                text_color(&layout, "missing"),
+            ));
+        });
+        let _ = e;
+        let (cycle, selfref, missing) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a custom-property cycle hung the style pass");
+        assert_eq!(cycle, Some(rustkit_css::Color::from_rgb(0x0a, 0x0b, 0x0c)));
+        assert_eq!(
+            selfref,
+            Some(rustkit_css::Color::from_rgb(0x0d, 0x0e, 0x0f)),
+            "a self-reference is a cycle: the property is invalid, the use site falls back"
+        );
+        assert_eq!(missing, Some(rustkit_css::Color::from_rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn inline_and_important_custom_properties_follow_the_cascade() {
+        let e = engine();
+        let html = "<html><head><style>\
+                    .i{--k:#111111 !important} .i{--k:#222222} p{color:var(--k)}\
+                    </style></head><body>\
+                    <p class=\"i\">imp</p><p style=\"--k:#333333\">inline</p></body></html>";
+        let layout = layout_of(&e, html);
+        let rgb = |v: u8| Some(rustkit_css::Color::from_rgb(v, v, v));
+        assert_eq!(text_color(&layout, "imp"), rgb(0x11));
+        assert_eq!(text_color(&layout, "inline"), rgb(0x33));
+    }
+
+    #[test]
+    fn an_unchanged_custom_property_shares_the_parent_map() {
+        // Tailwind's `*{--tw-…:0}` re-declares the same values on every
+        // element; that must not copy the map per element.
+        let mut parent = HashMap::new();
+        parent.insert("--tw".to_string(), "0".to_string());
+        let parent = Arc::new(parent);
+        let same = Engine::element_custom_properties(&parent, &[("--tw", Some("0"))]);
+        assert!(Arc::ptr_eq(&parent, &same));
+        let changed = Engine::element_custom_properties(&parent, &[("--tw", Some("1"))]);
+        assert!(!Arc::ptr_eq(&parent, &changed));
+        assert_eq!(changed.get("--tw").map(String::as_str), Some("1"));
+        let unset = Engine::element_custom_properties(&parent, &[("--tw", None)]);
+        assert!(unset.get("--tw").is_none(), "`initial` removes the property");
+    }
+
+    #[test]
+    fn pseudo_classes_on_an_ancestor_compound_constrain_it() {
+        // github: `:is(.TreeViewRootUlStyles .TreeViewItem):focus-visible>div`
+        // gave every div an inset focus ring, because the ancestor compound
+        // stopped parsing at `:is` and matched any parent.
+        let e = engine();
+        let html = "<html><head><style>\
+                    :is(.tree .item):focus-visible>p{color:#ff0000}\
+                    :is(.x):hover>p{color:#ff0000}\
+                    [data-m]:focus>p{color:#ff0000}\
+                    :has(.y) p{color:#ff0000}\
+                    :is(.x, .z)>p{color:#00aa00}\
+                    </style></head><body>\
+                    <div><p>plain</p></div>\
+                    <div class=\"x\"><p>x</p></div>\
+                    <div data-m=\"1\"><p>attr</p></div>\
+                    </body></html>";
+        fn color_of(b: &LayoutBox, text: &str) -> Option<rustkit_css::Color> {
+            if matches!(&b.box_type, BoxType::Text(t) if t.trim() == text) {
+                return Some(b.style.color);
+            }
+            b.children.iter().find_map(|c| color_of(c, text))
+        }
+        let layout = layout_of(&e, html);
+        assert_eq!(color_of(&layout, "plain"), Some(rustkit_css::Color::BLACK));
+        assert_eq!(
+            color_of(&layout, "x"),
+            Some(rustkit_css::Color::from_rgb(0, 0xaa, 0)),
+            ":is(.x, .z) > p matches under .x"
+        );
+        assert_eq!(color_of(&layout, "attr"), Some(rustkit_css::Color::BLACK));
+    }
+
+    #[test]
+    fn checked_sibling_content_follows_the_checkbox_state() {
+        // wikipedia's dropdowns use `.checkbox:checked ~ .content`. Exercise
+        // the full DOM-to-layout path so sibling state cannot be dropped while
+        // building the selector context.
+        fn has_text(b: &LayoutBox, text: &str) -> bool {
+            matches!(&b.box_type, BoxType::Text(t) if t.trim() == text)
+                || b.children.iter().any(|child| has_text(child, text))
+        }
+
+        let e = engine();
+        let page = |checked: &str| {
+            format!(
+                "<html><head><style>\
+                 .content{{display:none}}\
+                 .cb:checked ~ .content{{display:block}}\
+                 </style></head><body>\
+                 <input type=\"checkbox\" class=\"cb\" {checked}>\
+                 <div class=\"content\"><p>menu</p></div>\
+                 </body></html>"
+            )
+        };
+
+        assert!(
+            !has_text(&layout_of(&e, &page("")), "menu"),
+            "an unchecked checkbox must keep its sibling content out of layout"
+        );
+        assert!(
+            has_text(&layout_of(&e, &page("checked")), "menu"),
+            "a checked checkbox must reveal its sibling content"
         );
     }
 
@@ -18620,5 +19381,364 @@ mod float_clear_tests {
             assert_eq!(by_id(&root, "a").unwrap().float, rustkit_css::Float::Left);
             assert_eq!(by_id(&root, "p").unwrap().float, rustkit_css::Float::None);
         }
+    }
+}
+
+/// Upper bound on the bytes a single `var()` expansion may produce. Real
+/// pages stay far below it (a long box-shadow chain is a few hundred bytes);
+/// it only stops pathological exponential fan-out.
+const VAR_EXPANSION_BUDGET: usize = 64 * 1024;
+
+/// Byte index of the `)` that closes the parenthesis opened just before
+/// `s[0]`, or `None` when unbalanced.
+fn matching_close_paren(s: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(i),
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Left-to-right `var()` substitution. The text a substitution produces is
+/// already fully resolved, so it is appended and never re-scanned; `stack`
+/// holds the variables being resolved (cycle detection). Every byte written
+/// at every level is charged to `budget`; once it is spent, the expansion
+/// stops, so pathological fan-out costs bounded work, not just bounded output.
+///
+/// `layers` are searched in order, first hit wins (an element's own `--*`
+/// over the ones it inherited). `cycle` is set when a reference was refused
+/// because its variable was already on the stack.
+fn substitute_css_vars<'a>(
+    value: &str,
+    layers: &[&'a HashMap<String, String>],
+    stack: &mut Vec<&'a str>,
+    budget: &mut usize,
+    cycle: &mut bool,
+) -> String {
+    fn push(out: &mut String, s: &str, budget: &mut usize) {
+        let n = s.len().min(*budget);
+        // Stay on a char boundary when truncating at the cap.
+        let mut n2 = n;
+        while !s.is_char_boundary(n2) {
+            n2 -= 1;
+        }
+        out.push_str(&s[..n2]);
+        *budget -= n2;
+        if n2 < s.len() {
+            *budget = 0;
+        }
+    }
+    let mut out = String::with_capacity(value.len().min(*budget));
+    let mut rest = value;
+    while let Some(start) = rest.find("var(") {
+        if *budget == 0 {
+            return out;
+        }
+        push(&mut out, &rest[..start], budget);
+        let after = &rest[start + 4..];
+        let Some(end) = matching_close_paren(after) else {
+            // Malformed var(): keep the remainder verbatim, as before.
+            push(&mut out, &rest[start..], budget);
+            return out;
+        };
+        let content = &after[..end];
+        let (name, fallback) = match content.find(',') {
+            Some(i) => (content[..i].trim(), Some(content[i + 1..].trim())),
+            None => (content.trim(), None),
+        };
+        let found = layers.iter().find_map(|l| l.get_key_value(name));
+        let piece = match found {
+            Some((key, raw)) if !stack.contains(&key.as_str()) => {
+                stack.push(key.as_str());
+                let r = substitute_css_vars(raw, layers, stack, budget, cycle);
+                stack.pop();
+                r
+            }
+            // Missing, or part of a cycle: the fallback applies.
+            _ => {
+                if found.is_some() {
+                    *cycle = true;
+                }
+                fallback
+                    .map(|f| substitute_css_vars(f, layers, stack, budget, cycle))
+                    .unwrap_or_default()
+            }
+        };
+        // The nested call already charged its bytes; appending is free.
+        out.push_str(&piece);
+        rest = &after[end + 1..];
+    }
+    push(&mut out, rest, budget);
+    out
+}
+
+// ── url() in an external stylesheet resolves against THAT SHEET's URL
+//    (CSS Values 4 §4.2), not the document's. github's fonts live beside
+//    its CSS on github.githubassets.com and were fetched from github.com. ──
+#[cfg(test)]
+mod css_url_base_tests {
+    use super::*;
+
+    fn abs(css: &str) -> String {
+        absolutize_css_urls(css, &Url::parse("https://cdn.example/assets/a.css").unwrap())
+    }
+
+    #[test]
+    fn relative_urls_resolve_against_the_sheet() {
+        assert_eq!(
+            abs("@font-face{src:url(font.woff2)}"),
+            r#"@font-face{src:url("https://cdn.example/assets/font.woff2")}"#
+        );
+        assert_eq!(
+            abs(r#"a{background:url("../img/x.png")} b{cursor:URL('/c.cur'),auto}"#),
+            r#"a{background:url("https://cdn.example/img/x.png")} b{cursor:URL('https://cdn.example/c.cur'),auto}"#
+        );
+        assert_eq!(
+            abs("i{background-image:url( //other.example/y.svg )}"),
+            r#"i{background-image:url("https://other.example/y.svg")}"#
+        );
+    }
+
+    #[test]
+    fn absolute_data_fragment_comments_and_strings_are_left_alone() {
+        for css in [
+            "a{background:url(https://x.example/a.png)}",
+            "a{background:url(data:image/png;base64,AAAA)}",
+            "a{filter:url(#blur)}",
+            "/* url(nope.png) */ a{}",
+            r#"a::after{content:"url(nope.png)"}"#,
+            "a{--my-url(x):1}",
+        ] {
+            assert_eq!(abs(css), css, "{css}");
+        }
+    }
+
+    #[test]
+    fn an_unterminated_url_does_not_panic_or_loop() {
+        assert_eq!(abs("a{background:url(x.png"), "a{background:url(x.png");
+    }
+}
+
+#[cfg(all(test, feature = "headless"))]
+mod css_url_base_engine_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn a_web_font_named_relative_to_its_stylesheet_is_fetched_from_the_sheets_directory() {
+        let requested: Arc<Mutex<Vec<String>>> = Arc::default();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let log = requested.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let log = log.clone();
+                std::thread::spawn(move || {
+                    let mut req = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => req.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let req = String::from_utf8_lossy(&req);
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    log.lock().unwrap().push(path.clone());
+                    let (status, ct, body) = match path.as_str() {
+                        "/" => ("200 OK", "text/html", r#"<html><head><link rel="stylesheet" href="/assets/a.css"></head><body style="font-family:W">x</body></html>"#),
+                        "/assets/a.css" => ("200 OK", "text/css", "@font-face{font-family:W;src:url(font.woff2)}"),
+                        _ => ("404 Not Found", "text/plain", ""),
+                    };
+                    let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                });
+            }
+        });
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(engine.load_url(view, Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap()))
+            .expect("load_url");
+        let paths = requested.lock().unwrap().clone();
+        assert!(paths.iter().any(|p| p == "/assets/font.woff2"), "font not fetched from the sheet's directory: {paths:?}");
+        assert!(!paths.iter().any(|p| p == "/font.woff2"), "font fetched against the document URL: {paths:?}");
+    }
+}
+
+// Needs a headless view: `cargo test -p rustkit-engine --features headless`.
+#[cfg(all(test, target_os = "macos", feature = "headless"))]
+mod referrer_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    type Seen = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
+    /// Serve `/page` as `html` (with `doc_headers`), anything else as a
+    /// stylesheet, and record each subresource request's path and Referer.
+    fn recording_server(html: &str, doc_headers: &'static str) -> (u16, Seen) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        let html = html.replace("PORT", &port.to_string());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                let referer = head
+                    .lines()
+                    .filter_map(|l| l.split_once(':'))
+                    .find(|(k, _)| k.eq_ignore_ascii_case("referer"))
+                    .map(|(_, v)| v.trim().to_string());
+                let (ctype, extra, body) = if path.starts_with("/page") {
+                    ("text/html", doc_headers, html.clone())
+                } else {
+                    log.lock().unwrap().push((path, referer));
+                    ("text/css", "", "p{}".to_string())
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (port, seen)
+    }
+
+    /// Load `http://127.0.0.1:<port>/page?q=1#frag` and return the Referer
+    /// each subresource request carried, by path.
+    fn referers(html: &str, doc_headers: &'static str) -> (u16, Vec<(String, Option<String>)>) {
+        let (port, seen) = recording_server(html, doc_headers);
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/page?q=1#frag")).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            engine.load_url(view, url).await.expect("load_url");
+            engine.load_subresources(view).await.expect("subresources");
+        });
+        let mut seen = seen.lock().unwrap().clone();
+        seen.sort();
+        seen.dedup();
+        (port, seen)
+    }
+
+    const TWO_SHEETS: &str = r#"<html><head>
+        <link rel="stylesheet" href="/same.css">
+        <link rel="stylesheet" href="http://localhost:PORT/cross.css">
+        </head><body>x</body></html>"#;
+
+    #[test]
+    fn subresources_carry_a_strict_origin_when_cross_origin_referer() {
+        // apple's /wss/fonts answers 404 to a request with no Referer.
+        let (port, seen) = referers(TWO_SHEETS, "");
+        assert_eq!(
+            seen,
+            vec![
+                ("/cross.css".to_string(), Some(format!("http://127.0.0.1:{port}/"))),
+                ("/same.css".to_string(), Some(format!("http://127.0.0.1:{port}/page?q=1"))),
+            ],
+            "same-origin: the full URL without its fragment; cross-origin: the origin only"
+        );
+    }
+
+    #[test]
+    fn the_documents_referrer_policy_header_is_respected() {
+        let (_, seen) = referers(TWO_SHEETS, "Referrer-Policy: no-referrer\r\n");
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(seen.iter().all(|(_, r)| r.is_none()), "{seen:?}");
+    }
+
+    #[test]
+    fn a_meta_referrer_overrides_the_header() {
+        let html = TWO_SHEETS.replace(
+            "<head>",
+            r#"<head><meta name="Referrer" content="same-origin"><meta name="referrer" content="bogus">"#,
+        );
+        let (port, seen) = referers(&html, "Referrer-Policy: unsafe-url\r\n");
+        assert_eq!(
+            seen,
+            vec![
+                ("/cross.css".to_string(), None),
+                ("/same.css".to_string(), Some(format!("http://127.0.0.1:{port}/page?q=1"))),
+            ]
+        );
+    }
+}
+
+// Needs a headless view: `cargo test -p rustkit-engine --features headless`.
+#[cfg(all(test, feature = "headless"))]
+mod svg_content_type_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>"#;
+
+    /// linkedin's hero is `<img src="https://static.licdn.com/aero-v1/sc/h/<hash>">`
+    /// served as `image/svg+xml`: no `.svg` extension, so it went to the
+    /// raster lane and failed as "Unknown image format".
+    #[test]
+    fn an_extensionless_img_is_routed_to_the_svg_lane_by_its_content_type() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                let (ctype, body) = match path.as_str() {
+                    "/page" => (
+                        "text/html",
+                        r#"<html><body><img src="/h/typed"><img src="/h/untyped"></body></html>"#,
+                    ),
+                    "/h/typed" => ("image/svg+xml; charset=utf-8", SVG),
+                    // Chrome doesn't sniff SVG: served as octet-stream it's a broken image.
+                    "/h/untyped" => ("application/octet-stream", SVG),
+                    _ => ("text/plain", ""),
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            engine
+                .load_url(view, Url::parse(&format!("http://127.0.0.1:{port}/page")).unwrap())
+                .await
+                .expect("load_url");
+            engine.load_subresources(view).await.expect("subresources");
+        });
+        let typed = format!("http://127.0.0.1:{port}/h/typed");
+        let untyped = format!("http://127.0.0.1:{port}/h/untyped");
+        let doc = engine.svg_cache.get(&typed).expect("image/svg+xml img must land in the SVG cache");
+        assert_eq!(doc.get_size(0.0, 0.0), (40.0, 20.0));
+        assert!(!engine.svg_cache.contains_key(&untyped), "SVG is never sniffed from bytes");
     }
 }

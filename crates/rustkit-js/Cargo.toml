@@ -27,6 +27,8 @@ tracing = "0.1"
 tokio = { version = "1.42", features = ["sync", "time"] }
 
 [dev-dependencies]
+# Only to force a collection in tests/gc_weak_cycle.rs.
+boa_gc = "0.20"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
 

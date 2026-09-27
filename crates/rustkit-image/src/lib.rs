@@ -54,6 +54,38 @@ pub enum ImageError {
 
     #[error("Cache error: {0}")]
     CacheError(String),
+
+    /// The response is `image/svg+xml`: vector content this raster manager
+    /// does not decode. Carries the document text so the caller can hand
+    /// it to the SVG lane without fetching it again.
+    #[error("Image is SVG (vector), not raster")]
+    Svg(String),
+}
+
+#[cfg(test)]
+mod svg_content_type_tests {
+    use super::is_svg_content_type;
+
+    #[test]
+    fn only_the_image_svg_xml_essence_is_svg() {
+        assert!(is_svg_content_type("image/svg+xml"));
+        assert!(is_svg_content_type("Image/SVG+XML ; charset=utf-8"));
+        assert!(!is_svg_content_type("application/octet-stream"));
+        assert!(!is_svg_content_type("text/xml"));
+        assert!(!is_svg_content_type("image/png"));
+    }
+}
+
+/// Whether a response `Content-Type` names SVG. The type decides, never the
+/// bytes: the MIME Sniffing Standard's image table has no SVG signature, so
+/// Chrome renders an `<img>` as SVG only when it is served as
+/// `image/svg+xml`, whatever the URL's extension.
+pub fn is_svg_content_type(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .map(|essence| essence.trim().eq_ignore_ascii_case("image/svg+xml"))
+        .unwrap_or(false)
 }
 
 /// Result type for image operations
@@ -358,6 +390,11 @@ impl ImageManager {
                     let _ = waiter.send(Ok(image.clone()));
                 }
             }
+            Err(ImageError::Svg(xml)) => {
+                for waiter in waiters {
+                    let _ = waiter.send(Err(ImageError::Svg(xml.clone())));
+                }
+            }
             Err(e) => {
                 let err_msg = e.to_string();
                 for waiter in waiters {
@@ -388,6 +425,15 @@ impl ImageManager {
         }
 
         let content_type = response.content_type().map(|s| s.to_string());
+
+        // SVG from an extensionless URL (linkedin's hero is
+        // `/aero-v1/sc/h/<hash>`) reaches the raster lane; route it back by
+        // its type instead of failing it as "Unknown image format".
+        if content_type.as_deref().is_some_and(is_svg_content_type) {
+            return Err(ImageError::Svg(
+                String::from_utf8_lossy(&response.body).into_owned(),
+            ));
+        }
 
         // Decode the image
         let mut loaded = self.decode_bytes(&url, &response.body)?;

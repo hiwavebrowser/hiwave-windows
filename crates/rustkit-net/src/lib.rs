@@ -94,7 +94,11 @@ pub struct Request {
     pub body: Option<Bytes>,
     pub timeout: Option<Duration>,
     pub credentials: CredentialsMode,
+    /// The URL of the document that made the request. The `Referer` header
+    /// is derived from it through `referrer_policy`; this URL itself is
+    /// never sent as-is.
     pub referrer: Option<Url>,
+    pub referrer_policy: ReferrerPolicy,
 }
 
 impl Request {
@@ -109,6 +113,7 @@ impl Request {
             timeout: Some(Duration::from_secs(30)),
             credentials: CredentialsMode::SameOrigin,
             referrer: None,
+            referrer_policy: ReferrerPolicy::default(),
         }
     }
 
@@ -123,6 +128,7 @@ impl Request {
             timeout: Some(Duration::from_secs(30)),
             credentials: CredentialsMode::SameOrigin,
             referrer: None,
+            referrer_policy: ReferrerPolicy::default(),
         }
     }
 
@@ -141,6 +147,12 @@ impl Request {
     /// Set referrer.
     pub fn referrer(mut self, referrer: Url) -> Self {
         self.referrer = Some(referrer);
+        self
+    }
+
+    /// Set the referrer policy (default strict-origin-when-cross-origin).
+    pub fn referrer_policy(mut self, policy: ReferrerPolicy) -> Self {
+        self.referrer_policy = policy;
         self
     }
 }
@@ -506,6 +518,27 @@ impl ResourceLoader {
             }
         }
         
+        // data: URLs (RFC 2397) carry their own body — answer them here instead
+        // of sending them to the HTTP client, which rejects them for having no
+        // host. Sites inline small stylesheets, fonts, images and scripts this
+        // way (facebook ships a base64 `data:text/css` sheet).
+        if request.url.scheme() == "data" {
+            let (content_type, body) = decode_data_url(request.url.as_str())?;
+            let mut headers = HeaderMap::new();
+            if let Ok(v) = HeaderValue::try_from(content_type.as_str()) {
+                headers.insert(HeaderName::from_static("content-type"), v);
+            }
+            return Ok(Response {
+                request_id: request.id,
+                url: request.url.clone(),
+                status: StatusCode::OK,
+                headers,
+                content_type: content_type.parse::<Mime>().ok(),
+                content_length: Some(body.len() as u64),
+                body: ResponseBody::Full(Bytes::from(body)),
+            });
+        }
+
         // Check cache for GET requests
         let cache_key = if request.method == Method::GET && self.cache.enabled() {
             let key = CacheKey::new(&request.url);
@@ -541,9 +574,17 @@ impl ResourceLoader {
             headers.insert(HeaderName::from_static("accept-language"), val);
         }
 
-        // Add referrer
-        if let Some(ref referrer) = request.referrer {
-            if let Ok(val) = HeaderValue::try_from(referrer.as_str()) {
+        // Referer, as the request's policy allows (never the raw referrer
+        // URL, and never a caller-set header that could say more). Redirects
+        // are safe: rustkit-http follows them with fresh headers, so this
+        // value never reaches a redirect target.
+        headers.remove(HeaderName::from_static("referer"));
+        if let Some(value) = request
+            .referrer
+            .as_ref()
+            .and_then(|referrer| request.referrer_policy.compute_referrer(referrer, &request.url))
+        {
+            if let Ok(val) = HeaderValue::try_from(value) {
                 headers.insert(HeaderName::from_static("referer"), val);
             }
         }
@@ -768,5 +809,114 @@ mod tests {
         let config = LoaderConfig::default();
         assert_eq!(config.user_agent, "RustKit/1.0");
         assert!(config.cookies_enabled);
+    }
+}
+
+/// Largest `data:` payload the loader will decode (bytes, after decoding).
+pub const MAX_DATA_URL_BYTES: usize = 32 * 1024 * 1024;
+
+/// Decode an RFC 2397 `data:[<mediatype>][;base64],<data>` URL into its media
+/// type (default `text/plain;charset=US-ASCII`) and body bytes.
+pub fn decode_data_url(url: &str) -> Result<(String, Vec<u8>), NetError> {
+    let rest = url
+        .get(..5)
+        .filter(|s| s.eq_ignore_ascii_case("data:"))
+        .map(|_| &url[5..])
+        .ok_or_else(|| NetError::InvalidUrl("not a data: URL".into()))?;
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| NetError::InvalidUrl("data: URL has no ','".into()))?;
+    // Base64 encodes 3 bytes in 4 chars, and percent-encoding never grows the
+    // payload, so bounding the input bounds the output.
+    if payload.len() / 4 * 3 > MAX_DATA_URL_BYTES && payload.len() > MAX_DATA_URL_BYTES {
+        return Err(NetError::RequestFailed("data: URL payload too large".into()));
+    }
+    let mut params: Vec<&str> = meta.split(';').map(str::trim).collect();
+    let is_base64 = params.last().is_some_and(|p| p.eq_ignore_ascii_case("base64"));
+    if is_base64 {
+        params.pop();
+    }
+    let media = if params.first().is_none_or(|m| m.is_empty()) {
+        let mut p = vec!["text/plain"];
+        p.extend(params.iter().skip(1).copied());
+        if p.len() == 1 {
+            p.push("charset=US-ASCII");
+        }
+        p.join(";")
+    } else {
+        params.join(";")
+    };
+    let raw = percent_decode_bytes(payload);
+    let body = if is_base64 {
+        use base64::Engine as _;
+        let compact: Vec<u8> = raw.into_iter().filter(|b| !b.is_ascii_whitespace()).collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(&compact)
+            .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(&compact))
+            .map_err(|e| NetError::RequestFailed(format!("bad base64 in data: URL: {e}")))?
+    } else {
+        raw
+    };
+    if body.len() > MAX_DATA_URL_BYTES {
+        return Err(NetError::RequestFailed("data: URL payload too large".into()));
+    }
+    Ok((media, body))
+}
+
+fn percent_decode_bytes(s: &str) -> Vec<u8> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    out
+}
+
+#[cfg(test)]
+mod data_url_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_base64_and_percent_encoded_payloads_with_their_media_type() {
+        let (ct, body) = decode_data_url("data:text/css; charset=utf-8;base64,Lm93N1g1NzQub3c3WDU3NHtkaXNwbGF5Om5vbmV9Cg==").unwrap();
+        assert_eq!(ct, "text/css;charset=utf-8");
+        assert_eq!(body, b".ow7X574.ow7X574{display:none}\n");
+        let (ct, body) = decode_data_url("data:,a%20b%2Cc").unwrap();
+        assert_eq!(ct, "text/plain;charset=US-ASCII");
+        assert_eq!(body, b"a b,c");
+        let (ct, body) = decode_data_url("data:image/svg+xml,%3Csvg%3E%3C/svg%3E").unwrap();
+        assert_eq!(ct, "image/svg+xml");
+        assert_eq!(body, b"<svg></svg>");
+        // Unpadded base64 and whitespace inside the payload are accepted.
+        assert_eq!(decode_data_url("data:;base64,aGk").unwrap().1, b"hi");
+        assert_eq!(decode_data_url("data:;base64,aG k=").unwrap().1, b"hi");
+    }
+
+    #[test]
+    fn rejects_malformed_and_oversized_data_urls() {
+        assert!(decode_data_url("data:text/plain").is_err(), "no comma");
+        assert!(decode_data_url("data:;base64,@@@@").is_err(), "bad base64");
+        let huge = format!("data:,{}", "a".repeat(MAX_DATA_URL_BYTES + 1));
+        assert!(decode_data_url(&huge).is_err(), "over the cap");
+    }
+
+    #[test]
+    fn the_loader_answers_a_data_url_without_the_network() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let loader = ResourceLoader::new(LoaderConfig::default()).unwrap();
+        let url = Url::parse("data:text/css;base64,Ym9keXtjb2xvcjpyZWR9").unwrap();
+        let resp = rt.block_on(loader.fetch(Request::get(url))).expect("data: fetch");
+        assert!(resp.ok());
+        assert_eq!(resp.content_type.as_ref().map(|m| m.essence_str().to_string()), Some("text/css".into()));
+        assert_eq!(rt.block_on(resp.text()).unwrap(), "body{color:red}");
     }
 }

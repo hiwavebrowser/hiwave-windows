@@ -2774,6 +2774,23 @@ pub(crate) fn own_max_content_width(layout_box: &LayoutBox) -> f32 {
         };
     }
 
+    // A form control's content is not in its children: a <button>'s text lives
+    // in `FormControlType::Button { label }` and a <select>'s in its options,
+    // and the box has no Text child to walk. The generic walk below therefore
+    // found nothing to measure and returned the padding box alone, so every
+    // form control contributed its author padding+border and none of its
+    // label. It only shows where a contribution is what SIZES the box: on
+    // `settings`' footer a `.btn-group { display: flex }` nested in a
+    // `display: flex` parent measured 68 for two buttons (34 + 34, the author
+    // padding of each) against Chrome's 194.70, and flex-shrink then squeezed
+    // the buttons themselves to 38.57 and 34.00 against 117.92 and 68.78.
+    // `form_control_intrinsic_size` already returns a BORDER-box width — it
+    // composes the author padding and border itself — so `padding_border` is
+    // deliberately NOT added on top of it.
+    if let BoxType::FormControl(control) = &layout_box.box_type {
+        return crate::form_control_intrinsic_size(style, control).0;
+    }
+
     // A flex container's max-content main size sums its ITEMS plus
     // main-axis gaps (row), or takes the widest item (column). Whitespace-
     // only text never becomes a flex item (css-flexbox-1 §4), so it

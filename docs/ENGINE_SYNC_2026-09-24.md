@@ -117,6 +117,31 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-09-27 (refresh #4, after #92 merged):** crates now verbatim from
+hiwave-macos develop `04dd1d1` (Merge #307), 27 upstream PRs past refresh #3
+(#281–#307). Two things outside `crates/rustkit-*` came with it:
+
+- **Vendored `boa_gc`.** hiwave-macos #287 backports boa_gc 0.22's weak-phase
+  mark fix into 0.20 via `third_party/boa_gc` and a workspace
+  `[patch.crates-io]` (plus `exclude`). Without it this workspace would build
+  stock boa_gc 0.20: pages that hold a cycle behind a WeakMap entry hang the
+  collector (tripadvisor, squarespace, bmw, toyota), and the new
+  `rustkit-js/tests/gc_weak_cycle.rs` never terminates. `third_party/boa_gc`
+  is byte-identical to upstream; the two `Cargo.toml` lines match upstream.
+- **One shell test line.** #296 added `referrer_policy` to
+  `rustkit_net::Request`; `hiwave-app/src/shield_adapter.rs`'s test helper
+  builds a `Request` by hand and gets the same `Default::default()` line
+  macOS added.
+
+The residual inside `crates/rustkit-*` is still the one sidecar-pin file.
+Gates: workspace minus `rustkit-engine` **1336 / 0 / 5**; `rustkit-engine`
+**145 / 0** with `--test-threads=1` **and** in parallel (19.7 s) — the first
+parallel engine pass on this box, courtesy of the test-only GPU-init lock in
+hiwave-macos #306; total **1481 / 0 / 5**. Both shells and release
+`parity-capture` build (`CARGO_BUILD_JOBS=4`); example.com capture
+pixel-identical to the 2026-09-26 capture; dark smoke exact; sidecars dated
+correctly.
+
 **2026-09-26 (refresh #3, after #91 merged):** crates now verbatim from
 hiwave-macos develop `8f8b53d` (Merge #280); adds #263, #276 (float/clear
 placement), #279 (grid item child width, revived) and #280 (`:root` custom
