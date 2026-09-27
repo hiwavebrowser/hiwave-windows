@@ -963,6 +963,25 @@ impl Drop for Compositor {
 mod tests {
     use super::*;
 
+    /// Serialise GPU device creation across this binary's tests: concurrent
+    /// `Compositor::new` / `with_config` can stall the whole test process on a
+    /// real GPU (Windows/DX12). See `rustkit_engine::test_compositor`.
+    static GPU_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn gpu_init() -> std::sync::MutexGuard<'static, ()> {
+        GPU_INIT.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn new_compositor() -> Result<Compositor, CompositorError> {
+        let _gpu_init = gpu_init();
+        Compositor::new()
+    }
+
+    fn new_compositor_with(config: CompositorConfig) -> Result<Compositor, CompositorError> {
+        let _gpu_init = gpu_init();
+        Compositor::with_config(config)
+    }
+
     #[test]
     fn test_compositor_config_default() {
         let config = CompositorConfig::default();
@@ -986,7 +1005,7 @@ mod tests {
     #[test]
     fn test_compositor_creation() {
         // Test that compositor can be created with default config
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             // Skip test if no GPU available (CI environments)
             println!("Skipping test: No GPU available");
@@ -1004,7 +1023,7 @@ mod tests {
             format: wgpu::TextureFormat::Bgra8Unorm,
             power_preference: wgpu::PowerPreference::LowPower,
         };
-        let result = Compositor::with_config(config.clone());
+        let result = new_compositor_with(config.clone());
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1015,7 +1034,7 @@ mod tests {
 
     #[test]
     fn test_headless_texture_lifecycle() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1045,7 +1064,7 @@ mod tests {
 
     #[test]
     fn test_headless_texture_recreate_different_size() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1078,7 +1097,7 @@ mod tests {
 
     #[test]
     fn test_headless_texture_zero_size() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1096,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_multiple_headless_textures() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1131,7 +1150,7 @@ mod tests {
 
     #[test]
     fn test_destroy_nonexistent_texture() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1147,7 +1166,7 @@ mod tests {
 
     #[test]
     fn test_double_destroy() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1171,7 +1190,7 @@ mod tests {
 
     #[test]
     fn test_get_headless_texture_view() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1197,7 +1216,7 @@ mod tests {
 
     #[test]
     fn test_render_solid_color_headless() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1219,7 +1238,7 @@ mod tests {
 
     #[test]
     fn test_adapter_info() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1233,7 +1252,7 @@ mod tests {
 
     #[test]
     fn test_device_and_queue_access() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1253,7 +1272,7 @@ mod tests {
 
     #[test]
     fn test_headless_texture_various_sizes() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;
@@ -1291,7 +1310,7 @@ mod tests {
 
     #[test]
     fn test_resize_surface_error_for_headless() {
-        let result = Compositor::new();
+        let result = new_compositor();
         if result.is_err() {
             println!("Skipping test: No GPU available");
             return;

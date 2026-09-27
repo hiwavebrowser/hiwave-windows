@@ -619,6 +619,25 @@ impl SvgStyle {
 
     /// Parse style attributes.
     pub fn parse_attributes(&mut self, attrs: &HashMap<String, String>) {
+        // An inline `style="fill: #fbf1e2"` sets the same properties as the
+        // presentation attributes and wins over them (SVG 2 §6.8). linkedin's
+        // hero paints all 148 of its shapes this way; without it every one
+        // fell back to the initial black fill.
+        if let Some(style) = attrs.get("style") {
+            let mut merged = attrs.clone();
+            merged.remove("style");
+            for decl in style.split(';') {
+                if let Some((name, value)) = decl.split_once(':') {
+                    let value = value.trim();
+                    let value = value
+                        .strip_suffix("!important")
+                        .map(str::trim_end)
+                        .unwrap_or(value);
+                    merged.insert(name.trim().to_ascii_lowercase(), value.to_string());
+                }
+            }
+            return self.parse_attributes(&merged);
+        }
         if let Some(fill) = attrs.get("fill") {
             self.fill = Paint::parse(fill);
         }
@@ -1297,7 +1316,10 @@ impl SvgPath {
         let mut current_segment = Vec::new();
         let mut current_pos = (0.0_f32, 0.0_f32);
         let mut start_pos = (0.0_f32, 0.0_f32);
-        let mut _last_control = None::<(f32, f32)>;
+        // The previous segment's second control point, for S/s (after C/S)
+        // and T/t (after Q/T) to reflect. Any other command clears both.
+        let mut last_cubic = None::<(f32, f32)>;
+        let mut last_quad = None::<(f32, f32)>;
 
         for cmd in &self.commands {
             match cmd {
@@ -1308,7 +1330,8 @@ impl SvgPath {
                     current_pos = (*x, *y);
                     start_pos = current_pos;
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::MoveToRel(dx, dy) => {
                     if !current_segment.is_empty() {
@@ -1317,43 +1340,51 @@ impl SvgPath {
                     current_pos = (current_pos.0 + dx, current_pos.1 + dy);
                     start_pos = current_pos;
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::LineTo(x, y) => {
                     current_pos = (*x, *y);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::LineToRel(dx, dy) => {
                     current_pos = (current_pos.0 + dx, current_pos.1 + dy);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::HorizontalTo(x) => {
                     current_pos = (*x, current_pos.1);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::HorizontalToRel(dx) => {
                     current_pos = (current_pos.0 + dx, current_pos.1);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::VerticalTo(y) => {
                     current_pos = (current_pos.0, *y);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::VerticalToRel(dy) => {
                     current_pos = (current_pos.0, current_pos.1 + dy);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::CubicTo(x1, y1, x2, y2, x, y) => {
                     let points = cubic_bezier_points(current_pos, (*x1, *y1), (*x2, *y2), (*x, *y), 20);
                     current_segment.extend(points);
                     current_pos = (*x, *y);
-                    _last_control = Some((*x2, *y2));
+                    last_cubic = Some((*x2, *y2));
+                    last_quad = None;
                 }
                 PathCommand::CubicToRel(dx1, dy1, dx2, dy2, dx, dy) => {
                     let (x1, y1) = (current_pos.0 + dx1, current_pos.1 + dy1);
@@ -1362,13 +1393,15 @@ impl SvgPath {
                     let points = cubic_bezier_points(current_pos, (x1, y1), (x2, y2), (x, y), 20);
                     current_segment.extend(points);
                     current_pos = (x, y);
-                    _last_control = Some((x2, y2));
+                    last_cubic = Some((x2, y2));
+                    last_quad = None;
                 }
                 PathCommand::QuadTo(x1, y1, x, y) => {
                     let points = quad_bezier_points(current_pos, (*x1, *y1), (*x, *y), 20);
                     current_segment.extend(points);
                     current_pos = (*x, *y);
-                    _last_control = Some((*x1, *y1));
+                    last_quad = Some((*x1, *y1));
+                    last_cubic = None;
                 }
                 PathCommand::QuadToRel(dx1, dy1, dx, dy) => {
                     let (x1, y1) = (current_pos.0 + dx1, current_pos.1 + dy1);
@@ -1376,7 +1409,8 @@ impl SvgPath {
                     let points = quad_bezier_points(current_pos, (x1, y1), (x, y), 20);
                     current_segment.extend(points);
                     current_pos = (x, y);
-                    _last_control = Some((x1, y1));
+                    last_quad = Some((x1, y1));
+                    last_cubic = None;
                 }
                 PathCommand::Close => {
                     if current_pos != start_pos {
@@ -1386,11 +1420,53 @@ impl SvgPath {
                     if !current_segment.is_empty() {
                         segments.push(std::mem::take(&mut current_segment));
                     }
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
-                // Handle other commands as lines for simplicity
-                _ => {
-                    _last_control = None;
+                // S/s and T/t: the first control point is the reflection of
+                // the previous segment's (SVG 1.1 §8.3.6, §8.3.7), or the
+                // current point when the previous command wasn't the same kind.
+                PathCommand::SmoothCubicTo(..) | PathCommand::SmoothCubicToRel(..) => {
+                    let (x2, y2, x, y) = match cmd {
+                        PathCommand::SmoothCubicTo(x2, y2, x, y) => (*x2, *y2, *x, *y),
+                        PathCommand::SmoothCubicToRel(dx2, dy2, dx, dy) => (
+                            current_pos.0 + dx2,
+                            current_pos.1 + dy2,
+                            current_pos.0 + dx,
+                            current_pos.1 + dy,
+                        ),
+                        _ => unreachable!(),
+                    };
+                    let c1 = reflect(last_cubic, current_pos);
+                    current_segment.extend(cubic_bezier_points(current_pos, c1, (x2, y2), (x, y), 20));
+                    current_pos = (x, y);
+                    last_cubic = Some((x2, y2));
+                    last_quad = None;
+                }
+                PathCommand::SmoothQuadTo(..) | PathCommand::SmoothQuadToRel(..) => {
+                    let (x, y) = match cmd {
+                        PathCommand::SmoothQuadTo(x, y) => (*x, *y),
+                        PathCommand::SmoothQuadToRel(dx, dy) => (current_pos.0 + dx, current_pos.1 + dy),
+                        _ => unreachable!(),
+                    };
+                    let c1 = reflect(last_quad, current_pos);
+                    current_segment.extend(quad_bezier_points(current_pos, c1, (x, y), 20));
+                    current_pos = (x, y);
+                    last_quad = Some(c1);
+                    last_cubic = None;
+                }
+                PathCommand::ArcTo(..) | PathCommand::ArcToRel(..) => {
+                    let (rx, ry, angle, large_arc, sweep, x, y) = match cmd {
+                        PathCommand::ArcTo(rx, ry, a, l, s, x, y) => (*rx, *ry, *a, *l, *s, *x, *y),
+                        PathCommand::ArcToRel(rx, ry, a, l, s, dx, dy) => {
+                            (*rx, *ry, *a, *l, *s, current_pos.0 + dx, current_pos.1 + dy)
+                        }
+                        _ => unreachable!(),
+                    };
+                    current_segment.extend(arc_points(current_pos, rx, ry, angle, large_arc, sweep, (x, y)));
+                    current_pos = (x, y);
+                    last_cubic = None;
+                    last_quad = None;
                 }
             }
         }
@@ -1626,6 +1702,93 @@ fn cubic_bezier_points(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), p3: (f32,
         points.push((x, y));
     }
 
+    points
+}
+
+/// The reflection of `control` about `about`; `about` itself when there is no
+/// control to reflect (S/T after a command of another kind).
+fn reflect(control: Option<(f32, f32)>, about: (f32, f32)) -> (f32, f32) {
+    match control {
+        Some((cx, cy)) => (2.0 * about.0 - cx, 2.0 * about.1 - cy),
+        None => about,
+    }
+}
+
+/// Points along an SVG elliptical arc from `p0` to `p1`, excluding `p0` and
+/// ending exactly on `p1` (SVG 1.1 appendix F.6: endpoint to center
+/// parameterization, with out-of-range radii scaled up and a zero radius
+/// meaning a straight line).
+fn arc_points(
+    p0: (f32, f32),
+    rx: f32,
+    ry: f32,
+    x_axis_rotation_deg: f32,
+    large_arc: bool,
+    sweep: bool,
+    p1: (f32, f32),
+) -> Vec<(f32, f32)> {
+    if p0 == p1 {
+        return Vec::new();
+    }
+    let (mut rx, mut ry) = (f64::from(rx.abs()), f64::from(ry.abs()));
+    if rx == 0.0 || ry == 0.0 {
+        return vec![p1];
+    }
+    let (x0, y0) = (f64::from(p0.0), f64::from(p0.1));
+    let (x1, y1) = (f64::from(p1.0), f64::from(p1.1));
+    let phi = f64::from(x_axis_rotation_deg).to_radians();
+    let (sin_phi, cos_phi) = phi.sin_cos();
+
+    // F.6.5.1: the midpoint in the ellipse's rotated frame.
+    let (hx, hy) = ((x0 - x1) / 2.0, (y0 - y1) / 2.0);
+    let xp = cos_phi * hx + sin_phi * hy;
+    let yp = -sin_phi * hx + cos_phi * hy;
+
+    // F.6.6.2: radii too small to span the endpoints are scaled up.
+    let lambda = (xp * xp) / (rx * rx) + (yp * yp) / (ry * ry);
+    if lambda > 1.0 {
+        let k = lambda.sqrt();
+        rx *= k;
+        ry *= k;
+    }
+
+    // F.6.5.2: the center in the rotated frame.
+    let num = rx * rx * ry * ry - rx * rx * yp * yp - ry * ry * xp * xp;
+    let den = rx * rx * yp * yp + ry * ry * xp * xp;
+    let mut coef = if den == 0.0 { 0.0 } else { (num / den).max(0.0).sqrt() };
+    if large_arc == sweep {
+        coef = -coef;
+    }
+    let cxp = coef * rx * yp / ry;
+    let cyp = -coef * ry * xp / rx;
+
+    // F.6.5.3: back to user space.
+    let cx = cos_phi * cxp - sin_phi * cyp + (x0 + x1) / 2.0;
+    let cy = sin_phi * cxp + cos_phi * cyp + (y0 + y1) / 2.0;
+
+    // F.6.5.5-6: start angle and sweep.
+    let angle = |ux: f64, uy: f64, vx: f64, vy: f64| (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
+    let (ux, uy) = ((xp - cxp) / rx, (yp - cyp) / ry);
+    let (vx, vy) = ((-xp - cxp) / rx, (-yp - cyp) / ry);
+    let theta1 = angle(1.0, 0.0, ux, uy);
+    let mut delta = angle(ux, uy, vx, vy);
+    if !sweep && delta > 0.0 {
+        delta -= std::f64::consts::TAU;
+    } else if sweep && delta < 0.0 {
+        delta += std::f64::consts::TAU;
+    }
+
+    // About one point per 11.25 degrees, as fine as the 20-step beziers.
+    let steps = ((delta.abs() / (std::f64::consts::PI / 16.0)).ceil() as usize).max(2);
+    let mut points = Vec::with_capacity(steps);
+    for i in 1..steps {
+        let (sin_t, cos_t) = (theta1 + delta * i as f64 / steps as f64).sin_cos();
+        points.push((
+            (cx + rx * cos_phi * cos_t - ry * sin_phi * sin_t) as f32,
+            (cy + rx * sin_phi * cos_t + ry * cos_phi * sin_t) as f32,
+        ));
+    }
+    points.push(p1);
     points
 }
 
@@ -2016,6 +2179,81 @@ fn parse_points(s: &str) -> Vec<(f32, f32)> {
 
 #[cfg(test)]
 mod tests {
+    /// Every point `to_line_segments` produces for path data `d`, in order.
+    fn flattened(d: &str) -> Vec<(f32, f32)> {
+        let path = super::SvgPath { commands: super::SvgPath::parse(d), ..Default::default() };
+        path.to_line_segments().into_iter().flatten().collect()
+    }
+
+    fn near(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3
+    }
+
+    #[test]
+    fn smooth_cubic_reflects_the_previous_control_point() {
+        // C's second control (10,10) reflects about (10,0) to (10,-10), so
+        // the S half dips below the axis.
+        let pts = flattened("M0 0 C0 10 10 10 10 0 S20 -10 20 0");
+        assert!(near(*pts.last().unwrap(), (20.0, 0.0)), "{:?}", pts.last());
+        let second_half: Vec<_> = pts.iter().filter(|p| p.0 > 10.0).collect();
+        assert!(second_half.iter().all(|p| p.1 <= 1e-3), "S must bend away from C: {second_half:?}");
+        assert!(second_half.iter().any(|p| p.1 < -5.0));
+    }
+
+    #[test]
+    fn smooth_commands_advance_the_current_point() {
+        // Relative commands after s/t/a start from where they ended.
+        for d in ["M0 0 s10 10 10 0 l5 0", "M0 0 t10 0 l5 0", "M0 0 a5 5 0 0 1 10 0 l5 0"] {
+            assert!(near(*flattened(d).last().unwrap(), (15.0, 0.0)), "{d}: {:?}", flattened(d));
+        }
+    }
+
+    #[test]
+    fn smooth_quad_reflects_only_a_quad_control() {
+        // Q's control (5,10) reflects about (10,0) to (15,-10).
+        let pts = flattened("M0 0 Q5 10 10 0 T20 0");
+        assert!(pts.iter().filter(|p| p.0 > 10.0).any(|p| p.1 < -2.0), "{pts:?}");
+        // After a cubic, T has no quad control to reflect: a straight line.
+        let pts = flattened("M0 0 C0 10 10 10 10 0 T20 0");
+        assert!(pts.iter().filter(|p| p.0 > 10.0).all(|p| p.1.abs() < 1e-3), "{pts:?}");
+    }
+
+    #[test]
+    fn arcs_follow_the_ellipse_and_honour_the_flags() {
+        // A semicircle of radius 10 about (10,0). sweep=1 is the positive
+        // angle direction, which is upward (negative y) here.
+        let up = flattened("M0 0 A10 10 0 0 1 20 0");
+        assert!(near(*up.last().unwrap(), (20.0, 0.0)));
+        for p in &up {
+            let r = ((p.0 - 10.0).powi(2) + p.1.powi(2)).sqrt();
+            assert!((r - 10.0).abs() < 1e-2, "off the circle: {p:?}");
+        }
+        assert!(up.iter().any(|p| p.1 < -9.9));
+        let down = flattened("M0 0 A10 10 0 0 0 20 0");
+        assert!(down.iter().any(|p| p.1 > 9.9));
+
+        // large-arc picks the long way round a circle through both points.
+        let small = flattened("M0 0 A10 10 0 0 1 10 10");
+        let large = flattened("M0 0 A10 10 0 1 1 10 10");
+        assert!(large.len() > small.len() * 2, "{} vs {}", large.len(), small.len());
+
+        // Radii too small are scaled up to just span the endpoints.
+        let scaled = flattened("M0 0 a1 1 0 0 1 20 0");
+        assert!(near(*scaled.last().unwrap(), (20.0, 0.0)));
+        assert!(scaled.iter().any(|p| p.1 < -9.9));
+
+        // A zero radius is a straight line.
+        assert_eq!(flattened("M0 0 A0 5 0 0 1 20 0"), vec![(0.0, 0.0), (20.0, 0.0)]);
+    }
+
+    #[test]
+    fn packed_decimals_split_into_separate_numbers() {
+        // facebook's logo: `1.727.125` is two numbers, 1.727 and .125.
+        let cmds = super::SvgPath::parse("M1.727.125l-.5.25");
+        assert!(matches!(cmds[0], super::PathCommand::MoveTo(x, y) if x == 1.727 && y == 0.125), "{cmds:?}");
+        assert!(matches!(cmds[1], super::PathCommand::LineToRel(x, y) if x == -0.5 && y == 0.25), "{cmds:?}");
+    }
+
     use super::*;
 
     #[test]
@@ -2080,6 +2318,21 @@ mod tests {
         if let Some(DisplayCommand::Text { x, .. }) = commands.iter().find(|c| matches!(c, DisplayCommand::Text { .. })) {
             assert!(*x < 100.0, "middle anchor must shift the run left: x={x}");
         }
+    }
+
+    #[test]
+    fn test_inline_style_sets_paint_and_beats_presentation_attributes() {
+        // linkedin's hero: `<path d=".." style="fill: #fbf1e2"/>`, 148 times.
+        let doc = SvgDocument::parse(
+            r##"<svg width="10" height="10"><rect width="10" height="10" fill="#0000ff" style="fill: #fbf1e2; stroke:#ff0000 !important;stroke-width: 2"/></svg>"##,
+        )
+        .expect("parse");
+        let SvgElement::Group(root) = &doc.root else { panic!("root is a group") };
+        let SvgElement::Rect(rect) = &root.children[0] else { panic!("rect") };
+        let rgb = |c: Option<Color>| c.map(|c| (c.r, c.g, c.b));
+        assert_eq!(rgb(rect.style.fill_color()), Some((0xfb, 0xf1, 0xe2)));
+        assert_eq!(rgb(rect.style.stroke_color()), Some((0xff, 0, 0)));
+        assert_eq!(rect.style.stroke_width, 2.0);
     }
 
     #[test]

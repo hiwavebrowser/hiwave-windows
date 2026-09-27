@@ -129,6 +129,11 @@ pub struct FlexItem<'a> {
     /// children are laid out (step 11); step 11d re-derives it from the real
     /// laid-out height for exactly these items.
     pub main_size_from_content: bool,
+
+    /// §4.5's automatic minimum applies on the VERTICAL main axis: a
+    /// non-replaced item with `min-height: auto` and `overflow-y: visible`.
+    /// The number needs laid-out children, so step 11d applies it.
+    pub auto_min_main: bool,
 }
 
 impl<'a> FlexItem<'a> {
@@ -278,11 +283,32 @@ pub fn layout_flex_container_in(
     container_box: &Dimensions,
     positioning_cb: Option<&Dimensions>,
 ) {
+    layout_flex_container_at(container, container_box, positioning_cb, None)
+}
+
+/// As [`layout_flex_container_in`], for a container that is itself a flex
+/// item whose parent flex has already fixed its used inner HEIGHT.
+///
+/// css-flexbox-1 §9.4.11 and §9.8: a stretched item's used cross size, and
+/// an item's post-flexing main size in a container with a definite main
+/// size, are treated as DEFINITE when the item's contents are laid out. An
+/// item that is also a flex container has `height: auto` in style, so
+/// without this the inner pass sized its line by its content and centred
+/// its items in that: `align-items: center` inside a stretched 1000px item
+/// put a 50px box at y=0, where Chrome 148 puts it at y=475 (x's logo
+/// column, and every hero that centres inside a stretched flex item).
+fn layout_flex_container_at(
+    container: &mut LayoutBox,
+    container_box: &Dimensions,
+    positioning_cb: Option<&Dimensions>,
+    used_inner_height: Option<f32>,
+) {
     // Resolved once, up front, and read by both the main-size choice below
     // and step 11d's redistribution: these take `&LayoutBox`, and from the
     // moment the item list borrows `container.children` mutably no whole-box
     // borrow is available again.
-    let style_definite_inner_main = definite_inner_main_size(container);
+    let style_definite_inner_main =
+        used_inner_height.or_else(|| definite_inner_main_size(container));
     let style_min_inner_main = min_inner_main_size(container);
 
     let style = &container.style;
@@ -325,7 +351,13 @@ pub fn layout_flex_container_in(
     // rather than restating the rule.
     let container_main_size = match main_axis {
         Axis::Horizontal => container_box.content.width,
-        Axis::Vertical => style_definite_inner_main.unwrap_or(container_box.content.height),
+        // An indefinite height still has its `min-height` floor
+        // (css-sizing-3 §5.1), and the items grow into it. The collapse
+        // entry point hands over the pre-pass stack, which can sit below
+        // the floor: x's `min-height: 100dvh` column grew its `flex: 1`
+        // row to the 450px stack instead of the 1000px floor.
+        Axis::Vertical => style_definite_inner_main
+            .unwrap_or(container_box.content.height.max(style_min_inner_main)),
     };
     // Deliberately NOT given the same treatment: the cross-axis analogue (an
     // inset-stretched ROW container centring items in a stale cursor) is the
@@ -341,7 +373,9 @@ pub fn layout_flex_container_in(
     // For row direction, cross axis is vertical (height)
     // For column direction, cross axis is horizontal (width)
     let has_definite_cross_size = match cross_axis {
-        Axis::Vertical => !matches!(container.style.height, Length::Auto),
+        Axis::Vertical => {
+            used_inner_height.is_some() || !matches!(container.style.height, Length::Auto)
+        }
         // A block-level flex container with `width: auto` still has a
         // DEFINITE used width — it resolves against its containing block.
         // Treating auto as indefinite sent the stretch path down the
@@ -362,7 +396,9 @@ pub fn layout_flex_container_in(
     // children-stacked height in content.height (logo 38.4 + nav 25.6 = 64
     // inside a height:60px header), which would center every item 2px low.
     // Px lengths resolve here; anything else falls back to the passed size.
-    let definite_inner_cross = if has_definite_cross_size {
+    let definite_inner_cross = if let (Axis::Vertical, Some(h)) = (cross_axis, used_inner_height) {
+        Some(h)
+    } else if has_definite_cross_size {
         let (spec, pb) = match cross_axis {
             Axis::Vertical => (
                 &container.style.height,
@@ -555,9 +591,35 @@ pub fn layout_flex_container_in(
             // If this flex item has children and is a container (flex or block), lay them out
             if !item.layout_box.children.is_empty() {
                 if item.layout_box.style.display.is_flex() {
-                    // Nested flex container: recursively apply flex layout
+                    // Nested flex container: recursively apply flex layout.
+                    // Its height is DEFINITE when this pass already fixed it
+                    // (§9.4.11: stretched in a definite single line; §9.8:
+                    // flexed along a definite vertical main axis), and the
+                    // inner pass aligns and grows against that, not against
+                    // its own content.
+                    let stretched = cross_axis == Axis::Vertical
+                        && wrap == FlexWrap::NoWrap
+                        && definite_inner_cross.is_some()
+                        && !item.has_explicit_cross_size
+                        && resolved_align(item.align_self, style.align_items)
+                            == AlignItems::Stretch;
+                    // A `min-height` floor counts: steps 4–10 already grew
+                    // the items into it (`min-height: 100dvh` columns, x's
+                    // layout), and Chrome 148 lays their contents out at
+                    // that grown size.
+                    let flexed = main_axis == Axis::Vertical
+                        && !item.main_size_from_content
+                        && (style_definite_inner_main.or(inset_inner_main).is_some()
+                            || style_min_inner_main > 0.0);
+                    let used_inner_height = (stretched || flexed)
+                        .then_some(item.layout_box.dimensions.content.height);
                     let child_containing = item.layout_box.dimensions.clone();
-                    layout_flex_container(item.layout_box, &child_containing);
+                    layout_flex_container_at(
+                        item.layout_box,
+                        &child_containing,
+                        None,
+                        used_inner_height,
+                    );
                     // Absolutely positioned children are skipped by the flex
                     // item collection; lay them out against the item's FINAL
                     // dimensions so `inset: 0` overlays position AND stretch
@@ -799,6 +861,21 @@ pub fn layout_flex_container_in(
                 if content_height > item.layout_box.dimensions.content.height {
                     item.cross_size = target;
                     item.layout_box.dimensions.content.height = content_height;
+                    // A nested flex container laid its items out in step 11
+                    // against its content height; §9.4.11 says redo that
+                    // layout with the stretched size as definite, or
+                    // `align-items: center` inside it centres in the old one.
+                    if item.layout_box.style.display.is_flex()
+                        && !item.layout_box.children.is_empty()
+                    {
+                        let child_containing = item.layout_box.dimensions.clone();
+                        layout_flex_container_at(
+                            item.layout_box,
+                            &child_containing,
+                            None,
+                            Some(content_height),
+                        );
+                    }
                     item.layout_box.reanchor_absolute_children();
                 }
             }
@@ -847,6 +924,42 @@ pub fn layout_flex_container_in(
     // grow/shrink resolution from the corrected hypotheticals.
     if main_axis == Axis::Vertical {
         let mut any_changed = false;
+        // css-flexbox-1 §4.5 on the vertical main axis. Steps 4–10 had no
+        // min-content HEIGHT (create_flex_item floors at 0 there); the
+        // children laid out in step 11 now say how tall each item's content
+        // is, so the automatic minimum is applied here and the rerun below
+        // honours it. Without it a `flex: 1` column item shrank below its
+        // content: the shelf's command palette went to its padding (24)
+        // where Chrome 148 keeps its 135 and overflows the 120 body.
+        for line in &mut lines {
+            for item in &mut line.items {
+                if !item.auto_min_main || item.layout_box.children.is_empty() {
+                    continue;
+                }
+                let mut auto_min = content_border_height(item.layout_box);
+                // Specified size suggestion: a definite height caps it.
+                if let Length::Px(h) = item.layout_box.style.height {
+                    auto_min = auto_min.min(spec_height_to_border_box(item.layout_box, h));
+                }
+                let auto_min = auto_min.min(item.max_main_size);
+                if auto_min > item.min_main_size + 0.01 {
+                    item.min_main_size = auto_min;
+                    // A content-sized item's hypothetical size is re-derived
+                    // just below, and the change it detects is what triggers
+                    // the rerun; only its floor is raised here.
+                    if item.main_size_from_content {
+                        continue;
+                    }
+                    if item.hypothetical_main_size < auto_min {
+                        item.hypothetical_main_size = auto_min;
+                    }
+                    if item.target_main_size < auto_min - 0.01 {
+                        item.target_main_size = auto_min;
+                        any_changed = true;
+                    }
+                }
+            }
+        }
         for line in &mut lines {
             for item in &mut line.items {
                 if !item.main_size_from_content || item.layout_box.children.is_empty() {
@@ -869,6 +982,9 @@ pub fn layout_flex_container_in(
                     .max(item.min_main_size)
                     .min(item.max_main_size);
                 if (new_hyp - item.hypothetical_main_size).abs() > 0.01 {
+                    // A content-sized basis IS the content size, so the base
+                    // size the flexing step starts from moves with it.
+                    item.flex_basis = laid_out + item.main_pb();
                     item.hypothetical_main_size = new_hyp;
                     item.target_main_size = new_hyp;
                     any_changed = true;
@@ -916,8 +1032,27 @@ pub fn layout_flex_container_in(
                     if delta != 0.0 {
                         translate_subtree(item.layout_box, 0.0, delta);
                     }
-                    item.layout_box.dimensions.content.height =
-                        (item.target_main_size - item.main_pb()).max(0.0);
+                    let used = (item.target_main_size - item.main_pb()).max(0.0);
+                    let resized = (used - item.layout_box.dimensions.content.height).abs() > 0.01;
+                    item.layout_box.dimensions.content.height = used;
+                    // Step 11 laid a nested flex container out at its old
+                    // height; the flexed one is final now (§9.8), so its
+                    // items align and grow against it. x's logo column is
+                    // this: a `flex: 1 1 0%` row in a `min-height: 100dvh`
+                    // column only reaches 1000px here, and its centred
+                    // child sat in the middle of the pre-grow height.
+                    if resized
+                        && item.layout_box.style.display.is_flex()
+                        && !item.layout_box.children.is_empty()
+                    {
+                        let child_containing = item.layout_box.dimensions.clone();
+                        layout_flex_container_at(
+                            item.layout_box,
+                            &child_containing,
+                            None,
+                            Some(used),
+                        );
+                    }
                 }
             }
         }
@@ -962,7 +1097,11 @@ pub fn layout_flex_container_in(
             Axis::Horizontal => total_cross,
             Axis::Vertical => total_main,
         };
-        if let Some(used_main) = inset_used_main {
+        if let Some(used) = used_inner_height {
+            // The parent flex fixed this height (§9.4.11 / §9.8); the items'
+            // extent neither grows nor shrinks it.
+            container.dimensions.content.height = used;
+        } else if let Some(used_main) = inset_used_main {
             // CSS2 §10.6.4, a third time and in the other direction: an
             // inset-stretched box's `height: auto` does not mean "size me by
             // my content". The constraint equation already fixed the used
@@ -1045,6 +1184,8 @@ pub fn layout_flex_container_in(
         // new_tab's body, and Chrome aligns in the floored 800, not the stack).
         let used_inner_main = if main_is_horizontal {
             content.width
+        } else if let Some(used) = used_inner_height {
+            used
         } else {
             let pb = container.dimensions.padding.vertical() + container.dimensions.border.vertical();
             let is_bb = container.style.box_sizing == rustkit_css::BoxSizing::BorderBox;
@@ -1287,7 +1428,7 @@ fn create_flex_item<'a>(
     //
     // `min-width: auto` is the DEFAULT for a flex item, and the spec resolves
     // it to the item's content-based minimum (min-content), not to zero.
-    // Flooring at zero let shrink_items() squeeze items arbitrarily narrow,
+    // Flooring at zero let the shrink step squeeze items arbitrarily narrow,
     // including text: layout believed a run was 9.36px wide while paint drew
     // it at its true 18.66px, because the shaper is downstream of this and
     // never saw the squeeze. That mismatch is what put overlapping keyboard
@@ -1340,6 +1481,13 @@ fn create_flex_item<'a>(
     } else {
         0.0
     };
+    let auto_min_main = main_axis == Axis::Vertical
+        && specified_min_is_auto
+        && main_overflow_is_visible
+        && matches!(
+            layout_box.box_type,
+            crate::BoxType::Block | crate::BoxType::Inline | crate::BoxType::AnonymousBlock
+        );
     let max_main = if max_main.is_finite() {
         spec_main_to_border_box(max_main)
     } else {
@@ -1424,6 +1572,7 @@ fn create_flex_item<'a>(
         cross_pb_start,
         cross_pb_end,
         main_size_from_content,
+        auto_min_main,
     }
 }
 
@@ -1481,101 +1630,159 @@ fn collect_flex_lines<'a>(
     lines
 }
 
-/// Resolve flexible lengths (grow/shrink) for a line.
+/// Resolve flexible lengths (grow/shrink) for a line — css-flexbox-1 §9.7.
+///
+/// Free space is measured from each item's FLEX BASE SIZE, not from its
+/// hypothetical (min/max-clamped) main size. The two differ whenever the
+/// automatic minimum (§4.5) lifts an item above its basis, which is exactly
+/// the `flex: 1 1 0%` idiom: two basis-0 items where one holds a 50px box
+/// both hypothetically start at their min-content, and measuring free space
+/// from those split the row 175/225 where Chrome splits it 200/200. The
+/// minimum is honoured by the violation loop instead: an item whose share
+/// falls below it is frozen at it and the rest is redistributed.
 fn resolve_flexible_lengths(line: &mut FlexLine, container_main: f32, main_gap: f32) {
     if line.items.is_empty() {
         return;
     }
 
-    // Calculate used space
     let total_gaps = main_gap * (line.items.len().saturating_sub(1)) as f32;
-    let used_space: f32 = line
+    let margins = |i: &FlexItem| i.main_margin_start + i.main_margin_end;
+    // Border-box base size. A basis can't make the content box negative, so
+    // it never goes below the item's own padding+border.
+    let base = |i: &FlexItem| i.flex_basis.max(i.main_pb());
+
+    // 1. Use the grow factor when the hypothetical sizes leave space over.
+    let hypothetical_sum: f32 = line
         .items
         .iter()
-        .map(|i| i.hypothetical_main_size + i.main_margin_start + i.main_margin_end)
+        .map(|i| i.hypothetical_main_size + margins(i))
         .sum();
-    let free_space = container_main - used_space - total_gaps;
-
-    if free_space.abs() < 0.01 {
-        // No adjustment needed
+    // Hypothetical sizes that already fill the line leave nothing to
+    // distribute: §9.7 would end with every item at its hypothetical size.
+    // Returning early keeps the targets the caller holds instead, and step
+    // 11d relies on that. Its indefinite-height re-run sizes the container
+    // to exactly this sum, and the vertical automatic minimum (§4.5) only
+    // covers items whose content 11d can read (`content_border_height`).
+    // For anything else a `flex: 1` item's hypothetical height is its 0
+    // basis, and resolving would collapse it to its padding; keeping the
+    // target keeps the size the first pass gave it.
+    if (container_main - hypothetical_sum - total_gaps).abs() < 0.01 {
         return;
     }
+    let growing = hypothetical_sum + total_gaps < container_main;
+    let factor = |i: &FlexItem| if growing { i.flex_grow } else { i.flex_shrink };
 
-    // Reset frozen state
+    // 2. Size inflexible items: a zero factor, or a basis already past the
+    // hypothetical size in the direction of flexing, freezes at the
+    // hypothetical size.
     for item in &mut line.items {
-        item.frozen = false;
         item.target_main_size = item.hypothetical_main_size;
+        let b = base(item);
+        item.frozen = factor(item) <= 0.0
+            || (growing && b > item.hypothetical_main_size)
+            || (!growing && b < item.hypothetical_main_size);
     }
 
-    if free_space > 0.0 {
-        // Grow items
-        grow_items(line, free_space);
-    } else {
-        // Shrink items
-        shrink_items(line, -free_space);
-    }
-}
+    let remaining_free_space = |line: &FlexLine| -> f32 {
+        let used: f32 = line
+            .items
+            .iter()
+            .map(|i| {
+                (if i.frozen {
+                    i.target_main_size
+                } else {
+                    base(i)
+                }) + margins(i)
+            })
+            .sum();
+        container_main - used - total_gaps
+    };
 
-/// Grow items to fill free space.
-fn grow_items(line: &mut FlexLine, free_space: f32) {
-    let total_grow: f32 = line
-        .items
-        .iter()
-        .filter(|i| !i.frozen)
-        .map(|i| i.flex_grow)
-        .sum();
+    // 3. Initial free space.
+    let initial_free_space = remaining_free_space(line);
 
-    if total_grow <= 0.0 {
-        return;
-    }
-
-    let space_per_grow = free_space / total_grow;
-
-    for item in &mut line.items {
-        if item.frozen {
-            continue;
+    // 4. Loop. Each pass freezes at least one item, so it ends within
+    // items.len() passes; the bound is a guard against float stalls.
+    for _ in 0..=line.items.len() {
+        if line.items.iter().all(|i| i.frozen) {
+            break;
         }
 
-        let grow = item.flex_grow * space_per_grow;
-        let new_size = item.target_main_size + grow;
+        // b. Remaining free space, scaled down when the unfrozen factors sum
+        // to less than 1.
+        let mut free_space = remaining_free_space(line);
+        let factor_sum: f32 = line
+            .items
+            .iter()
+            .filter(|i| !i.frozen)
+            .map(|i| factor(i))
+            .sum();
+        if factor_sum < 1.0 {
+            let scaled = initial_free_space * factor_sum;
+            if scaled.abs() < free_space.abs() {
+                free_space = scaled;
+            }
+        }
 
-        if new_size > item.max_main_size {
-            item.target_main_size = item.max_main_size;
-            item.frozen = true;
+        // c. Distribute in proportion to the flex factors.
+        if free_space != 0.0 {
+            if growing {
+                for item in line.items.iter_mut().filter(|i| !i.frozen) {
+                    item.target_main_size = base(item) + free_space * item.flex_grow / factor_sum;
+                }
+            } else {
+                // Shrink in proportion to the scaled shrink factor, which
+                // weights by the INNER base size.
+                let scaled = |i: &FlexItem| i.flex_shrink * (base(i) - i.main_pb());
+                let scaled_sum: f32 = line.items.iter().filter(|i| !i.frozen).map(scaled).sum();
+                for item in line.items.iter_mut().filter(|i| !i.frozen) {
+                    item.target_main_size = if scaled_sum > 0.0 {
+                        base(item) - free_space.abs() * scaled(item) / scaled_sum
+                    } else {
+                        base(item)
+                    };
+                }
+            }
         } else {
-            item.target_main_size = new_size;
-        }
-    }
-}
-
-/// Shrink items to remove overflow.
-fn shrink_items(line: &mut FlexLine, overflow: f32) {
-    let total_shrink_scaled: f32 = line
-        .items
-        .iter()
-        .filter(|i| !i.frozen)
-        .map(|i| i.flex_shrink * i.flex_basis)
-        .sum();
-
-    if total_shrink_scaled <= 0.0 {
-        return;
-    }
-
-    for item in &mut line.items {
-        if item.frozen {
-            continue;
+            for item in line.items.iter_mut().filter(|i| !i.frozen) {
+                item.target_main_size = base(item);
+            }
         }
 
-        let shrink_scaled = item.flex_shrink * item.flex_basis;
-        let shrink_ratio = shrink_scaled / total_shrink_scaled;
-        let shrink = overflow * shrink_ratio;
-        let new_size = (item.target_main_size - shrink).max(item.min_main_size);
+        // d. Clamp to min/max (min wins) and total the violations.
+        let mut total_violation = 0.0f32;
+        let mut clamp = vec![0i8; line.items.len()];
+        for (k, item) in line.items.iter_mut().enumerate() {
+            if item.frozen {
+                continue;
+            }
+            let unclamped = item.target_main_size;
+            let clamped = unclamped
+                .min(item.max_main_size)
+                .max(item.min_main_size)
+                .max(0.0);
+            if clamped > unclamped {
+                clamp[k] = 1;
+            } else if clamped < unclamped {
+                clamp[k] = -1;
+            }
+            item.target_main_size = clamped;
+            total_violation += clamped - unclamped;
+        }
 
-        if new_size <= item.min_main_size {
-            item.target_main_size = item.min_main_size;
-            item.frozen = true;
-        } else {
-            item.target_main_size = new_size;
+        // e. Freeze: all when there's no net violation, else the min (positive)
+        // or max (negative) violators.
+        for (k, item) in line.items.iter_mut().enumerate() {
+            if item.frozen {
+                continue;
+            }
+            item.frozen = if total_violation.abs() < 0.01 {
+                true
+            } else if total_violation > 0.0 {
+                clamp[k] > 0
+            } else {
+                clamp[k] < 0
+            };
         }
     }
 }
@@ -2183,6 +2390,104 @@ pub(crate) fn translate_subtree(b: &mut crate::LayoutBox, dx: f32, dy: f32) {
     for child in &mut b.children {
         translate_subtree(child, dx, dy);
     }
+}
+
+/// A `height: <px>` as a border-box figure.
+fn spec_height_to_border_box(b: &LayoutBox, h: f32) -> f32 {
+    if b.style.box_sizing == rustkit_css::BoxSizing::BorderBox {
+        h
+    } else {
+        h + b.dimensions.padding.vertical() + b.dimensions.border.vertical()
+    }
+}
+
+/// The border-box height a laid-out box's CONTENT asks for: the height it
+/// would have with `height: auto`, read off its laid-out subtree. This is
+/// §4.5's content size suggestion on the vertical axis (block-axis min- and
+/// max-content are the same height).
+///
+/// The box's own `content.height` can't be used: a flex item's used main
+/// size has already been written there (step 11 restores it on the block
+/// path, and a nested flex container is laid out at it), so a squeezed item
+/// reads as small as it was squeezed and a grown one as large as it grew.
+/// So a flex container adds up (column) or takes the tallest of (single-line
+/// row) its items' own content heights, and anything else takes the extent
+/// of its in-flow children, falling back to its flowed height when there
+/// are none to read.
+///
+/// A percentage height counts as `auto` here: an intrinsic size never
+/// resolves a percentage against the indefinite height it is computing
+/// (CSS 2.1 §10.5). Block-level children are measured the same way rather
+/// than read off their boxes, because a laid-out block is as tall as any
+/// percentage-height descendant made it. x.com's `h-full` login widget
+/// inside an auto-height `min-h-[440px]` wrapper lays out at the 800px
+/// viewport, and reading that as content floored x's `flex-1` main row at
+/// 1011, pushing its footer out of the first viewport.
+fn content_border_height(b: &LayoutBox) -> f32 {
+    let d = &b.dimensions;
+    let pb = d.padding.vertical() + d.border.vertical();
+    let pct_height = match b.style.height {
+        Length::Px(h) => return spec_height_to_border_box(b, h),
+        Length::Auto => false,
+        Length::Percent(_) => true,
+        // Any other length (vh, em, calc…) is already resolved.
+        _ => return d.content.height + pb,
+    };
+    let min = match b.style.min_height {
+        Length::Px(h) => spec_height_to_border_box(b, h),
+        _ => 0.0,
+    };
+    let in_flow = |c: &&LayoutBox| {
+        !matches!(
+            c.style.position,
+            rustkit_css::Position::Absolute | rustkit_css::Position::Fixed
+        ) && !matches!(&c.box_type, crate::BoxType::Text(t) if t.trim().is_empty())
+    };
+    let block_level = |c: &LayoutBox| {
+        matches!(
+            c.box_type,
+            crate::BoxType::Block | crate::BoxType::AnonymousBlock
+        )
+    };
+    let extent = || {
+        b.children
+            .iter()
+            .filter(in_flow)
+            .map(|c| {
+                let m = c.dimensions.margin_box();
+                let h = if block_level(c) {
+                    c.dimensions.margin.vertical() + content_border_height(c)
+                } else {
+                    m.height
+                };
+                m.y + h - d.content.y
+            })
+            .fold(0.0f32, f32::max)
+    };
+    let content = if b.style.display.is_flex() && !b.children.is_empty() {
+        let outer = |c: &LayoutBox| content_border_height(c) + c.dimensions.margin.vertical();
+        if !b.style.flex_direction.is_row() {
+            let kids: Vec<f32> = b.children.iter().filter(in_flow).map(outer).collect();
+            let gap = resolve_length(&b.style.row_gap, 0.0);
+            kids.iter().sum::<f32>() + gap * kids.len().saturating_sub(1) as f32
+        } else if b.style.flex_wrap == FlexWrap::NoWrap {
+            b.children
+                .iter()
+                .filter(in_flow)
+                .map(outer)
+                .fold(0.0f32, f32::max)
+        } else {
+            extent()
+        }
+    } else {
+        let e = extent();
+        if e > 0.0 || pct_height {
+            e
+        } else {
+            d.content.height
+        }
+    };
+    (content.max(0.0) + pb).max(min)
 }
 
 /// Get the intrinsic main size for replaced elements (form controls, images).

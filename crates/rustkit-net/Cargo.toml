@@ -37,6 +37,9 @@ bytes = "1.9"
 # Headers
 http = "1.2"
 
+# data: URL payloads
+base64 = "0.22"
+
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }

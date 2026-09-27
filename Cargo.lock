@@ -657,8 +657,6 @@ dependencies = [
 [[package]]
 name = "boa_gc"
 version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2425c0b7720d42d73eaa6a883fbb77a5c920da8694964a3d79a67597ac55cce2"
 dependencies = [
  "boa_macros",
  "boa_profiler",
@@ -5148,6 +5146,7 @@ name = "rustkit-js"
 version = "0.1.0"
 dependencies = [
  "boa_engine",
+ "boa_gc",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -5189,6 +5188,7 @@ dependencies = [
 name = "rustkit-net"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "futures",
  "http",
