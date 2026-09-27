@@ -2513,8 +2513,10 @@ dependencies = [
  "rustkit-viewhost",
  "serde_json",
  "tao",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "windows 0.58.0",
  "wry",
 ]
@@ -5096,6 +5098,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "bytes",
+ "flate2",
  "futures",
  "http",
  "native-tls",

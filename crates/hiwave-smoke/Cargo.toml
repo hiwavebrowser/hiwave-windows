@@ -25,6 +25,10 @@ rustkit-viewhost = { path = "../rustkit-viewhost" }
 # For window handle conversion
 raw-window-handle = "0.6"
 
+# Live URL loading (--url): Engine::load_url is async
+tokio = { version = "1.42", features = ["rt"] }
+url = { workspace = true }
+
 # Windows platform support
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation"] }

@@ -1,0 +1,26 @@
+{
+  "description": "Real-site board, phase 1: top 20 US consumer sites, logged-out, 1280x800 first viewport. Pinned list — change it only with a dated note in trench/BASELINE-realsite.md, never to make the number move.",
+  "viewport": { "width": 1280, "height": 800 },
+  "sites": [
+    { "id": "google",    "url": "https://www.google.com/" },
+    { "id": "youtube",   "url": "https://www.youtube.com/" },
+    { "id": "facebook",  "url": "https://www.facebook.com/" },
+    { "id": "instagram", "url": "https://www.instagram.com/" },
+    { "id": "wikipedia", "url": "https://en.wikipedia.org/wiki/Web_browser" },
+    { "id": "amazon",    "url": "https://www.amazon.com/" },
+    { "id": "reddit",    "url": "https://www.reddit.com/" },
+    { "id": "x",         "url": "https://x.com/" },
+    { "id": "linkedin",  "url": "https://www.linkedin.com/" },
+    { "id": "yahoo",     "url": "https://www.yahoo.com/" },
+    { "id": "bing",      "url": "https://www.bing.com/" },
+    { "id": "chatgpt",   "url": "https://chatgpt.com/" },
+    { "id": "microsoft", "url": "https://www.microsoft.com/en-us" },
+    { "id": "apple",     "url": "https://www.apple.com/" },
+    { "id": "netflix",   "url": "https://www.netflix.com/" },
+    { "id": "github",    "url": "https://github.com/" },
+    { "id": "ebay",      "url": "https://www.ebay.com/" },
+    { "id": "nytimes",   "url": "https://www.nytimes.com/" },
+    { "id": "cnn",       "url": "https://www.cnn.com/" },
+    { "id": "weather",   "url": "https://weather.com/" }
+  ]
+}
