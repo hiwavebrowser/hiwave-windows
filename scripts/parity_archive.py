@@ -31,7 +31,7 @@ def get_git_commit() -> str:
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=5, encoding="utf-8"
         )
         if result.returncode == 0:
             return result.stdout.strip()[:12]
@@ -47,7 +47,7 @@ def get_git_branch() -> str:
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=5, encoding="utf-8"
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -146,8 +146,7 @@ def archive_run(
             shutil.rmtree(captures_dst)
         shutil.copytree(captures_src, captures_dst)
     
-    # Update 'latest' pointer. Symlinks need elevation on Windows
-    # (WinError 1314), so fall back to a plain latest.txt pointer file.
+    # Update 'latest' symlink
     latest_link = history_dir / "latest"
     if latest_link.is_symlink():
         latest_link.unlink()
@@ -155,7 +154,7 @@ def archive_run(
         latest_link.unlink()
     try:
         latest_link.symlink_to(timestamp)
-    except OSError:
+    except OSError:  # Windows: symlinks need elevation (WinError 1314)
         (history_dir / "latest.txt").write_text(timestamp, encoding="utf-8")
     
     return run_dir
@@ -272,4 +271,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 

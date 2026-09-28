@@ -40,3 +40,5 @@ export function buildChromeStyleIndex(chromeStylesJson) {
   const elements = chromeStylesJson?.elements || [];
   return new Map(elements.map((e) => [e.selector, e]));
 }
+
+

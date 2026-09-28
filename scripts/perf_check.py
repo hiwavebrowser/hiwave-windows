@@ -23,7 +23,7 @@ DEFAULT_BASELINE_FILE = PROJECT_DIR / "perf_baseline.json"
 
 def load_budgets() -> dict:
     """Load performance budget configuration."""
-    with open(BUDGETS_FILE) as f:
+    with open(BUDGETS_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -31,7 +31,7 @@ def load_perf_files(perf_dir: Path) -> List[Tuple[str, dict]]:
     """Load all .perf.json files from a directory."""
     results = []
     for f in perf_dir.glob("*.perf.json"):
-        with open(f) as pf:
+        with open(f, encoding="utf-8") as pf:
             data = json.load(pf)
             page_id = f.stem.replace(".perf", "")
             # Handle both "perf" and "timings" keys for compatibility
@@ -43,14 +43,14 @@ def load_perf_files(perf_dir: Path) -> List[Tuple[str, dict]]:
 def load_baseline(baseline_file: Path) -> Optional[dict]:
     """Load baseline performance data."""
     if baseline_file.exists():
-        with open(baseline_file) as f:
+        with open(baseline_file, encoding="utf-8") as f:
             return json.load(f)
     return None
 
 
 def save_baseline(baseline_file: Path, data: dict):
     """Save baseline performance data."""
-    with open(baseline_file, "w") as f:
+    with open(baseline_file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
 

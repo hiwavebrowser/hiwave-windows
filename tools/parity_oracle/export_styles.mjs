@@ -34,7 +34,7 @@ const KEY_PROPERTIES = [
   'border-bottom-width',
   'border-left-width',
   'box-sizing',
-
+  
   // Positioning
   'position',
   'top',
@@ -42,7 +42,7 @@ const KEY_PROPERTIES = [
   'bottom',
   'left',
   'z-index',
-
+  
   // Flexbox
   'flex-direction',
   'flex-wrap',
@@ -53,14 +53,14 @@ const KEY_PROPERTIES = [
   'flex-shrink',
   'flex-basis',
   'align-self',
-
+  
   // Grid
   'grid-template-columns',
   'grid-template-rows',
   'grid-column',
   'grid-row',
   'gap',
-
+  
   // Typography
   'font-family',
   'font-size',
@@ -69,18 +69,18 @@ const KEY_PROPERTIES = [
   'line-height',
   'text-align',
   'color',
-
+  
   // Background
   'background-color',
   'background-image',
-
+  
   // Visual
   'opacity',
   'visibility',
   'overflow',
   'overflow-x',
   'overflow-y',
-
+  
   // Transform
   'transform',
   'transform-origin',
@@ -88,7 +88,7 @@ const KEY_PROPERTIES = [
 
 /**
  * Generate a unique CSS selector for an element
- *
+ * 
  * @param {Element} el - DOM element
  * @returns {string} Unique selector
  */
@@ -96,20 +96,20 @@ function getUniqueSelector(el) {
   if (el.id) {
     return `#${el.id}`;
   }
-
+  
   const path = [];
   let current = el;
-
+  
   while (current && current.nodeType === 1) {
     let selector = current.tagName.toLowerCase();
-
+    
     if (current.className && typeof current.className === 'string') {
       const classes = current.className.trim().split(/\s+/).filter(c => c);
       if (classes.length > 0) {
         selector += '.' + classes.slice(0, 2).join('.');
       }
     }
-
+    
     // Add nth-child for disambiguation
     const parent = current.parentElement;
     if (parent) {
@@ -121,23 +121,23 @@ function getUniqueSelector(el) {
         selector += `:nth-of-type(${idx})`;
       }
     }
-
+    
     path.unshift(selector);
     current = current.parentElement;
-
+    
     // Stop at body
     if (current && current.tagName === 'BODY') {
       path.unshift('body');
       break;
     }
   }
-
+  
   return path.join(' > ');
 }
 
 /**
  * Export computed styles for all elements in a page
- *
+ * 
  * @param {string} htmlPath - Path to HTML file
  * @param {number} width - Viewport width
  * @param {number} height - Viewport height
@@ -146,13 +146,13 @@ function getUniqueSelector(el) {
  */
 export async function exportStyles(htmlPath, width, height, selector = '*') {
   const absolutePath = resolve(htmlPath);
-
+  
   if (!existsSync(absolutePath)) {
     throw new Error(`HTML file not found: ${absolutePath}`);
   }
-
+  
   const browser = await chromium.launch(getDeterministicLaunchOptions());
-
+  
   try {
     const context = await createDeterministicContext(
       browser,
@@ -160,38 +160,37 @@ export async function exportStyles(htmlPath, width, height, selector = '*') {
       height,
       { applyParityReset: shouldApplyParityResetForHtmlPath(absolutePath) }
     );
-
+    
     const page = await context.newPage();
-
+    
     // Load the page
-    // On Windows, convert backslashes to forward slashes for file:// URLs
-    const fileUrl = `file:///${absolutePath.replace(/\\/g, '/')}`;
+    const fileUrl = `file://${absolutePath}`;
     await page.goto(fileUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(50);
-
+    
     // Extract styles
     const styles = await page.evaluate((args) => {
       const { selector, properties } = args;
       const elements = document.querySelectorAll(selector);
       const results = [];
-
+      
       // Helper to get unique selector
       function getSelector(el) {
         if (el.id) return `#${el.id}`;
-
+        
         const path = [];
         let current = el;
-
+        
         while (current && current.nodeType === 1) {
           let sel = current.tagName.toLowerCase();
-
+          
           if (current.className && typeof current.className === 'string') {
             const classes = current.className.trim().split(/\s+/).filter(c => c);
             if (classes.length > 0) {
               sel += '.' + classes.slice(0, 2).join('.');
             }
           }
-
+          
           const parent = current.parentElement;
           if (parent) {
             const siblings = Array.from(parent.children).filter(
@@ -202,35 +201,35 @@ export async function exportStyles(htmlPath, width, height, selector = '*') {
               sel += `:nth-of-type(${idx})`;
             }
           }
-
+          
           path.unshift(sel);
           current = current.parentElement;
-
+          
           if (current && current.tagName === 'BODY') {
             path.unshift('body');
             break;
           }
         }
-
+        
         return path.join(' > ');
       }
-
+      
       for (const el of elements) {
         // Skip invisible elements
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 && rect.height === 0) continue;
-
+        
         // Skip script/style/meta tags
         const tag = el.tagName.toLowerCase();
         if (['script', 'style', 'meta', 'link', 'head', 'title'].includes(tag)) continue;
-
+        
         const computed = getComputedStyle(el);
         const styleObj = {};
-
+        
         for (const prop of properties) {
           styleObj[prop] = computed.getPropertyValue(prop);
         }
-
+        
         results.push({
           selector: getSelector(el),
           tag: tag,
@@ -245,13 +244,13 @@ export async function exportStyles(htmlPath, width, height, selector = '*') {
           styles: styleObj,
         });
       }
-
+      
       return results;
     }, { selector, properties: KEY_PROPERTIES });
-
+    
     await context.close();
     return styles;
-
+    
   } finally {
     await browser.close();
   }
@@ -259,7 +258,7 @@ export async function exportStyles(htmlPath, width, height, selector = '*') {
 
 /**
  * Compare computed styles between Chrome and RustKit
- *
+ * 
  * @param {Array} chromeStyles - Styles from Chrome
  * @param {Array} rustkitStyles - Styles from RustKit
  * @returns {Object} Comparison results
@@ -267,7 +266,7 @@ export async function exportStyles(htmlPath, width, height, selector = '*') {
 export function compareStyles(chromeStyles, rustkitStyles) {
   const chromeMap = new Map(chromeStyles.map(s => [s.selector, s]));
   const rustkitMap = new Map(rustkitStyles.map(s => [s.selector, s]));
-
+  
   const results = {
     matched: 0,
     mismatched: 0,
@@ -275,21 +274,21 @@ export function compareStyles(chromeStyles, rustkitStyles) {
     rustkitOnly: 0,
     differences: [],
   };
-
+  
   // Compare elements found in both
   for (const [selector, chrome] of chromeMap) {
     const rustkit = rustkitMap.get(selector);
-
+    
     if (!rustkit) {
       results.chromeOnly++;
       continue;
     }
-
+    
     const diffs = [];
     for (const prop of KEY_PROPERTIES) {
       const chromeVal = chrome.styles[prop];
       const rustkitVal = rustkit.styles?.[prop];
-
+      
       if (chromeVal !== rustkitVal) {
         diffs.push({
           property: prop,
@@ -298,7 +297,7 @@ export function compareStyles(chromeStyles, rustkitStyles) {
         });
       }
     }
-
+    
     if (diffs.length > 0) {
       results.mismatched++;
       results.differences.push({
@@ -310,13 +309,16 @@ export function compareStyles(chromeStyles, rustkitStyles) {
       results.matched++;
     }
   }
-
+  
   // Count RustKit-only elements
   for (const selector of rustkitMap.keys()) {
     if (!chromeMap.has(selector)) {
       results.rustkitOnly++;
     }
   }
-
+  
   return results;
 }
+
+
+

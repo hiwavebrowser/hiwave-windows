@@ -77,3 +77,14 @@ __pycache__/
 # it impossible, not to remember to check.
 _*.txt
 _*.py
+
+# Parity tooling outputs (synced from hiwave-macos, scripts/sync_parity_tooling.py)
+baselines/seat-control/
+parity-baseline/captures/
+parity-baseline/diffs/
+parity-baseline/failure_packets/
+parity-baseline/oracle_results.json
+parity-baseline/parity_test_results*.json
+scripts/tests/__pycache__/
+third_party/wpt/
+trench/wpt/last-run.json

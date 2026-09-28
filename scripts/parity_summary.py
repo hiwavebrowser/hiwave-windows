@@ -141,13 +141,17 @@ def generate_progress_report(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         last_cases = runs[-1].get("case_diffs", {})
         
         for case_id in set(first_cases.keys()) | set(last_cases.keys()):
-            first_diff = first_cases.get(case_id, {}).get("diff_pct", 100)
-            last_diff = last_cases.get(case_id, {}).get("diff_pct", 100)
+            # See parity_compare.py: a present null is not a missing key, so
+            # the `100` default never fired for a refused measurement.
+            first_diff = first_cases.get(case_id, {}).get("diff_pct")
+            last_diff = last_cases.get(case_id, {}).get("diff_pct")
+            measured = first_diff is not None and last_diff is not None
             case_first_last[case_id] = {
                 "first": first_diff,
                 "last": last_diff,
-                "delta": last_diff - first_diff,
-                "improved": last_diff < first_diff,
+                "delta": (last_diff - first_diff) if measured else None,
+                "improved": (last_diff < first_diff) if measured else None,
+                "not_measured": not measured,
             }
     
     # Sort cases by improvement
@@ -396,4 +400,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
