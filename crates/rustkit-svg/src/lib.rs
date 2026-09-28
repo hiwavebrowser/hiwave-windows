@@ -658,6 +658,12 @@ impl SvgStyle {
         if let Some(opacity) = attrs.get("opacity") {
             self.opacity = opacity.parse().unwrap_or(1.0);
         }
+        if let Some(rule) = attrs.get("fill-rule") {
+            self.fill_rule = match rule.trim() {
+                "evenodd" => FillRule::EvenOdd,
+                _ => FillRule::NonZero,
+            };
+        }
         if let Some(linecap) = attrs.get("stroke-linecap") {
             self.stroke_linecap = match linecap.as_str() {
                 "round" => LineCap::Round,
@@ -673,6 +679,178 @@ impl SvgStyle {
             };
         }
     }
+}
+
+// ==================== Fill tessellation ====================
+
+/// Pair checks spent looking for edge crossings in one fill. Past it the
+/// fill still paints; a self-crossing edge pair just isn't split exactly.
+const MAX_CROSSING_CHECKS: usize = 2_000_000;
+
+/// Fill closed contours (SVG 2 §13.4.1 `fill-rule`) as convex pieces.
+///
+/// The renderer fills a `FillPolygon` as a triangle fan, which is exact
+/// only for one convex polygon. So a lone convex contour (rects, circles,
+/// most triangles) goes through as-is, and anything else (concave outlines,
+/// holes, self-crossings, several subpaths) is swept into horizontal
+/// trapezoids, each inside under `rule`.
+fn fill_contours(
+    contours: &[Vec<(f32, f32)>],
+    rule: FillRule,
+    color: Color,
+    commands: &mut Vec<DisplayCommand>,
+) {
+    let contours: Vec<Vec<(f32, f32)>> = contours
+        .iter()
+        .map(|c| {
+            let mut pts: Vec<(f32, f32)> = Vec::with_capacity(c.len());
+            for &p in c {
+                if !(p.0.is_finite() && p.1.is_finite()) {
+                    continue;
+                }
+                if pts.last() != Some(&p) {
+                    pts.push(p);
+                }
+            }
+            while pts.len() > 1 && pts.first() == pts.last() {
+                pts.pop();
+            }
+            pts
+        })
+        .filter(|c| c.len() >= 3)
+        .collect();
+
+    match contours.as_slice() {
+        [] => return,
+        [only] if is_convex(only) => {
+            commands.push(DisplayCommand::FillPolygon { points: only.clone(), color });
+            return;
+        }
+        _ => {}
+    }
+
+    // Edges, top to bottom, with the winding each one adds when crossed.
+    struct Edge {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        dir: i32,
+    }
+    impl Edge {
+        fn x_at(&self, y: f32) -> f32 {
+            self.x0 + (self.x1 - self.x0) * (y - self.y0) / (self.y1 - self.y0)
+        }
+    }
+    let mut edges: Vec<Edge> = Vec::new();
+    for c in &contours {
+        for i in 0..c.len() {
+            let (a, b) = (c[i], c[(i + 1) % c.len()]);
+            if a.1 == b.1 {
+                continue;
+            }
+            edges.push(if a.1 < b.1 {
+                Edge { x0: a.0, y0: a.1, x1: b.0, y1: b.1, dir: 1 }
+            } else {
+                Edge { x0: b.0, y0: b.1, x1: a.0, y1: a.1, dir: -1 }
+            });
+        }
+    }
+    if edges.is_empty() {
+        return;
+    }
+    edges.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+
+    // Band boundaries: every vertex y, plus every y where two edges cross,
+    // so inside one band the edges keep their left-to-right order.
+    let mut ys: Vec<f32> = edges.iter().flat_map(|e| [e.y0, e.y1]).collect();
+    let mut checks = 0usize;
+    'crossings: for i in 0..edges.len() {
+        let a = &edges[i];
+        for b in &edges[i + 1..] {
+            if b.y0 >= a.y1 {
+                break;
+            }
+            checks += 1;
+            if checks > MAX_CROSSING_CHECKS {
+                break 'crossings;
+            }
+            let (lo, hi) = (a.y0.max(b.y0), a.y1.min(b.y1));
+            if hi <= lo {
+                continue;
+            }
+            let (d_lo, d_hi) = (a.x_at(lo) - b.x_at(lo), a.x_at(hi) - b.x_at(hi));
+            if (d_lo < 0.0 && d_hi > 0.0) || (d_lo > 0.0 && d_hi < 0.0) {
+                ys.push(lo + (hi - lo) * d_lo / (d_lo - d_hi));
+            }
+        }
+    }
+    ys.sort_by(f32::total_cmp);
+    ys.dedup();
+
+    let mut next = 0usize;
+    let mut active: Vec<usize> = Vec::new();
+    let mut crossing: Vec<(f32, f32, f32, i32)> = Vec::new();
+    for band in ys.windows(2) {
+        let (top, bottom) = (band[0], band[1]);
+        while next < edges.len() && edges[next].y0 <= top {
+            active.push(next);
+            next += 1;
+        }
+        active.retain(|&i| edges[i].y1 > top);
+        if bottom - top < 1e-4 {
+            continue;
+        }
+        let mid = (top + bottom) * 0.5;
+        crossing.clear();
+        crossing.extend(active.iter().map(|&i| {
+            let e = &edges[i];
+            (e.x_at(mid), e.x_at(top), e.x_at(bottom), e.dir)
+        }));
+        crossing.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        let mut winding = 0;
+        let mut left: Option<(f32, f32)> = None;
+        for &(_, x_top, x_bottom, dir) in &crossing {
+            winding += dir;
+            let inside = match rule {
+                FillRule::NonZero => winding != 0,
+                FillRule::EvenOdd => winding % 2 != 0,
+            };
+            match (left, inside) {
+                (None, true) => left = Some((x_top, x_bottom)),
+                (Some((l_top, l_bottom)), false) => {
+                    commands.push(DisplayCommand::FillPolygon {
+                        points: vec![(l_top, top), (x_top, top), (x_bottom, bottom), (l_bottom, bottom)],
+                        color,
+                    });
+                    left = None;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A simple convex polygon: every turn the same way, and one full turn in
+/// total (a pentagram turns one way too, but twice around).
+fn is_convex(points: &[(f32, f32)]) -> bool {
+    let n = points.len();
+    let mut sign = 0.0f32;
+    let mut turning = 0.0f32;
+    for i in 0..n {
+        let (a, b, c) = (points[i], points[(i + 1) % n], points[(i + 2) % n]);
+        let (u, v) = ((b.0 - a.0, b.1 - a.1), (c.0 - b.0, c.1 - b.1));
+        let cross = u.0 * v.1 - u.1 * v.0;
+        if cross != 0.0 {
+            if sign != 0.0 && cross.signum() != sign {
+                return false;
+            }
+            sign = cross.signum();
+        }
+        turning += cross.atan2(u.0 * v.0 + u.1 * v.1);
+    }
+    turning.abs() < 3.0 * std::f32::consts::PI
 }
 
 // ==================== SVG Elements ====================
@@ -1059,10 +1237,7 @@ impl SvgPolygon {
         if let Some(color) = style.fill_color() {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
-            commands.push(DisplayCommand::FillPolygon {
-                points: points.clone(),
-                color: fill_color,
-            });
+            fill_contours(std::slice::from_ref(&points), style.fill_rule, fill_color, commands);
         }
 
         if let Some(color) = style.stroke_color() {
@@ -1488,28 +1663,24 @@ impl SvgPath {
             return;
         }
 
-        let segments = self.to_line_segments();
+        let subpaths: Vec<Vec<(f32, f32)>> = self
+            .to_line_segments()
+            .into_iter()
+            .map(|segment| segment.iter().map(|(x, y)| transform.apply(*x, *y)).collect())
+            .collect();
 
-        for segment in segments {
-            let points: Vec<(f32, f32)> = segment
-                .iter()
-                .map(|(x, y)| transform.apply(*x, *y))
-                .collect();
+        // Fill: every subpath is one contour of a single fill, so a hole
+        // (a reversed inner subpath, or any inner one under evenodd) stays
+        // empty and overlapping subpaths don't double their alpha.
+        if let Some(color) = style.fill_color() {
+            let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
+            let fill_color = Color { a: alpha, ..color };
+            fill_contours(&subpaths, style.fill_rule, fill_color, commands);
+        }
 
+        for points in subpaths {
             if points.len() < 2 {
                 continue;
-            }
-
-            // Fill (only for closed paths)
-            if let Some(color) = style.fill_color() {
-                if points.len() >= 3 {
-                    let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
-                    let fill_color = Color { a: alpha, ..color };
-                    commands.push(DisplayCommand::FillPolygon {
-                        points: points.clone(),
-                        color: fill_color,
-                    });
-                }
             }
 
             // Stroke
@@ -2318,6 +2489,76 @@ mod tests {
         if let Some(DisplayCommand::Text { x, .. }) = commands.iter().find(|c| matches!(c, DisplayCommand::Text { .. })) {
             assert!(*x < 100.0, "middle anchor must shift the run left: x={x}");
         }
+    }
+
+    /// How many times the renderer's triangle fans paint the point `p`.
+    fn fan_coverage(commands: &[DisplayCommand], p: (f32, f32)) -> usize {
+        let in_tri = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
+            let side = |u: (f32, f32), v: (f32, f32)| (v.0 - u.0) * (p.1 - u.1) - (v.1 - u.1) * (p.0 - u.0);
+            let (d1, d2, d3) = (side(a, b), side(b, c), side(c, a));
+            !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+        };
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                DisplayCommand::FillPolygon { points, .. } => Some(points),
+                _ => None,
+            })
+            .map(|pts| (1..pts.len() - 1).filter(|&i| in_tri(pts[0], pts[i], pts[i + 1])).count().min(1))
+            .sum()
+    }
+
+    fn render_path(d: &str, extra: &str) -> Vec<DisplayCommand> {
+        let doc = SvgDocument::parse(&format!(
+            r##"<svg width="10" height="10"><path d="{d}" fill="#000" {extra}/></svg>"##
+        ))
+        .expect("parse");
+        doc.render(0.0, 0.0, 10.0, 10.0)
+    }
+
+    #[test]
+    fn test_evenodd_leaves_an_inner_subpath_empty() {
+        // linkedin's chair outline: an outer and an inner subpath, both the
+        // same direction, under fill-rule="evenodd". Chrome paints a ring.
+        let d = "M0 0H10V10H0Z M3 3H7V7H3Z";
+        let ring = render_path(d, r#"fill-rule="evenodd""#);
+        assert_eq!(fan_coverage(&ring, (5.0, 5.0)), 0, "evenodd hole must stay empty");
+        assert_eq!(fan_coverage(&ring, (1.0, 5.0)), 1, "the ring itself paints once");
+        // The same path under the initial nonzero rule is solid.
+        let solid = render_path(d, "");
+        assert_eq!(fan_coverage(&solid, (5.0, 5.0)), 1, "nonzero, same direction: solid, painted once");
+        // The style property spells it the same way.
+        let styled = render_path(d, r#"style="fill-rule: evenodd""#);
+        assert_eq!(fan_coverage(&styled, (5.0, 5.0)), 0);
+    }
+
+    #[test]
+    fn test_nonzero_reversed_inner_subpath_is_a_hole() {
+        // The icon-font idiom: the counter of an "O" is drawn counter-wise.
+        let commands = render_path("M0 0H10V10H0Z M3 3V7H7V3Z", "");
+        assert_eq!(fan_coverage(&commands, (5.0, 5.0)), 0);
+        assert_eq!(fan_coverage(&commands, (8.5, 5.0)), 1);
+    }
+
+    #[test]
+    fn test_concave_path_does_not_fill_its_notch() {
+        // A dart: a fan from (0,0) would paint the notch at x < 5.
+        let commands = render_path("M0 0L10 5L0 10L5 5Z", "");
+        assert_eq!(fan_coverage(&commands, (2.0, 4.5)), 0, "the notch is outside the dart");
+        assert_eq!(fan_coverage(&commands, (7.0, 4.5)), 1);
+        // A convex shape still goes through as one polygon.
+        let tri = render_path("M0 0L10 0L5 10Z", "");
+        assert_eq!(tri.iter().filter(|c| matches!(c, DisplayCommand::FillPolygon { .. })).count(), 1);
+    }
+
+    #[test]
+    fn test_self_crossing_star_follows_the_fill_rule() {
+        // A pentagram: its centre winds twice, so nonzero fills it and
+        // evenodd leaves it empty.
+        let d = "M5 0L8 10L0 3.5H10L2 10Z";
+        assert_eq!(fan_coverage(&render_path(d, ""), (5.0, 5.5)), 1);
+        assert_eq!(fan_coverage(&render_path(d, r#"fill-rule="evenodd""#), (5.0, 5.5)), 0);
+        assert_eq!(fan_coverage(&render_path(d, r#"fill-rule="evenodd""#), (5.0, 2.0)), 1);
     }
 
     #[test]

@@ -117,6 +117,32 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-09-28 (refresh #5, after #94-#96 merged):** crates now verbatim from
+hiwave-macos develop `f83865c` (Merge #317), 10 upstream PRs past refresh #4
+(#308-#317), including the whole-test GPU guard (#312). The Windows diff is
+exactly the 5 upstream files. The residual is unchanged: the one sidecar-pin
+file, the vendored `boa_gc`, and the one shell test line. There were no root
+`Cargo.toml` or `third_party/` changes upstream. `scripts/sync_parity_tooling.py`
+run against the same commit found no tooling changes.
+
+Gates:
+
+| Gate | Result |
+|---|---|
+| workspace minus `rustkit-engine` | **1350 / 1 / 5** |
+| `rustkit-engine`, `--test-threads=1` | **146 / 0** |
+| `rustkit-engine`, parallel | **146 / 0** |
+| both shells, release `parity-capture` | build |
+| example.com capture | pixel-identical to refresh #4 (0 of 848000) |
+| dark smoke | exact |
+
+The one failure is upstream's
+`seam_kern_tests::text_kerns_across_an_inline_seam_like_one_run` (#313). Its
+final non-vacuity assertion assumes the macOS system font (SF) kerns `c|x`
+and `z|d`. Windows' `system-ui` is Segoe UI, which does not, and per-node ==
+one-run == where `def` lands == 94.515625. The engine assertions pass. The fix
+is test-only and upstream: hiwave-macos #319. It arrives with the next refresh.
+
 **2026-09-27 (refresh #4, after #92 merged):** crates now verbatim from
 hiwave-macos develop `04dd1d1` (Merge #307), 27 upstream PRs past refresh #3
 (#281–#307). Two things outside `crates/rustkit-*` came with it:

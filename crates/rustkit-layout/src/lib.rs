@@ -190,6 +190,37 @@ pub(crate) fn aspect_ratio_content_height(
     })
 }
 
+/// Compose a button's BORDER-box width from an advance measured out of its
+/// label: the author's horizontal padding+border when there is any, else the
+/// UA well (24px) the bare-control calibration uses.
+///
+/// This exists as one function because a button has TWO intrinsic widths and
+/// they differ only in which advance goes in — the whole label for
+/// max-content, the widest word for min-content (`grid::form_control_min_content_width`).
+/// Written as two copies of the composition, a later change to the padding
+/// rule would land on one of them; `settings` is on the board tonight because
+/// a flex container and `own_max_content_width` held two copies of one rule
+/// and only one of them had been fixed.
+pub(crate) fn button_border_box_width(
+    style: &ComputedStyle,
+    font_size: f32,
+    label_advance: f32,
+) -> f32 {
+    let px = |l: &Length| match l {
+        Length::Percent(_) | Length::Auto => 0.0,
+        other => other.to_px(font_size, 16.0, 0.0),
+    };
+    let author_pb_h = px(&style.padding_left)
+        + px(&style.padding_right)
+        + px(&style.border_left_width)
+        + px(&style.border_right_width);
+    if author_pb_h > 0.0 {
+        label_advance + author_pb_h
+    } else {
+        label_advance + 24.0
+    }
+}
+
 /// Intrinsic BORDER-box size of a form control: the bare-control calibration,
 /// or the control's content line composed with author padding/border. Block
 /// flow (`layout_form_control`) and flex items (`flex::get_intrinsic_*`) both
@@ -290,20 +321,10 @@ pub(crate) fn form_control_intrinsic_size(
                 style.font_style,
             )
             .width;
-            let px = |l: &Length| match l {
-                Length::Percent(_) | Length::Auto => 0.0,
-                other => other.to_px(font_size, 16.0, 0.0),
-            };
-            let author_pb_h = px(&style.padding_left)
-                + px(&style.padding_right)
-                + px(&style.border_left_width)
-                + px(&style.border_right_width);
-            let width = if author_pb_h > 0.0 {
-                label_width + author_pb_h
-            } else {
-                label_width + 24.0
-            };
-            (width, single_line_box(19.0 * ua_scale))
+            (
+                button_border_box_width(style, font_size, label_width),
+                single_line_box(19.0 * ua_scale),
+            )
         }
         FormControlType::Checkbox { .. } | FormControlType::Radio { .. } => {
             // Fixed size for checkboxes and radios
@@ -1366,6 +1387,52 @@ pub struct ElementIdentity {
     pub selector: String,
 }
 
+/// One side of an inline seam: the edge character of a text run and the
+/// font it is shaped in (`LayoutBox::seam_edge`).
+#[derive(Debug, Clone)]
+struct SeamEdge {
+    ch: char,
+    family: String,
+    size: f32,
+    weight: rustkit_css::FontWeight,
+    style: rustkit_css::FontStyle,
+    stretch: rustkit_css::FontStretch,
+}
+
+impl SeamEdge {
+    fn new(ch: char, s: &ComputedStyle) -> Self {
+        Self {
+            ch,
+            family: s.font_family.clone(),
+            size: match s.font_size {
+                Length::Px(px) => px,
+                _ => 16.0,
+            },
+            weight: s.font_weight,
+            style: s.font_style,
+            stretch: s.font_stretch,
+        }
+    }
+
+    fn same_font(&self, other: &SeamEdge) -> bool {
+        self.family == other.family
+            && self.size == other.size
+            && self.weight == other.weight
+            && self.style == other.style
+            && self.stretch == other.stretch
+    }
+}
+
+/// A length that resolves to zero whatever its base (`auto` margins on a
+/// non-replaced inline are zero too).
+fn is_zero_length(l: &Length) -> bool {
+    match l {
+        Length::Zero | Length::Auto => true,
+        Length::Px(v) | Length::Em(v) | Length::Rem(v) | Length::Percent(v) => *v == 0.0,
+        _ => false,
+    }
+}
+
 /// A layout box in the layout tree.
 #[derive(Debug)]
 pub struct LayoutBox {
@@ -1947,8 +2014,12 @@ impl LayoutBox {
         let available_width = containing_block.content.width;
         let mut cursor_x = 0.0;
         let mut max_height = 0.0f32;
+        let mut seam: Option<SeamEdge> = None;
 
         for child in &mut self.children {
+            // Cross-node shaping inside the inline (`seam_kern`).
+            cursor_x += Self::seam_kern(seam.as_ref(), Self::seam_edge(child, false).as_ref());
+            seam = Self::seam_edge(child, true);
             let mut cb = self.dimensions.clone();
             cb.content.x = self.dimensions.content.x + cursor_x;
             cb.content.width = available_width; // Pass parent's available width
@@ -2244,6 +2315,68 @@ impl LayoutBox {
                 child.style.white_space,
                 rustkit_css::WhiteSpace::Nowrap | rustkit_css::WhiteSpace::Pre
             )
+    }
+
+    /// The character at one edge of an inline-level box's text, with its
+    /// font, when shaping would run straight across that edge: the box is a
+    /// text run, or a non-atomic inline with no margin/border/padding on
+    /// that side whose edge child is such a box (recursively). Whitespace
+    /// edges and letter-spaced runs return None.
+    fn seam_edge(b: &LayoutBox, last: bool) -> Option<SeamEdge> {
+        match &b.box_type {
+            BoxType::Text(text) => {
+                if !is_zero_length(&b.style.letter_spacing) {
+                    return None;
+                }
+                let c = if last { text.chars().next_back() } else { text.chars().next() }?;
+                if c.is_whitespace() {
+                    return None;
+                }
+                Some(SeamEdge::new(c, &b.style))
+            }
+            BoxType::Inline if b.style.display == rustkit_css::Display::Inline => {
+                let s = &b.style;
+                let (m, p, w, bs) = if last {
+                    (&s.margin_right, &s.padding_right, &s.border_right_width, s.border_right_style)
+                } else {
+                    (&s.margin_left, &s.padding_left, &s.border_left_width, s.border_left_style)
+                };
+                let no_border = is_zero_length(w) || bs == rustkit_css::BorderStyle::None;
+                if !(is_zero_length(m) && is_zero_length(p) && no_border) {
+                    return None;
+                }
+                let child = if last { b.children.last() } else { b.children.first() }?;
+                Self::seam_edge(child, last)
+            }
+            _ => None,
+        }
+    }
+
+    /// The pair kern between the text left of an inline seam and the text
+    /// right of it. Blink shapes a paragraph's text across element
+    /// boundaries when the font is the same, so `abc<span>xyz</span>def`
+    /// kerns `c|x` and `z|d` exactly as the one run `abcxyzdef` does;
+    /// RustKit shapes per text node, so the seam pair is added here as a
+    /// cursor offset (width("cx") - width("c") - width("x")).
+    fn seam_kern(prev: Option<&SeamEdge>, next: Option<&SeamEdge>) -> f32 {
+        let (Some(a), Some(b)) = (prev, next) else {
+            return 0.0;
+        };
+        if !a.same_font(b) {
+            return 0.0;
+        }
+        let measure = |s: &str| {
+            measure_text_with_spacing(s, &a.family, a.size, a.weight, a.style, 0.0, 0.0).width
+        };
+        let pair: String = [a.ch, b.ch].iter().collect();
+        let k = measure(&pair) - measure(&a.ch.to_string()) - measure(&b.ch.to_string());
+        // Same bound as the shaper's own kerning deltas: anything larger is
+        // not a pair adjustment (a fallback face, a ligature, a probe miss).
+        if k.is_finite() && k.abs() <= a.size * 0.2 {
+            k
+        } else {
+            0.0
+        }
     }
 
     /// Lay out a text box that STARTS MID-LINE in an inline formatting
@@ -4033,6 +4166,9 @@ impl LayoutBox {
         // IFC Slice B2: phase-5 mid-line splits whose CLOSED lines (line 0
         // + middles) need alignment after the loop: (line_start, text_index).
         let mut split_records: Vec<(usize, usize)> = Vec::new();
+        // The edge of the text last placed on the open line, for the
+        // cross-node seam kern (`seam_kern`).
+        let mut seam: Option<SeamEdge> = None;
         // Floats placed among these children, in content-box coordinates
         // (x from 0 at the content edge, y relative to the content top).
         let mut floats = FloatContext::new();
@@ -4073,6 +4209,7 @@ impl LayoutBox {
             // nothing on the line yet, the break still advances by one
             // empty line box.
             if matches!(child.box_type, BoxType::LineBreak) {
+                seam = None;
                 if let Some(start) = line_start_index {
                     lines.push((start, i, line_width));
                 }
@@ -4127,6 +4264,11 @@ impl LayoutBox {
                         || child.text_single_line_width() <= container_width - cursor_x));
 
             if flows_inline {
+                // Cross-node shaping: kern the seam pair with the text
+                // before this child, as one shaped run would.
+                let kern = Self::seam_kern(seam.as_ref(), Self::seam_edge(child, false).as_ref());
+                cursor_x += kern;
+                line_width += kern;
                 // Layout inline-level child to get its dimensions first
                 let mut cb = self.dimensions.clone();
                 cb.content.x = self.dimensions.content.x + cursor_x;
@@ -4224,6 +4366,7 @@ impl LayoutBox {
                         line_below_baseline = 0.0;
                         line_extents = (0.0, 0.0);
                         line_start_index = Some(i);
+                        seam = Self::seam_edge(child, true);
                         continue;
                     }
                 } else {
@@ -4232,6 +4375,7 @@ impl LayoutBox {
                 // Advance cursor
                 cursor_x += child_width;
                 line_width += child_width;
+                seam = Self::seam_edge(child, true);
                 // vertical-align: top|bottom boxes do not anchor to the
                 // baseline at all (CSS2 §10.8): a top-aligned box hangs from
                 // the line-box top, so a tall one SWALLOWS the strut instead
@@ -4272,7 +4416,11 @@ impl LayoutBox {
                 // width instead of dropping to its own block row.
                 let cb = self.dimensions.clone();
                 let line_top = self.dimensions.content.y + cursor_y;
+                let kern = Self::seam_kern(seam.as_ref(), Self::seam_edge(child, false).as_ref());
+                cursor_x += kern;
+                line_width += kern;
                 let (n_lines, last_w) = child.layout_text_in_flow(&cb, line_top, cursor_x);
+                seam = Self::seam_edge(child, true);
                 let lh = child.get_line_height();
                 if n_lines <= 1 {
                     // Degenerate (shaping fallback): continue the line.
@@ -4296,6 +4444,7 @@ impl LayoutBox {
                     line_start_index = Some(i);
                 }
             } else {
+                seam = None;
                 // Regular block layout
                 // First, finish any inline-block line
                 if cursor_x > 0.0 {
@@ -4796,6 +4945,9 @@ impl LayoutBox {
         // IFC Slice B2: phase-5 mid-line splits whose CLOSED lines (line 0
         // + middles) need alignment after the loop: (line_start, text_index).
         let mut split_records: Vec<(usize, usize)> = Vec::new();
+        // The edge of the text last placed on the open line, for the
+        // cross-node seam kern (`seam_kern`).
+        let mut seam: Option<SeamEdge> = None;
 
         // Floats placed among these children (see layout_block_children).
         let mut floats = FloatContext::new();
@@ -4870,6 +5022,7 @@ impl LayoutBox {
 
             // `<br>`: forced line break (see layout_block_children).
             if matches!(child.box_type, BoxType::LineBreak) {
+                seam = None;
                 if let Some(start) = line_start_index {
                     lines.push((start, i, line_width));
                 }
@@ -4918,6 +5071,11 @@ impl LayoutBox {
                         || child.text_single_line_width() <= container_width - cursor_x));
 
             if flows_inline {
+                // Cross-node shaping: kern the seam pair with the text
+                // before this child, as one shaped run would.
+                let kern = Self::seam_kern(seam.as_ref(), Self::seam_edge(child, false).as_ref());
+                cursor_x += kern;
+                line_width += kern;
                 // Inline-level content never collapses margins with siblings
                 // (and an inline-block establishes its own BFC), so lay it
                 // out against a throwaway context instead of leaking margins
@@ -5020,6 +5178,7 @@ impl LayoutBox {
                         line_below_baseline = 0.0;
                         line_extents = (0.0, 0.0);
                         line_start_index = Some(i);
+                        seam = Self::seam_edge(child, true);
                         continue;
                     }
                 } else {
@@ -5028,6 +5187,7 @@ impl LayoutBox {
                 // Advance cursor
                 cursor_x += child_width;
                 line_width += child_width;
+                seam = Self::seam_edge(child, true);
                 // vertical-align: top|bottom boxes do not anchor to the
                 // baseline at all (CSS2 §10.8): a top-aligned box hangs from
                 // the line-box top, so a tall one SWALLOWS the strut instead
@@ -5065,7 +5225,11 @@ impl LayoutBox {
                 // Phase 5 (IFC text splitting) — see layout_block_children.
                 let cb = self.dimensions.clone();
                 let line_top = self.dimensions.content.y + cursor_y;
+                let kern = Self::seam_kern(seam.as_ref(), Self::seam_edge(child, false).as_ref());
+                cursor_x += kern;
+                line_width += kern;
                 let (n_lines, last_w) = child.layout_text_in_flow(&cb, line_top, cursor_x);
+                seam = Self::seam_edge(child, true);
                 let lh = child.get_line_height();
                 if n_lines <= 1 {
                     cursor_x += last_w;
@@ -5084,6 +5248,7 @@ impl LayoutBox {
                     line_start_index = Some(i);
                 }
             } else {
+                seam = None;
                 // Regular block layout with margin collapse
                 // First, finish any inline-block line
                 if cursor_x > 0.0 {
@@ -7846,6 +8011,15 @@ impl DisplayList {
         let text_color = layout_box.style.color;
         let bg_color = layout_box.style.background_color;
         let border_color = layout_box.style.border_top_color;
+        // The control's painted frame: 1px (the UA border stand-in) unless
+        // the author removed it. `border: none` on a styled search box drew
+        // a 1px frame anyway and seated the text 1px right of Chrome's
+        // (shelf's command input).
+        let border_width = if layout_box.style.border_top_style == rustkit_css::BorderStyle::None {
+            0.0
+        } else {
+            1.0
+        };
         let font_family = layout_box.style.font_family.clone();
         let font_weight = layout_box.style.font_weight.0;
         // Same resolution layout_form_control composes the box from, so the
@@ -7892,7 +8066,7 @@ impl DisplayList {
                     } else {
                         Color::new(200, 200, 200, 1.0)
                     },
-                    border_width: 1.0,
+                    border_width,
                     // Focus and caret come from the engine's live edit state,
                     // carried on the box via `focused_caret` (unblocked by
                     // LayoutBox::node_id).
@@ -7922,7 +8096,7 @@ impl DisplayList {
                     } else {
                         Color::new(200, 200, 200, 1.0)
                     },
-                    border_width: 1.0,
+                    border_width,
                     focused: layout_box.focused_caret.is_some(),
                     caret_position: layout_box.focused_caret,
                 });
@@ -7950,7 +8124,7 @@ impl DisplayList {
                     } else {
                         Color::new(180, 180, 180, 1.0)
                     },
-                    border_width: 1.0,
+                    border_width,
                     border_radius: 4.0,
                     pressed: false,
                     focused: false,
@@ -8049,7 +8223,7 @@ impl DisplayList {
                     } else {
                         Color::new(200, 200, 200, 1.0)
                     },
-                    border_width: 1.0,
+                    border_width,
                     focused: false,
                     caret_position: None,
                 });
@@ -11005,6 +11179,29 @@ mod tests {
         LayoutBox::new(BoxType::FormControl(control), s)
     }
 
+    #[test]
+    fn a_border_none_control_paints_no_frame_and_seats_at_its_edge() {
+        let frame = |control: LayoutBox| {
+            let list = DisplayList::build(&control);
+            list.commands
+                .iter()
+                .find_map(|c| match c {
+                    DisplayCommand::TextInput { border_width, .. } => Some(*border_width),
+                    _ => None,
+                })
+                .expect("a TextInput command")
+        };
+        // Bare control: the 1px UA frame stand-in.
+        let mut bare = n53_text_input();
+        bare.dimensions.content = Rect::new(0.0, 0.0, 149.0, 19.0);
+        assert_eq!(frame(bare), 1.0);
+        // `border: none` (shelf's command input): no frame, no inset.
+        let mut none = n53_text_input();
+        none.style.border_top_style = rustkit_css::BorderStyle::None;
+        none.dimensions.content = Rect::new(0.0, 0.0, 149.0, 19.0);
+        assert_eq!(frame(none), 0.0);
+    }
+
     fn n53_text_input() -> LayoutBox {
         n53_control(FormControlType::TextInput {
             value: String::new(),
@@ -11723,6 +11920,264 @@ mod tests {
             got > padding_only + 1.0,
             "the labels must be inside the sum ({got} vs the padding-only {padding_only})"
         );
+    }
+
+    // ---- a form control's MIN-content contribution (n68) -----------------
+    //
+    // n67 gave `own_max_content_width` a FormControl arm and left
+    // `own_min_content_width` without one, so a control's min-content was its
+    // padding box alone. Min-content is used as a FLOOR — css-flexbox-1 §4.5
+    // automatic minimum size, and shrink-to-fit — so the effect was not a
+    // too-small preferred width but a control allowed to shrink past its own
+    // text. Chrome 148, measured on this seat:
+    //
+    //   button "Save Changes", padding 8px 16px + 1px border
+    //     min-content 90.031  = widest word "Changes" 56.047 + 34
+    //     max-content 125.844 = whole label        91.844 + 34
+    //   an inline-block <span> with the same padding and label: IDENTICAL.
+    //   two such buttons in a `display: flex; width: 120px` line:
+    //     Chrome floors them at 90.031 / 77.594 and OVERFLOWS the line.
+    //
+    // The span row is the load-bearing one: it says a button's min-content is
+    // the ordinary text rule, so these guards assert against a measured word
+    // advance rather than against a number copied out of Chrome.
+
+    /// A button with the author padding+border of `settings`' `.btn` (34px),
+    /// big enough that the padding box ALONE still looks like a plausible
+    /// width — a bare control could not tell the defect from the fix.
+    fn n68_button(label: &str) -> LayoutBox {
+        let mut s = ComputedStyle::new();
+        s.box_sizing = BoxSizing::BorderBox;
+        s.font_size = Length::Px(13.6);
+        s.padding_left = Length::Px(16.0);
+        s.padding_right = Length::Px(16.0);
+        s.border_left_width = Length::Px(1.0);
+        s.border_right_width = Length::Px(1.0);
+        LayoutBox::new(
+            BoxType::FormControl(FormControlType::Button {
+                label: label.to_string(),
+                button_type: "button".to_string(),
+            }),
+            s,
+        )
+    }
+
+    /// The advance of `word` in a box's own font — the quantity Chrome's
+    /// min-content rule is stated in, measured with the same shaper layout
+    /// uses so the guard does not hardcode this seat's font stack.
+    fn n68_advance(b: &LayoutBox, word: &str) -> f32 {
+        let font_size = match b.style.font_size {
+            Length::Px(px) => px,
+            _ => 16.0,
+        };
+        crate::measure_text_advanced(
+            word,
+            &b.style.font_family,
+            font_size,
+            b.style.font_weight,
+            b.style.font_style,
+        )
+        .width
+    }
+
+    #[test]
+    fn a_buttons_min_content_is_its_widest_word_not_its_whole_label() {
+        let b = n68_button("Save Changes");
+        let padding_border = crate::grid::horizontal_padding_border(&b.style);
+        let widest_word = n68_advance(&b, "Changes");
+        let whole_label = n68_advance(&b, "Save Changes");
+        // Fixture integrity: the three candidate answers must be distinct, or
+        // the assert below cannot tell the rule from either wrong answer.
+        assert!(
+            widest_word > 1.0 && whole_label > widest_word + 1.0,
+            "fixture: the label must have a strictly widest word \
+             (word {widest_word}, label {whole_label})"
+        );
+        let got = crate::grid::own_min_content_width(&b);
+        assert!(
+            (got - (widest_word + padding_border)).abs() < 0.01,
+            "a button's min-content is its widest word plus padding+border \
+             ({} = {widest_word} + {padding_border}), got {got} \
+             (the whole label would be {}, the padding box alone {padding_border})",
+            widest_word + padding_border,
+            whole_label + padding_border
+        );
+    }
+
+    #[test]
+    fn a_buttons_min_content_is_strictly_narrower_than_its_max_content() {
+        // Stated as its own claim because it is the PROPERTY the floor needs:
+        // a min-content that merely equals max-content still floors, but at
+        // the wrong place, and an assert on one number alone cannot see that.
+        let b = n68_button("Save Changes");
+        let min = crate::grid::own_min_content_width(&b);
+        let max = crate::grid::own_max_content_width(&b);
+        assert!(
+            min < max - 1.0 && min > crate::grid::horizontal_padding_border(&b.style) + 1.0,
+            "a two-word button sits strictly between its padding box and its \
+             whole label (min {min}, max {max})"
+        );
+    }
+
+    #[test]
+    fn a_single_word_button_has_the_same_min_and_max_content() {
+        // "Cancel" has no soft-wrap opportunity, so Chrome gives 77.594 for
+        // both. A rule that always subtracted "the last word" would fail here.
+        let b = n68_button("Cancel");
+        let min = crate::grid::own_min_content_width(&b);
+        let max = crate::grid::own_max_content_width(&b);
+        assert!(
+            (min - max).abs() < 0.01,
+            "a one-word button cannot wrap, so min == max (min {min}, max {max})"
+        );
+    }
+
+    #[test]
+    fn a_nowrap_button_carries_its_whole_label_into_min_content() {
+        // `white-space: nowrap` removes the wrap opportunity, so the widest
+        // unbreakable unit is the entire label. This is what makes the button
+        // arm a TEXT rule rather than a "strip the last word" rule.
+        let mut b = n68_button("Save Changes");
+        b.style.white_space = rustkit_css::WhiteSpace::Nowrap;
+        let min = crate::grid::own_min_content_width(&b);
+        let max = crate::grid::own_max_content_width(&b);
+        assert!(
+            (min - max).abs() < 0.01,
+            "under nowrap a button's min-content is its whole label \
+             (min {min}, max {max})"
+        );
+    }
+
+    #[test]
+    fn a_bare_buttons_min_content_keeps_the_ua_well() {
+        // With no author padding the composition falls back to the 24px UA
+        // well, and it must still be there under min-content — otherwise a
+        // bare button floors at its bare text and paints over its own border.
+        let mut b = n68_button("Save Changes");
+        b.style.padding_left = Length::Px(0.0);
+        b.style.padding_right = Length::Px(0.0);
+        b.style.border_left_width = Length::Px(0.0);
+        b.style.border_right_width = Length::Px(0.0);
+        let widest_word = n68_advance(&b, "Changes");
+        let got = crate::grid::own_min_content_width(&b);
+        assert!(
+            (got - (widest_word + 24.0)).abs() < 0.01,
+            "a bare button's min-content is its widest word plus the 24px UA \
+             well ({}), got {got}",
+            widest_word + 24.0
+        );
+    }
+
+    #[test]
+    fn controls_that_cannot_wrap_have_min_content_equal_to_max_content() {
+        // Chrome on this seat: input 185/185, padded input 215/215, select
+        // 137/137, textarea 182/182, checkbox 13, range 129. None of them has
+        // a soft-wrap opportunity, so delegating is the rule and not a
+        // shortcut — and the delegation must take the WIDTH, not the height.
+        let mut s = ComputedStyle::new();
+        s.box_sizing = BoxSizing::BorderBox;
+        s.font_size = Length::Px(13.6);
+        let controls = [
+            FormControlType::TextInput {
+                input_type: "text".to_string(),
+                value: String::new(),
+                placeholder: String::new(),
+            },
+            FormControlType::Select {
+                size: 1,
+                options: vec!["A longer option text".to_string(), "Short".to_string()],
+                selected_index: None,
+            },
+            FormControlType::TextArea {
+                rows: 2,
+                cols: 20,
+                value: String::new(),
+                placeholder: String::new(),
+            },
+            FormControlType::Checkbox { checked: false },
+        ];
+        for control in controls {
+            let b = LayoutBox::new(BoxType::FormControl(control.clone()), s.clone());
+            let intrinsic = crate::form_control_intrinsic_size(&b.style, &control);
+            let min = crate::grid::own_min_content_width(&b);
+            assert!(
+                (min - intrinsic.0).abs() < 0.01,
+                "{control:?}: min-content is the control's intrinsic WIDTH \
+                 {} (its height is {}), got {min}",
+                intrinsic.0,
+                intrinsic.1
+            );
+            assert!(
+                (min - crate::grid::own_max_content_width(&b)).abs() < 0.01,
+                "{control:?}: min-content == max-content, got {min}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_explicit_pixel_width_wins_over_a_buttons_min_content() {
+        // The arm sits BELOW the `width: Px` check. Moving it above would
+        // re-size every explicitly sized control from its text — and this is
+        // the guard n67's M4 probe proved can be left green by a mutation
+        // aimed at the wrong one of two textually identical blocks.
+        let mut b = n68_button("Save Changes");
+        b.style.width = Length::Px(40.0);
+        let got = crate::grid::own_min_content_width(&b);
+        assert!(
+            (got - 40.0).abs() < 0.01,
+            "a specified border-box width is the min-content contribution, got {got}"
+        );
+    }
+
+    #[test]
+    fn a_flex_items_automatic_minimum_floors_a_button_at_its_widest_word() {
+        // The consumer-level claim, and the one the defect was actually about:
+        // css-flexbox-1 §4.5 floors a `min-width: auto` item at its
+        // min-content size. Chrome overflows a 120px line rather than shrink
+        // two buttons below 90.031 and 77.594; RustKit gave 72.17 and 39.84
+        // because the floor it consulted was the padding box.
+        //
+        // Asserted by LAYING THE LINE OUT rather than by calling
+        // `own_min_content_width` a fourth time, so an arm that satisfies the
+        // sizing guards but is never reached from the floor still fails here.
+        let (save, cancel) = (n68_button("Save Changes"), n68_button("Cancel"));
+        let want_save =
+            n68_advance(&save, "Changes") + crate::grid::horizontal_padding_border(&save.style);
+        let want_cancel =
+            n68_advance(&cancel, "Cancel") + crate::grid::horizontal_padding_border(&cancel.style);
+        // Fixture integrity: the line must be narrower than the two floors, or
+        // flex never shrinks and the guard passes without exercising anything.
+        let line = 120.0;
+        assert!(
+            want_save + want_cancel > line + 1.0,
+            "fixture: the floors ({want_save} + {want_cancel}) must overflow the \
+             {line}px line"
+        );
+
+        let mut cs = ComputedStyle::new();
+        cs.display = rustkit_css::Display::Flex;
+        cs.box_sizing = BoxSizing::BorderBox;
+        let mut container = LayoutBox::new(BoxType::Block, cs);
+        container.children.push(save);
+        container.children.push(cancel);
+        let containing = Dimensions {
+            content: Rect::new(0.0, 0.0, line, 40.0),
+            ..Default::default()
+        };
+        crate::flex::layout_flex_container(&mut container, &containing);
+
+        for (item, want, name) in [
+            (&container.children[0], want_save, "Save Changes"),
+            (&container.children[1], want_cancel, "Cancel"),
+        ] {
+            let got = item.dimensions.border_box().width;
+            assert!(
+                (got - want).abs() < 0.01,
+                "flex must not shrink the {name:?} button below its min-content \
+                 {want}; got {got} (the padding box alone is {})",
+                crate::grid::horizontal_padding_border(&item.style)
+            );
+        }
     }
 
     #[test]
@@ -14901,5 +15356,89 @@ mod border_radius_emit_tests {
         let k = kinds(&box_with(Length::Px(12.0), Color::TRANSPARENT));
         assert!(!k.contains(&"RoundedRect".to_string()), "got {k:?}");
         assert!(!k.contains(&"SolidColor".to_string()), "got {k:?}");
+    }
+}
+
+#[cfg(test)]
+mod seam_kern_tests {
+    use super::*;
+
+    fn seam_style(display_inline: bool) -> ComputedStyle {
+        let mut s = ComputedStyle::new();
+        s.font_family = "system-ui".to_string();
+        s.font_size = Length::Px(32.0);
+        s.white_space = rustkit_css::WhiteSpace::Nowrap;
+        if display_inline {
+            s.display = rustkit_css::Display::Inline;
+        }
+        s
+    }
+
+    fn seam_run_width(text: &str) -> f32 {
+        measure_text_with_spacing(
+            text,
+            "system-ui",
+            32.0,
+            rustkit_css::FontWeight(400),
+            rustkit_css::FontStyle::Normal,
+            0.0,
+            0.0,
+        )
+        .width
+    }
+
+    /// WPT break-boundary-2-chars-002: `abc<span>xyz</span>def` lays out
+    /// exactly as the one run `abcxyzdef` — Blink shapes across same-font
+    /// inline seams, so SF's `c|x` and `z|d` pairs kern.
+    fn seam_parent(span_padding: f32) -> LayoutBox {
+        let mut parent = LayoutBox::new(BoxType::Block, seam_style(false));
+        parent.dimensions.content = Rect::new(0.0, 0.0, 600.0, 0.0);
+        parent.children.push(LayoutBox::new(BoxType::Text("abc".into()), seam_style(false)));
+        let mut span_style = seam_style(true);
+        span_style.padding_left = Length::Px(span_padding);
+        let mut span = LayoutBox::new(BoxType::Inline, span_style);
+        span.children.push(LayoutBox::new(BoxType::Text("xyz".into()), seam_style(false)));
+        parent.children.push(span);
+        parent.children.push(LayoutBox::new(BoxType::Text("def".into()), seam_style(false)));
+        parent.layout_block_children(None);
+        parent
+    }
+
+    #[test]
+    fn text_kerns_across_an_inline_seam_like_one_run() {
+        let parent = seam_parent(0.0);
+        let xyz = &parent.children[1].children[0];
+        let def = &parent.children[2];
+        let one_run_abc = seam_run_width("abcx") - seam_run_width("x");
+        let one_run_abcxyz = seam_run_width("abcxyzd") - seam_run_width("d");
+        assert!(
+            (xyz.dimensions.content.x - one_run_abc).abs() < 0.02,
+            "xyz at {} for one-run {}",
+            xyz.dimensions.content.x,
+            one_run_abc
+        );
+        assert!(
+            (def.dimensions.content.x - one_run_abcxyz).abs() < 0.02,
+            "def at {} for one-run {}",
+            def.dimensions.content.x,
+            one_run_abcxyz
+        );
+        // The seams really do kern in SF (probe: 142.19 vs 142.81 at 32px).
+        let per_node = seam_run_width("abc") + seam_run_width("xyz");
+        assert!(per_node - def.dimensions.content.x > 0.1);
+    }
+
+    #[test]
+    fn a_padded_inline_edge_breaks_the_seam() {
+        let parent = seam_parent(4.0);
+        let span = &parent.children[1];
+        let abc_w = seam_run_width("abc");
+        // The span's margin box starts right after the unkerned run.
+        assert!(
+            (span.dimensions.margin_box().x - abc_w).abs() < 0.02,
+            "span margin box at {} for {}",
+            span.dimensions.margin_box().x,
+            abc_w
+        );
     }
 }
