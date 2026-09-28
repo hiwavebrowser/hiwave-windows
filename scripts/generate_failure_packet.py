@@ -26,21 +26,21 @@ from typing import Dict, Any, Optional
 def load_oracle(oracle_path: Path) -> Optional[Dict[str, Any]]:
     """Load oracle JSON if available."""
     if oracle_path.exists():
-        with open(oracle_path) as f:
+        with open(oracle_path, encoding="utf-8") as f:
             return json.load(f)
     return None
 
 def load_comparison(comparison_path: Path) -> Optional[Dict[str, Any]]:
     """Load comparison report if available."""
     if comparison_path.exists():
-        with open(comparison_path) as f:
+        with open(comparison_path, encoding="utf-8") as f:
             return json.load(f)
     return None
 
 def load_perf(perf_path: Path) -> Optional[Dict[str, Any]]:
     """Load perf JSON if available."""
     if perf_path.exists():
-        with open(perf_path) as f:
+        with open(perf_path, encoding="utf-8") as f:
             return json.load(f)
     return None
 
@@ -219,7 +219,7 @@ def main():
     packets_dir.mkdir(parents=True, exist_ok=True)
     
     packet_path = packets_dir / f"{case_id}.packet.json"
-    with open(packet_path, "w") as f:
+    with open(packet_path, "w", encoding="utf-8") as f:
         json.dump(packet, f, indent=2)
     
     print(f"\nFailure Packet Generated: {packet_path}")

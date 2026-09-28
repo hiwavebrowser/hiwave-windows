@@ -1,260 +1,219 @@
 {
-  "$schema_note": "Single source of truth for parity cases. Mirrors the macOS cases/registry.json schema (Atlas R0); reconcile field names on the first shared-crate touch. parity_lib imports this; do not add cases to the Python lists.",
   "pin": {
-    "browser": "chrome-for-testing",
-    "version": "148.0.7778.216",
-    "baseline_set": "chrome-148"
-  },
-  "policy": {
-    "default_threshold": 15,
-    "gate_scope_caps": {
-      "builtins": 8,
-      "micro": 8
-    },
-    "holdout_no_edit": true
+    "baseline_set": "chrome-148",
+    "chrome_version": "148.0.7778.216",
+    "dpr": 1
   },
   "cases": {
     "new_tab": {
       "html": "crates/hiwave-app/src/ui/new_tab.html",
       "width": 1280,
       "height": 800,
-      "scope": "builtins",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "builtins"
     },
     "about": {
       "html": "crates/hiwave-app/src/ui/about.html",
       "width": 800,
       "height": 600,
       "scope": "builtins",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "known_fail": true,
+      "kf_ceiling": 14.5
     },
     "settings": {
       "html": "crates/hiwave-app/src/ui/settings.html",
       "width": 1024,
       "height": 768,
-      "scope": "builtins",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "dim_mismatch",
-      "known_fail": true,
-      "baseline_dims": [
-        800,
-        600
-      ]
+      "scope": "builtins"
     },
     "chrome_rustkit": {
-      "html": "crates/hiwave-app/src/ui/chrome.html",
+      "html": "crates/hiwave-app/src/ui/chrome_rustkit.html",
       "width": 1280,
       "height": 100,
       "scope": "builtins",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "missing",
-      "known_fail": true
+      "role": "chrome_strip"
     },
     "shelf": {
       "html": "crates/hiwave-app/src/ui/shelf.html",
       "width": 1280,
       "height": 120,
       "scope": "builtins",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "role": "chrome_strip"
     },
     "article-typography": {
       "html": "websuite/cases/article-typography/index.html",
       "width": 1280,
       "height": 800,
-      "scope": "websuite",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "websuite"
     },
     "card-grid": {
       "html": "websuite/cases/card-grid/index.html",
       "width": 1280,
       "height": 800,
-      "scope": "websuite",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "websuite"
     },
     "css-selectors": {
       "html": "websuite/cases/css-selectors/index.html",
       "width": 800,
       "height": 1200,
-      "scope": "websuite",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "websuite"
     },
     "flex-positioning": {
       "html": "websuite/cases/flex-positioning/index.html",
       "width": 800,
       "height": 1000,
-      "scope": "websuite",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "websuite"
     },
     "form-elements": {
       "html": "websuite/cases/form-elements/index.html",
       "width": 800,
       "height": 600,
-      "scope": "websuite",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "websuite"
     },
     "gradient-backgrounds": {
       "html": "websuite/cases/gradient-backgrounds/index.html",
       "width": 800,
       "height": 600,
-      "scope": "websuite",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "websuite"
     },
     "image-gallery": {
       "html": "websuite/cases/image-gallery/index.html",
       "width": 1280,
       "height": 800,
       "scope": "websuite",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "known_fail": true,
+      "kf_ceiling": 14.0
     },
     "sticky-scroll": {
       "html": "websuite/cases/sticky-scroll/index.html",
       "width": 1280,
       "height": 800,
-      "scope": "websuite",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "websuite"
     },
     "backgrounds": {
       "html": "websuite/micro/backgrounds/index.html",
       "width": 900,
       "height": 1000,
-      "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "micro"
     },
     "bg-solid": {
       "html": "websuite/micro/bg-solid/index.html",
       "width": 800,
       "height": 600,
-      "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "dim_mismatch",
-      "known_fail": true,
-      "baseline_dims": [
-        600,
-        500
-      ]
+      "scope": "micro"
     },
     "bg-pure": {
       "html": "websuite/micro/bg-pure/index.html",
       "width": 800,
       "height": 600,
-      "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "missing",
-      "known_fail": true
+      "scope": "micro"
     },
     "combinators": {
       "html": "websuite/micro/combinators/index.html",
       "width": 800,
       "height": 800,
-      "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "micro"
     },
     "form-controls": {
       "html": "websuite/micro/form-controls/index.html",
       "width": 800,
       "height": 1200,
-      "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "micro"
     },
     "gradients": {
       "html": "websuite/micro/gradients/index.html",
       "width": 900,
       "height": 1000,
+      "scope": "micro"
+    },
+    "gradient-no-radius": {
+      "html": "websuite/micro/gradient-no-radius/index.html",
+      "width": 800,
+      "height": 600,
       "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "known_fail": true,
+      "kf_ceiling": 15.8
+    },
+    "gradient-radius-only": {
+      "html": "websuite/micro/gradient-radius-only/index.html",
+      "width": 800,
+      "height": 600,
+      "scope": "micro",
+      "known_fail": true,
+      "kf_ceiling": 12.5
+    },
+    "gpu-gradient-regression": {
+      "html": "websuite/micro/gpu-gradient-regression/index.html",
+      "width": 800,
+      "height": 1200,
+      "scope": "micro"
     },
     "images-intrinsic": {
       "html": "websuite/micro/images-intrinsic/index.html",
       "width": 800,
       "height": 1400,
       "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "known_fail": true,
+      "kf_ceiling": 10.3
     },
     "pseudo-classes": {
       "html": "websuite/micro/pseudo-classes/index.html",
       "width": 800,
       "height": 800,
-      "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "dim_mismatch",
-      "known_fail": true,
-      "baseline_dims": [
-        800,
-        1200
-      ]
+      "scope": "micro"
     },
     "rounded-corners": {
       "html": "websuite/micro/rounded-corners/index.html",
       "width": 900,
       "height": 1000,
-      "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "micro"
     },
     "specificity": {
       "html": "websuite/micro/specificity/index.html",
       "width": 800,
       "height": 600,
-      "scope": "micro",
-      "dpr": 1,
-      "threshold": 15,
-      "baseline_status": "ok",
-      "known_fail": false
+      "scope": "micro"
+    },
+    "holdout-sticky-nav": {
+      "html": "websuite/holdout/holdout-sticky-nav/index.html",
+      "width": 1280,
+      "height": 800,
+      "scope": "holdout",
+      "policy": "holdout: dig sessions must not edit this HTML (test-fidelity T1)"
+    },
+    "holdout-mixed-inline": {
+      "html": "websuite/holdout/holdout-mixed-inline/index.html",
+      "width": 800,
+      "height": 700,
+      "scope": "holdout",
+      "policy": "holdout: dig sessions must not edit this HTML (test-fidelity T1)"
+    },
+    "holdout-cascade-depth": {
+      "html": "websuite/holdout/holdout-cascade-depth/index.html",
+      "width": 800,
+      "height": 1000,
+      "scope": "holdout",
+      "policy": "holdout: dig sessions must not edit this HTML (test-fidelity T1)"
+    },
+    "holdout-flex-toolbar": {
+      "html": "websuite/holdout/holdout-flex-toolbar/index.html",
+      "width": 1280,
+      "height": 200,
+      "scope": "holdout",
+      "policy": "holdout: dig sessions must not edit this HTML (test-fidelity T1)"
+    },
+    "holdout-grid-mosaic": {
+      "html": "websuite/holdout/holdout-grid-mosaic/index.html",
+      "width": 1000,
+      "height": 700,
+      "scope": "holdout",
+      "policy": "holdout: dig sessions must not edit this HTML (test-fidelity T1)"
+    },
+    "holdout-gradient-text": {
+      "html": "websuite/holdout/holdout-gradient-text/index.html",
+      "width": 800,
+      "height": 400,
+      "scope": "holdout",
+      "policy": "holdout: dig sessions must not edit this HTML (test-fidelity T1)"
     }
   }
 }

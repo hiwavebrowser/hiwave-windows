@@ -17,7 +17,7 @@ from typing import Dict, List, Any, Optional, Tuple
 def load_json(path: Path) -> Optional[Dict[str, Any]]:
     """Load JSON file if it exists."""
     if path.exists():
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     return None
 
@@ -284,7 +284,7 @@ def main():
     
     # Save results
     report_path = run_dir / "layout_comparison.json"
-    with open(report_path, "w") as f:
+    with open(report_path, "w", encoding="utf-8") as f:
         json.dump({
             "run_dir": str(run_dir),
             "cases": results,
