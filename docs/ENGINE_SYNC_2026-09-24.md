@@ -118,30 +118,32 @@ receipt honest and points at the flake if it recurs.
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
 **2026-09-28 (refresh #5, after #94-#96 merged):** crates now verbatim from
-hiwave-macos develop `f83865c` (Merge #317), 10 upstream PRs past refresh #4
-(#308-#317), including the whole-test GPU guard (#312). The Windows diff is
-exactly the 5 upstream files. The residual is unchanged: the one sidecar-pin
-file, the vendored `boa_gc`, and the one shell test line. There were no root
-`Cargo.toml` or `third_party/` changes upstream. `scripts/sync_parity_tooling.py`
-run against the same commit found no tooling changes.
+hiwave-macos develop `19a1319` (Merge #319), 12 upstream PRs past refresh #4
+(#308-#319), including the whole-test GPU guard (#312). The residual is
+unchanged: the one sidecar-pin file, the vendored `boa_gc`, and the one shell
+test line. There were no root `Cargo.toml` or `third_party/` changes upstream.
+`scripts/sync_parity_tooling.py` run against the same commit found no tooling
+changes.
+
+This refresh first landed at `f83865c` (#317). There, upstream's new
+`seam_kern_tests::text_kerns_across_an_inline_seam_like_one_run` (#313)
+failed on Windows. Its non-vacuity assertion assumed the macOS system font
+kerns `c|x` and `z|d`. Segoe UI does not: per-node, one-run and `def`'s
+position are all 94.515625, and the engine assertions passed. The test-only
+fix went upstream as hiwave-macos #319, and this refresh was bumped to include
+it.
 
 Gates:
 
 | Gate | Result |
 |---|---|
-| workspace minus `rustkit-engine` | **1350 / 1 / 5** |
+| workspace minus `rustkit-engine` | **1351 / 0 / 5** |
 | `rustkit-engine`, `--test-threads=1` | **146 / 0** |
 | `rustkit-engine`, parallel | **146 / 0** |
+| total | **1497 / 0 / 5** (refresh #4: 1481 / 0 / 5) |
 | both shells, release `parity-capture` | build |
 | example.com capture | pixel-identical to refresh #4 (0 of 848000) |
 | dark smoke | exact |
-
-The one failure is upstream's
-`seam_kern_tests::text_kerns_across_an_inline_seam_like_one_run` (#313). Its
-final non-vacuity assertion assumes the macOS system font (SF) kerns `c|x`
-and `z|d`. Windows' `system-ui` is Segoe UI, which does not, and per-node ==
-one-run == where `def` lands == 94.515625. The engine assertions pass. The fix
-is test-only and upstream: hiwave-macos #319. It arrives with the next refresh.
 
 **2026-09-27 (refresh #4, after #92 merged):** crates now verbatim from
 hiwave-macos develop `04dd1d1` (Merge #307), 27 upstream PRs past refresh #3

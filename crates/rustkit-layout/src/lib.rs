@@ -15423,9 +15423,22 @@ mod seam_kern_tests {
             def.dimensions.content.x,
             one_run_abcxyz
         );
-        // The seams really do kern in SF (probe: 142.19 vs 142.81 at 32px).
+        // Non-vacuity: the seams really do kern in SF (probe: 142.19 vs 142.81
+        // at 32px), so on macOS the asserts above are not trivially true. That
+        // is a fact about the font, not the engine: Windows' system-ui (Segoe
+        // UI) has no kerning for these pairs, per-node == one-run exactly
+        // (94.515625 at 32px), and the asserts above are then vacuous but
+        // still correct. Check the premise before relying on it.
         let per_node = seam_run_width("abc") + seam_run_width("xyz");
-        assert!(per_node - def.dimensions.content.x > 0.1);
+        if per_node - one_run_abcxyz > 0.1 {
+            assert!(per_node - def.dimensions.content.x > 0.1);
+        } else {
+            eprintln!(
+                "system-ui does not kern c|x or z|d here ({per_node} per node vs \
+                 {one_run_abcxyz} one run); the seam assertions above hold but are \
+                 vacuous on this font"
+            );
+        }
     }
 
     #[test]

@@ -4814,7 +4814,10 @@ impl Engine {
                     sib,
                 )
             {
-                let specificity = self.selector_specificity(&rule.selector);
+                let specificity = match index.as_ref() {
+                    Some(ix) => ix.specificity[rule_index],
+                    None => self.selector_specificity(&rule.selector),
+                };
                 matching_rules.push((rule, specificity, rule_index));
             }
         }
@@ -7632,6 +7635,7 @@ impl Engine {
             rules: Vec::new(),
             keys: Vec::new(),
             pseudo_keys: Vec::new(),
+            specificity: Vec::new(),
             main: RuleBuckets::default(),
             before: RuleBuckets::default(),
             after: RuleBuckets::default(),
@@ -7645,6 +7649,7 @@ impl Engine {
                     ix.main.file(key, g);
                 }
                 ix.keys.push(keys);
+                ix.specificity.push(self.selector_specificity(&rule.selector));
                 let mut pseudo_keys = None;
                 // Same test as create_pseudo_element's (the single-colon
                 // form covers the double-colon one). Filed under the keys of
@@ -17425,6 +17430,28 @@ mod rule_prefilter_tests {
     }
 
     #[test]
+    fn rule_index_specificity_matches_selector_specificity() {
+        // The cascade sorts matched rules by the index's stored specificity;
+        // it must be exactly what `selector_specificity` computes.
+        let css = "div {} .a {} #b {} div.a > p:first-child {} a:not(.x) {} \
+                   :where(#y) span {} ul li + li {} [data-z] {} .c::before {} \
+                   h1, #d .e {} * {}";
+        let sheet = Stylesheet::parse(css).expect("css");
+        let sheets = std::slice::from_ref(&sheet);
+        let engine = Engine::new(EngineConfig::default()).expect("engine");
+        let ix = engine.build_rule_index(sheets);
+        assert_eq!(ix.specificity.len(), sheet.rules.len());
+        for (g, rule) in sheet.rules.iter().enumerate() {
+            assert_eq!(
+                ix.specificity[g],
+                engine.selector_specificity(&rule.selector),
+                "{}",
+                rule.selector
+            );
+        }
+    }
+
+    #[test]
     fn pseudo_rules_filed_under_other_subjects_are_never_visited() {
         // github: ~1,000 `::before`/`::after` rules, every one prefiltered
         // (selector hashed, suffix trimmed) for every element, twice: half
@@ -18733,6 +18760,9 @@ struct RuleIndex {
     /// string for every candidate of every element (24% of github's cascade).
     keys: Vec<Rc<Vec<SubjectKey>>>,
     pseudo_keys: Vec<Option<Rc<Vec<SubjectKey>>>>,
+    /// Global rule index -> `selector_specificity` of its selector, so a
+    /// matched rule doesn't re-scan its selector string on every element.
+    specificity: Vec<(usize, usize, usize)>,
     /// Every rule, by its subject keys.
     main: RuleBuckets,
     /// Rules whose selector ends in `:before`/`::before` (resp. after), the
