@@ -53,6 +53,13 @@ struct Args {
     #[arg(long, default_value = "800")]
     height: u32,
 
+    /// After loading at --width x --height, resize the view to `WxH` (through
+    /// `Engine::resize_view`, as a window resize does) and capture at the new
+    /// size. Compare against a fresh load at `WxH` to find layout that stays
+    /// stale across a resize.
+    #[arg(long, value_parser = parse_size)]
+    resize_to: Option<(u32, u32)>,
+
     /// Output path for PPM frame
     #[arg(long)]
     dump_frame: Option<String>,
@@ -265,6 +272,20 @@ fn run_capture(args: &Args) -> CaptureResult {
         }
     }
 
+    if let Some((width, height)) = args.resize_to {
+        let bounds = Bounds {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        if let Err(e) = engine.resize_view(view_id, bounds) {
+            return result.failed("error", format!("Failed to resize view: {:?}", e));
+        }
+        result.width = width;
+        result.height = height;
+    }
+
     // Render
     if let Err(e) = engine.render_view(view_id) {
         return result.failed("error", format!("Failed to render: {:?}", e));
@@ -306,6 +327,16 @@ fn run_capture(args: &Args) -> CaptureResult {
     let _ = engine.destroy_view(view_id);
 
     result
+}
+
+/// `WxH`, e.g. `1024x768`.
+fn parse_size(s: &str) -> Result<(u32, u32), String> {
+    let (w, h) = s
+        .split_once('x')
+        .ok_or_else(|| format!("expected WxH, got {s:?}"))?;
+    let w = w.parse().map_err(|e| format!("width {w:?}: {e}"))?;
+    let h = h.parse().map_err(|e| format!("height {h:?}: {e}"))?;
+    Ok((w, h))
 }
 
 fn script_stats(log: &[ScriptRecord]) -> ScriptStats {

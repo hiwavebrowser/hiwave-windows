@@ -2602,6 +2602,25 @@ pub(crate) fn own_min_content_width(layout_box: &LayoutBox) -> f32 {
         };
     }
 
+    // A form control's content is not in its children (see the same arm in
+    // `own_max_content_width`), so the generic walk below finds nothing and
+    // answers the padding box alone. n67 closed that hole for max-content and
+    // left this one open: a `.btn { padding: 0.6rem 1rem; border: 1px }`
+    // floored at 34 — its padding and none of its text — so every rule that
+    // uses min-content as a FLOOR let the control shrink past its own label.
+    // The two that do are css-flexbox-1 §4.5 automatic minimum size
+    // (`min-width: auto` on a flex item) and css-sizing-3 shrink-to-fit.
+    // Measured against Chrome 148 on this seat, a 120px flex line holding two
+    // `padding: 8px 16px; border: 1px` buttons: Chrome floors them at 90.03
+    // and 77.59 and lets the LINE overflow; RustKit shrank them to 72.17 and
+    // 39.84. A float in a 60px parent: Chrome 90.03, RustKit 60.
+    //
+    // The arm sits BELOW the `width: Px` check, like max-content's, so a
+    // specified width still wins.
+    if let BoxType::FormControl(control) = &layout_box.box_type {
+        return form_control_min_content_width(style, control);
+    }
+
     // Content-derived width. Under white-space that forbids wrapping,
     // consecutive inline-level children form one unbreakable run (sum);
     // otherwise every child stands alone (max). A block-level child always
@@ -2659,6 +2678,59 @@ pub(crate) fn own_min_content_width(layout_box: &LayoutBox) -> f32 {
     max_contribution = max_contribution.max(inline_run);
 
     max_contribution + padding_border
+}
+
+/// The BORDER-box min-content width of a form control.
+///
+/// A button is the only control whose intrinsic min and max differ, because
+/// it is the only one whose content is text laid out in a block that can take
+/// a soft wrap: Chrome floors it at its WIDEST WORD plus the horizontal
+/// padding/border, not its whole label. Everything else has no soft-wrap
+/// opportunity — a text input is sized by its `size`, a select by its widest
+/// option, a textarea by its `cols`, a checkbox/radio/range/colour by a fixed
+/// box — so min-content IS max-content and delegating is the rule, not a
+/// shortcut.
+///
+/// Measured in Chrome 148 on this seat, `width: min-content` against
+/// `width: max-content`, `padding: 8px 16px; border: 1px` where noted:
+///
+/// ```text
+///   button "Save Changes"   min  90.031   max 125.844   (widest word "Changes" 56.047 + 34)
+///   button "Cancel"         min  77.594   max  77.594   (one word: min == max)
+///   inline-block span, same padding and label:  90.031 / 125.844 — IDENTICAL
+///   input[type=text]       min 185 max 185     input, padded   min 215 max 215
+///   select                 min 137 max 137     textarea        min 182 max 182
+///   input[type=checkbox]   13      input[type=range]  129
+/// ```
+///
+/// The span row is why the button arm is a text rule rather than a control
+/// rule: Chrome measures a button's label with the ordinary min-content
+/// algorithm for text, so `text_min_content_width` is the right quantity and
+/// carries `white-space: nowrap | pre` (no wrap opportunity, so min == max)
+/// for free.
+///
+/// The variants are listed rather than wildcarded so that a new control type
+/// has to answer this question explicitly instead of silently inheriting
+/// "min == max".
+fn form_control_min_content_width(style: &ComputedStyle, control: &crate::FormControlType) -> f32 {
+    match control {
+        crate::FormControlType::Button { label, .. } => {
+            let font_size = match style.font_size {
+                Length::Px(px) => px,
+                _ => 16.0,
+            };
+            // Same composition the max-content arm uses, from a narrower
+            // advance — deliberately the SAME function, not a second copy.
+            crate::button_border_box_width(style, font_size, text_min_content_width(label, style))
+        }
+        crate::FormControlType::TextInput { .. }
+        | crate::FormControlType::TextArea { .. }
+        | crate::FormControlType::Checkbox { .. }
+        | crate::FormControlType::Radio { .. }
+        | crate::FormControlType::Select { .. } => {
+            crate::form_control_intrinsic_size(style, control).0
+        }
+    }
 }
 
 /// Is this child a text box made only of collapsible document white space?

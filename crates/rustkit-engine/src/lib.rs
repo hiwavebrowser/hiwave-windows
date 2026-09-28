@@ -20,8 +20,7 @@ use rustkit_bindings::DomBindings;
 pub use rustkit_bindings::IpcMessage;
 use rustkit_compositor::Compositor;
 
-/// Test-only: create a `Compositor` with GPU device creation serialised across
-/// this crate's unit tests.
+/// Test-only: create a `Compositor` while holding this crate's GPU guard.
 ///
 /// `Compositor::new` builds a wgpu instance, requests an adapter and a device.
 /// Run from many test threads at once on a machine with a real GPU (seen on
@@ -29,11 +28,126 @@ use rustkit_compositor::Compositor;
 /// the parallel test binary stops making progress with no slow-test warnings,
 /// while `--test-threads=1` always passes. Tests only; `Engine::new` and every
 /// test that builds an engine by hand go through this.
+///
+/// Serialising only the creation (#306) cut the stalls from 5/5 parallel runs
+/// to 2/35: the remaining hangs were a device being created while another
+/// test's device was still in use or being dropped. So the guard is held for
+/// the rest of the test, not just the call: see [`test_gpu::hold_for_this_test`].
 #[cfg(test)]
 pub(crate) fn test_compositor() -> Result<Compositor, rustkit_compositor::CompositorError> {
-    static GPU_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _gpu_init = GPU_INIT.lock().unwrap_or_else(|e| e.into_inner());
+    test_gpu::hold_for_this_test();
     Compositor::new()
+}
+
+/// Test-only GPU guard: at most one unit test at a time owns GPU devices.
+///
+/// The first device a test thread creates takes the guard; a thread-local
+/// token gives it back when that thread exits. libtest runs every test on its
+/// own thread, so the guard spans the whole test: device creation, use, AND
+/// teardown (locals drop before thread-locals). Tests that never touch the GPU
+/// never take it and still run in parallel.
+///
+/// A second engine on the same thread is free (the thread already holds the
+/// guard). A helper thread that builds its own engine takes the guard for
+/// itself, so a test must not keep a GPU engine alive on its own thread while
+/// waiting for such a helper; that would wait on itself.
+///
+/// Waiting is bounded: after [`test_gpu::MAX_WAIT`] the waiter panics and
+/// names the holder, so a test that hangs while holding the GPU fails the
+/// tests queued behind it loudly instead of stalling the binary silently.
+#[cfg(test)]
+pub(crate) mod test_gpu {
+    use std::cell::RefCell;
+    use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
+
+    pub(crate) const MAX_WAIT: Duration = Duration::from_secs(120);
+
+    /// Name of the thread holding the guard, if any.
+    static HOLDER: Mutex<Option<String>> = Mutex::new(None);
+    static RELEASED: Condvar = Condvar::new();
+
+    /// Dropped when the owning thread exits; that is the release.
+    struct Token;
+
+    impl Drop for Token {
+        fn drop(&mut self) {
+            let mut holder = HOLDER.lock().unwrap_or_else(|e| e.into_inner());
+            *holder = None;
+            RELEASED.notify_all();
+        }
+    }
+
+    thread_local! {
+        static TOKEN: RefCell<Option<Token>> = const { RefCell::new(None) };
+    }
+
+    fn this_thread() -> String {
+        let t = std::thread::current();
+        match t.name() {
+            Some(name) => name.to_string(),
+            None => format!("{:?}", t.id()),
+        }
+    }
+
+    /// Take the guard for the rest of this thread's life, unless it already
+    /// holds it.
+    pub(crate) fn hold_for_this_test() {
+        if TOKEN.with(|t| t.borrow().is_some()) {
+            return;
+        }
+        let me = this_thread();
+        let mut holder = HOLDER.lock().unwrap_or_else(|e| e.into_inner());
+        let deadline = std::time::Instant::now() + MAX_WAIT;
+        while let Some(other) = holder.as_ref() {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                panic!(
+                    "GPU test guard: waited {}s for `{other}` to finish with the GPU; \
+                     that test is hung or kept a GPU engine alive while waiting on a helper thread",
+                    MAX_WAIT.as_secs()
+                );
+            }
+            holder = RELEASED
+                .wait_timeout(holder, deadline - now)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        *holder = Some(me);
+        drop(holder);
+        TOKEN.with(|t| *t.borrow_mut() = Some(Token));
+    }
+
+    /// Run `work` against a fresh engine on a helper thread, and fail with
+    /// `what` if it takes longer than `budget` once that engine EXISTS.
+    ///
+    /// For tests that bound a possible hang (a style pass that loops) with a
+    /// timeout. Building the engine takes the GPU guard, which can mean queueing
+    /// behind other GPU tests; that wait must not count against the hang budget,
+    /// or a busy parallel run fails a test that did nothing wrong.
+    pub(crate) fn on_helper_engine<T: Send + 'static>(
+        budget: Duration,
+        what: &str,
+        work: impl FnOnce(&crate::Engine) -> T + Send + 'static,
+    ) -> T {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let e = crate::Engine::new(crate::EngineConfig::default()).expect("engine");
+            let _ = ready_tx.send(());
+            let _ = done_tx.send(work(&e));
+        });
+        if ready_rx
+            .recv_timeout(MAX_WAIT + Duration::from_secs(30))
+            .is_err()
+        {
+            panic!("{what}: the helper thread never got an engine");
+        }
+        match done_rx.recv_timeout(budget) {
+            Ok(v) => v,
+            Err(_) => panic!("{what}"),
+        }
+    }
 }
 use rustkit_core::{LoadEvent, NavigationRequest, NavigationStateMachine};
 use rustkit_css::{css_ident, parse_display, ComputedStyle, Rule, Stylesheet};
@@ -388,6 +502,13 @@ impl EngineConfig {
             ..Default::default()
         }
     }
+}
+
+/// `RUSTKIT_CASCADE_TIMING=1` logs a "Cascade timing" line per layout build
+/// (the cascade-speed trench's instrument). Read once; off by default.
+fn cascade_timing_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("RUSTKIT_CASCADE_TIMING").is_some_and(|v| v != "0"))
 }
 
 /// css-text §4.1 "document white space": the characters that collapse under
@@ -1195,6 +1316,38 @@ impl Engine {
             .is_some()
         {
             self.relayout(id)?;
+        }
+
+        // The page's scripts see the new size, then get `resize` at
+        // `window`, as a browser window resize does. Listener exceptions go
+        // to the script log like the lifecycle events' do.
+        if let Some(view) = self.views.get_mut(&id) {
+            if let Some(bindings) = view.bindings.as_ref() {
+                let fired = bindings
+                    .set_dimensions(bounds.width as f64, bounds.height as f64)
+                    .and_then(|()| {
+                        bindings.fire_lifecycle_event(
+                            rustkit_bindings::LifecycleTarget::Window,
+                            "resize",
+                        )
+                    });
+                if let Err(e) = fired {
+                    view.script_log.push(ScriptRecord {
+                        source: "event:resize".into(),
+                        bytes: 0,
+                        elapsed_ms: 0,
+                        outcome: ScriptOutcome::Threw(e.to_string()),
+                    });
+                }
+                for message in bindings.take_reported_errors() {
+                    view.script_log.push(ScriptRecord {
+                        source: "event:resize".into(),
+                        bytes: 0,
+                        elapsed_ms: 0,
+                        outcome: ScriptOutcome::Threw(message),
+                    });
+                }
+            }
         }
 
         // Emit event
@@ -2037,6 +2190,14 @@ impl Engine {
                 .set_location(&url)
                 .map_err(|e| EngineError::JsError(e.to_string()))?;
 
+            // `window.innerWidth/innerHeight` are this view's size, not the
+            // bindings' 800x600 placeholder: pages pick layouts from them.
+            if let Some((width, height)) = self.view_viewport(id) {
+                bindings
+                    .set_dimensions(width as f64, height as f64)
+                    .map_err(|e| EngineError::JsError(e.to_string()))?;
+            }
+
             let view = self
                 .views
                 .get_mut(&id)
@@ -2244,6 +2405,14 @@ impl Engine {
             bindings
                 .set_location(&url)
                 .map_err(|e| EngineError::JsError(e.to_string()))?;
+
+            // `window.innerWidth/innerHeight` are this view's size, not the
+            // bindings' 800x600 placeholder: pages pick layouts from them.
+            if let Some((width, height)) = self.view_viewport(id) {
+                bindings
+                    .set_dimensions(width as f64, height as f64)
+                    .map_err(|e| EngineError::JsError(e.to_string()))?;
+            }
 
             let view = self
                 .views
@@ -2768,8 +2937,14 @@ impl Engine {
         document: &Document,
         external_stylesheets: &[Stylesheet],
     ) -> LayoutBox {
+        let parse_started = cascade_timing_enabled().then(std::time::Instant::now);
+
         // Extract stylesheets from <style> elements
         let mut stylesheets = self.extract_stylesheets(document);
+
+        // Everything from here to the finished box tree is what Chrome's
+        // `UpdateLayoutTree` covers; stylesheet parsing above is its `parse`.
+        let cascade_started = parse_started.map(|t| (t.elapsed(), std::time::Instant::now()));
 
         // Add external stylesheets (loaded from <link> elements)
         stylesheets.extend(external_stylesheets.iter().cloned());
@@ -2923,6 +3098,14 @@ impl Engine {
         }
 
         info!(total_children = root_box.children.len(), "Root box built");
+        if let Some((parse, started)) = cascade_started {
+            let cascade = started.elapsed();
+            info!(
+                parse_ms = parse.as_secs_f64() * 1000.0,
+                cascade_ms = cascade.as_secs_f64() * 1000.0,
+                "Cascade timing"
+            );
+        }
         root_box
     }
 
@@ -4089,21 +4272,33 @@ impl Engine {
             "::after" => Some(&ix.after),
             _ => None,
         });
-        let rules: Box<dyn Iterator<Item = &Rule>> = match (index.as_ref(), indexed) {
-            (Some(ix), Some(list)) => Box::new(list.iter().map(|&g| ix.rule(stylesheets, g))),
-            _ => Box::new(stylesheets.iter().flat_map(|s| s.rules.iter())),
-        };
+        // Only the pseudo rules filed under this element's id, classes,
+        // attribute names or tag (by their base selector), plus the universal
+        // ones: github's ~1,000 `::before`/`::after` rules were walked in full
+        // for every element, half of all cascade time.
+        let rules: Box<dyn Iterator<Item = (Option<&[SubjectKey]>, &Rule)>> =
+            match (index.as_ref(), indexed) {
+                (Some(ix), Some(buckets)) => Box::new(
+                    buckets
+                        .candidates(tag_name, attributes)
+                        .into_iter()
+                        .map(move |g| {
+                            let keys = ix.pseudo_keys[g as usize].as_deref().map(Vec::as_slice);
+                            (keys, ix.rule(stylesheets, g))
+                        }),
+                ),
+                _ => Box::new(stylesheets.iter().flat_map(|s| s.rules.iter()).map(|r| (None, r))),
+            };
 
-        for rule in rules {
+        for (indexed_keys, rule) in rules {
             {
                 let selector = &rule.selector;
 
                 // Check for explicit pseudo-element in selector
                 if selector.ends_with(pseudo) || selector.ends_with(single_colon.as_str()) {
                     // Get the base selector (without pseudo)
-                    let base_selector = selector
-                        .trim_end_matches(pseudo)
-                        .trim_end_matches(single_colon.as_str());
+                    let base_selector =
+                        pseudo_base_selector(selector, pseudo, single_colon.as_str());
 
                     // Check if base selector matches this element, with the
                     // host's real sibling context (`li:first-child::before`,
@@ -4111,7 +4306,12 @@ impl Engine {
                     // subject prefilter first, exactly as the cascade does.
                     // A bare `::before` has no subject to prefilter on.
                     if (base_selector.trim().is_empty()
-                        || self.rule_may_match(base_selector.trim(), tag_name, attributes))
+                        || match indexed_keys {
+                            Some(keys) => Self::keys_may_match(keys, tag_name, attributes),
+                            None => {
+                                self.rule_may_match(base_selector.trim(), tag_name, attributes)
+                            }
+                        })
                         && self.selector_matches(
                         base_selector.trim(),
                         tag_name,
@@ -4599,7 +4799,12 @@ impl Engine {
         };
 
         for (rule_index, rule) in rules {
-            if self.rule_may_match(&rule.selector, tag_name, attributes)
+            // With an index, `rule_index` is the global index `g`.
+            let may_match = match index.as_ref() {
+                Some(ix) => Self::keys_may_match(&ix.keys[rule_index], tag_name, attributes),
+                None => self.rule_may_match(&rule.selector, tag_name, attributes),
+            };
+            if may_match
                 && self.selector_matches(
                     &rule.selector,
                     tag_name,
@@ -4609,7 +4814,10 @@ impl Engine {
                     sib,
                 )
             {
-                let specificity = self.selector_specificity(&rule.selector);
+                let specificity = match index.as_ref() {
+                    Some(ix) => ix.specificity[rule_index],
+                    None => self.selector_specificity(&rule.selector),
+                };
                 matching_rules.push((rule, specificity, rule_index));
             }
         }
@@ -5463,20 +5671,12 @@ impl Engine {
                 }
             }
             "flex-basis" => {
-                if value == "auto" {
-                    style.flex_basis = rustkit_css::FlexBasis::Auto;
-                } else if value == "content" {
-                    style.flex_basis = rustkit_css::FlexBasis::Content;
-                } else if let Some(length) = parse_length(value) {
-                    match length {
-                        rustkit_css::Length::Px(px) => {
-                            style.flex_basis = rustkit_css::FlexBasis::Length(px)
-                        }
-                        rustkit_css::Length::Percent(pct) => {
-                            style.flex_basis = rustkit_css::FlexBasis::Percent(pct)
-                        }
-                        _ => {}
-                    }
+                // A value parse_flex_basis can't place (it answers Auto for
+                // anything but an explicit `auto`) leaves the basis as it was.
+                let v = value.trim();
+                match parse_flex_basis(v) {
+                    rustkit_css::FlexBasis::Auto if !v.eq_ignore_ascii_case("auto") => {}
+                    basis => style.flex_basis = basis,
                 }
             }
             "flex" => {
@@ -7433,44 +7633,49 @@ impl Engine {
         let mut ix = RuleIndex {
             source: RuleIndex::source_of(stylesheets),
             rules: Vec::new(),
-            by_id: HashMap::new(),
-            by_class: HashMap::new(),
-            by_attr: HashMap::new(),
-            by_tag: HashMap::new(),
-            universal: Vec::new(),
-            before: Vec::new(),
-            after: Vec::new(),
+            keys: Vec::new(),
+            pseudo_keys: Vec::new(),
+            specificity: Vec::new(),
+            main: RuleBuckets::default(),
+            before: RuleBuckets::default(),
+            after: RuleBuckets::default(),
         };
         for (s, sheet) in stylesheets.iter().enumerate() {
             for (r, rule) in sheet.rules.iter().enumerate() {
                 let g = ix.rules.len() as u32;
                 ix.rules.push((s as u32, r as u32));
-                for key in self.subject_keys(&rule.selector).iter() {
-                    // Any one required field is enough to file under: an
-                    // element lacking it fails that key in rule_may_match.
-                    let bucket = if let Some(id) = &key.id {
-                        ix.by_id.entry(id.clone()).or_default()
-                    } else if let Some(class) = &key.class {
-                        ix.by_class.entry(class.clone()).or_default()
-                    } else if let Some(attr) = &key.attr {
-                        ix.by_attr.entry(attr.clone()).or_default()
-                    } else if let Some(tag) = &key.tag {
-                        ix.by_tag.entry(tag.clone()).or_default()
+                let keys = self.subject_keys(&rule.selector);
+                for key in keys.iter() {
+                    ix.main.file(key, g);
+                }
+                ix.keys.push(keys);
+                ix.specificity.push(self.selector_specificity(&rule.selector));
+                let mut pseudo_keys = None;
+                // Same test as create_pseudo_element's (the single-colon
+                // form covers the double-colon one). Filed under the keys of
+                // the BASE selector, the one create_pseudo_element prefilters:
+                // an empty base (bare `::before`) can match any element; a
+                // base with no keys never passes `rule_may_match`.
+                for (suffix, pseudo, buckets) in [
+                    (":before", "::before", &mut ix.before),
+                    (":after", "::after", &mut ix.after),
+                ] {
+                    if !rule.selector.ends_with(suffix) {
+                        continue;
+                    }
+                    let base = pseudo_base_selector(&rule.selector, pseudo, suffix);
+                    if base.is_empty() {
+                        buckets.universal.push(g);
                     } else {
-                        &mut ix.universal
-                    };
-                    if bucket.last() != Some(&g) {
-                        bucket.push(g);
+                        // create_pseudo_element prefilters the TRIMMED base.
+                        let keys = self.subject_keys(base.trim());
+                        for key in keys.iter() {
+                            buckets.file(key, g);
+                        }
+                        pseudo_keys = Some(keys);
                     }
                 }
-                // Same test as create_pseudo_element's (the single-colon
-                // form covers the double-colon one).
-                if rule.selector.ends_with(":before") {
-                    ix.before.push(g);
-                }
-                if rule.selector.ends_with(":after") {
-                    ix.after.push(g);
-                }
+                ix.pseudo_keys.push(pseudo_keys);
             }
         }
         ix
@@ -7482,9 +7687,19 @@ impl Engine {
         tag_name: &str,
         attributes: &HashMap<String, String>,
     ) -> bool {
+        Self::keys_may_match(&self.subject_keys(selector), tag_name, attributes)
+    }
+
+    /// `rule_may_match` with the subject keys already in hand (the rule
+    /// index stores them per rule).
+    fn keys_may_match(
+        keys: &[SubjectKey],
+        tag_name: &str,
+        attributes: &HashMap<String, String>,
+    ) -> bool {
         #[cfg(test)]
         PREFILTER_VISITS.with(|n| n.set(n.get() + 1));
-        self.subject_keys(selector).iter().any(|k| {
+        keys.iter().any(|k| {
             k.id.as_deref()
                 .map_or(true, |id| attributes.get("id").map(String::as_str) == Some(id))
                 && k.tag
@@ -11332,6 +11547,12 @@ fn parse_flex_basis(value: &str) -> rustkit_css::FlexBasis {
     match parse_length(v) {
         Some(rustkit_css::Length::Px(px)) => rustkit_css::FlexBasis::Length(px),
         Some(rustkit_css::Length::Percent(pct)) => rustkit_css::FlexBasis::Percent(pct),
+        // A unitless `0` is a length (`flex: 1 1 0`, `flex-basis: 0`).
+        // Falling to Auto sized the item to its content, so two basis-0
+        // siblings split the free space unevenly.
+        Some(rustkit_css::Length::Zero) => rustkit_css::FlexBasis::Length(0.0),
+        // Same 16px root the rest of the cascade assumes for rem.
+        Some(rustkit_css::Length::Rem(rem)) => rustkit_css::FlexBasis::Length(rem * 16.0),
         _ => rustkit_css::FlexBasis::Auto,
     }
 }
@@ -17209,6 +17430,125 @@ mod rule_prefilter_tests {
     }
 
     #[test]
+    fn rule_index_specificity_matches_selector_specificity() {
+        // The cascade sorts matched rules by the index's stored specificity;
+        // it must be exactly what `selector_specificity` computes.
+        let css = "div {} .a {} #b {} div.a > p:first-child {} a:not(.x) {} \
+                   :where(#y) span {} ul li + li {} [data-z] {} .c::before {} \
+                   h1, #d .e {} * {}";
+        let sheet = Stylesheet::parse(css).expect("css");
+        let sheets = std::slice::from_ref(&sheet);
+        let engine = Engine::new(EngineConfig::default()).expect("engine");
+        let ix = engine.build_rule_index(sheets);
+        assert_eq!(ix.specificity.len(), sheet.rules.len());
+        for (g, rule) in sheet.rules.iter().enumerate() {
+            assert_eq!(
+                ix.specificity[g],
+                engine.selector_specificity(&rule.selector),
+                "{}",
+                rule.selector
+            );
+        }
+    }
+
+    #[test]
+    fn pseudo_rules_filed_under_other_subjects_are_never_visited() {
+        // github: ~1,000 `::before`/`::after` rules, every one prefiltered
+        // (selector hashed, suffix trimmed) for every element, twice: half
+        // of all cascade time. The pseudo lists are bucketed like the main
+        // index, by their base selector's keys.
+        let mut css = String::new();
+        for i in 0..300 {
+            css.push_str(&format!(".miss-{i}::before {{ content: \"x\" }}\n"));
+            css.push_str(&format!("#miss-{i}::after {{ content: \"x\" }}\n"));
+            css.push_str(&format!("[data-miss-{i}]::before {{ content: \"x\" }}\n"));
+            css.push_str(&format!("x-miss-{i}:after {{ content: \"x\" }}\n"));
+        }
+        css.push_str(".hit::before { content: \"ok\" }\n");
+        let sheet = Stylesheet::parse(&css).expect("css");
+        let sheets = std::slice::from_ref(&sheet);
+        let engine = Engine::new(EngineConfig::default()).expect("engine");
+        let vars = HashMap::new();
+
+        let _scope = RuleIndexScope::install(engine.build_rule_index(sheets));
+        PREFILTER_VISITS.with(|n| n.set(0));
+        let host = attrs(&[("class", "hit"), ("id", "main")]);
+        let before = engine.create_pseudo_element(
+            "div", &host, sheets, &vars, &[], &[], SiblingContext::SOLE, "::before",
+        );
+        let after = engine.create_pseudo_element(
+            "div", &host, sheets, &vars, &[], &[], SiblingContext::SOLE, "::after",
+        );
+        let visits = PREFILTER_VISITS.with(|n| n.get());
+
+        assert!(before.is_some(), ".hit::before must still generate its box");
+        assert!(after.is_none());
+        assert!(
+            visits <= 1,
+            "1,200 pseudo rules filed under other subjects must not be \
+             visited; the prefilter ran {visits} times"
+        );
+    }
+
+    #[test]
+    fn indexing_pseudo_rules_never_changes_which_pseudo_element_wins() {
+        // Every base-selector shape: bare, tag, class, id, attribute,
+        // :is/:where, :root, descendant/child, a list, single and double
+        // colon, and specificity/order ties the sort must break identically.
+        let css = r#"
+            ::before { content: "a"; color: rgb(1, 0, 0) }
+            div::before { content: "b"; color: rgb(2, 0, 0) }
+            .card::before { color: rgb(3, 0, 0) }
+            .card.wide:before { color: rgb(4, 0, 0) }
+            #main::after { content: "c"; color: rgb(5, 0, 0) }
+            [data-x]::after { content: "d"; color: rgb(6, 0, 0) }
+            :is(.card, span)::before { color: rgb(7, 0, 0) }
+            :where(.other)::after { color: rgb(8, 0, 0) }
+            section .card::after { content: "e"; color: rgb(9, 0, 0) }
+            section > p::before { color: rgb(10, 0, 0) }
+            span::before, .card::before { color: rgb(11, 0, 0) }
+            :root::before { color: rgb(12, 0, 0) }
+            DIV.card::after { color: rgb(13, 0, 0) }
+            .card::before { color: rgb(14, 0, 0) }
+        "#;
+        let sheet = Stylesheet::parse(css).expect("css");
+        let sheets = std::slice::from_ref(&sheet);
+        let engine = Engine::new(EngineConfig::default()).expect("engine");
+        let vars = HashMap::new();
+        let section: Vec<(String, Vec<String>, Option<String>)> =
+            vec![("section".to_string(), vec![], None)];
+        let hosts: Vec<(&str, HashMap<String, String>, &[(String, Vec<String>, Option<String>)])> = vec![
+            ("div", attrs(&[("class", "card wide"), ("id", "main")]), &section),
+            ("div", attrs(&[("class", "card")]), &[]),
+            ("p", attrs(&[("data-x", "1")]), &section),
+            ("span", attrs(&[]), &[]),
+            ("html", attrs(&[]), &[]),
+            ("em", attrs(&[("class", "other")]), &[]),
+        ];
+        let pseudo = |host: &(&str, HashMap<String, String>, &[(String, Vec<String>, Option<String>)]),
+                      which: &str| {
+            engine
+                .create_pseudo_element(
+                    host.0, &host.1, sheets, &vars, host.2, &[], SiblingContext::SOLE, which,
+                )
+                .map(|b| b.style.color)
+        };
+        let plain: Vec<_> = hosts
+            .iter()
+            .flat_map(|h| [pseudo(h, "::before"), pseudo(h, "::after")])
+            .collect();
+        let _scope = RuleIndexScope::install(engine.build_rule_index(sheets));
+        let indexed: Vec<_> = hosts
+            .iter()
+            .flat_map(|h| [pseudo(h, "::before"), pseudo(h, "::after")])
+            .collect();
+
+        assert_eq!(indexed, plain);
+        // Not vacuous: class, compound-class, id and attribute winners.
+        assert_eq!(plain.iter().filter(|c| c.is_some()).count(), 4, "{plain:?}");
+    }
+
+    #[test]
     fn the_index_changes_which_rules_are_visited_never_which_ones_win() {
         // Every shape the prefilter keys on, plus ones it cannot key
         // (attribute-only, pseudo-class-only, lists mixing both), and
@@ -17563,6 +17903,32 @@ mod cascade_wire_tests {
     }
 
     #[test]
+    fn a_unitless_zero_basis_is_a_length_not_auto() {
+        // `flex: 1 1 0` (scratch/basis/b-zero.html): Chrome splits two such
+        // items evenly; as Auto they sized to content and split unevenly.
+        let e = engine();
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "flex", "1 1 0");
+        assert_eq!(s.flex_basis, rustkit_css::FlexBasis::Length(0.0));
+
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "flex-basis", "0");
+        assert_eq!(s.flex_basis, rustkit_css::FlexBasis::Length(0.0));
+
+        let mut s = ComputedStyle::default();
+        e.apply_style_property(&mut s, "flex", "0 0 2.5rem");
+        assert_eq!(s.flex_basis, rustkit_css::FlexBasis::Length(40.0));
+        e.apply_style_property(&mut s, "flex-basis", "1rem");
+        assert_eq!(s.flex_basis, rustkit_css::FlexBasis::Length(16.0));
+
+        // An explicit auto still resets; garbage leaves the basis alone.
+        e.apply_style_property(&mut s, "flex-basis", "bogus");
+        assert_eq!(s.flex_basis, rustkit_css::FlexBasis::Length(16.0));
+        e.apply_style_property(&mut s, "flex-basis", "auto");
+        assert_eq!(s.flex_basis, rustkit_css::FlexBasis::Auto);
+    }
+
+    #[test]
     fn a_two_value_shorthand_distinguishes_shrink_from_basis() {
         let e = engine();
         let mut s = ComputedStyle::default();
@@ -17914,6 +18280,30 @@ mod page_script_tests {
         rt.block_on(engine.load_url(view, url)).expect("load_url");
         let took = started.elapsed();
         (engine, view, took)
+    }
+
+    /// Scripts see the view's size, and a resize updates it and fires
+    /// `resize` at `window` (the page's layout choice must not stay frozen
+    /// at the load size).
+    #[test]
+    fn scripts_see_the_view_size_and_a_resize_updates_it() {
+        let page = r#"<html><head><script>
+var seen = [window.innerWidth + 'x' + window.innerHeight];
+window.addEventListener('resize', function () {
+    seen.push('resize:' + window.innerWidth + 'x' + window.innerHeight);
+});
+</script></head><body>hi</body></html>"#;
+        let port = serve(vec![("/", "text/html", page.to_string())]);
+        let (mut engine, view) = load(EngineConfig::default(), port);
+
+        let seen = engine.execute_script(view, "seen.join(',')").unwrap();
+        assert_eq!(seen, r#"String("200x100")"#);
+
+        engine
+            .resize_view(view, Bounds { x: 0, y: 0, width: 640, height: 480 })
+            .expect("resize");
+        let seen = engine.execute_script(view, "seen.join(',')").unwrap();
+        assert_eq!(seen, r#"String("200x100,resize:640x480")"#);
     }
 
     #[test]
@@ -18364,25 +18754,53 @@ struct RuleIndex {
     source: (usize, usize, usize),
     /// Global rule index -> (sheet, rule within sheet).
     rules: Vec<(u32, u32)>,
+    /// Global rule index -> the subject keys of its selector, and (for a
+    /// `:before`/`:after` rule with a non-empty base) of its base selector.
+    /// Computed once here so `rule_may_match` doesn't re-hash the selector
+    /// string for every candidate of every element (24% of github's cascade).
+    keys: Vec<Rc<Vec<SubjectKey>>>,
+    pseudo_keys: Vec<Option<Rc<Vec<SubjectKey>>>>,
+    /// Global rule index -> `selector_specificity` of its selector, so a
+    /// matched rule doesn't re-scan its selector string on every element.
+    specificity: Vec<(usize, usize, usize)>,
+    /// Every rule, by its subject keys.
+    main: RuleBuckets,
+    /// Rules whose selector ends in `:before`/`::before` (resp. after), the
+    /// only rules `create_pseudo_element` can use, by the subject keys of
+    /// their base selector (`pseudo_base_selector`).
+    before: RuleBuckets,
+    after: RuleBuckets,
+}
+
+/// Global rule indices filed by subject key. Each list is ascending.
+#[derive(Default)]
+struct RuleBuckets {
     by_id: HashMap<String, Vec<u32>>,
     by_class: HashMap<String, Vec<u32>>,
     /// Keyed by the attribute name an attribute-first subject requires.
     by_attr: HashMap<String, Vec<u32>>,
     by_tag: HashMap<String, Vec<u32>>,
     universal: Vec<u32>,
-    /// Rules whose selector ends in `:before`/`::before` (resp. after), in
-    /// rule order: the only rules `create_pseudo_element` can use.
-    before: Vec<u32>,
-    after: Vec<u32>,
 }
 
-impl RuleIndex {
-    fn source_of(stylesheets: &[Stylesheet]) -> (usize, usize, usize) {
-        (
-            stylesheets.as_ptr() as usize,
-            stylesheets.len(),
-            stylesheets.iter().map(|s| s.rules.len()).sum(),
-        )
+impl RuleBuckets {
+    /// File rule `g` under one of `key`'s required fields. Any one is
+    /// enough: an element lacking it fails that key in rule_may_match.
+    fn file(&mut self, key: &SubjectKey, g: u32) {
+        let bucket = if let Some(id) = &key.id {
+            self.by_id.entry(id.clone()).or_default()
+        } else if let Some(class) = &key.class {
+            self.by_class.entry(class.clone()).or_default()
+        } else if let Some(attr) = &key.attr {
+            self.by_attr.entry(attr.clone()).or_default()
+        } else if let Some(tag) = &key.tag {
+            self.by_tag.entry(tag.clone()).or_default()
+        } else {
+            &mut self.universal
+        };
+        if bucket.last() != Some(&g) {
+            bucket.push(g);
+        }
     }
 
     /// Candidate global rule indices for an element, ascending, no repeats.
@@ -18413,6 +18831,31 @@ impl RuleIndex {
         out.sort_unstable();
         out.dedup();
         out
+    }
+}
+
+/// The selector a `…::before`/`…:before` rule matches its host with, as
+/// `create_pseudo_element` computes it. The rule index files pseudo rules
+/// by the keys of this same string, so the two cannot disagree.
+fn pseudo_base_selector<'a>(selector: &'a str, pseudo: &str, single_colon: &str) -> &'a str {
+    selector
+        .trim_end_matches(pseudo)
+        .trim_end_matches(single_colon)
+        .trim()
+}
+
+impl RuleIndex {
+    fn source_of(stylesheets: &[Stylesheet]) -> (usize, usize, usize) {
+        (
+            stylesheets.as_ptr() as usize,
+            stylesheets.len(),
+            stylesheets.iter().map(|s| s.rules.len()).sum(),
+        )
+    }
+
+    /// Candidate global rule indices for an element, ascending, no repeats.
+    fn candidates(&self, tag_name: &str, attributes: &HashMap<String, String>) -> Vec<u32> {
+        self.main.candidates(tag_name, attributes)
     }
 
     fn rule<'a>(&self, stylesheets: &'a [Stylesheet], g: u32) -> &'a Rule {
@@ -18828,13 +19271,12 @@ mod windows_a_leg_pins {
         // carvana.com ships `--spacing-xs: var(--spacing-xs, .125rem)` (13
         // such declarations). The old resolver re-scanned its own output and
         // substituted that forever, hanging the first style pass.
-        let e = Engine::new(EngineConfig::default()).expect("engine");
         let mut vars = HashMap::new();
         vars.insert("--spacing-xs".to_string(), "var(--spacing-xs, .125rem)".to_string());
         vars.insert("--a".to_string(), "var(--b)".to_string());
         vars.insert("--b".to_string(), "var(--a, 7px)".to_string());
         vars.insert("--gap".to_string(), "4px".to_string());
-        let r = |v: &str| resolve_bounded(&e, v, &vars);
+        let r = |v: &str| resolve_bounded(v, &vars);
         assert_eq!(r("var(--spacing-xs)"), ".125rem");
         assert_eq!(r("var(--spacing-xs, 9px)"), ".125rem");
         // A two-variable cycle takes the inner fallback, and terminates.
@@ -18847,13 +19289,12 @@ mod windows_a_leg_pins {
     #[test]
     fn css_variable_fan_out_is_bounded() {
         // Each level doubles: 40 levels would be 2^40 copies unbounded.
-        let e = Engine::new(EngineConfig::default()).expect("engine");
         let mut vars = HashMap::new();
         vars.insert("--v0".to_string(), "x".to_string());
         for i in 1..40 {
             vars.insert(format!("--v{i}"), format!("var(--v{p}) var(--v{p})", p = i - 1));
         }
-        let out = resolve_bounded(&e, "var(--v39)", &vars);
+        let out = resolve_bounded("var(--v39)", &vars);
         assert!(out.len() <= 2 * VAR_EXPANSION_BUDGET, "len {}", out.len());
     }
 
@@ -18867,31 +19308,27 @@ mod windows_a_leg_pins {
             ".btn{padding:var(--spacing-xs)}",
             "</style></head><body><div class=\"btn\">buy</div></body></html>"
         );
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let e = Engine::new(EngineConfig::default()).expect("engine");
-            let d = Document::parse_html(html).expect("parse");
-            let _ = e.build_layout_from_document(&d, &[]);
-            let _ = tx.send(());
-        });
-        assert!(
-            rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(),
-            "style/layout did not finish: var() self-reference loops"
+        crate::test_gpu::on_helper_engine(
+            std::time::Duration::from_secs(10),
+            "style/layout did not finish: var() self-reference loops",
+            move |e| {
+                let d = Document::parse_html(html).expect("parse");
+                let _ = e.build_layout_from_document(&d, &[]);
+            },
         );
     }
 
     /// Runs the resolver on a worker thread so a regression fails the test
-    /// instead of hanging the suite.
-    fn resolve_bounded(e: &Engine, v: &str, vars: &HashMap<String, String>) -> String {
-        let _ = e;
+    /// instead of hanging the suite. The worker builds its own engine; the
+    /// caller must not hold one (the GPU test guard, crate::test_gpu, would
+    /// make the worker wait for the caller's thread).
+    fn resolve_bounded(v: &str, vars: &HashMap<String, String>) -> String {
         let (v, vars) = (v.to_string(), vars.clone());
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let e = Engine::new(EngineConfig::default()).expect("engine");
-            let _ = tx.send(e.resolve_css_variables(&v, &vars));
-        });
-        rx.recv_timeout(std::time::Duration::from_secs(10))
-            .expect("resolve_css_variables did not terminate")
+        crate::test_gpu::on_helper_engine(
+            std::time::Duration::from_secs(10),
+            "resolve_css_variables did not terminate",
+            move |e| e.resolve_css_variables(&v, &vars),
+        )
     }
 
     #[test]
@@ -19042,7 +19479,8 @@ mod windows_a_leg_pins {
 
     #[test]
     fn custom_property_cycles_and_missing_vars_fall_back() {
-        let e = engine();
+        // No engine on this thread: the helper below builds its own, and the
+        // GPU test guard (crate::test_gpu) would make it wait for this thread.
         let html = "<html><head><style>\
                     .cyc{--a:var(--b);--b:var(--a);color:var(--a, #0a0b0c)}\
                     .self{--x:var(--x, #ffffff);color:var(--x, #0d0e0f)}\
@@ -19050,20 +19488,18 @@ mod windows_a_leg_pins {
                     </style></head><body>\
                     <p class=\"cyc\">cycle</p><p class=\"self\">self</p>\
                     <p class=\"miss\">missing</p></body></html>";
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let e2 = Engine::new(EngineConfig::default()).expect("engine");
-            let layout = layout_of(&e2, html);
-            let _ = tx.send((
-                text_color(&layout, "cycle"),
-                text_color(&layout, "self"),
-                text_color(&layout, "missing"),
-            ));
-        });
-        let _ = e;
-        let (cycle, selfref, missing) = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("a custom-property cycle hung the style pass");
+        let (cycle, selfref, missing) = crate::test_gpu::on_helper_engine(
+            std::time::Duration::from_secs(10),
+            "a custom-property cycle hung the style pass",
+            move |e2| {
+                let layout = layout_of(e2, html);
+                (
+                    text_color(&layout, "cycle"),
+                    text_color(&layout, "self"),
+                    text_color(&layout, "missing"),
+                )
+            },
+        );
         assert_eq!(cycle, Some(rustkit_css::Color::from_rgb(0x0a, 0x0b, 0x0c)));
         assert_eq!(
             selfref,
