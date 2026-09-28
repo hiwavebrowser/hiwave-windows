@@ -2977,6 +2977,23 @@ impl Engine {
             trace.clear();
         }
 
+        // A replayed style records no trace entries, so a traced build
+        // always cascades in full.
+        let _style_memo = self
+            .style_trace
+            .borrow()
+            .is_none()
+            .then(|| {
+                StyleMemoBuild::begin(StyleMemoKey {
+                    view: self.building_view.get(),
+                    document: document as *const Document,
+                    external_sheets: external_stylesheets.len(),
+                    viewport,
+                    focus: self.building_focus.get(),
+                })
+            })
+            .flatten();
+
         info!(
             inline_count = stylesheets.len() - external_stylesheets.len(),
             external_count = external_stylesheets.len(),
@@ -3002,16 +3019,18 @@ impl Engine {
                 ..
             } = &html.node_type
             {
-                Some(self.compute_style_for_element(
-                    tag_name,
-                    attributes,
-                    &stylesheets,
-                    &css_vars,
-                    &[],
-                    &[],
-                    SiblingContext::SOLE.with_children(true),
-                    None,
-                ))
+                Some(memoized_style(html.id, || {
+                    self.compute_style_for_element(
+                        tag_name,
+                        attributes,
+                        &stylesheets,
+                        &css_vars,
+                        &[],
+                        &[],
+                        SiblingContext::SOLE.with_children(true),
+                        None,
+                    )
+                }))
             } else {
                 None
             }
@@ -3352,16 +3371,18 @@ impl Engine {
                 }
 
                 // Create computed style based on element, attributes, and stylesheets
-                let mut style = self.compute_style_for_element(
-                    tag_name,
-                    attributes,
-                    stylesheets,
-                    css_vars,
-                    ancestors,
-                    siblings_before,
-                    sib,
-                    parent_style,
-                );
+                let mut style = memoized_style(node.id, || {
+                    self.compute_style_for_element(
+                        tag_name,
+                        attributes,
+                        stylesheets,
+                        css_vars,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                        parent_style,
+                    )
+                });
 
                 // CSS computed-value resolution: font-size absolutizes at
                 // style time — em/% against the PARENT's computed font-size,
@@ -4804,16 +4825,26 @@ impl Engine {
                 Some(ix) => Self::keys_may_match(&ix.keys[rule_index], tag_name, attributes),
                 None => self.rule_may_match(&rule.selector, tag_name, attributes),
             };
-            if may_match
-                && self.selector_matches(
-                    &rule.selector,
-                    tag_name,
-                    attributes,
-                    ancestors,
-                    siblings_before,
-                    sib,
-                )
-            {
+            let matches = may_match
+                && match index.as_ref() {
+                    Some(ix) => self.selector_matches_prepared(
+                        &ix.prepared[rule_index],
+                        tag_name,
+                        attributes,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                    ),
+                    None => self.selector_matches(
+                        &rule.selector,
+                        tag_name,
+                        attributes,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                    ),
+                };
+            if matches {
                 let specificity = match index.as_ref() {
                     Some(ix) => ix.specificity[rule_index],
                     None => self.selector_specificity(&rule.selector),
@@ -7255,6 +7286,12 @@ impl Engine {
             info!(count = fonts_loaded, "Loaded web fonts");
         }
 
+        // Behind RUSTKIT_INCREMENTAL_RESTYLE: the sheets relayout records
+        // each element's cascade and the images relayout below replays it.
+        // Images change box sizes, not styles, and no script runs between
+        // the two builds.
+        let _style_memo = StyleMemoScope::arm();
+
         if count > 0 || had_previous || fonts_loaded > 0 {
             self.relayout(id)?;
         }
@@ -7636,6 +7673,7 @@ impl Engine {
             keys: Vec::new(),
             pseudo_keys: Vec::new(),
             specificity: Vec::new(),
+            prepared: Vec::new(),
             main: RuleBuckets::default(),
             before: RuleBuckets::default(),
             after: RuleBuckets::default(),
@@ -7650,6 +7688,7 @@ impl Engine {
                 }
                 ix.keys.push(keys);
                 ix.specificity.push(self.selector_specificity(&rule.selector));
+                ix.prepared.push(self.prepared_selector(rule.selector.trim()));
                 let mut pseudo_keys = None;
                 // Same test as create_pseudo_element's (the single-colon
                 // form covers the double-colon one). Filed under the keys of
@@ -7851,23 +7890,44 @@ impl Engine {
         siblings_before: &[SiblingKey],
         sib: SiblingContext,
     ) -> bool {
+        let prepared = self.prepared_selector(selector.trim());
+        self.selector_matches_prepared(
+            &prepared,
+            tag_name,
+            attributes,
+            ancestors,
+            siblings_before,
+            sib,
+        )
+    }
+
+    /// `selector_matches` for an already-prepared selector (the rule index
+    /// keeps one per rule).
+    fn selector_matches_prepared(
+        &self,
+        prepared: &PreparedSelector,
+        tag_name: &str,
+        attributes: &HashMap<String, String>,
+        ancestors: &[(String, Vec<String>, Option<String>)],
+        siblings_before: &[SiblingKey],
+        sib: SiblingContext,
+    ) -> bool {
         #[cfg(test)]
         FULL_SELECTOR_MATCHES.with(|n| n.set(n.get() + 1));
-        let prepared = self.prepared_selector(selector.trim());
-        let (tokens, compounds) = match &*prepared {
+        let (tokens, compounds) = match prepared {
             PreparedSelector::Never => return false,
             PreparedSelector::List(members) => {
                 return members.iter().any(|s| {
                     self.selector_matches(s, tag_name, attributes, ancestors, siblings_before, sib)
                 });
             }
-            PreparedSelector::Complex { tokens, compounds } => (tokens, compounds),
+            PreparedSelector::Complex { tokens, compounds, subject } => {
+                if !subject.matches(self, tag_name, attributes, sib) {
+                    return false;
+                }
+                (tokens, compounds)
+            }
         };
-
-        let last_token = &tokens[tokens.len() - 1];
-        if !self.simple_selector_matches_with_pseudo(&last_token.0, tag_name, attributes, sib) {
-            return false;
-        }
 
         // If there's only one token, we're done
         if tokens.len() == 1 {
@@ -7995,7 +8055,8 @@ impl Engine {
                 .iter()
                 .map(|(part, _)| AncestorCompound::parse(part))
                 .collect();
-            PreparedSelector::Complex { tokens, compounds }
+            let subject = SubjectCompound::parse(self, &tokens[tokens.len() - 1].0);
+            PreparedSelector::Complex { tokens, compounds, subject }
         };
 
         PREPARED.with(|cache| {
@@ -17316,6 +17377,82 @@ mod rule_prefilter_tests {
         ));
     }
 
+    /// The compiled subject compound must agree with the string matcher it
+    /// replaced on every (selector, element) pair, quirks included.
+    #[test]
+    fn compiled_subject_matches_like_the_string_matcher() {
+        let engine = Engine::new(EngineConfig::default()).expect("engine");
+        let escaped_class = rustkit_css::encode_selector_escapes(".sm\\:flex").into_owned();
+        let escaped_id = rustkit_css::encode_selector_escapes("#a\\.b").into_owned();
+        let mut selectors: Vec<&str> = vec![
+            "*",
+            ":root",
+            "#main",
+            "#main.card",
+            "#MAIN",
+            ".card",
+            ".card.wide",
+            ".card.narrow",
+            ".",
+            "..card",
+            "div",
+            "DIV",
+            "span",
+            "div.card",
+            "div.card.wide#main",
+            "div#main",
+            "div#other",
+            "div[data-x]",
+            "div[data-x=\"1\"]",
+            "[data-x]",
+            "[data-x=2]",
+            "div[unclosed",
+            ".card[data-x]",
+            "div:first-child",
+            "div:last-child",
+            "div:empty",
+            "div:hover",
+            ":not(.card)",
+            ":not(.nope)",
+            ".card:not(.wide)",
+            ":is(div, span).card",
+            ":where(p)",
+            "div:nth-child(1)",
+            "div:nth-child(2n+1 of .card)",
+            ":not(:is(.a, .b))",
+            ":",
+            "div:",
+            "*.card",
+            "div$weird",
+            "div.card$weird.nope",
+            ".t",
+        ];
+        selectors.push(&escaped_class);
+        selectors.push(&escaped_id);
+        let elements: Vec<(&str, HashMap<String, String>)> = vec![
+            ("div", attrs(&[("class", "card wide"), ("id", "main"), ("data-x", "1")])),
+            ("DIV", attrs(&[("class", "card")])),
+            ("div", attrs(&[])),
+            ("html", attrs(&[])),
+            ("span", attrs(&[("class", "t"), ("id", "other")])),
+            ("div", attrs(&[("class", "sm:flex t"), ("id", "a.b")])),
+            ("p", attrs(&[("class", ""), ("data-x", "2")])),
+        ];
+        let sibs = [SiblingContext::SOLE, SiblingContext::SOLE.with_children(true)];
+        for selector in &selectors {
+            let subject = SubjectCompound::parse(&engine, selector);
+            for (tag, attributes) in &elements {
+                for sib in sibs {
+                    assert_eq!(
+                        subject.matches(&engine, tag, attributes, sib),
+                        engine.simple_selector_matches_with_pseudo(selector, tag, attributes, sib),
+                        "{selector:?} on {tag} {attributes:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn cascade_skips_the_full_matcher_for_rules_whose_subject_cannot_match() {
         // A real-site stylesheet is thousands of class rules; any one element
@@ -17448,6 +17585,56 @@ mod rule_prefilter_tests {
                 "{}",
                 rule.selector
             );
+        }
+    }
+
+    #[test]
+    fn rule_index_prepared_selectors_match_like_the_string_path() {
+        // The indexed cascade matches through the index's stored prepared
+        // selector; it must agree with `selector_matches` on the string.
+        let css = "div {} .a {} #b {} div.a > p:first-child {} a:not(.x) {} \
+                   :where(#y) span {} ul li + li {} [data-z] {} .c::before {} \
+                   h1, #d .e {} * {} section .a {} .a.b {}";
+        let sheet = Stylesheet::parse(css).expect("css");
+        let sheets = std::slice::from_ref(&sheet);
+        let engine = Engine::new(EngineConfig::default()).expect("engine");
+        let ix = engine.build_rule_index(sheets);
+        assert_eq!(ix.prepared.len(), sheet.rules.len());
+        let chain = vec![
+            ancestor("section", &["a"], Some("d")),
+            ancestor("body", &[], None),
+            ancestor("html", &[], None),
+        ];
+        let elements = [
+            ("div", attrs(&[("class", "a b")])),
+            ("span", attrs(&[("class", "e"), ("data-z", "1")])),
+            ("a", attrs(&[("class", "x")])),
+            ("h1", attrs(&[("id", "b")])),
+            ("p", attrs(&[])),
+        ];
+        for (g, rule) in sheet.rules.iter().enumerate() {
+            for (tag, attributes) in &elements {
+                assert_eq!(
+                    engine.selector_matches_prepared(
+                        &ix.prepared[g],
+                        tag,
+                        attributes,
+                        &chain,
+                        &[],
+                        SiblingContext::SOLE,
+                    ),
+                    engine.selector_matches(
+                        &rule.selector,
+                        tag,
+                        attributes,
+                        &chain,
+                        &[],
+                        SiblingContext::SOLE,
+                    ),
+                    "{} on {tag}",
+                    rule.selector
+                );
+            }
         }
     }
 
@@ -18501,7 +18688,118 @@ enum PreparedSelector {
     Complex {
         tokens: Vec<(String, String)>,
         compounds: Vec<AncestorCompound>,
+        subject: SubjectCompound,
     },
+}
+
+/// The subject compound of a prepared selector, split once into the pieces
+/// `simple_selector_matches_with_pseudo` used to re-scan out of the string on
+/// every match: identifiers are already `css_ident`-decoded and pseudo-classes
+/// already parsed. `SubjectCompound::parse` walks the string exactly the way
+/// that function does, so the two agree on every input, quirks included (the
+/// `#id` shape takes the whole rest as the id; an unknown character stops the
+/// walk and ignores what follows).
+enum SubjectCompound {
+    /// `*`
+    Universal,
+    /// `:root`
+    Root,
+    /// `#id` (the whole rest of the string, decoded).
+    IdOnly(String),
+    /// `.a.b` with no `#`, `[` or `:`.
+    ClassesOnly(Vec<String>),
+    /// Anything else: an optional tag, then parts in source order.
+    General { tag: String, parts: Vec<SubjectPart> },
+}
+
+enum SubjectPart {
+    Class(String),
+    Id(String),
+    Attr(String),
+    Pseudo(String, Option<String>),
+}
+
+impl SubjectCompound {
+    fn parse(engine: &Engine, selector: &str) -> Self {
+        if selector == "*" {
+            return Self::Universal;
+        }
+        if selector == ":root" {
+            return Self::Root;
+        }
+        if let Some(id) = selector.strip_prefix('#') {
+            return Self::IdOnly(css_ident(id).into_owned());
+        }
+        if selector.starts_with('.') && !selector.contains(|c| c == '#' || c == '[' || c == ':') {
+            return Self::ClassesOnly(
+                selector[1..]
+                    .split('.')
+                    .filter(|s| !s.is_empty())
+                    .map(|c| css_ident(c).into_owned())
+                    .collect(),
+            );
+        }
+
+        let is_delim = |c| c == '.' || c == '#' || c == ':' || c == '[';
+        let tag_end = selector.find(is_delim).unwrap_or(selector.len());
+        let tag = selector[..tag_end].to_string();
+        let mut remaining = &selector[tag_end..];
+        let mut parts = Vec::new();
+        while !remaining.is_empty() {
+            if let Some(rest) = remaining.strip_prefix('.') {
+                let end = rest.find(is_delim).unwrap_or(rest.len());
+                parts.push(SubjectPart::Class(css_ident(&rest[..end]).into_owned()));
+                remaining = &rest[end..];
+            } else if let Some(rest) = remaining.strip_prefix('#') {
+                let end = rest.find(is_delim).unwrap_or(rest.len());
+                parts.push(SubjectPart::Id(css_ident(&rest[..end]).into_owned()));
+                remaining = &rest[end..];
+            } else if let Some(rest) = remaining.strip_prefix('[') {
+                let end = rest.find(']').unwrap_or(rest.len());
+                parts.push(SubjectPart::Attr(rest[..end].to_string()));
+                remaining = if end < rest.len() { &rest[end + 1..] } else { "" };
+            } else if let Some(rest) = remaining.strip_prefix(':') {
+                let (name, arg, consumed) = engine.parse_pseudo_class(rest);
+                parts.push(SubjectPart::Pseudo(name, arg));
+                remaining = &rest[consumed..];
+            } else {
+                break;
+            }
+        }
+        Self::General { tag, parts }
+    }
+
+    fn matches(
+        &self,
+        engine: &Engine,
+        tag_name: &str,
+        attributes: &HashMap<String, String>,
+        sib: SiblingContext,
+    ) -> bool {
+        match self {
+            Self::Universal => true,
+            Self::Root => tag_name.eq_ignore_ascii_case("html"),
+            Self::IdOnly(id) => attributes.get("id").is_some_and(|el_id| el_id == id),
+            Self::ClassesOnly(classes) => attributes.get("class").is_some_and(|el_class| {
+                classes.iter().all(|c| el_class.split_whitespace().any(|e| e == c))
+            }),
+            Self::General { tag, parts } => {
+                if !tag.is_empty() && !tag.eq_ignore_ascii_case(tag_name) {
+                    return false;
+                }
+                parts.iter().all(|part| match part {
+                    SubjectPart::Class(class) => attributes
+                        .get("class")
+                        .is_some_and(|el_class| el_class.split_whitespace().any(|c| c == class)),
+                    SubjectPart::Id(id) => attributes.get("id") == Some(id),
+                    SubjectPart::Attr(attr) => engine.match_attribute_selector(attr, attributes),
+                    SubjectPart::Pseudo(name, arg) => {
+                        engine.match_pseudo_class(name, arg.as_deref(), tag_name, sib, attributes)
+                    }
+                })
+            }
+        }
+    }
 }
 
 /// An earlier sibling as `+` / `~` see it: tag, classes, id, and the form
@@ -18763,6 +19061,10 @@ struct RuleIndex {
     /// Global rule index -> `selector_specificity` of its selector, so a
     /// matched rule doesn't re-scan its selector string on every element.
     specificity: Vec<(usize, usize, usize)>,
+    /// Global rule index -> its prepared selector, so the cascade doesn't
+    /// SipHash the selector string into the prepared cache on every
+    /// candidate of every element.
+    prepared: Vec<Rc<PreparedSelector>>,
     /// Every rule, by its subject keys.
     main: RuleBuckets,
     /// Rules whose selector ends in `:before`/`::before` (resp. after), the
@@ -18897,6 +19199,339 @@ fn active_rule_index(stylesheets: &[Stylesheet]) -> Option<Rc<RuleIndex>> {
             .filter(|ix| ix.source == RuleIndex::source_of(stylesheets))
             .cloned()
     })
+}
+
+/// `RUSTKIT_INCREMENTAL_RESTYLE`: `1` lets the images relayout reuse the
+/// sheets relayout's per-element cascade; `verify` recomputes every style
+/// anyway and counts the ones that differ from the memo. Off by default.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RestyleMode {
+    Off,
+    Reuse,
+    Verify,
+}
+
+fn incremental_restyle_mode() -> RestyleMode {
+    static MODE: std::sync::OnceLock<RestyleMode> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("RUSTKIT_INCREMENTAL_RESTYLE").as_deref() {
+        Ok("verify") => RestyleMode::Verify,
+        Ok(v) if !v.is_empty() && v != "0" => RestyleMode::Reuse,
+        _ => RestyleMode::Off,
+    })
+}
+
+/// Everything a memoized cascade depends on besides the DOM and the sheets.
+/// Neither of those can change between the two builds a memo spans: it is
+/// armed only inside `load_subresources`, after the sheets are assigned and
+/// before any script runs, and it is gone when that returns.
+#[derive(Clone, PartialEq, Debug)]
+struct StyleMemoKey {
+    view: Option<EngineViewId>,
+    document: *const Document,
+    external_sheets: usize,
+    viewport: Option<(f32, f32)>,
+    focus: Option<rustkit_dom::NodeId>,
+}
+
+/// What the build in progress does with the memo.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MemoUse {
+    Record,
+    Replay,
+    Verify,
+}
+
+/// Per-element cascade results from one build, for the next build of the
+/// same page to replay. `key` is None until a build has recorded into it.
+struct StyleMemo {
+    verify: bool,
+    key: Option<StyleMemoKey>,
+    styles: HashMap<rustkit_dom::NodeId, ComputedStyle>,
+    in_build: Option<MemoUse>,
+    hits: usize,
+    mismatches: usize,
+}
+
+thread_local! {
+    /// Set by `StyleMemoScope` for the span of `load_subresources`.
+    static STYLE_MEMO: std::cell::RefCell<Option<StyleMemo>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Arms the memo for the builds inside one `load_subresources`: the first
+/// build records, a later one with an equal key replays. Dropping it (also on
+/// an early `?` return) discards the memo, so no build outside that span —
+/// in particular none after page script has run — can read it.
+struct StyleMemoScope;
+
+impl StyleMemoScope {
+    fn arm() -> Option<Self> {
+        Self::arm_with(incremental_restyle_mode())
+    }
+
+    fn arm_with(mode: RestyleMode) -> Option<Self> {
+        if mode == RestyleMode::Off {
+            return None;
+        }
+        STYLE_MEMO.with(|m| {
+            *m.borrow_mut() = Some(StyleMemo {
+                verify: mode == RestyleMode::Verify,
+                key: None,
+                styles: HashMap::new(),
+                in_build: None,
+                hits: 0,
+                mismatches: 0,
+            })
+        });
+        Some(StyleMemoScope)
+    }
+}
+
+impl Drop for StyleMemoScope {
+    fn drop(&mut self) {
+        STYLE_MEMO.with(|m| *m.borrow_mut() = None);
+    }
+}
+
+/// One build's use of the memo, decided from its key at build start.
+/// Dropping it ends the build: a recording becomes replayable.
+struct StyleMemoBuild;
+
+impl StyleMemoBuild {
+    fn begin(key: StyleMemoKey) -> Option<Self> {
+        STYLE_MEMO.with(|m| {
+            let mut slot = m.borrow_mut();
+            let memo = slot.as_mut()?;
+            let use_ = match &memo.key {
+                None => {
+                    memo.key = Some(key);
+                    MemoUse::Record
+                }
+                Some(recorded) if *recorded == key => match memo.verify {
+                    true => MemoUse::Verify,
+                    false => MemoUse::Replay,
+                },
+                // Something style-relevant moved (a resize, a focus change):
+                // the recording describes a different build.
+                Some(_) => {
+                    *slot = None;
+                    return None;
+                }
+            };
+            memo.in_build = Some(use_);
+            memo.hits = 0;
+            memo.mismatches = 0;
+            Some(StyleMemoBuild)
+        })
+    }
+}
+
+impl Drop for StyleMemoBuild {
+    fn drop(&mut self) {
+        STYLE_MEMO.with(|m| {
+            if let Some(memo) = m.borrow_mut().as_mut() {
+                if let Some(use_) = memo.in_build.take() {
+                    if use_ != MemoUse::Record {
+                        info!(
+                            ?use_,
+                            hits = memo.hits,
+                            mismatches = memo.mismatches,
+                            memoized = memo.styles.len(),
+                            "Incremental restyle"
+                        );
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// The cascade for `node`, through the memo when the build in progress has
+/// one. `compute` is the full cascade; it runs outside the memo's borrow.
+fn memoized_style(
+    node: rustkit_dom::NodeId,
+    compute: impl FnOnce() -> ComputedStyle,
+) -> ComputedStyle {
+    let use_ = STYLE_MEMO.with(|m| m.borrow().as_ref().and_then(|memo| memo.in_build));
+    match use_ {
+        None => compute(),
+        Some(MemoUse::Record) => {
+            let style = compute();
+            STYLE_MEMO.with(|m| {
+                if let Some(memo) = m.borrow_mut().as_mut() {
+                    memo.styles.insert(node, style.clone());
+                }
+            });
+            style
+        }
+        Some(MemoUse::Replay) => {
+            let hit = STYLE_MEMO.with(|m| {
+                let mut slot = m.borrow_mut();
+                let memo = slot.as_mut()?;
+                let style = memo.styles.get(&node).cloned();
+                memo.hits += style.is_some() as usize;
+                style
+            });
+            hit.unwrap_or_else(compute)
+        }
+        Some(MemoUse::Verify) => {
+            let fresh = compute();
+            STYLE_MEMO.with(|m| {
+                if let Some(memo) = m.borrow_mut().as_mut() {
+                    if let Some(recorded) = memo.styles.get(&node) {
+                        memo.hits += 1;
+                        if !same_computed_style(recorded, &fresh) {
+                            memo.mismatches += 1;
+                            warn!(?node, "Incremental restyle: memoized style differs from a fresh cascade");
+                        }
+                    }
+                }
+            });
+            fresh
+        }
+    }
+}
+
+/// Field-for-field equality through `Debug`, with the custom-property map
+/// compared as a map: its `Debug` order depends on each map's hasher seed.
+fn same_computed_style(a: &ComputedStyle, b: &ComputedStyle) -> bool {
+    if a.custom_properties != b.custom_properties {
+        return false;
+    }
+    let strip = |s: &ComputedStyle| {
+        let mut s = s.clone();
+        s.custom_properties = Default::default();
+        format!("{s:?}")
+    };
+    strip(a) == strip(b)
+}
+
+#[cfg(test)]
+mod incremental_restyle_tests {
+    use super::*;
+    use rustkit_layout::{Dimensions, DisplayList, Rect};
+
+    fn engine() -> Engine {
+        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
+        Engine::new(EngineConfig::default()).expect("engine")
+    }
+
+    const PAGE: &str = r#"<!DOCTYPE html><html><head><style>
+        :root { --accent: #c00; --gap: 12px; }
+        html { font-size: 15px; line-height: 1.4; }
+        body { margin: 0; font-family: sans-serif; }
+        .card { padding: var(--gap); border: 1px solid var(--accent); width: 30ch; }
+        .card > h2 { font-size: 1.5em; color: var(--accent); }
+        ul li:nth-child(2n) { background: #eee; }
+        ul li + li { margin-top: 4px; }
+        .card:not(.muted) p { font-weight: bold; }
+        .tag::before { content: "*"; color: blue; }
+        </style></head><body>
+        <div class="card"><h2>Title</h2><p>Body <span class="tag">x</span></p></div>
+        <div class="card muted" style="--gap: 20px"><p>Muted</p></div>
+        <ul><li>one</li><li>two</li><li>three</li><li>four</li></ul>
+        </body></html>"#;
+
+    fn paint(e: &Engine, d: &Document) -> String {
+        let mut root = e.build_layout_from_document(d, &[]);
+        let mut cb = Dimensions::default();
+        cb.content = Rect::new(0.0, 0.0, 800.0, 600.0);
+        root.layout(&cb);
+        DisplayList::build(&root)
+            .commands
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn memo_counts() -> Option<(usize, usize, usize)> {
+        STYLE_MEMO.with(|m| {
+            m.borrow()
+                .as_ref()
+                .map(|memo| (memo.hits, memo.mismatches, memo.styles.len()))
+        })
+    }
+
+    #[test]
+    fn a_replayed_build_paints_what_a_full_cascade_paints() {
+        let e = engine();
+        let d = Document::parse_html(PAGE).expect("parse");
+        let full = paint(&e, &d);
+
+        let _scope = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+        let recorded = paint(&e, &d);
+        let (_, _, memoized) = memo_counts().expect("memo");
+        let replayed = paint(&e, &d);
+        let (hits, _, _) = memo_counts().expect("memo");
+
+        assert!(memoized > 10, "the recording build memoized {memoized} styles");
+        assert_eq!(hits, memoized, "every element replays");
+        assert_eq!(recorded, full);
+        assert_eq!(replayed, full);
+    }
+
+    #[test]
+    fn verify_mode_finds_no_difference_between_memo_and_fresh_cascade() {
+        let e = engine();
+        let d = Document::parse_html(PAGE).expect("parse");
+        let _scope = StyleMemoScope::arm_with(RestyleMode::Verify).expect("armed");
+        paint(&e, &d);
+        paint(&e, &d);
+        let (hits, mismatches, memoized) = memo_counts().expect("memo");
+        assert_eq!(hits, memoized);
+        assert_eq!(mismatches, 0);
+    }
+
+    #[test]
+    fn a_build_of_another_document_discards_the_memo() {
+        let e = engine();
+        let first = Document::parse_html(PAGE).expect("parse");
+        let other_html = PAGE.replace("#c00", "#0c0");
+        let other = Document::parse_html(&other_html).expect("parse");
+        let other_full = paint(&e, &other);
+
+        let _scope = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+        paint(&e, &first);
+        assert_eq!(paint(&e, &other), other_full);
+        assert!(memo_counts().is_none(), "a key mismatch drops the recording");
+    }
+
+    #[test]
+    fn replay_skips_the_cascade_and_an_unrecorded_node_still_cascades() {
+        let key = StyleMemoKey {
+            view: None,
+            document: std::ptr::null(),
+            external_sheets: 0,
+            viewport: None,
+            focus: None,
+        };
+        let recorded_node = rustkit_dom::NodeId::new(7);
+        let fresh_node = rustkit_dom::NodeId::new(8);
+        let mut marked = ComputedStyle::new();
+        marked.z_index = 42;
+
+        let _scope = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+        {
+            let _build = StyleMemoBuild::begin(key.clone()).expect("records");
+            memoized_style(recorded_node, || marked.clone());
+        }
+        let _build = StyleMemoBuild::begin(key).expect("replays");
+        let replayed = memoized_style(recorded_node, || panic!("replay must not cascade"));
+        assert_eq!(replayed.z_index, 42);
+        let fresh = memoized_style(fresh_node, ComputedStyle::new);
+        assert_eq!(fresh.z_index, ComputedStyle::new().z_index);
+    }
+
+    #[test]
+    fn nothing_is_memoized_outside_an_armed_scope() {
+        {
+            let _scope = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+        }
+        assert!(memo_counts().is_none());
+        assert!(StyleMemoScope::arm_with(RestyleMode::Off).is_none());
+    }
 }
 
 // ── ported from hiwave-windows: paint-order / border-radius / display-list

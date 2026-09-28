@@ -117,6 +117,34 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-09-28 (refresh #6, after #97 merged):** crates now verbatim from
+hiwave-macos develop `2062352` (Merge #322). That brings #320-#322, cascade
+performance work: compiled selectors, per-rule preparation, incremental
+restyle. The Windows diff is `rustkit-engine/src/lib.rs` only. The residual
+and the parity tooling are unchanged.
+
+This refresh stops one merge short of develop's tip on purpose. #323
+(`grid-template-areas`) adds a test that fails on Windows,
+`a_min_content_row_is_its_items_real_height_not_the_estimate`: the row is
+10.640625, not 10. The cause is a cross-platform engine bug that the macOS
+font hides. A `<span>` flex item is not blockified, so it keeps the inline-box
+height path and its rect is the font content area, not the line box. It
+reproduces with Arial on any OS (8px font, 8px line-height: flex span 8.9375,
+block span 8). It was reported upstream. #323 and its fix come in the next
+refresh.
+
+Gates:
+
+| Gate | Result |
+|---|---|
+| workspace minus `rustkit-engine` | **1351 / 0 / 5** |
+| `rustkit-engine`, `--test-threads=1` | **151 / 0** |
+| `rustkit-engine`, parallel | **151 / 0** |
+| total | **1502 / 0 / 5** |
+| both shells, release `parity-capture` | build |
+| example.com capture | pixel-identical to refresh #4 |
+| dark smoke | exact |
+
 **2026-09-28 (refresh #5, after #94-#96 merged):** crates now verbatim from
 hiwave-macos develop `19a1319` (Merge #319), 12 upstream PRs past refresh #4
 (#308-#319), including the whole-test GPU guard (#312). The residual is
