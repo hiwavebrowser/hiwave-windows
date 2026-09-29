@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HiWave Chrome</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            /* Background layers - warmer tones for less eye strain */
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --bg-elevated: #475569;
+
+            /* Teal/Cyan Accent (HiWave signature) */
+            --accent: #06b6d4;
+            --accent-hover: #22d3ee;
+            --accent-dark: #0891b2;
+            --accent-subtle: rgba(6, 182, 212, 0.08);
+
+            /* Text hierarchy */
+            --text-primary: #f1f5f9;
+            --text-secondary: #cbd5e1;
+            --text-muted: #94a3b8;
+
+            /* Borders */
+            --border: #1f2937;
+            --border-subtle: #16213e;
+        }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+
+        /* ========================================
+           CHROME LAYOUT
+           ======================================== */
+
+        .chrome-container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        /* Tab strip */
+        .tab-strip {
+            display: flex;
+            height: 40px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 0 8px;
+            align-items: flex-end;
+        }
+
+        .tab {
+            display: flex;
+            align-items: center;
+            height: 36px;
+            padding: 0 16px;
+            background: var(--bg-tertiary);
+            border-radius: 8px 8px 0 0;
+            margin-right: 2px;
+            min-width: 120px;
+            max-width: 200px;
+            cursor: pointer;
+        }
+
+        .tab.active {
+            background: var(--bg-primary);
+        }
+
+        .tab-title {
+            flex: 1;
+            font-size: 13px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--text-secondary);
+        }
+
+        .tab.active .tab-title {
+            color: var(--text-primary);
+        }
+
+        .tab-close {
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            color: var(--text-muted);
+            margin-left: 8px;
+        }
+
+        .new-tab-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 20px;
+            margin-left: 4px;
+            cursor: pointer;
+        }
+
+        /* Navigation bar */
+        .nav-bar {
+            display: flex;
+            height: 44px;
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border);
+            padding: 0 8px;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .nav-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .nav-btn.disabled {
+            opacity: 0.4;
+        }
+
+        .url-bar {
+            flex: 1;
+            height: 32px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            gap: 8px;
+        }
+
+        .url-icon {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .url-text {
+            flex: 1;
+            font-size: 14px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .shield-icon {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--accent);
+            font-size: 14px;
+        }
+
+        .shield-count {
+            font-size: 11px;
+            color: var(--accent);
+            margin-left: 2px;
+        }
+
+        .menu-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 18px;
+            cursor: pointer;
+        }
+
+        /* Sidebar toggle */
+        .sidebar-toggle {
+            width: 200px;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            padding: 0 8px;
+        }
+
+        .workspace-name {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        /* ========================================
+           SIDEBAR
+           ======================================== */
+
+        .sidebar {
+            position: absolute;
+            top: 84px; /* tab-strip + nav-bar */
+            left: 0;
+            width: 220px;
+            height: calc(100% - 84px);
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+        }
+
+        .sidebar-section {
+            padding: 12px 8px;
+        }
+
+        .sidebar-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 0 8px;
+            margin-bottom: 8px;
+        }
+
+        .sidebar-item {
+            display: flex;
+            align-items: center;
+            height: 32px;
+            padding: 0 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            gap: 8px;
+        }
+
+        .sidebar-item.active {
+            background: var(--accent-subtle);
+        }
+
+        .sidebar-icon {
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .sidebar-item.active .sidebar-icon {
+            color: var(--accent);
+        }
+
+        .sidebar-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .sidebar-item.active .sidebar-label {
+            color: var(--text-primary);
+        }
+    </style>
+</head>
+<body>
+    <div class="chrome-container">
+        <!-- Tab strip -->
+        <div class="tab-strip">
+            <div class="tab active">
+                <span class="tab-title">New Tab</span>
+                <span class="tab-close">×</span>
+            </div>
+            <div class="new-tab-btn">+</div>
+        </div>
+
+        <!-- Navigation bar -->
+        <div class="nav-bar">
+            <div class="sidebar-toggle">
+                <span class="workspace-name">Default</span>
+            </div>
+            <div class="nav-btn disabled">←</div>
+            <div class="nav-btn disabled">→</div>
+            <div class="nav-btn">↻</div>
+            <div class="url-bar">
+                <span class="url-icon">🔒</span>
+                <span class="url-text">hiwave://newtab</span>
+                <span class="shield-icon">🛡️</span>
+                <span class="shield-count">0</span>
+            </div>
+            <div class="menu-btn">☰</div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-title">Navigation</div>
+                <div class="sidebar-item active">
+                    <span class="sidebar-icon">🏠</span>
+                    <span class="sidebar-label">Home</span>
+                </div>
+                <div class="sidebar-item">
+                    <span class="sidebar-icon">⭐</span>
+                    <span class="sidebar-label">Favorites</span>
+                </div>
+                <div class="sidebar-item">
+                    <span class="sidebar-icon">📚</span>
+                    <span class="sidebar-label">Reading List</span>
+                </div>
+                <div class="sidebar-item">
+                    <span class="sidebar-icon">📥</span>
+                    <span class="sidebar-label">Downloads</span>
+                </div>
+                <div class="sidebar-item">
+                    <span class="sidebar-icon">🕒</span>
+                    <span class="sidebar-label">History</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
