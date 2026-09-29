@@ -99,10 +99,20 @@ impl FontFamilyChain {
     }
 
     /// Create default font chain for sans-serif.
+    ///
+    /// Windows: Chrome's default `sans-serif` there is Arial, not Segoe UI
+    /// (Segoe UI is what `system-ui` resolves to). At 14px Arial's `normal`
+    /// line is 16px and Segoe UI's is 19px, so leading with Segoe UI made
+    /// every line of a `sans-serif` page 3px too tall and the error
+    /// accumulated down the page.
     #[cfg(not(target_os = "macos"))]
     pub fn sans_serif() -> Self {
-        Self::new("Segoe UI")
-            .with_fallback("Arial")
+        #[cfg(windows)]
+        let (first, second) = ("Arial", "Segoe UI");
+        #[cfg(not(windows))]
+        let (first, second) = ("Segoe UI", "Arial");
+        Self::new(first)
+            .with_fallback(second)
             .with_fallback("Helvetica")
             .with_fallback("Noto Sans")
             .with_fallback("Noto Sans CJK SC")
@@ -180,6 +190,21 @@ impl FontFamilyChain {
         let families: Vec<&str> = value
             .split(',')
             .map(|s| s.trim().trim_matches('"').trim_matches('\''))
+            .collect();
+
+        // `-apple-system` and `BlinkMacSystemFont` are macOS-only aliases.
+        // Chrome on Windows does not recognise them, so they are skipped like
+        // any other family that is not installed and the stack falls through
+        // (`-apple-system, BlinkMacSystemFont, sans-serif` becomes plain
+        // `sans-serif`). Treating them as `system-ui` picked Segoe UI where
+        // Chrome picked Arial.
+        #[cfg(windows)]
+        let families: Vec<&str> = families
+            .into_iter()
+            .filter(|f| {
+                let l = f.to_lowercase();
+                l != "-apple-system" && l != "blinkmacsystemfont"
+            })
             .collect();
 
         if families.is_empty() {
@@ -2655,7 +2680,9 @@ mod tests {
         let sans = FontFamilyChain::from_css_value("sans-serif");
         #[cfg(target_os = "macos")]
         assert_eq!(sans.primary, "SF Pro");
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        assert_eq!(sans.primary, "Arial");
+        #[cfg(all(not(target_os = "macos"), not(windows)))]
         assert_eq!(sans.primary, "Segoe UI");
 
         let mono = FontFamilyChain::from_css_value("monospace");
@@ -2674,8 +2701,25 @@ mod tests {
         let apple = FontFamilyChain::from_css_value("-apple-system");
         #[cfg(target_os = "macos")]
         assert_eq!(apple.primary, ".AppleSystemUIFont");
-        #[cfg(not(target_os = "macos"))]
+        // Windows: the alias is skipped, so it falls through to `sans-serif`.
+        #[cfg(windows)]
+        assert_eq!(apple.primary, "Arial");
+        #[cfg(all(not(target_os = "macos"), not(windows)))]
         assert_eq!(apple.primary, "Segoe UI");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn macos_only_aliases_fall_through_on_windows() {
+        // The css-selectors stack: Chrome on Windows resolves it to Arial.
+        let c = FontFamilyChain::from_css_value("-apple-system, BlinkMacSystemFont, sans-serif");
+        assert_eq!(c.primary, "Arial");
+        // A real family after the aliases still wins.
+        let c = FontFamilyChain::from_css_value("-apple-system, 'Segoe UI', sans-serif");
+        assert_eq!(c.primary, "Segoe UI");
+        // system-ui is not an alias of the two above: it stays Segoe UI.
+        let c = FontFamilyChain::from_css_value("system-ui, sans-serif");
+        assert_eq!(c.primary, "Segoe UI");
     }
 
     #[test]
