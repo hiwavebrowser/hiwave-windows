@@ -117,6 +117,45 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-09-29 (refresh #7, after #98 merged):** crates now verbatim from
+hiwave-macos develop `675156a` (Merge #347), 25 upstream PRs past refresh #6
+(#323-#347). Highlights: grid-template-areas and fixed tracks, blockified flex
+and grid items (#330, the fix for the span-height bug found in refresh #6),
+em/rem and viewport units in flex and grid sizing, the Rust-backed DOM for
+scripts (new `rustkit-bindings/src/dom.rs`, innerHTML, tree moves, one
+relayout per script write), cascade performance work, and rustkit-http on
+rustls.
+
+Outside `crates/rustkit-*`:
+
+- **`Cargo.lock`.** `rustkit-http` now depends on `rustls`, `tokio-rustls` and
+  `rustls-native-certs` (native-tls is an optional feature). Cargo resolved the
+  Windows lock by adding those packages and bumping a few; it stays a minimal
+  update, not a copy of the macOS lock. `aws-lc-sys` builds here because cmake
+  and NASM are installed.
+- **Nothing else.** The residual inside the crates is unchanged (the sidecar
+  pin), as are the vendored `boa_gc` and the one shell test line. The parity
+  tooling sync against the same commit found no changes.
+
+Gates:
+
+| Gate | Result |
+|---|---|
+| workspace minus `rustkit-engine` | **1409 / 0 / 5** |
+| `rustkit-engine`, `--test-threads=1` | **184 / 0** |
+| `rustkit-engine`, parallel | **184 / 0** |
+| total | **1593 / 0 / 5** (refresh #6: 1502 / 0 / 5) |
+| both shells, release `parity-capture` | build |
+| parity board (`parity_swarm --scope all`, 3 iterations) | **23 / 26, mean 5.97%, no case moved** against the nightly of the same morning |
+| dark smoke | exact |
+
+`https://example.com` is no longer a usable regression fixture. The live page
+was redesigned (a `light-dark()` background, a centred grid body, no heading),
+so a pixel comparison against the 2026-09-27 capture is meaningless. Its render
+shows two engine gaps: the background paints white where `light-dark(#eee,#222)`
+should give `#eee`, and the anchor's underline spans the whole grid item
+instead of the text. Both are parity work, recorded here so they are not lost.
+
 **2026-09-28 (refresh #6, after #97 merged):** crates now verbatim from
 hiwave-macos develop `2062352` (Merge #322). That brings #320-#322, cascade
 performance work: compiled selectors, per-rule preparation, incremental

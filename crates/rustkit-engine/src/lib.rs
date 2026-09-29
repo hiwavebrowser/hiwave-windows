@@ -15,7 +15,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use rustkit_bindings::DomBindings;
+use rustkit_bindings::{DomBindings, DomDirty};
 // Re-export IpcMessage for external use
 pub use rustkit_bindings::IpcMessage;
 use rustkit_compositor::Compositor;
@@ -150,7 +150,7 @@ pub(crate) mod test_gpu {
     }
 }
 use rustkit_core::{LoadEvent, NavigationRequest, NavigationStateMachine};
-use rustkit_css::{css_ident, parse_display, ComputedStyle, Rule, Stylesheet};
+use rustkit_css::{css_ident, parse_display, ComputedStyle, CustomProperties, Rule, Stylesheet};
 use rustkit_dom::{Document, Node, NodeType};
 use rustkit_image::ImageManager;
 use rustkit_js::JsRuntime;
@@ -2181,6 +2181,9 @@ impl Engine {
 
             let bindings =
                 DomBindings::new(js_runtime).map_err(|e| EngineError::JsError(e.to_string()))?;
+            bindings.set_selector_matcher(Rc::new(|node, selector| {
+                SelectorMatcher.node_matches(node, selector)
+            }));
 
             bindings
                 .set_document(document.clone())
@@ -2273,6 +2276,7 @@ impl Engine {
                 debug!(?id, %url, "Navigation abandoned after page scripts");
                 return Ok(());
             }
+            self.flush_script_dom_writes(id)?;
         }
 
         // Finish navigation
@@ -2397,6 +2401,9 @@ impl Engine {
 
             let bindings =
                 DomBindings::new(js_runtime).map_err(|e| EngineError::JsError(e.to_string()))?;
+            bindings.set_selector_matcher(Rc::new(|node, selector| {
+                SelectorMatcher.node_matches(node, selector)
+            }));
 
             bindings
                 .set_document(document.clone())
@@ -2965,21 +2972,9 @@ impl Engine {
 
         let css_vars = self.extract_css_variables(&stylesheets);
 
-        // Every element's cascade below consults this; it is dropped (and
-        // uninstalled) when the build returns.
-        let _rule_index = RuleIndexScope::install(self.build_rule_index(&stylesheets));
-
-        // A trace describes ONE build. Keeping entries from the previous
-        // page would let `hiwave_style` answer with a stale element that no
-        // longer exists — the same class of lie as a gate reading a stale
-        // snapshot.
-        if let Some(trace) = self.style_trace.borrow_mut().as_mut() {
-            trace.clear();
-        }
-
         // A replayed style records no trace entries, so a traced build
         // always cascades in full.
-        let _style_memo = self
+        let style_memo = self
             .style_trace
             .borrow()
             .is_none()
@@ -2993,6 +2988,26 @@ impl Engine {
                 })
             })
             .flatten();
+
+        // Every element's cascade below consults this; it is dropped (and
+        // uninstalled) when the build returns. A replaying build takes its
+        // styles from the memo and skips building it; a node the recording
+        // missed still cascades correctly, by the unindexed scan.
+        let _rule_index = match style_memo.as_ref().is_some_and(StyleMemoBuild::replays) {
+            true => None,
+            false => Some(RuleIndexScope::install_for(
+                RuleIndex::source_of(&stylesheets),
+                self.shared_rule_index(&stylesheets),
+            )),
+        };
+
+        // A trace describes ONE build. Keeping entries from the previous
+        // page would let `hiwave_style` answer with a stale element that no
+        // longer exists — the same class of lie as a gate reading a stale
+        // snapshot.
+        if let Some(trace) = self.style_trace.borrow_mut().as_mut() {
+            trace.clear();
+        }
 
         info!(
             inline_count = stylesheets.len() - external_stylesheets.len(),
@@ -3461,6 +3476,22 @@ impl Engine {
                 // Check for display: none
                 if style.display == rustkit_css::Display::None {
                     return LayoutBox::new(BoxType::Block, ComputedStyle::new());
+                }
+
+                // CSS Display 3 §2.7: the children of a flex or grid
+                // container are blockified — `display` computes to its
+                // block-level equivalent. A `<span>` flex item left Inline
+                // took the inline-box height path, the font's content area
+                // (Arial 8px: 8.9375) with line-height ignored.
+                if parent_style.is_some_and(|p| p.display.is_flex() || p.display.is_grid()) {
+                    style.display = match style.display {
+                        rustkit_css::Display::Inline | rustkit_css::Display::InlineBlock => {
+                            rustkit_css::Display::Block
+                        }
+                        rustkit_css::Display::InlineFlex => rustkit_css::Display::Flex,
+                        rustkit_css::Display::InlineGrid => rustkit_css::Display::Grid,
+                        other => other,
+                    };
                 }
 
                 // Handle replaced elements (images)
@@ -3946,16 +3977,19 @@ impl Engine {
                 child_ancestors.extend(ancestors.iter().cloned());
 
                 // Check for ::before pseudo-element
-                if let Some(before_box) = self.create_pseudo_element(
-                    &tag_lower,
-                    attributes,
-                    stylesheets,
-                    css_vars,
-                    ancestors,
-                    siblings_before,
-                    sib,
-                    "::before",
-                ) {
+                if let Some(before_box) = memoized_pseudo_style(node.id, Pseudo::Before, || {
+                    self.pseudo_element_style(
+                        &tag_lower,
+                        attributes,
+                        stylesheets,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                        "::before",
+                    )
+                })
+                .and_then(Self::pseudo_element_box)
+                {
                     layout_box.children.push(before_box);
                 }
 
@@ -4056,16 +4090,19 @@ impl Engine {
                 }
 
                 // Check for ::after pseudo-element
-                if let Some(after_box) = self.create_pseudo_element(
-                    &tag_lower,
-                    attributes,
-                    stylesheets,
-                    css_vars,
-                    ancestors,
-                    siblings_before,
-                    sib,
-                    "::after",
-                ) {
+                if let Some(after_box) = memoized_pseudo_style(node.id, Pseudo::After, || {
+                    self.pseudo_element_style(
+                        &tag_lower,
+                        attributes,
+                        stylesheets,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                        "::after",
+                    )
+                })
+                .and_then(Self::pseudo_element_box)
+                {
                     layout_box.children.push(after_box);
                 }
 
@@ -4265,7 +4302,9 @@ impl Engine {
         }
     }
 
-    /// Create a pseudo-element (::before or ::after) if applicable.
+    /// Create a pseudo-element (::before or ::after) if applicable. The
+    /// layout build calls the two halves itself, through the style memo.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn create_pseudo_element(
         &self,
@@ -4278,6 +4317,32 @@ impl Engine {
         sib: SiblingContext,
         pseudo: &str,
     ) -> Option<LayoutBox> {
+        let style = self.pseudo_element_style(
+            tag_name,
+            attributes,
+            stylesheets,
+            ancestors,
+            siblings_before,
+            sib,
+            pseudo,
+        )?;
+        Self::pseudo_element_box(style)
+    }
+
+    /// The cascade half of `create_pseudo_element`: the pseudo-element's
+    /// style, or None when it generates no box (no rule matched, or none set
+    /// `content`).
+    #[allow(clippy::too_many_arguments)]
+    fn pseudo_element_style(
+        &self,
+        tag_name: &str,
+        attributes: &std::collections::HashMap<String, String>,
+        stylesheets: &[Stylesheet],
+        ancestors: &[(String, Vec<String>, Option<String>)],
+        siblings_before: &[SiblingKey],
+        sib: SiblingContext,
+        pseudo: &str,
+    ) -> Option<ComputedStyle> {
         // Compute style for the pseudo-element by matching selectors with the pseudo suffix
         let mut pseudo_style = ComputedStyle::new();
 
@@ -4297,21 +4362,36 @@ impl Engine {
         // attribute names or tag (by their base selector), plus the universal
         // ones: github's ~1,000 `::before`/`::after` rules were walked in full
         // for every element, half of all cascade time.
-        let rules: Box<dyn Iterator<Item = (Option<&[SubjectKey]>, &Rule)>> =
-            match (index.as_ref(), indexed) {
-                (Some(ix), Some(buckets)) => Box::new(
-                    buckets
-                        .candidates(tag_name, attributes)
-                        .into_iter()
-                        .map(move |g| {
-                            let keys = ix.pseudo_keys[g as usize].as_deref().map(Vec::as_slice);
-                            (keys, ix.rule(stylesheets, g))
-                        }),
-                ),
-                _ => Box::new(stylesheets.iter().flat_map(|s| s.rules.iter()).map(|r| (None, r))),
-            };
-
-        for (indexed_keys, rule) in rules {
+        if let (Some(ix), Some(buckets)) = (index.as_ref(), indexed) {
+            // Every rule in these buckets ends in the pseudo, and the index
+            // holds its prepared base selector, base keys and specificity:
+            // the same tests as the string path below, computed once.
+            for g in buckets.candidates(tag_name, attributes) {
+                let gi = g as usize;
+                let Some(prepared) = ix.pseudo_prepared[gi].as_deref() else {
+                    continue;
+                };
+                // No base keys means an empty base, which admits any element.
+                let admitted = ix.pseudo_keys[gi]
+                    .as_deref()
+                    .is_none_or(|keys| Self::keys_may_match(keys, tag_name, attributes));
+                if admitted
+                    && SelectorMatcher.selector_matches_prepared(
+                        prepared,
+                        tag_name,
+                        attributes,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                    )
+                {
+                    matching_rules.push((ix.specificity[gi], ix.rule(stylesheets, g)));
+                }
+            }
+        }
+        // Without an index (or for another pseudo), walk every rule.
+        let unindexed = indexed.is_none();
+        for rule in stylesheets.iter().flat_map(|s| s.rules.iter()).filter(|_| unindexed) {
             {
                 let selector = &rule.selector;
 
@@ -4327,13 +4407,8 @@ impl Engine {
                     // subject prefilter first, exactly as the cascade does.
                     // A bare `::before` has no subject to prefilter on.
                     if (base_selector.trim().is_empty()
-                        || match indexed_keys {
-                            Some(keys) => Self::keys_may_match(keys, tag_name, attributes),
-                            None => {
-                                self.rule_may_match(base_selector.trim(), tag_name, attributes)
-                            }
-                        })
-                        && self.selector_matches(
+                        || self.rule_may_match(base_selector.trim(), tag_name, attributes))
+                        && SelectorMatcher.selector_matches(
                         base_selector.trim(),
                         tag_name,
                         attributes,
@@ -4341,7 +4416,7 @@ impl Engine {
                         siblings_before,
                         sib,
                     ) {
-                        let specificity = self.selector_specificity(selector);
+                        let specificity = SelectorMatcher.selector_specificity(selector);
                         matching_rules.push((specificity, rule));
                     }
                 }
@@ -4378,6 +4453,13 @@ impl Engine {
             }
         }
 
+        // Without `content` there is no box, so there is nothing to keep:
+        // `*::before, *::after { box-sizing: … }` matches on every element.
+        pseudo_style.content.is_some().then_some(pseudo_style)
+    }
+
+    /// The box half of `create_pseudo_element`, from the cascaded style.
+    fn pseudo_element_box(pseudo_style: ComputedStyle) -> Option<LayoutBox> {
         // Only create pseudo-element if content property is set
         let content = pseudo_style.content.as_ref()?;
 
@@ -4410,6 +4492,7 @@ impl Engine {
         sib: SiblingContext,
         parent_style: Option<&ComputedStyle>,
     ) -> ComputedStyle {
+        let _ancestor_filter = AncestorFilterScope::install(ancestors);
         let mut style = ComputedStyle::new();
         style.color = rustkit_css::Color::BLACK;
 
@@ -4825,30 +4908,35 @@ impl Engine {
                 Some(ix) => Self::keys_may_match(&ix.keys[rule_index], tag_name, attributes),
                 None => self.rule_may_match(&rule.selector, tag_name, attributes),
             };
-            let matches = may_match
-                && match index.as_ref() {
-                    Some(ix) => self.selector_matches_prepared(
-                        &ix.prepared[rule_index],
+            if !may_match {
+                continue;
+            }
+            let matched = match index.as_ref() {
+                Some(ix) => SelectorMatcher.matched_specificity(
+                    &ix.prepared[rule_index],
+                    &ix.member_specificity[rule_index],
+                    ix.specificity[rule_index],
+                    tag_name,
+                    attributes,
+                    ancestors,
+                    siblings_before,
+                    sib,
+                ),
+                None => {
+                    let selector = rule.selector.trim();
+                    SelectorMatcher.matched_specificity(
+                        &SelectorMatcher.prepared_selector(selector),
+                        &SelectorMatcher.list_member_specificity(selector),
+                        SelectorMatcher.selector_specificity(&rule.selector),
                         tag_name,
                         attributes,
                         ancestors,
                         siblings_before,
                         sib,
-                    ),
-                    None => self.selector_matches(
-                        &rule.selector,
-                        tag_name,
-                        attributes,
-                        ancestors,
-                        siblings_before,
-                        sib,
-                    ),
-                };
-            if matches {
-                let specificity = match index.as_ref() {
-                    Some(ix) => ix.specificity[rule_index],
-                    None => self.selector_specificity(&rule.selector),
-                };
+                    )
+                }
+            };
+            if let Some(specificity) = matched {
                 matching_rules.push((rule, specificity, rule_index));
             }
         }
@@ -4867,7 +4955,7 @@ impl Engine {
         // custom properties.
         let inherited_vars = match parent_style {
             Some(p) => p.custom_properties.clone(),
-            None => Arc::new(css_vars.clone()),
+            None => Arc::new(CustomProperties::from_map(css_vars.clone())),
         };
         let inline_style = attributes.get("style");
         let mut declared_vars: Vec<(&str, Option<&str>)> = Vec::new();
@@ -4904,7 +4992,7 @@ impl Engine {
             }
         }
         let vars = Self::element_custom_properties(&inherited_vars, &declared_vars);
-        let css_vars: &HashMap<String, String> = &vars;
+        let css_vars: &CustomProperties = &vars;
 
         // Provenance is recorded from INSIDE this loop rather than by a
         // separate pass, so "which rule won" is answered by the same code
@@ -5038,7 +5126,7 @@ impl Engine {
     fn record_inline_style(
         &self,
         style_attr: &str,
-        css_vars: &HashMap<String, String>,
+        css_vars: &dyn VarSource,
         records: &mut Vec<DeclarationRecord>,
         order: &mut usize,
         important_pass: bool,
@@ -5131,7 +5219,7 @@ impl Engine {
         style: &mut ComputedStyle,
         parent_style: Option<&ComputedStyle>,
         style_attr: &str,
-        css_vars: &HashMap<String, String>,
+        css_vars: &dyn VarSource,
         ch_pending: &mut ChPending,
         important_pass: bool,
     ) {
@@ -6299,6 +6387,28 @@ impl Engine {
             "grid-template-rows" => {
                 if let Some(template) = parse_grid_template(value) {
                     style.grid_template_rows = template;
+                }
+            }
+            "grid-template-areas" => {
+                if value.trim() == "none" {
+                    style.grid_template_areas = None;
+                } else if let Some(areas) = rustkit_css::GridTemplateAreas::parse(value) {
+                    style.grid_template_areas = Some(areas);
+                }
+            }
+            "grid-template" => {
+                if let Some((rows, columns, areas)) = parse_grid_template_shorthand(value) {
+                    style.grid_template_rows = rows;
+                    style.grid_template_columns = columns;
+                    style.grid_template_areas = areas;
+                }
+            }
+            "grid-area" => {
+                if let Some((row_start, col_start, row_end, col_end)) = parse_grid_area(value) {
+                    style.grid_row_start = row_start;
+                    style.grid_column_start = col_start;
+                    style.grid_row_end = row_end;
+                    style.grid_column_end = col_end;
                 }
             }
             "grid-column" => {
@@ -7554,13 +7664,13 @@ impl Engine {
     /// the first style pass. Fallbacks are delimited by balanced parentheses,
     /// and the expanded length is capped so fan-out chains cannot grow without
     /// bound.
-    fn resolve_css_variables(&self, value: &str, css_vars: &HashMap<String, String>) -> String {
+    fn resolve_css_variables(&self, value: &str, css_vars: &dyn VarSource) -> String {
         if !value.contains("var(") {
             return value.to_string();
         }
         let mut stack: Vec<&str> = Vec::new();
         let mut budget = VAR_EXPANSION_BUDGET;
-        substitute_css_vars(value, &[css_vars], &mut stack, &mut budget, &mut false)
+        substitute_css_vars(value, &[css_vars], &mut stack, &mut budget, &mut false, &mut false)
     }
 
     /// The custom properties in effect on one element: the inherited map
@@ -7574,9 +7684,9 @@ impl Engine {
     /// resolved value actually differs from it: Tailwind sets ~30 `--tw-*`
     /// on every element via `*`, and those must not copy the map each time.
     fn element_custom_properties(
-        inherited: &Arc<HashMap<String, String>>,
+        inherited: &Arc<CustomProperties>,
         declared: &[(&str, Option<&str>)],
-    ) -> Arc<HashMap<String, String>> {
+    ) -> Arc<CustomProperties> {
         if declared.is_empty() {
             return inherited.clone();
         }
@@ -7596,52 +7706,47 @@ impl Engine {
         }
         // `initial` names are hidden from the inherited layer while
         // resolving the others.
-        let mut visible = inherited.as_ref();
-        let masked;
-        if !unset.is_empty() {
-            let mut m = inherited.as_ref().clone();
-            for n in &unset {
-                m.remove(*n);
-            }
-            masked = m;
-            visible = &masked;
-        }
+        let visible = MaskedVars {
+            vars: inherited,
+            hidden: &unset,
+        };
         let mut resolved: Vec<(String, Option<String>)> = Vec::with_capacity(own.len());
         for (name, raw) in &own {
             let value = if raw.contains("var(") {
                 let mut stack: Vec<&str> = vec![name.as_str()];
                 let mut budget = VAR_EXPANSION_BUDGET;
-                let mut cycle = false;
-                let v = substitute_css_vars(raw, &[&own, visible], &mut stack, &mut budget, &mut cycle);
-                (!cycle).then_some(v)
+                let (mut cycle, mut invalid) = (false, false);
+                let v = substitute_css_vars(
+                    raw,
+                    &[&own, &visible],
+                    &mut stack,
+                    &mut budget,
+                    &mut cycle,
+                    &mut invalid,
+                );
+                (!cycle && !invalid).then_some(v)
             } else {
                 Some(raw.clone())
             };
             resolved.push((name.clone(), value));
         }
-        let changes = unset.iter().any(|n| inherited.contains_key(*n))
-            || resolved
-                .iter()
-                .any(|(n, v)| inherited.get(n).map(String::as_str) != v.as_deref());
-        if !changes {
-            return inherited.clone();
-        }
-        let mut map = inherited.clone();
-        let m = Arc::make_mut(&mut map);
+        // Only what differs from the inherited set goes on this element's
+        // layer; `None` hides the inherited value.
+        let mut layer: HashMap<String, Option<String>> = HashMap::new();
         for n in unset {
-            m.remove(n);
-        }
-        for (n, v) in resolved {
-            match v {
-                Some(v) => {
-                    m.insert(n, v);
-                }
-                None => {
-                    m.remove(&n);
-                }
+            if inherited.contains_key(n) {
+                layer.insert(n.to_string(), None);
             }
         }
-        map
+        for (n, v) in resolved {
+            if inherited.get(&n) != v.as_deref() {
+                layer.insert(n, v);
+            }
+        }
+        if layer.is_empty() {
+            return inherited.clone();
+        }
+        Arc::new(CustomProperties::over(inherited, layer))
     }
 
     /// Check if a selector matches an element.
@@ -7672,7 +7777,9 @@ impl Engine {
             rules: Vec::new(),
             keys: Vec::new(),
             pseudo_keys: Vec::new(),
+            pseudo_prepared: Vec::new(),
             specificity: Vec::new(),
+            member_specificity: Vec::new(),
             prepared: Vec::new(),
             main: RuleBuckets::default(),
             before: RuleBuckets::default(),
@@ -7687,9 +7794,12 @@ impl Engine {
                     ix.main.file(key, g);
                 }
                 ix.keys.push(keys);
-                ix.specificity.push(self.selector_specificity(&rule.selector));
-                ix.prepared.push(self.prepared_selector(rule.selector.trim()));
+                ix.specificity.push(SelectorMatcher.selector_specificity(&rule.selector));
+                ix.member_specificity
+                    .push(SelectorMatcher.list_member_specificity(rule.selector.trim()));
+                ix.prepared.push(SelectorMatcher.prepared_selector(rule.selector.trim()));
                 let mut pseudo_keys = None;
+                let mut pseudo_prepared = None;
                 // Same test as create_pseudo_element's (the single-colon
                 // form covers the double-colon one). Filed under the keys of
                 // the BASE selector, the one create_pseudo_element prefilters:
@@ -7703,6 +7813,7 @@ impl Engine {
                         continue;
                     }
                     let base = pseudo_base_selector(&rule.selector, pseudo, suffix);
+                    pseudo_prepared = Some(SelectorMatcher.prepared_selector(base.trim()));
                     if base.is_empty() {
                         buckets.universal.push(g);
                     } else {
@@ -7715,8 +7826,45 @@ impl Engine {
                     }
                 }
                 ix.pseudo_keys.push(pseudo_keys);
+                ix.pseudo_prepared.push(pseudo_prepared);
             }
         }
+        ix
+    }
+
+    /// `build_rule_index`, reused while the selectors don't change. A page
+    /// load lays out 2-3 times over a freshly extracted copy of the same
+    /// sheets, and rebuilding the index each time was ~38% of github's
+    /// cascade. The index is a function of the selectors alone (their
+    /// keys, specificity and prepared form are pure, and rules are found
+    /// by position), so the same selectors in the same sheets in the same
+    /// order get the same index. Comparing them is a memcmp per rule.
+    fn shared_rule_index(&self, stylesheets: &[Stylesheet]) -> Rc<RuleIndex> {
+        let same = |built: &[Vec<String>]| {
+            built.len() == stylesheets.len()
+                && built.iter().zip(stylesheets).all(|(selectors, sheet)| {
+                    selectors.len() == sheet.rules.len()
+                        && selectors
+                            .iter()
+                            .zip(&sheet.rules)
+                            .all(|(s, rule)| *s == rule.selector)
+                })
+        };
+        let reused = LAST_RULE_INDEX.with(|c| {
+            c.borrow()
+                .as_ref()
+                .filter(|(built, _)| same(built))
+                .map(|(_, ix)| ix.clone())
+        });
+        if let Some(ix) = reused {
+            return ix;
+        }
+        let ix = Rc::new(self.build_rule_index(stylesheets));
+        let built = stylesheets
+            .iter()
+            .map(|sheet| sheet.rules.iter().map(|r| r.selector.clone()).collect())
+            .collect();
+        LAST_RULE_INDEX.with(|c| *c.borrow_mut() = Some((built, ix.clone())));
         ix
     }
 
@@ -7807,19 +7955,19 @@ impl Engine {
                 // The matcher's first check after the tag: the element must
                 // carry the attribute match_attribute_selector looks up.
                 let end = r.find(']').unwrap_or(r.len());
-                key.attr = Some(Engine::attr_selector_name(&r[..end]).to_string());
+                key.attr = Some(SelectorMatcher::attr_selector_name(&r[..end]).to_string());
             } else if key.tag.is_none() {
                 if let Some(r) = rest.strip_prefix(':') {
                     // The matcher's first check: this pseudo-class.
-                    let (name, arg, _) = engine.parse_pseudo_class(r);
+                    let (name, arg, _) = SelectorMatcher.parse_pseudo_class(r);
                     match (name.as_str(), arg) {
                         ("root" | "scope", _) => key.tag = Some("html".to_string()),
                         ("is" | "where" | "matches" | "-webkit-any", Some(arg)) => {
                             // Some member compound must match the element
                             // (any_compound_in_list_matches); members with
                             // a combinator never do.
-                            for member in Engine::split_top_level_commas(&arg) {
-                                if !Engine::selector_has_combinator(member) {
+                            for member in SelectorMatcher::split_top_level_commas(&arg) {
+                                if !SelectorMatcher::selector_has_combinator(member) {
                                     keys_for_compound(engine, member, out);
                                 }
                             }
@@ -7834,11 +7982,11 @@ impl Engine {
 
         fn keys_for(engine: &Engine, selector: &str, out: &mut Vec<SubjectKey>) {
             let selector = selector.trim();
-            if !Engine::selector_list_is_valid(selector) {
+            if !SelectorMatcher::selector_list_is_valid(selector) {
                 return;
             }
             if selector.contains(',') {
-                let members = Engine::split_top_level_commas(selector);
+                let members = SelectorMatcher::split_top_level_commas(selector);
                 if members.len() != 1 || members[0] != selector {
                     for m in members {
                         keys_for(engine, m, out);
@@ -7854,7 +8002,7 @@ impl Engine {
             {
                 return;
             }
-            let tokens = engine.tokenize_selector(selector);
+            let tokens = SelectorMatcher.tokenize_selector(selector);
             match tokens.last() {
                 Some((compound, combinator)) if combinator.is_empty() => {
                     keys_for_compound(engine, compound, out)
@@ -7880,6 +8028,87 @@ impl Engine {
             v
         })
     }
+}
+
+/// The selector matcher. It reads no `Engine` state (its caches are
+/// thread-locals), so it is a zero-sized type: the cascade reaches it
+/// through `Engine`'s `Deref`, and the DOM bindings hold a copy for
+/// `querySelector`/`matches`/`closest` without borrowing the `Engine`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SelectorMatcher;
+
+impl SelectorMatcher {
+    /// Does the element `node` match `selector`, read from the live DOM?
+    /// `None` when the selector list is invalid (script throws
+    /// `SyntaxError`). This is the DOM bindings' `querySelector`/`matches`
+    /// matcher: it builds the same ancestor, sibling and position context
+    /// the cascade threads down, from the node's current place in the tree,
+    /// so a script query and the style that paints agree on what matches.
+    pub(crate) fn node_matches(&self, node: &Rc<Node>, selector: &str) -> Option<bool> {
+        let selector = selector.trim();
+        if selector.is_empty() || !Self::selector_list_is_valid(selector) {
+            return None;
+        }
+        let NodeType::Element { tag_name, attributes, .. } = &node.node_type else {
+            return Some(false);
+        };
+        let tag = tag_name.to_lowercase();
+        let classes = |attributes: &HashMap<String, String>| -> Vec<String> {
+            attributes
+                .get("class")
+                .map(|c| c.split_whitespace().map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+
+        // ancestors[0] is the parent, as in the cascade.
+        let mut ancestors = Vec::new();
+        let mut current = node.parent();
+        while let Some(n) = current {
+            let NodeType::Element { tag_name, attributes, .. } = &n.node_type else {
+                break;
+            };
+            ancestors.push((tag_name.to_lowercase(), classes(attributes), attributes.get("id").cloned()));
+            current = n.parent();
+        }
+
+        let has_children = Engine::node_has_children(node);
+        let mut siblings_before: Vec<SiblingKey> = Vec::new();
+        let sib = match node.parent() {
+            None => SiblingContext::SOLE.with_children(has_children),
+            Some(parent) => {
+                let (mut count, mut type_index, mut type_count) = (0, 0, 0);
+                let mut before = true;
+                for c in parent.children() {
+                    let NodeType::Element { tag_name, attributes, .. } = &c.node_type else {
+                        continue;
+                    };
+                    let t = tag_name.to_lowercase();
+                    count += 1;
+                    if c.id == node.id {
+                        before = false;
+                    }
+                    if t == tag {
+                        type_count += 1;
+                        if before {
+                            type_index += 1;
+                        }
+                    }
+                    if before {
+                        let state = ElementState::of(&t, attributes);
+                        siblings_before.push((t, classes(attributes), attributes.get("id").cloned(), state));
+                    }
+                }
+                SiblingContext {
+                    index: siblings_before.len(),
+                    count,
+                    type_index,
+                    type_count,
+                    has_children,
+                }
+            }
+        };
+        Some(self.selector_matches(selector, &tag, attributes, &ancestors, &siblings_before, sib))
+    }
 
     fn selector_matches(
         &self,
@@ -7890,8 +8119,8 @@ impl Engine {
         siblings_before: &[SiblingKey],
         sib: SiblingContext,
     ) -> bool {
-        let prepared = self.prepared_selector(selector.trim());
-        self.selector_matches_prepared(
+        let prepared = SelectorMatcher.prepared_selector(selector.trim());
+        SelectorMatcher.selector_matches_prepared(
             &prepared,
             tag_name,
             attributes,
@@ -7917,11 +8146,23 @@ impl Engine {
         let (tokens, compounds) = match prepared {
             PreparedSelector::Never => return false,
             PreparedSelector::List(members) => {
-                return members.iter().any(|s| {
-                    self.selector_matches(s, tag_name, attributes, ancestors, siblings_before, sib)
+                return members.iter().any(|m| {
+                    self.selector_matches_prepared(
+                        m,
+                        tag_name,
+                        attributes,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                    )
                 });
             }
-            PreparedSelector::Complex { tokens, compounds, subject } => {
+            PreparedSelector::Complex { tokens, compounds, subject, ancestor_keys } => {
+                if !ancestor_keys.is_empty() && !ancestor_filter_admits(ancestors, ancestor_keys) {
+                    #[cfg(test)]
+                    ANCESTOR_FILTER_REJECTS.with(|n| n.set(n.get() + 1));
+                    return false;
+                }
                 if !subject.matches(self, tag_name, attributes, sib) {
                     return false;
                 }
@@ -8013,17 +8254,24 @@ impl Engine {
             // invalid as a whole and the rule is dropped — `.a:frobnicate, .b {}`
             // styles NOTHING, not `.b`. An unknown pseudo-class used to fall to
             // the matcher's `_ => true` arm and match every element instead.
-            if !Self::selector_list_is_valid(selector) {
+            if !SelectorMatcher::selector_list_is_valid(selector) {
                 return PreparedSelector::Never;
             }
 
             // Handle multiple selectors (comma-separated at the top level —
             // `:is(a, b)` is one member).
             if selector.contains(',') {
-                let members = Self::split_top_level_commas(selector);
+                let members = SelectorMatcher::split_top_level_commas(selector);
                 if members.len() != 1 || members[0] != selector {
+                    // Prepare the members here, once. Matching them by string
+                    // re-hashed each member into this cache per candidate
+                    // element (~15% of github's cascade). No cache borrow is
+                    // held while `prepare` runs, so the recursion is safe.
                     return PreparedSelector::List(
-                        members.into_iter().map(str::to_string).collect(),
+                        members
+                            .into_iter()
+                            .map(|m| self.prepared_selector(m.trim()))
+                            .collect(),
                     );
                 }
             }
@@ -8045,18 +8293,26 @@ impl Engine {
             }
 
             // Tokenize selector into parts and combinators
-            let tokens = self.tokenize_selector(selector);
+            let tokens = SelectorMatcher.tokenize_selector(selector);
             // The last token must be the subject, with no combinator after it.
             match tokens.last() {
                 Some((_, combinator)) if combinator.is_empty() => {}
                 _ => return PreparedSelector::Never,
             }
-            let compounds = tokens
+            let compounds: Vec<AncestorCompound> = tokens
                 .iter()
                 .map(|(part, _)| AncestorCompound::parse(part))
                 .collect();
             let subject = SubjectCompound::parse(self, &tokens[tokens.len() - 1].0);
-            PreparedSelector::Complex { tokens, compounds, subject }
+            let mut ancestor_keys = Vec::new();
+            for ((_, combinator), compound) in tokens.iter().zip(&compounds) {
+                if combinator == " " || combinator == ">" {
+                    ancestor_compound_keys(compound, &mut ancestor_keys);
+                }
+            }
+            ancestor_keys.sort_unstable();
+            ancestor_keys.dedup();
+            PreparedSelector::Complex { tokens, compounds, subject, ancestor_keys }
         };
 
         PREPARED.with(|cache| {
@@ -8281,15 +8537,15 @@ impl Engine {
                     ""
                 };
 
-                if !self.match_attribute_selector(attr_selector, attributes) {
+                if !SelectorMatcher.match_attribute_selector(attr_selector, attributes) {
                     return false;
                 }
             } else if let Some(rest) = remaining.strip_prefix(':') {
                 // Pseudo-class
-                let (pseudo_name, pseudo_arg, consumed) = self.parse_pseudo_class(rest);
+                let (pseudo_name, pseudo_arg, consumed) = SelectorMatcher.parse_pseudo_class(rest);
                 remaining = &rest[consumed..];
 
-                if !self.match_pseudo_class(
+                if !SelectorMatcher.match_pseudo_class(
                     &pseudo_name,
                     pseudo_arg.as_deref(),
                     tag_name,
@@ -8313,7 +8569,7 @@ impl Engine {
         attr_selector: &str,
         attributes: &HashMap<String, String>,
     ) -> bool {
-        let attr_name = Self::attr_selector_name(attr_selector);
+        let attr_name = SelectorMatcher::attr_selector_name(attr_selector);
         for op in &Self::ATTR_OPERATORS {
             if let Some(pos) = attr_selector.find(op) {
                 let mut attr_value = attr_selector[pos + op.len()..].trim();
@@ -8374,7 +8630,10 @@ impl Engine {
             // Find matching closing paren
             let paren_start = name_end + 1;
             let mut depth = 1;
-            let mut paren_end = paren_start;
+            // CSS Syntax §5.4.8: EOF closes an unclosed block. Without a
+            // `)`, the argument runs to the end and all of `rest` is
+            // consumed; `paren_end + 1` would point past it (`div:not(`).
+            let mut close = None;
             // `i` must be a byte offset: it slices `rest` below.
             for (i, c) in rest[paren_start..].char_indices() {
                 match c {
@@ -8382,15 +8641,19 @@ impl Engine {
                     ')' => {
                         depth -= 1;
                         if depth == 0 {
-                            paren_end = paren_start + i;
+                            close = Some(paren_start + i);
                             break;
                         }
                     }
                     _ => {}
                 }
             }
+            let (paren_end, consumed) = match close {
+                Some(end) => (end, end + 1),
+                None => (rest.len(), rest.len()),
+            };
             let arg = rest[paren_start..paren_end].to_string();
-            (name, Some(arg), paren_end + 1)
+            (name, Some(arg), consumed)
         } else {
             (name, None, name_end)
         }
@@ -8418,7 +8681,7 @@ impl Engine {
     /// Pseudo-classes the matcher can decide. Anything else makes the
     /// selector invalid (see `selector_list_is_valid`).
     fn pseudo_class_is_supported(name: &str) -> bool {
-        Self::pseudo_class_is_static_false(name)
+        SelectorMatcher::pseudo_class_is_static_false(name)
             || matches!(
                 name,
                 "root"
@@ -8531,7 +8794,7 @@ impl Engine {
                     // Legacy single-colon pseudo-elements are valid selectors
                     // (they style a generated box; the host guard above
                     // keeps them off the element itself).
-                    let known = Self::pseudo_class_is_supported(&name_l)
+                    let known = SelectorMatcher::pseudo_class_is_supported(&name_l)
                         || matches!(name_l.as_str(), "before" | "after");
                     if !known && forgiving_depth == 0 {
                         return false;
@@ -8607,11 +8870,11 @@ impl Engine {
         attributes: &HashMap<String, String>,
         sib: SiblingContext,
     ) -> bool {
-        Self::split_top_level_commas(list).into_iter().any(|member| {
-            if Self::selector_has_combinator(member) {
+        SelectorMatcher::split_top_level_commas(list).into_iter().any(|member| {
+            if SelectorMatcher::selector_has_combinator(member) {
                 return false;
             }
-            self.simple_selector_matches_with_pseudo(member, tag_name, attributes, sib)
+            SelectorMatcher.simple_selector_matches_with_pseudo(member, tag_name, attributes, sib)
         })
     }
 
@@ -8646,16 +8909,21 @@ impl Engine {
         sib: SiblingContext,
         attributes: &HashMap<String, String>,
     ) -> bool {
-        let tag = tag_name.to_ascii_lowercase();
-        let tag = tag.as_str();
-        let is_control = Self::is_form_control_tag(tag);
+        // DOM tag names are already lowercase; allocate only when not.
+        let tag: std::borrow::Cow<str> = if tag_name.bytes().any(|b| b.is_ascii_uppercase()) {
+            tag_name.to_ascii_lowercase().into()
+        } else {
+            tag_name.into()
+        };
+        let tag = tag.as_ref();
+        let is_control = SelectorMatcher::is_form_control_tag(tag);
         let value_is_empty = attributes.get("value").map_or(true, |v| v.is_empty());
         match name {
             "first-child" => sib.index == 0,
             "last-child" => sib.index == sib.count.saturating_sub(1),
             "only-child" => sib.count == 1,
-            "nth-child" => arg.is_some_and(|a| self.match_nth(a, sib.index + 1)),
-            "nth-last-child" => arg.is_some_and(|a| self.match_nth(a, sib.count - sib.index)),
+            "nth-child" => arg.is_some_and(|a| SelectorMatcher.match_nth(a, sib.index + 1)),
+            "nth-last-child" => arg.is_some_and(|a| SelectorMatcher.match_nth(a, sib.count - sib.index)),
             // Typed variants (Selectors 4 §14.4): position among siblings
             // that share the element's tag. These used to fall to the
             // catch-all and match EVERY element — `h2:first-of-type` styled
@@ -8663,19 +8931,19 @@ impl Engine {
             "first-of-type" => sib.type_index == 0,
             "last-of-type" => sib.type_index == sib.type_count.saturating_sub(1),
             "only-of-type" => sib.type_count == 1,
-            "nth-of-type" => arg.is_some_and(|a| self.match_nth(a, sib.type_index + 1)),
+            "nth-of-type" => arg.is_some_and(|a| SelectorMatcher.match_nth(a, sib.type_index + 1)),
             "nth-last-of-type" => {
-                arg.is_some_and(|a| self.match_nth(a, sib.type_count - sib.type_index))
+                arg.is_some_and(|a| SelectorMatcher.match_nth(a, sib.type_count - sib.type_index))
             }
             // :not() takes a selector list; none of the members may match.
             "not" => arg.map_or(true, |a| {
-                !self.any_compound_in_list_matches(a, tag_name, attributes, sib)
+                !SelectorMatcher.any_compound_in_list_matches(a, tag_name, attributes, sib)
             }),
             // :is()/:where() select exactly their arguments. They used to
             // match everything, so `:where(ul, ol) { padding: 0 }` (every
             // modern reset) zeroed padding on every element.
             "is" | "where" | "matches" | "-webkit-any" => arg.is_some_and(|a| {
-                self.any_compound_in_list_matches(a, tag_name, attributes, sib)
+                SelectorMatcher.any_compound_in_list_matches(a, tag_name, attributes, sib)
             }),
             // Relational: needs the subtree; under-match rather than style
             // every element. Ledgered.
@@ -8685,7 +8953,7 @@ impl Engine {
             // and `focus-visible` used to fall to the catch-all below and
             // MATCH EVERYTHING, so `.wrapper:focus-within .icon { color }`
             // styled every icon as if its input were focused.
-            n if Self::pseudo_class_is_static_false(n) => false,
+            n if SelectorMatcher::pseudo_class_is_static_false(n) => false,
             // Link pseudo-classes: an <a>/<area> with an href.
             "link" | "any-link" => matches!(tag, "a" | "area") && attributes.contains_key("href"),
             // One definition with the sibling path (`ElementState`).
@@ -8709,7 +8977,7 @@ impl Engine {
                         .get("contenteditable")
                         .is_some_and(|v| v.is_empty() || v.eq_ignore_ascii_case("true"))
             }
-            "read-only" => !self.match_pseudo_class("read-write", None, tag_name, sib, attributes),
+            "read-only" => !SelectorMatcher.match_pseudo_class("read-write", None, tag_name, sib, attributes),
             // A text control showing its placeholder: has one and no value.
             "placeholder-shown" => {
                 attributes.get("placeholder").is_some_and(|p| !p.is_empty())
@@ -8823,6 +9091,65 @@ impl Engine {
         }
     }
 
+    /// For a top-level selector list, each member's `(position, specificity)`,
+    /// highest specificity first (ties keep source order). Positions index the
+    /// members of `prepared_selector(selector)`'s `List`, which splits the same
+    /// way. Empty for a single complex selector.
+    fn list_member_specificity(&self, selector: &str) -> Vec<(usize, (usize, usize, usize))> {
+        if !selector.contains(',') {
+            return Vec::new();
+        }
+        let members = SelectorMatcher::split_top_level_commas(selector);
+        if members.len() < 2 {
+            return Vec::new();
+        }
+        let mut specs: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (i, self.selector_specificity(m.trim())))
+            .collect();
+        specs.sort_by(|a, b| b.1.cmp(&a.1));
+        specs
+    }
+
+    /// The specificity a matched rule cascades with, or `None` if it doesn't
+    /// match. Selectors 4 §17: a selector list's specificity is that of the
+    /// most specific member THAT MATCHES the element, not of the whole list.
+    /// `a, a:hover { color: blue }` is (0,0,1) on a link that isn't hovered,
+    /// so `.nav-link { color: gray }` beats it. `whole` is the list's (max)
+    /// specificity, used for a single complex selector. Members are tried
+    /// most specific first, so the first match is the answer.
+    #[allow(clippy::too_many_arguments)]
+    fn matched_specificity(
+        &self,
+        prepared: &PreparedSelector,
+        member_specificity: &[(usize, (usize, usize, usize))],
+        whole: (usize, usize, usize),
+        tag_name: &str,
+        attributes: &HashMap<String, String>,
+        ancestors: &[(String, Vec<String>, Option<String>)],
+        siblings_before: &[SiblingKey],
+        sib: SiblingContext,
+    ) -> Option<(usize, usize, usize)> {
+        if let PreparedSelector::List(members) = prepared {
+            if members.len() == member_specificity.len() {
+                return member_specificity.iter().find_map(|&(i, spec)| {
+                    self.selector_matches_prepared(
+                        &members[i],
+                        tag_name,
+                        attributes,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                    )
+                    .then_some(spec)
+                });
+            }
+        }
+        self.selector_matches_prepared(prepared, tag_name, attributes, ancestors, siblings_before, sib)
+            .then_some(whole)
+    }
+
     /// Calculate selector specificity for ordering.
     /// Returns (a, b, c) where:
     /// - a = number of ID selectors
@@ -8837,7 +9164,7 @@ impl Engine {
         if selector.contains(',') {
             let mut max_spec = (0, 0, 0);
             for part in selector.split(',') {
-                let spec = self.selector_specificity(part.trim());
+                let spec = SelectorMatcher.selector_specificity(part.trim());
                 if spec > max_spec {
                     max_spec = spec;
                 }
@@ -8935,7 +9262,7 @@ impl Engine {
                                     }
                                     let arg: String =
                                         chars[arg_start..i.saturating_sub(1)].iter().collect();
-                                    let (a, b, c) = self.selector_specificity(&arg);
+                                    let (a, b, c) = SelectorMatcher.selector_specificity(&arg);
                                     ids += a;
                                     classes += b;
                                     tags += c;
@@ -8995,7 +9322,9 @@ impl Engine {
 
         (ids, classes, tags)
     }
+}
 
+impl Engine {
     /// Render a view (public API for continuous rendering).
     pub fn render_view(&mut self, id: EngineViewId) -> Result<(), EngineError> {
         self.render(id)
@@ -9923,11 +10252,30 @@ impl Engine {
             .as_ref()
             .ok_or(EngineError::JsError("JavaScript not initialized".into()))?;
 
-        let result = bindings
-            .evaluate(script)
-            .map_err(|e| EngineError::JsError(e.to_string()))?;
+        // A script that threw may still have written to the DOM before it
+        // did, so the flush runs either way.
+        let result = bindings.evaluate(script);
+        self.flush_script_dom_writes(id)?;
+        let result = result.map_err(|e| EngineError::JsError(e.to_string()))?;
 
         Ok(format!("{:?}", result))
+    }
+
+    /// Apply what script's DOM writes invalidated (the DOM-bindings pin §3
+    /// flush): one relayout for however many writes the script made. Runs
+    /// once when script settles; `relayout` rebuilds style and layout in
+    /// full, so both `DomDirty` buckets take the same path for now.
+    fn flush_script_dom_writes(&mut self, id: EngineViewId) -> Result<(), EngineError> {
+        let dirty = self
+            .views
+            .get(&id)
+            .and_then(|view| view.bindings.as_ref())
+            .map_or(DomDirty::Clean, |bindings| bindings.take_dirty());
+        if dirty == DomDirty::Clean {
+            return Ok(());
+        }
+        debug!(?id, ?dirty, "Script wrote to the DOM; relayout");
+        self.relayout(id)
     }
 
     /// Get the current URL of a view.
@@ -12074,7 +12422,27 @@ fn parse_track_size(value: &str) -> Option<rustkit_css::TrackSize> {
         }
     }
 
-    None
+    // Any other fixed length. A unitless `0` and `rem` were dropped here, so
+    // wikipedia's `minmax(0,1fr)` and `12.25rem` columns never parsed. `rem`
+    // assumes the 16px root, as `fit-content()` and `flex-basis` do.
+    match parse_length(value)? {
+        rustkit_css::Length::Zero => Some(rustkit_css::TrackSize::Px(0.0)),
+        rustkit_css::Length::Rem(rem) => Some(rustkit_css::TrackSize::Px(rem * 16.0)),
+        _ => None,
+    }
+}
+
+/// A `<custom-ident>` usable as a grid line or area name.
+fn is_grid_ident(value: &str) -> bool {
+    let mut chars = value.chars();
+    let starts_ok = chars
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '-');
+    starts_ok
+        && value
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        && !matches!(value, "auto" | "span" | "-")
 }
 
 /// Parse a grid line value (e.g., "1", "span 2", "auto").
@@ -12085,11 +12453,14 @@ fn parse_grid_line(value: &str) -> Option<rustkit_css::GridLine> {
         return Some(rustkit_css::GridLine::Auto);
     }
 
-    // Check for "span N"
-    if let Some(span_str) = value.strip_prefix("span") {
+    // Check for "span N" / "span <name>"
+    if let Some(span_str) = value.strip_prefix("span ") {
         let span_str = span_str.trim();
         if let Ok(span) = span_str.parse::<u32>() {
             return Some(rustkit_css::GridLine::Span(span));
+        }
+        if is_grid_ident(span_str) {
+            return Some(rustkit_css::GridLine::SpanName(span_str.to_string()));
         }
     }
 
@@ -12098,8 +12469,172 @@ fn parse_grid_line(value: &str) -> Option<rustkit_css::GridLine> {
         return Some(rustkit_css::GridLine::Number(num));
     }
 
-    // Could be a named line (just use auto for now)
+    // A named line or area. Layout resolves it against the container's
+    // line names and `grid-template-areas`; an unknown name auto-places.
+    if is_grid_ident(value) {
+        return Some(rustkit_css::GridLine::Name(value.to_string()));
+    }
+
+    // Anything else (`<integer> <name>` and friends): auto, as before.
     Some(rustkit_css::GridLine::Auto)
+}
+
+/// A custom-ident line copies itself into an omitted end slot; anything else
+/// leaves the slot `auto` (css-grid-1 §8.4).
+fn grid_line_or_auto_copy(line: &rustkit_css::GridLine) -> rustkit_css::GridLine {
+    match line {
+        rustkit_css::GridLine::Name(_) => line.clone(),
+        _ => rustkit_css::GridLine::Auto,
+    }
+}
+
+/// `grid-area: <line> [/ <line>]{0,3}` → (row-start, column-start, row-end,
+/// column-end). `grid-area: header` names the area on all four sides.
+fn parse_grid_area(
+    value: &str,
+) -> Option<(
+    rustkit_css::GridLine,
+    rustkit_css::GridLine,
+    rustkit_css::GridLine,
+    rustkit_css::GridLine,
+)> {
+    let parts: Vec<&str> = value.split('/').map(str::trim).collect();
+    if parts.len() > 4 || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let lines = parts
+        .iter()
+        .map(|p| parse_grid_line(p))
+        .collect::<Option<Vec<_>>>()?;
+    let row_start = lines[0].clone();
+    let col_start = lines
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| grid_line_or_auto_copy(&row_start));
+    let row_end = lines
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| grid_line_or_auto_copy(&row_start));
+    let col_end = lines
+        .get(3)
+        .cloned()
+        .unwrap_or_else(|| grid_line_or_auto_copy(&col_start));
+    Some((row_start, col_start, row_end, col_end))
+}
+
+/// `grid-template` (css-grid-1 §7.4) → (rows, columns, areas).
+///
+/// - `none` resets all three.
+/// - `<rows> / <columns>` sets the two track lists and clears the areas.
+/// - `[names]? "<string>" <track-size>? [names]? ... / <columns>` sets the
+///   areas from the strings, each string's row from the size after it
+///   (`auto` when omitted).
+fn parse_grid_template_shorthand(
+    value: &str,
+) -> Option<(
+    rustkit_css::GridTemplate,
+    rustkit_css::GridTemplate,
+    Option<rustkit_css::GridTemplateAreas>,
+)> {
+    let value = value.trim();
+    if value == "none" {
+        return Some((
+            rustkit_css::GridTemplate::none(),
+            rustkit_css::GridTemplate::none(),
+            None,
+        ));
+    }
+
+    // The top-level `/`, outside strings and brackets.
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut slash = None;
+    for (i, ch) in value.char_indices() {
+        match (quote, ch) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(ch),
+            (None, '(' | '[') => depth += 1,
+            (None, ')' | ']') => depth -= 1,
+            (None, '/') if depth == 0 => {
+                slash = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let slash = slash?;
+    let (rows_part, cols_part) = (value[..slash].trim(), value[slash + 1..].trim());
+    let columns = parse_grid_template(cols_part)?;
+
+    if !rows_part.contains(['"', '\'']) {
+        return Some((parse_grid_template(rows_part)?, columns, None));
+    }
+
+    // Strings form: walk strings, bracketed names and sizes in order.
+    let mut strings = String::new();
+    let mut tracks: Vec<rustkit_css::TrackDefinition> = Vec::new();
+    let mut pending_names: Vec<String> = Vec::new();
+    let mut rest = rows_part;
+    loop {
+        rest = rest.trim_start();
+        let Some(first) = rest.chars().next() else {
+            break;
+        };
+        if first == '"' || first == '\'' {
+            let close = rest[1..].find(first)? + 1;
+            strings.push_str(&rest[..=close]);
+            strings.push(' ');
+            tracks.push(rustkit_css::TrackDefinition {
+                size: rustkit_css::TrackSize::Auto,
+                line_names: std::mem::take(&mut pending_names),
+            });
+            rest = &rest[close + 1..];
+            continue;
+        }
+        // The next token ends at whitespace or a string (brackets and
+        // functions kept whole).
+        let token_end = {
+            let mut depth = 0i32;
+            let mut end = rest.len();
+            for (i, ch) in rest.char_indices() {
+                match ch {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    '"' | '\'' if depth == 0 => {
+                        end = i;
+                        break;
+                    }
+                    c if c.is_whitespace() && depth == 0 => {
+                        end = i;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            end
+        };
+        let token = &rest[..token_end];
+        rest = &rest[token_end..];
+        if let Some(names) = token.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+            pending_names.extend(names.split_whitespace().map(str::to_string));
+            continue;
+        }
+        // A size belongs to the string just before it, and only once.
+        let last = tracks.last_mut()?;
+        if last.size != rustkit_css::TrackSize::Auto || !pending_names.is_empty() {
+            return None;
+        }
+        last.size = parse_track_size(token)?;
+    }
+
+    let areas = rustkit_css::GridTemplateAreas::parse(&strings)?;
+    let rows = rustkit_css::GridTemplate {
+        tracks,
+        repeats: Vec::new(),
+        final_line_names: pending_names,
+    };
+    Some((rows, columns, Some(areas)))
 }
 
 /// Parse a grid-column or grid-row shorthand (e.g., "1 / 3", "span 2").
@@ -12119,9 +12654,10 @@ fn parse_grid_line_shorthand(
         return Some((start, end));
     }
 
-    // Single value - applies to start, end is auto
+    // Single value: the end is auto, or the same name (`grid-column: nav`).
     let start = parse_grid_line(value)?;
-    Some((start, rustkit_css::GridLine::Auto))
+    let end = grid_line_or_auto_copy(&start);
+    Some((start, end))
 }
 
 /// Compose two page-space affines: `outer ∘ inner`.
@@ -12994,16 +13530,16 @@ mod tests {
 
     #[test]
     fn test_selector_list_validity_and_top_level_commas() {
-        assert!(Engine::selector_list_is_valid(
+        assert!(SelectorMatcher::selector_list_is_valid(
             ".a:hover, li:nth-child(2n+1) > a"
         ));
-        assert!(Engine::selector_list_is_valid(":is(.a, :frobnicate) .b"));
-        assert!(Engine::selector_list_is_valid("a[title=\":x\"]::after"));
-        assert!(!Engine::selector_list_is_valid(".a:frobnicate, .b"));
-        assert!(!Engine::selector_list_is_valid(".a:not(:frobnicate)"));
-        assert!(!Engine::selector_list_is_valid("input:-moz-focusring"));
+        assert!(SelectorMatcher::selector_list_is_valid(":is(.a, :frobnicate) .b"));
+        assert!(SelectorMatcher::selector_list_is_valid("a[title=\":x\"]::after"));
+        assert!(!SelectorMatcher::selector_list_is_valid(".a:frobnicate, .b"));
+        assert!(!SelectorMatcher::selector_list_is_valid(".a:not(:frobnicate)"));
+        assert!(!SelectorMatcher::selector_list_is_valid("input:-moz-focusring"));
         assert_eq!(
-            Engine::split_top_level_commas(":is(a, b) c, d[x=\"1,2\"], e"),
+            SelectorMatcher::split_top_level_commas(":is(a, b) c, d[x=\"1,2\"], e"),
             vec![":is(a, b) c", "d[x=\"1,2\"]", "e"]
         );
     }
@@ -14004,7 +14540,9 @@ mod tests {
         let mut boxes = Vec::new();
         collect(&layout, &mut boxes);
         let px = |w: f32, h: f32| (rustkit_css::Length::Px(w), rustkit_css::Length::Px(h), rustkit_css::Display::InlineBlock);
-        assert!(boxes.contains(&px(14.0, 14.0)), "svg width=/height= box missing: {:?}", boxes);
+        // The first svg is a flex item, so it is blockified (Display 3 §2.7).
+        let flex_item = (rustkit_css::Length::Px(14.0), rustkit_css::Length::Px(14.0), rustkit_css::Display::Block);
+        assert!(boxes.contains(&flex_item), "svg width=/height= box missing: {:?}", boxes);
         assert!(boxes.contains(&px(300.0, 150.0)), "attribute-less svg must fall back to 300x150: {:?}", boxes);
         assert!(boxes.contains(&px(20.0, 40.0)), "author CSS width must win over width=: {:?}", boxes);
 
@@ -14604,84 +15142,54 @@ mod tests {
 
     #[test]
     fn test_selector_specificity() {
-        // Create a minimal engine for testing
-        let compositor = match crate::test_compositor() {
-            Ok(c) => c,
-            Err(_) => {
-                eprintln!("Skipping test: GPU not available");
-                return;
-            }
-        };
-
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
-        let engine = Engine {
-            config: EngineConfig::default(),
-            views: HashMap::new(),
-            
-            font_loader: Arc::new(FontLoader::new()),viewhost: ViewHost::new(),
-            compositor,
-            renderer: None,
-            loader: Arc::new(
-                ResourceLoader::new(LoaderConfig::default()).expect("Failed to create loader"),
-            ),
-            image_manager: Arc::new(ImageManager::new()),
-            event_tx,
-            event_rx: Some(event_rx),
-            style_trace: std::cell::RefCell::new(None),
-            render_failing: std::collections::HashSet::new(),
-            svg_cache: std::collections::HashMap::new(),
-            building_focus: std::cell::Cell::new(None),
-            building_view: std::cell::Cell::new(None),
-        };
-
         // Test type selector: (0, 0, 1)
-        assert_eq!(engine.selector_specificity("div"), (0, 0, 1));
-        assert_eq!(engine.selector_specificity("p"), (0, 0, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("div"), (0, 0, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("p"), (0, 0, 1));
 
         // Test class selector: (0, 1, 0)
-        assert_eq!(engine.selector_specificity(".class"), (0, 1, 0));
-        assert_eq!(engine.selector_specificity(".a.b"), (0, 2, 0));
+        assert_eq!(SelectorMatcher.selector_specificity(".class"), (0, 1, 0));
+        assert_eq!(SelectorMatcher.selector_specificity(".a.b"), (0, 2, 0));
 
         // Test ID selector: (1, 0, 0)
-        assert_eq!(engine.selector_specificity("#id"), (1, 0, 0));
+        assert_eq!(SelectorMatcher.selector_specificity("#id"), (1, 0, 0));
 
         // Test combined selectors
-        assert_eq!(engine.selector_specificity("div.class"), (0, 1, 1));
-        assert_eq!(engine.selector_specificity("div#id"), (1, 0, 1));
-        assert_eq!(engine.selector_specificity("#id.class"), (1, 1, 0));
+        assert_eq!(SelectorMatcher.selector_specificity("div.class"), (0, 1, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("div#id"), (1, 0, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("#id.class"), (1, 1, 0));
 
         // Test pseudo-classes: (0, 1, 0) each
-        assert_eq!(engine.selector_specificity(":hover"), (0, 1, 0));
-        assert_eq!(engine.selector_specificity(":first-child"), (0, 1, 0));
-        assert_eq!(engine.selector_specificity("div:first-child"), (0, 1, 1));
+        assert_eq!(SelectorMatcher.selector_specificity(":hover"), (0, 1, 0));
+        assert_eq!(SelectorMatcher.selector_specificity(":first-child"), (0, 1, 0));
+        assert_eq!(SelectorMatcher.selector_specificity("div:first-child"), (0, 1, 1));
 
         // Test pseudo-elements: (0, 0, 1) each
-        assert_eq!(engine.selector_specificity("::before"), (0, 0, 1));
-        assert_eq!(engine.selector_specificity("div::before"), (0, 0, 2));
+        assert_eq!(SelectorMatcher.selector_specificity("::before"), (0, 0, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("div::before"), (0, 0, 2));
 
         // Test attribute selectors: (0, 1, 0) each
-        assert_eq!(engine.selector_specificity("[type]"), (0, 1, 0));
-        assert_eq!(engine.selector_specificity("[type=text]"), (0, 1, 0));
-        assert_eq!(engine.selector_specificity("input[type=text]"), (0, 1, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("[type]"), (0, 1, 0));
+        assert_eq!(SelectorMatcher.selector_specificity("[type=text]"), (0, 1, 0));
+        assert_eq!(SelectorMatcher.selector_specificity("input[type=text]"), (0, 1, 1));
 
         // Test descendant selectors
-        assert_eq!(engine.selector_specificity("body div"), (0, 0, 2));
-        assert_eq!(engine.selector_specificity("body .class"), (0, 1, 1));
-        assert_eq!(engine.selector_specificity("#id .class div"), (1, 1, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("body div"), (0, 0, 2));
+        assert_eq!(SelectorMatcher.selector_specificity("body .class"), (0, 1, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("#id .class div"), (1, 1, 1));
 
         // Test :not() - adds specificity of argument
-        assert_eq!(engine.selector_specificity(":not(.class)"), (0, 1, 0));
-        assert_eq!(engine.selector_specificity("div:not(.class)"), (0, 1, 1));
+        assert_eq!(SelectorMatcher.selector_specificity(":not(.class)"), (0, 1, 0));
+        assert_eq!(SelectorMatcher.selector_specificity("div:not(.class)"), (0, 1, 1));
 
         // Test universal selector: (0, 0, 0)
-        assert_eq!(engine.selector_specificity("*"), (0, 0, 0));
+        assert_eq!(SelectorMatcher.selector_specificity("*"), (0, 0, 0));
 
         // Test complex selectors
-        assert_eq!(engine.selector_specificity("div.a.b#id:hover"), (1, 3, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("div.a.b#id:hover"), (1, 3, 1));
 
         // Test ID beats multiple classes
-        let id_spec = engine.selector_specificity("#test");
-        let multi_class_spec = engine.selector_specificity(".a.b.c.d.e");
+        let id_spec = SelectorMatcher.selector_specificity("#test");
+        let multi_class_spec = SelectorMatcher.selector_specificity(".a.b.c.d.e");
         assert!(
             id_spec > multi_class_spec,
             "ID should beat multiple classes"
@@ -17207,6 +17715,8 @@ thread_local! {
     static PREFILTER_VISITS: Cell<u64> = const { Cell::new(0) };
     /// How many times a selector string was tokenized on this thread.
     static SELECTOR_TOKENIZATIONS: Cell<u64> = const { Cell::new(0) };
+    /// How many selectors the ancestor filter rejected on this thread.
+    static ANCESTOR_FILTER_REJECTS: Cell<u64> = const { Cell::new(0) };
 }
 
 // Real Engine (Compositor wants a device) — macOS only, like
@@ -17236,12 +17746,11 @@ mod rule_prefilter_tests {
         // After the rule index, github's cascade was still 11 s: every
         // candidate re-validated and re-tokenized its selector string for
         // every element, and re-parsed each compound for every ancestor.
-        let engine = Engine::new(EngineConfig::default()).expect("engine");
         let ancestors: Vec<_> = (0..30).map(|_| ancestor("div", &["x"], None)).collect();
         let selector = "main.page section .card > .title";
         SELECTOR_TOKENIZATIONS.with(|n| n.set(0));
         for _ in 0..200 {
-            assert!(!engine.selector_matches(
+            assert!(!SelectorMatcher.selector_matches(
                 selector,
                 "h2",
                 &attrs(&[("class", "title")]),
@@ -17258,11 +17767,87 @@ mod rule_prefilter_tests {
     }
 
     #[test]
+    fn the_ancestor_filter_rejects_only_what_the_walk_rejects() {
+        // Nearest ancestor first, as the cascade passes them.
+        let chain = vec![
+            ancestor("div", &["card", "wide"], None),
+            ancestor("section", &["sec"], Some("s1")),
+            ancestor("main", &["page"], Some("app")),
+        ];
+        let t = attrs(&[("class", "t")]);
+        let selectors = [
+            "main .t",
+            "MAIN .t",
+            "main#app.page .t",
+            "#app .t",
+            ".card > .t",
+            ".sec > .t",
+            "section.sec .card.wide > .t",
+            "*.card .t",
+            ".card:hover .t",
+            ":is(.card, .nope) .t",
+            ":is(.nope) .t",
+            "div[data-x] .t",
+            ".card + .t",
+            ".missing .t",
+            "#nope .t",
+            "article .t",
+            "main .missing .t",
+            ".t",
+            "main .t, .missing .t",
+        ];
+        let run = |s: &str, chain: &[(String, Vec<String>, Option<String>)]| {
+            SelectorMatcher.selector_matches(s, "p", &t, chain, &[], SiblingContext::SOLE)
+        };
+        for chain in [&chain[..], &chain[1..], &[]] {
+            let expected: Vec<bool> = selectors.iter().map(|s| run(s, chain)).collect();
+            ANCESTOR_FILTER_REJECTS.with(|n| n.set(0));
+            let filtered: Vec<bool> = {
+                let _scope = AncestorFilterScope::install(chain);
+                selectors.iter().map(|s| run(s, chain)).collect()
+            };
+            assert_eq!(filtered, expected, "chain of {}", chain.len());
+            assert!(ANCESTOR_FILTER_REJECTS.with(|n| n.get()) > 0, "chain of {}", chain.len());
+        }
+        {
+            let _scope = AncestorFilterScope::install(&chain);
+            assert!(run("MAIN .t", &chain) && run("section.sec .card.wide > .t", &chain));
+            assert!(!run(".missing .t", &chain) && !run("#nope .t", &chain));
+        }
+        // A filter never answers for another slice, even one of equal length.
+        let other = vec![ancestor("x", &[], None); 3];
+        let _scope = AncestorFilterScope::install(&chain);
+        assert!(ancestor_filter_admits(&other, &[ancestor_key_hash(b'.', "missing")]));
+        assert!(!ancestor_filter_admits(&chain, &[ancestor_key_hash(b'.', "missing")]));
+        assert!(ancestor_filter_admits(&chain, &[ancestor_key_hash(b'<', "SECTION")]));
+    }
+
+    #[test]
+    fn a_selector_list_holds_its_members_prepared() {
+        // github's comma lists: each member used to be matched by string,
+        // i.e. hashed back into the prepared cache per candidate element.
+        let m = SelectorMatcher;
+        let list = m.prepared_selector(".a .x,  main .t , .nope");
+        let PreparedSelector::List(members) = &*list else {
+            panic!("a comma list prepares as a List");
+        };
+        assert_eq!(members.len(), 3);
+        assert!(members.iter().all(|m| matches!(**m, PreparedSelector::Complex { .. })));
+        assert!(
+            Rc::ptr_eq(&members[1], &m.prepared_selector("main .t")),
+            "members are trimmed and shared with the cache"
+        );
+        let main = vec![ancestor("main", &[], None)];
+        let t = attrs(&[("class", "t")]);
+        assert!(m.selector_matches_prepared(&list, "div", &t, &main, &[], SiblingContext::SOLE));
+        assert!(!m.selector_matches_prepared(&list, "div", &t, &[], &[], SiblingContext::SOLE));
+    }
+
+    #[test]
     fn a_sibling_compound_checks_the_siblings_form_state() {
         // wikipedia's dropdowns: `.dd .checkbox:checked ~ .content { display:
         // block }`. The sibling compound was matched by tag/class/id only,
         // so `:checked` was ignored and every closed menu painted open.
-        let engine = Engine::new(EngineConfig::default()).expect("engine");
         let sibling = |attributes: &[(&str, &str)]| -> Vec<SiblingKey> {
             let a = attrs(attributes);
             vec![("input".to_string(), vec!["cb".to_string()], None, ElementState::of("input", &a))]
@@ -17283,7 +17868,7 @@ mod rule_prefilter_tests {
             (".cb:first-child ~ .content", &unchecked, true),
         ];
         for (selector, siblings, want) in cases {
-            let got = engine.selector_matches(
+            let got = SelectorMatcher.selector_matches(
                 selector,
                 "div",
                 &attrs(&[("class", "content")]),
@@ -17302,7 +17887,6 @@ mod rule_prefilter_tests {
         // `customElements.define`, so under the spec rule they never upgrade
         // and the page paints blank. Showing the un-upgraded content is the
         // closer match to Chrome after script.
-        let engine = Engine::new(EngineConfig::default()).expect("engine");
         let cases: &[(&str, &str, bool)] = &[
             (":defined", "div", true),
             (":not(:defined)", "div", false),
@@ -17311,14 +17895,13 @@ mod rule_prefilter_tests {
             ("ms-header:not(:defined)", "ms-header", false),
         ];
         for (selector, tag, want) in cases {
-            let got = engine.selector_matches(selector, tag, &attrs(&[]), &[], &[], SiblingContext::SOLE);
+            let got = SelectorMatcher.selector_matches(selector, tag, &attrs(&[]), &[], &[], SiblingContext::SOLE);
             assert_eq!(got, *want, "{selector} on <{tag}>");
         }
     }
 
     #[test]
     fn prepared_selectors_match_like_the_string_matcher_did() {
-        let engine = Engine::new(EngineConfig::default()).expect("engine");
         let chain = vec![
             ancestor("section", &["card", "wide"], Some("main")),
             ancestor("body", &[], None),
@@ -17353,7 +17936,7 @@ mod rule_prefilter_tests {
             for _ in 0..2 {
                 // Second pass is served from the cache.
                 assert_eq!(
-                    engine.selector_matches(
+                    SelectorMatcher.selector_matches(
                         selector,
                         "div",
                         &attrs(&[("class", "t")]),
@@ -17367,7 +17950,7 @@ mod rule_prefilter_tests {
             }
         }
         let accented = vec![ancestor("div", &["café"], None)];
-        assert!(engine.selector_matches(
+        assert!(SelectorMatcher.selector_matches(
             ".café .t",
             "div",
             &attrs(&[("class", "t")]),
@@ -17381,7 +17964,6 @@ mod rule_prefilter_tests {
     /// replaced on every (selector, element) pair, quirks included.
     #[test]
     fn compiled_subject_matches_like_the_string_matcher() {
-        let engine = Engine::new(EngineConfig::default()).expect("engine");
         let escaped_class = rustkit_css::encode_selector_escapes(".sm\\:flex").into_owned();
         let escaped_id = rustkit_css::encode_selector_escapes("#a\\.b").into_owned();
         let mut selectors: Vec<&str> = vec![
@@ -17420,6 +18002,20 @@ mod rule_prefilter_tests {
             "div:nth-child(1)",
             "div:nth-child(2n+1 of .card)",
             ":not(:is(.a, .b))",
+            // Selector-list arguments, compiled once into `SubjectPart::List`.
+            ":not()",
+            ":is()",
+            ":not(.card, #main)",
+            ":not( .nope ,  .t )",
+            ":is(div > .card, .card)",
+            ":is(div .card)",
+            ":not(div .card)",
+            ":where(:not(.card), html)",
+            "div:is(:first-child):not(:empty)",
+            ":-webkit-any(span, p)",
+            ":matches(DIV.card)",
+            ":is(div[data-x=\"a,b\"], p)",
+            ":has(.card)",
             ":",
             "div:",
             "*.card",
@@ -17440,12 +18036,12 @@ mod rule_prefilter_tests {
         ];
         let sibs = [SiblingContext::SOLE, SiblingContext::SOLE.with_children(true)];
         for selector in &selectors {
-            let subject = SubjectCompound::parse(&engine, selector);
+            let subject = SubjectCompound::parse(&SelectorMatcher, selector);
             for (tag, attributes) in &elements {
                 for sib in sibs {
                     assert_eq!(
-                        subject.matches(&engine, tag, attributes, sib),
-                        engine.simple_selector_matches_with_pseudo(selector, tag, attributes, sib),
+                        subject.matches(&SelectorMatcher, tag, attributes, sib),
+                        SelectorMatcher.simple_selector_matches_with_pseudo(selector, tag, attributes, sib),
                         "{selector:?} on {tag} {attributes:?}"
                     );
                 }
@@ -17567,6 +18163,73 @@ mod rule_prefilter_tests {
     }
 
     #[test]
+    fn indexed_pseudo_styles_match_the_string_path() {
+        // The indexed path matches each pseudo rule by the index's prepared
+        // base selector and stored specificity; it must pick the same rules,
+        // in the same order, as matching the base selector string.
+        let css = "::before { content: \"bare\"; color: red }\n\
+                   .a::before { content: \"a\" }\n\
+                   div.a:before { color: blue }\n\
+                   #i.a::before { content: \"id\" !important }\n\
+                   .a::before { content: \"late\" }\n\
+                   ul > li.b::after { content: \"child\" }\n\
+                   nav li.b::after { content: \"desc\"; color: green }\n\
+                   li.b + li.b::after { content: \"adj\" }\n\
+                   li:first-child::after { content: \"first\" }\n\
+                   :is(.a, .b)::after { color: purple }\n\
+                   .a:frobnicate::before { content: \"never\" }\n\
+                   [data-x]::after { content: attr(data-x) }\n\
+                   .a , .b::after { content: \"list\" }\n";
+        let sheet = Stylesheet::parse(css).expect("css");
+        let sheets = std::slice::from_ref(&sheet);
+        let engine = Engine::new(EngineConfig::default()).expect("engine");
+        let li = |c: &str| ("li".to_string(), vec![c.to_string()], None::<String>);
+        let ancestors_sets: [Vec<(String, Vec<String>, Option<String>)>; 3] = [
+            vec![],
+            vec![("ul".to_string(), vec![], None), ("nav".to_string(), vec![], None)],
+            vec![li("b"), ("ol".to_string(), vec![], None)],
+        ];
+        let elements = [
+            ("div", attrs(&[("class", "a")])),
+            ("div", attrs(&[("class", "a"), ("id", "i")])),
+            ("li", attrs(&[("class", "b")])),
+            ("li", attrs(&[("class", "b"), ("data-x", "v")])),
+            ("span", attrs(&[])),
+        ];
+        let sibling_sets: [(Vec<SiblingKey>, SiblingContext); 2] = [
+            (vec![], SiblingContext::SOLE),
+            (
+                vec![("li".to_string(), vec!["b".to_string()], None, ElementState::default())],
+                SiblingContext { index: 1, count: 2, type_index: 1, type_count: 2, has_children: false },
+            ),
+        ];
+        let styles = |indexed: bool| {
+            let _scope = indexed.then(|| RuleIndexScope::install(engine.build_rule_index(sheets)));
+            let mut out = Vec::new();
+            for (tag, a) in &elements {
+                for ancestors in &ancestors_sets {
+                    for (siblings, sib) in &sibling_sets {
+                        for pseudo in ["::before", "::after"] {
+                            out.push(format!(
+                                "{tag} {a:?} {ancestors:?} {pseudo}: {:?}",
+                                engine.pseudo_element_style(
+                                    tag, a, sheets, ancestors, siblings, *sib, pseudo,
+                                )
+                            ));
+                        }
+                    }
+                }
+            }
+            out
+        };
+        let (plain, indexed) = (styles(false), styles(true));
+        assert!(plain.iter().any(|s| s.contains("Some(")), "the fixture must generate boxes");
+        for (p, i) in plain.iter().zip(&indexed) {
+            assert_eq!(p, i);
+        }
+    }
+
+    #[test]
     fn rule_index_specificity_matches_selector_specificity() {
         // The cascade sorts matched rules by the index's stored specificity;
         // it must be exactly what `selector_specificity` computes.
@@ -17581,11 +18244,63 @@ mod rule_prefilter_tests {
         for (g, rule) in sheet.rules.iter().enumerate() {
             assert_eq!(
                 ix.specificity[g],
-                engine.selector_specificity(&rule.selector),
+                SelectorMatcher.selector_specificity(&rule.selector),
                 "{}",
                 rule.selector
             );
         }
+    }
+
+    /// Selectors 4 §17: a list's specificity is its most specific MATCHING
+    /// member's. linkedin's reset `a,a:focus,a:hover{color:#0a66c2}` scored
+    /// (0,1,1) on every link, so it beat `.text-color-text-secondary` (0,1,0)
+    /// and the nav labels came out blue instead of gray. Checked with and
+    /// without the rule index installed (the two cascade paths).
+    #[test]
+    fn a_selector_list_cascades_with_its_matching_members_specificity() {
+        let engine = Engine::new(EngineConfig::default()).expect("engine");
+        let sheet = Stylesheet::parse(
+            "a, a:focus, a:hover { color: blue; } .sec { color: green; } \
+             i, i.zz#qq { color: blue; } .one { color: green; } \
+             em, #hit { color: green; } .two { color: blue; } \
+             u { color: red; } u, u.x { color: green; }",
+        )
+        .expect("sheet");
+        let vars = HashMap::new();
+        let style = |tag: &str, pairs: &[(&str, &str)]| {
+            engine.compute_style_for_element(
+                tag,
+                &attrs(pairs),
+                std::slice::from_ref(&sheet),
+                &vars,
+                &[],
+                &[],
+                SiblingContext::SOLE,
+                None,
+            )
+        };
+        let green = rustkit_css::Color::new(0, 128, 0, 1.0);
+        let check = |path: &str| {
+            assert_eq!(style("a", &[("class", "sec")]).color, green, "{path}: `a` is (0,0,1)");
+            assert_eq!(style("i", &[("class", "one")]).color, green, "{path}: unmatched `i.zz#qq`");
+            // The matching member is the more specific one: (1,0,0) wins.
+            assert_eq!(style("em", &[("id", "hit"), ("class", "two")]).color, green, "{path}: `#hit`");
+            // Equal specificity: the later rule still wins by source order.
+            assert_eq!(style("u", &[]).color, green, "{path}: source order");
+        };
+        check("string path");
+        let _scope = RuleIndexScope::install(engine.build_rule_index(std::slice::from_ref(&sheet)));
+        check("indexed path");
+    }
+
+    #[test]
+    fn list_member_specificity_splits_at_top_level_only() {
+        let specs = SelectorMatcher.list_member_specificity(":is(a, b) c, #d, .e");
+        let order: Vec<usize> = specs.iter().map(|&(i, _)| i).collect();
+        assert_eq!(order[0], 1, "#d is the most specific member: {specs:?}");
+        assert_eq!(specs.len(), 3, "`:is(a, b)` is one member: {specs:?}");
+        assert!(SelectorMatcher.list_member_specificity(":is(a, b) c").is_empty());
+        assert!(SelectorMatcher.list_member_specificity(".a").is_empty());
     }
 
     #[test]
@@ -17615,7 +18330,7 @@ mod rule_prefilter_tests {
         for (g, rule) in sheet.rules.iter().enumerate() {
             for (tag, attributes) in &elements {
                 assert_eq!(
-                    engine.selector_matches_prepared(
+                    SelectorMatcher.selector_matches_prepared(
                         &ix.prepared[g],
                         tag,
                         attributes,
@@ -17623,7 +18338,7 @@ mod rule_prefilter_tests {
                         &[],
                         SiblingContext::SOLE,
                     ),
-                    engine.selector_matches(
+                    SelectorMatcher.selector_matches(
                         &rule.selector,
                         tag,
                         attributes,
@@ -17798,6 +18513,38 @@ mod rule_prefilter_tests {
     }
 
     #[test]
+    fn a_relayout_over_the_same_selectors_reuses_the_index() {
+        let engine = Engine::new(EngineConfig::default()).expect("engine");
+        let parse = |css: &str| vec![Stylesheet::parse(css).expect("css")];
+        // Each build extracts a fresh copy of the sheets: same selectors,
+        // different allocation (and possibly different declarations).
+        let first = parse(".a { color: red } #b > p { color: blue }");
+        let again = parse(".a { color: green } #b > p { color: blue }");
+        let ix = engine.shared_rule_index(&first);
+        assert!(Rc::ptr_eq(&ix, &engine.shared_rule_index(&again)));
+
+        // It is installed for the slice at hand, not the one it was built from.
+        {
+            let _scope = RuleIndexScope::install_for(RuleIndex::source_of(&again), ix.clone());
+            assert!(active_rule_index(&again).is_some());
+            assert!(active_rule_index(&first).is_none());
+        }
+
+        // A changed selector, a dropped rule or a moved sheet boundary rebuilds.
+        for css in [
+            vec![".a { color: red } #b p { color: blue }"],
+            vec![".a { color: red }"],
+            vec![".a { color: red }", "#b > p { color: blue }"],
+        ] {
+            let sheets: Vec<Stylesheet> =
+                css.iter().map(|c| Stylesheet::parse(c).expect("css")).collect();
+            let rebuilt = engine.shared_rule_index(&sheets);
+            assert!(!Rc::ptr_eq(&ix, &rebuilt), "{css:?} reused a stale index");
+            assert_eq!(rebuilt.rules.len(), sheets.iter().map(|s| s.rules.len()).sum::<usize>());
+        }
+    }
+
+    #[test]
     fn attribute_root_and_where_subjects_are_filed_not_universal() {
         // github ships ~2,100 rules the index could not file (936 attribute-
         // first like `[data-color-mode=light][data-light-theme=light]`, 353
@@ -17927,7 +18674,7 @@ mod rule_prefilter_tests {
         let siblings = vec![("section".to_string(), vec![], None, ElementState::default())];
         for sel in selectors {
             for (tag, a) in &elements {
-                let full = engine.selector_matches(
+                let full = SelectorMatcher.selector_matches(
                     sel,
                     tag,
                     a,
@@ -17965,6 +18712,19 @@ mod cascade_wire_tests {
         static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
         Engine::new(EngineConfig::default()).expect("engine")
+    }
+
+    #[test]
+    fn an_unclosed_pseudo_class_paren_closes_at_the_end() {
+        assert_eq!(SelectorMatcher.parse_pseudo_class("not("), ("not".into(), Some(String::new()), 4));
+        assert_eq!(SelectorMatcher.parse_pseudo_class("not(.a"), ("not".into(), Some(".a".into()), 6));
+        assert_eq!(SelectorMatcher.parse_pseudo_class("is(a, b(c)"), ("is".into(), Some("a, b(c)".into()), 10));
+        assert_eq!(SelectorMatcher.parse_pseudo_class("not(.a) b"), ("not".into(), Some(".a".into()), 7));
+        // Through the matchers too: no panic, and no match to invent.
+        let attrs = HashMap::new();
+        for sel in ["div:not(", "div:not(.a", ":is(div"] {
+            let _ = SelectorMatcher.selector_matches(sel, "div", &attrs, &[], &[], SiblingContext::SOLE);
+        }
     }
 
     fn find<'a>(b: &'a LayoutBox, pred: &dyn Fn(&LayoutBox) -> bool) -> Option<&'a LayoutBox> {
@@ -18681,7 +19441,7 @@ enum PreparedSelector {
     /// Invalid, a pseudo-element selector, or no subject: matches nothing.
     Never,
     /// A top-level selector list; matches if any member does.
-    List(Vec<String>),
+    List(Vec<Rc<PreparedSelector>>),
     /// One complex selector: `(compound, following combinator)` tokens, the
     /// subject last, and each token's compound parsed for the ancestor and
     /// sibling walk (same index).
@@ -18689,7 +19449,124 @@ enum PreparedSelector {
         tokens: Vec<(String, String)>,
         compounds: Vec<AncestorCompound>,
         subject: SubjectCompound,
+        /// [`ancestor_key_hash`]es that some ancestor must carry: the tag,
+        /// classes and id of every compound left of a descendant or child
+        /// combinator. Checked against the element's [`AncestorFilter`]
+        /// before the walk.
+        ancestor_keys: Vec<u32>,
     },
+}
+
+/// A key's hash for [`AncestorFilter`]: FNV-1a over a kind byte (`<` tag,
+/// `.` class, `#` id) and the name, then a murmur3 finalizer so both of the
+/// filter's bit indices come from well-mixed bits. Tags are ASCII-folded,
+/// the way `AncestorCompound::matches` compares them.
+fn ancestor_key_hash(kind: u8, name: &str) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    let fold = kind == b'<';
+    for b in std::iter::once(kind).chain(name.bytes()) {
+        h ^= if fold { b.to_ascii_lowercase() } else { b } as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85eb_ca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xc2b2_ae35);
+    h ^ (h >> 16)
+}
+
+/// What `AncestorCompound::matches` requires of the ancestor it matches, as
+/// [`ancestor_key_hash`]es. Only hard requirements: a `never` compound fails
+/// the walk anyway, and `:is()` alternatives, pseudo-classes and attributes
+/// are left to the walk.
+fn ancestor_compound_keys(compound: &AncestorCompound, out: &mut Vec<u32>) {
+    if compound.never {
+        return;
+    }
+    if let Some(tag) = compound.tag.as_deref().filter(|t| *t != "*") {
+        out.push(ancestor_key_hash(b'<', tag));
+    }
+    out.extend(compound.classes.iter().map(|c| ancestor_key_hash(b'.', c)));
+    out.extend(compound.id.iter().map(|id| ancestor_key_hash(b'#', id)));
+}
+
+/// A Bloom filter over the tags, classes and ids of one element's
+/// ancestors (Blink's ancestor filter, our own code). A descendant/child
+/// selector whose ancestor compounds need a key no ancestor carries cannot
+/// match, and is rejected without walking the chain. It only ever says
+/// "maybe" or "no", so it can't turn a non-match into a match.
+struct AncestorFilter {
+    bits: [u64; 16],
+}
+
+impl AncestorFilter {
+    fn of(ancestors: &[(String, Vec<String>, Option<String>)]) -> Self {
+        let mut f = AncestorFilter { bits: [0; 16] };
+        for (tag, classes, id) in ancestors {
+            f.insert(ancestor_key_hash(b'<', tag));
+            for c in classes {
+                f.insert(ancestor_key_hash(b'.', c));
+            }
+            if let Some(id) = id {
+                f.insert(ancestor_key_hash(b'#', id));
+            }
+        }
+        f
+    }
+
+    fn bit_indices(h: u32) -> [u32; 2] {
+        [h & 1023, (h >> 16) & 1023]
+    }
+
+    fn insert(&mut self, h: u32) {
+        for b in Self::bit_indices(h) {
+            self.bits[(b >> 6) as usize] |= 1 << (b & 63);
+        }
+    }
+
+    fn may_contain(&self, h: u32) -> bool {
+        Self::bit_indices(h)
+            .iter()
+            .all(|&b| self.bits[(b >> 6) as usize] & (1 << (b & 63)) != 0)
+    }
+}
+
+thread_local! {
+    /// The filter for the element being styled, with the address and length
+    /// of the ancestor slice it was built from.
+    static ANCESTOR_FILTER: std::cell::RefCell<Option<(usize, usize, AncestorFilter)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Installs the [`AncestorFilter`] of one ancestor slice while one element
+/// is styled. Dropping it (also on unwind) restores the previous one. The
+/// filter only answers for that exact slice, which is borrowed for the
+/// scope's whole life, so it can't describe a different chain.
+struct AncestorFilterScope(Option<(usize, usize, AncestorFilter)>);
+
+impl AncestorFilterScope {
+    fn install(ancestors: &[(String, Vec<String>, Option<String>)]) -> Self {
+        let entry = (ancestors.as_ptr() as usize, ancestors.len(), AncestorFilter::of(ancestors));
+        AncestorFilterScope(ANCESTOR_FILTER.with(|c| c.replace(Some(entry))))
+    }
+}
+
+impl Drop for AncestorFilterScope {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        ANCESTOR_FILTER.with(|c| *c.borrow_mut() = previous);
+    }
+}
+
+/// False only when a filter is installed for exactly `ancestors` and it
+/// lacks one of `keys`. With no filter for this slice, it always says true.
+fn ancestor_filter_admits(ancestors: &[(String, Vec<String>, Option<String>)], keys: &[u32]) -> bool {
+    ANCESTOR_FILTER.with(|c| match &*c.borrow() {
+        Some((ptr, len, f)) if *ptr == ancestors.as_ptr() as usize && *len == ancestors.len() => {
+            keys.iter().all(|&k| f.may_contain(k))
+        }
+        _ => true,
+    })
 }
 
 /// The subject compound of a prepared selector, split once into the pieces
@@ -18717,10 +19594,15 @@ enum SubjectPart {
     Id(String),
     Attr(String),
     Pseudo(String, Option<String>),
+    /// `:not(list)` (`negate`) or `:is`/`:where`/`:matches`/`-webkit-any`
+    /// with its members compiled once, which `any_compound_in_list_matches`
+    /// re-split and re-parsed for every candidate element. A member with a
+    /// combinator is `None`: it never matches, as there.
+    List { negate: bool, members: Vec<Option<SubjectCompound>> },
 }
 
 impl SubjectCompound {
-    fn parse(engine: &Engine, selector: &str) -> Self {
+    fn parse(engine: &SelectorMatcher, selector: &str) -> Self {
         if selector == "*" {
             return Self::Universal;
         }
@@ -18759,8 +19641,27 @@ impl SubjectCompound {
                 parts.push(SubjectPart::Attr(rest[..end].to_string()));
                 remaining = if end < rest.len() { &rest[end + 1..] } else { "" };
             } else if let Some(rest) = remaining.strip_prefix(':') {
-                let (name, arg, consumed) = engine.parse_pseudo_class(rest);
-                parts.push(SubjectPart::Pseudo(name, arg));
+                let (name, arg, consumed) = SelectorMatcher.parse_pseudo_class(rest);
+                let negate = name == "not";
+                parts.push(match arg {
+                    Some(list)
+                        if negate
+                            || matches!(
+                                name.as_str(),
+                                "is" | "where" | "matches" | "-webkit-any"
+                            ) =>
+                    {
+                        let members = SelectorMatcher::split_top_level_commas(&list)
+                            .into_iter()
+                            .map(|m| {
+                                (!SelectorMatcher::selector_has_combinator(m))
+                                    .then(|| SubjectCompound::parse(engine, m))
+                            })
+                            .collect();
+                        SubjectPart::List { negate, members }
+                    }
+                    arg => SubjectPart::Pseudo(name, arg),
+                });
                 remaining = &rest[consumed..];
             } else {
                 break;
@@ -18771,7 +19672,7 @@ impl SubjectCompound {
 
     fn matches(
         &self,
-        engine: &Engine,
+        engine: &SelectorMatcher,
         tag_name: &str,
         attributes: &HashMap<String, String>,
         sib: SiblingContext,
@@ -18792,9 +19693,13 @@ impl SubjectCompound {
                         .get("class")
                         .is_some_and(|el_class| el_class.split_whitespace().any(|c| c == class)),
                     SubjectPart::Id(id) => attributes.get("id") == Some(id),
-                    SubjectPart::Attr(attr) => engine.match_attribute_selector(attr, attributes),
+                    SubjectPart::Attr(attr) => SelectorMatcher.match_attribute_selector(attr, attributes),
                     SubjectPart::Pseudo(name, arg) => {
-                        engine.match_pseudo_class(name, arg.as_deref(), tag_name, sib, attributes)
+                        SelectorMatcher.match_pseudo_class(name, arg.as_deref(), tag_name, sib, attributes)
+                    }
+                    SubjectPart::List { negate, members } => {
+                        members.iter().flatten().any(|m| m.matches(engine, tag_name, attributes, sib))
+                            != *negate
                     }
                 })
             }
@@ -18825,7 +19730,7 @@ impl ElementState {
                 && matches!(input_type.as_deref(), Some("checkbox" | "radio"))
                 && attributes.contains_key("checked"))
                 || (tag_lower == "option" && attributes.contains_key("selected")),
-            control: Engine::is_form_control_tag(tag_lower),
+            control: SelectorMatcher::is_form_control_tag(tag_lower),
             disabled: attributes.contains_key("disabled"),
         }
     }
@@ -18954,9 +19859,9 @@ impl AncestorCompound {
                             ("enabled", None) => out.state.push(StatePseudo::Enabled),
                             ("is" | "where" | "matches" | "-webkit-any", Some(a)) => {
                                 out.any_of.push(
-                                    Engine::split_top_level_commas(a)
+                                    SelectorMatcher::split_top_level_commas(a)
                                         .into_iter()
-                                        .filter(|m| !Engine::selector_has_combinator(m))
+                                        .filter(|m| !SelectorMatcher::selector_has_combinator(m))
                                         .map(AncestorCompound::parse)
                                         .collect(),
                                 );
@@ -18964,7 +19869,7 @@ impl AncestorCompound {
                             // Relational: the subject path under-matches it
                             // too.
                             ("has", _) => out.never = true,
-                            (n, _) if Engine::pseudo_class_is_static_false(n) => out.never = true,
+                            (n, _) if SelectorMatcher::pseudo_class_is_static_false(n) => out.never = true,
                             // Structural and the rest need context the tuple
                             // does not carry: permissive.
                             _ => {}
@@ -19058,9 +19963,17 @@ struct RuleIndex {
     /// string for every candidate of every element (24% of github's cascade).
     keys: Vec<Rc<Vec<SubjectKey>>>,
     pseudo_keys: Vec<Option<Rc<Vec<SubjectKey>>>>,
+    /// Global rule index -> for a `:before`/`:after` rule, its prepared
+    /// (trimmed) base selector, empty base included. `pseudo_element_style`
+    /// matched the base by string, re-hashing it into the prepared cache for
+    /// every candidate of every element (~20% of wikipedia's cascade).
+    pseudo_prepared: Vec<Option<Rc<PreparedSelector>>>,
     /// Global rule index -> `selector_specificity` of its selector, so a
     /// matched rule doesn't re-scan its selector string on every element.
     specificity: Vec<(usize, usize, usize)>,
+    /// Global rule index -> `list_member_specificity` of its selector (empty
+    /// unless it is a top-level list), for `matched_specificity`.
+    member_specificity: Vec<Vec<(usize, (usize, usize, usize))>>,
     /// Global rule index -> its prepared selector, so the cascade doesn't
     /// SipHash the selector string into the prepared cache on every
     /// candidate of every element.
@@ -19166,21 +20079,35 @@ impl RuleIndex {
     }
 }
 
+/// An installed index and the identity (`RuleIndex::source_of`) of the
+/// stylesheet slice it is installed for.
+type InstalledRuleIndex = ((usize, usize, usize), Rc<RuleIndex>);
+
 thread_local! {
     /// The index for the layout build in progress on this thread; set and
     /// cleared by `RuleIndexScope`.
-    static RULE_INDEX: std::cell::RefCell<Option<Rc<RuleIndex>>> =
+    static RULE_INDEX: std::cell::RefCell<Option<InstalledRuleIndex>> =
+        const { std::cell::RefCell::new(None) };
+    /// The last index `shared_rule_index` built on this thread, with the
+    /// selectors it was built from (one list per sheet, in order).
+    static LAST_RULE_INDEX: std::cell::RefCell<Option<(Vec<Vec<String>>, Rc<RuleIndex>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Installs a rule index for the duration of one layout build. Dropping it
 /// (also on unwind) restores the previous one, so an index can never outlive
 /// the stylesheet slice it describes.
-struct RuleIndexScope(Option<Rc<RuleIndex>>);
+struct RuleIndexScope(Option<InstalledRuleIndex>);
 
 impl RuleIndexScope {
     fn install(index: RuleIndex) -> Self {
-        RuleIndexScope(RULE_INDEX.with(|c| c.replace(Some(Rc::new(index)))))
+        Self::install_for(index.source, Rc::new(index))
+    }
+
+    /// Install `index` for the slice whose `source_of` is `source`. The index
+    /// must have been built from the same selectors in the same sheets.
+    fn install_for(source: (usize, usize, usize), index: Rc<RuleIndex>) -> Self {
+        RuleIndexScope(RULE_INDEX.with(|c| c.replace(Some((source, index)))))
     }
 }
 
@@ -19196,8 +20123,8 @@ fn active_rule_index(stylesheets: &[Stylesheet]) -> Option<Rc<RuleIndex>> {
     RULE_INDEX.with(|c| {
         c.borrow()
             .as_ref()
-            .filter(|ix| ix.source == RuleIndex::source_of(stylesheets))
-            .cloned()
+            .filter(|(source, _)| *source == RuleIndex::source_of(stylesheets))
+            .map(|(_, ix)| ix.clone())
     })
 }
 
@@ -19241,15 +20168,36 @@ enum MemoUse {
     Verify,
 }
 
+/// Which of an element's two generated boxes a memoized pseudo style is for.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Pseudo {
+    Before,
+    After,
+}
+
 /// Per-element cascade results from one build, for the next build of the
 /// same page to replay. `key` is None until a build has recorded into it.
 struct StyleMemo {
     verify: bool,
     key: Option<StyleMemoKey>,
-    styles: HashMap<rustkit_dom::NodeId, ComputedStyle>,
+    /// Boxed: a `ComputedStyle` is ~1.5 KB, and unboxed tables of them cost
+    /// the recording build more in fresh pages and rehash copies than the
+    /// replay saves (wikipedia: ~11k entries).
+    styles: HashMap<rustkit_dom::NodeId, Box<ComputedStyle>>,
+    /// `::before`/`::after` cascades; None records that no rule matched.
+    pseudos: HashMap<(rustkit_dom::NodeId, Pseudo), Option<Box<ComputedStyle>>>,
     in_build: Option<MemoUse>,
     hits: usize,
+    /// Replay lookups the recording did not cover. Each one cascades in
+    /// full, without a rule index (a replaying build does not build one).
+    misses: usize,
     mismatches: usize,
+}
+
+impl StyleMemo {
+    fn memoized(&self) -> usize {
+        self.styles.len() + self.pseudos.len()
+    }
 }
 
 thread_local! {
@@ -19262,6 +20210,11 @@ thread_local! {
 /// build records, a later one with an equal key replays. Dropping it (also on
 /// an early `?` return) discards the memo, so no build outside that span —
 /// in particular none after page script has run — can read it.
+///
+/// The memo is thread-local and the span crosses `load_images(..).await`.
+/// That is sound on the engine's `current_thread` runtime. Were the task ever
+/// to resume on another thread, its builds would find no memo there and
+/// cascade in full: a lost speedup, never a wrong replay.
 struct StyleMemoScope;
 
 impl StyleMemoScope {
@@ -19278,8 +20231,10 @@ impl StyleMemoScope {
                 verify: mode == RestyleMode::Verify,
                 key: None,
                 styles: HashMap::new(),
+                pseudos: HashMap::new(),
                 in_build: None,
                 hits: 0,
+                misses: 0,
                 mismatches: 0,
             })
         });
@@ -19295,7 +20250,17 @@ impl Drop for StyleMemoScope {
 
 /// One build's use of the memo, decided from its key at build start.
 /// Dropping it ends the build: a recording becomes replayable.
-struct StyleMemoBuild;
+struct StyleMemoBuild {
+    use_: MemoUse,
+}
+
+impl StyleMemoBuild {
+    /// True when this build takes its styles from the recording, so it has
+    /// no use for a rule index.
+    fn replays(&self) -> bool {
+        self.use_ == MemoUse::Replay
+    }
+}
 
 impl StyleMemoBuild {
     fn begin(key: StyleMemoKey) -> Option<Self> {
@@ -19320,8 +20285,9 @@ impl StyleMemoBuild {
             };
             memo.in_build = Some(use_);
             memo.hits = 0;
+            memo.misses = 0;
             memo.mismatches = 0;
-            Some(StyleMemoBuild)
+            Some(StyleMemoBuild { use_ })
         })
     }
 }
@@ -19335,8 +20301,9 @@ impl Drop for StyleMemoBuild {
                         info!(
                             ?use_,
                             hits = memo.hits,
+                            misses = memo.misses,
                             mismatches = memo.mismatches,
-                            memoized = memo.styles.len(),
+                            memoized = memo.memoized(),
                             "Incremental restyle"
                         );
                     }
@@ -19352,25 +20319,69 @@ fn memoized_style(
     node: rustkit_dom::NodeId,
     compute: impl FnOnce() -> ComputedStyle,
 ) -> ComputedStyle {
+    through_memo(
+        |m| &mut m.styles,
+        node,
+        |s| Box::new(s.clone()),
+        |b| (**b).clone(),
+        |b, s| same_computed_style(b, s),
+        compute,
+    )
+}
+
+/// The `::before`/`::after` cascade for `node`, through the memo like
+/// `memoized_style`.
+fn memoized_pseudo_style(
+    node: rustkit_dom::NodeId,
+    pseudo: Pseudo,
+    compute: impl FnOnce() -> Option<ComputedStyle>,
+) -> Option<ComputedStyle> {
+    through_memo(
+        |m| &mut m.pseudos,
+        (node, pseudo),
+        |s| s.as_ref().map(|s| Box::new(s.clone())),
+        |b| b.as_deref().cloned(),
+        |b, s| match (b, s) {
+            (None, None) => true,
+            (Some(b), Some(s)) => same_computed_style(b, s),
+            _ => false,
+        },
+        compute,
+    )
+}
+
+/// Record, replay or verify one memo entry, per the build in progress.
+/// Values are stored as `S` (`store`) and handed back as `T` (`load`).
+fn through_memo<K: std::hash::Hash + Eq + std::fmt::Debug, T, S>(
+    table: fn(&mut StyleMemo) -> &mut HashMap<K, S>,
+    key: K,
+    store: fn(&T) -> S,
+    load: fn(&S) -> T,
+    same: fn(&S, &T) -> bool,
+    compute: impl FnOnce() -> T,
+) -> T {
     let use_ = STYLE_MEMO.with(|m| m.borrow().as_ref().and_then(|memo| memo.in_build));
     match use_ {
         None => compute(),
         Some(MemoUse::Record) => {
-            let style = compute();
+            let value = compute();
             STYLE_MEMO.with(|m| {
                 if let Some(memo) = m.borrow_mut().as_mut() {
-                    memo.styles.insert(node, style.clone());
+                    table(memo).insert(key, store(&value));
                 }
             });
-            style
+            value
         }
         Some(MemoUse::Replay) => {
             let hit = STYLE_MEMO.with(|m| {
                 let mut slot = m.borrow_mut();
                 let memo = slot.as_mut()?;
-                let style = memo.styles.get(&node).cloned();
-                memo.hits += style.is_some() as usize;
-                style
+                let value = table(memo).get(&key).map(load);
+                match value.is_some() {
+                    true => memo.hits += 1,
+                    false => memo.misses += 1,
+                }
+                value
             });
             hit.unwrap_or_else(compute)
         }
@@ -19378,11 +20389,12 @@ fn memoized_style(
             let fresh = compute();
             STYLE_MEMO.with(|m| {
                 if let Some(memo) = m.borrow_mut().as_mut() {
-                    if let Some(recorded) = memo.styles.get(&node) {
+                    let differs = table(memo).get(&key).map(|recorded| !same(recorded, &fresh));
+                    if let Some(differs) = differs {
                         memo.hits += 1;
-                        if !same_computed_style(recorded, &fresh) {
+                        if differs {
                             memo.mismatches += 1;
-                            warn!(?node, "Incremental restyle: memoized style differs from a fresh cascade");
+                            warn!(?key, "Incremental restyle: memoized style differs from a fresh cascade");
                         }
                     }
                 }
@@ -19450,7 +20462,7 @@ mod incremental_restyle_tests {
         STYLE_MEMO.with(|m| {
             m.borrow()
                 .as_ref()
-                .map(|memo| (memo.hits, memo.mismatches, memo.styles.len()))
+                .map(|memo| (memo.hits, memo.mismatches, memo.memoized()))
         })
     }
 
@@ -19499,6 +20511,74 @@ mod incremental_restyle_tests {
     }
 
     #[test]
+    fn every_style_relevant_key_change_discards_the_memo() {
+        fn assert_discards(name: &str, mutate: impl FnOnce(&mut StyleMemoKey)) {
+            let original = StyleMemoKey {
+                view: None,
+                document: std::ptr::null(),
+                external_sheets: 0,
+                viewport: None,
+                focus: None,
+            };
+            let mut changed = original.clone();
+            mutate(&mut changed);
+            assert_ne!(changed, original, "{name} must change the key");
+
+            let _scope = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+            {
+                let _build = StyleMemoBuild::begin(original).expect("records");
+            }
+            assert!(
+                StyleMemoBuild::begin(changed).is_none(),
+                "{name} must not replay stale styles"
+            );
+            assert!(memo_counts().is_none(), "{name} must drop the recording");
+        }
+
+        assert_discards("view", |key| key.view = Some(EngineViewId::new()));
+        assert_discards("external sheets", |key| key.external_sheets = 1);
+        assert_discards("viewport", |key| key.viewport = Some((800.0, 600.0)));
+        assert_discards("focus", |key| {
+            key.focus = Some(rustkit_dom::NodeId::new(1))
+        });
+    }
+
+    #[cfg(feature = "headless")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_image_relayout_replays_styles_through_the_real_view_path() {
+        let mut e = engine();
+        let id = e
+            .create_headless_view(Bounds::new(0, 0, 800, 600))
+            .expect("headless view");
+        e.load_html(
+            id,
+            r#"<!DOCTYPE html><html><head><style>
+                p { color: rgb(1, 2, 3); font-weight: 700; }
+                img { width: 100px; height: auto; }
+            </style></head><body>
+                <p>styled</p>
+                <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+            </body></html>"#,
+        )
+        .expect("initial view load");
+
+        let _scope = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+        e.relayout(id).expect("sheets relayout records styles");
+        let (_, _, memoized) = memo_counts().expect("recording");
+        assert!(memoized > 0, "the real view build must record styles");
+
+        assert_eq!(
+            e.load_images(id).await.expect("load data image"),
+            1,
+            "the second relayout must follow an actual image load"
+        );
+        e.relayout(id).expect("images relayout replays styles");
+        let (hits, mismatches, _) = memo_counts().expect("replay");
+        assert_eq!(hits, memoized, "every recorded style must replay");
+        assert_eq!(mismatches, 0);
+    }
+
+    #[test]
     fn replay_skips_the_cascade_and_an_unrecorded_node_still_cascades() {
         let key = StyleMemoKey {
             view: None,
@@ -19522,6 +20602,55 @@ mod incremental_restyle_tests {
         assert_eq!(replayed.z_index, 42);
         let fresh = memoized_style(fresh_node, ComputedStyle::new);
         assert_eq!(fresh.z_index, ComputedStyle::new().z_index);
+    }
+
+    #[test]
+    fn pseudo_element_styles_replay_including_no_match() {
+        let e = engine();
+        let d = Document::parse_html(PAGE).expect("parse");
+        let _scope = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+        paint(&e, &d);
+        let (pseudos, some) = STYLE_MEMO.with(|m| {
+            let m = m.borrow();
+            let memo = m.as_ref().expect("memo");
+            (memo.pseudos.len(), memo.pseudos.values().filter(|s| s.is_some()).count())
+        });
+        // Both pseudos of every element, whether or not a rule matched.
+        assert!(pseudos > 2 * some, "{pseudos} pseudo entries, {some} matched");
+        assert!(some >= 1, "`.tag::before` matched");
+
+        let key = STYLE_MEMO.with(|m| m.borrow().as_ref().and_then(|memo| memo.key.clone()));
+        let _build = StyleMemoBuild::begin(key.expect("recorded")).expect("replays");
+        let before = memoized_pseudo_style(rustkit_dom::NodeId::new(usize::MAX), Pseudo::Before, || None);
+        assert!(before.is_none(), "an unrecorded pseudo still computes");
+    }
+
+    #[test]
+    fn a_replay_the_recording_does_not_cover_cascades_without_an_index() {
+        let e = engine();
+        let d = Document::parse_html(PAGE).expect("parse");
+        let full = paint(&e, &d);
+
+        let _scope = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+        {
+            // An empty recording with this build's key: every lookup misses.
+            let _build = StyleMemoBuild::begin(StyleMemoKey {
+                view: None,
+                document: &d as *const Document,
+                external_sheets: 0,
+                viewport: None,
+                focus: None,
+            })
+            .expect("records");
+        }
+        assert_eq!(paint(&e, &d), full);
+        let (hits, misses) = STYLE_MEMO.with(|m| {
+            let m = m.borrow();
+            let memo = m.as_ref().expect("memo");
+            (memo.hits, memo.misses)
+        });
+        assert_eq!(hits, 0);
+        assert!(misses > 10, "{misses} lookups cascaded by the unindexed scan");
     }
 
     #[test]
@@ -19700,45 +20829,41 @@ mod windows_engine_pins {
 
     #[test]
     fn a_descendant_selector_requires_the_ancestor() {
-        let e = engine();
         let attrs = HashMap::new();
         let inside = [anc("div", "hero")];
         let outside: [(String, Vec<String>, Option<String>); 0] = [];
-        assert!(e.selector_matches(".hero p", "p", &attrs, &inside, &[], SiblingContext::SOLE));
+        assert!(SelectorMatcher.selector_matches(".hero p", "p", &attrs, &inside, &[], SiblingContext::SOLE));
         assert!(
-            !e.selector_matches(".hero p", "p", &attrs, &outside, &[], SiblingContext::SOLE),
+            !SelectorMatcher.selector_matches(".hero p", "p", &attrs, &outside, &[], SiblingContext::SOLE),
             "a bare <p> outside .hero must not match (the over-match that leaked \
              text-align:center onto cards)"
         );
         assert!(
-            !e.selector_matches(".hero p", "span", &attrs, &inside, &[], SiblingContext::SOLE),
+            !SelectorMatcher.selector_matches(".hero p", "span", &attrs, &inside, &[], SiblingContext::SOLE),
             "the subject still has to match the element itself"
         );
     }
 
     #[test]
     fn a_descendant_selector_sums_the_specificity_of_its_compounds() {
-        let e = engine();
         // `.hero p` = one class + one type; a bare `p` is one type.
-        assert_eq!(e.selector_specificity(".hero p"), (0, 1, 1));
-        assert_eq!(e.selector_specificity("p"), (0, 0, 1));
+        assert_eq!(SelectorMatcher.selector_specificity(".hero p"), (0, 1, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("p"), (0, 0, 1));
     }
 
     #[test]
     fn a_descendant_matches_a_non_adjacent_ancestor() {
-        let e = engine();
         let attrs = HashMap::new();
         let chain = [anc("div", "hero"), anc("section", "")];
-        assert!(e.selector_matches(".hero p", "p", &attrs, &chain, &[], SiblingContext::SOLE));
+        assert!(SelectorMatcher.selector_matches(".hero p", "p", &attrs, &chain, &[], SiblingContext::SOLE));
     }
 
     #[test]
     fn a_malformed_group_does_not_kill_its_valid_siblings() {
-        let e = engine();
         let attrs = HashMap::new();
         let ancestors = [anc("ul", "nav")];
         assert!(
-            e.selector_matches("> broken, .nav > li", "li", &attrs, &ancestors, &[], SiblingContext::SOLE),
+            SelectorMatcher.selector_matches("> broken, .nav > li", "li", &attrs, &ancestors, &[], SiblingContext::SOLE),
             "a valid group must still match alongside a malformed one"
         );
     }
@@ -20145,6 +21270,31 @@ mod windows_a_leg_pins {
     }
 
     #[test]
+    fn a_custom_property_referencing_an_undefined_var_is_invalid() {
+        // CSS Variables 1 §3: `var(--unset)` with no fallback makes the
+        // custom property holding it invalid at computed-value time, so a
+        // use site's own fallback applies. lyft's theme is built on this
+        // "space toggle": `--bg-dark: var(--darkmode) #100f0f` with
+        // `--darkmode` never set, used as `var(--bg-dark, var(--bg-light))`.
+        // Substituting the empty string painted the whole page #100f0f.
+        let e = engine();
+        let html = "<html><head><style>\
+                    :root{--bg-dark:var(--darkmode)#100f0f;--bg-light:#fafafa;\
+                    --bg:var(--bg-dark,var(--bg-light))}\
+                    .t{color:var(--bg)}\
+                    .on{--darkmode: ;color:var(--bg-dark2)}\
+                    .on{--bg-dark2:var(--darkmode)#100f0f}\
+                    .inner{--i:var(--nope, var(--nope2));color:var(--i, #0a0b0c)}\
+                    </style></head><body><p class=\"t\">toggle</p>\
+                    <p class=\"on\">on</p><p class=\"inner\">inner</p></body></html>";
+        let layout = layout_of(&e, html);
+        let rgb = |r, g, b| Some(rustkit_css::Color::from_rgb(r, g, b));
+        assert_eq!(text_color(&layout, "toggle"), rgb(0xfa, 0xfa, 0xfa), "an unset toggle invalidates --bg-dark");
+        assert_eq!(text_color(&layout, "on"), rgb(0x10, 0x0f, 0x0f), "an empty (set) toggle substitutes nothing");
+        assert_eq!(text_color(&layout, "inner"), rgb(0x0a, 0x0b, 0x0c), "an invalid fallback is invalid too");
+    }
+
+    #[test]
     fn inline_and_important_custom_properties_follow_the_cascade() {
         let e = engine();
         let html = "<html><head><style>\
@@ -20163,14 +21313,63 @@ mod windows_a_leg_pins {
         // element; that must not copy the map per element.
         let mut parent = HashMap::new();
         parent.insert("--tw".to_string(), "0".to_string());
-        let parent = Arc::new(parent);
+        let parent = Arc::new(CustomProperties::from_map(parent));
         let same = Engine::element_custom_properties(&parent, &[("--tw", Some("0"))]);
         assert!(Arc::ptr_eq(&parent, &same));
         let changed = Engine::element_custom_properties(&parent, &[("--tw", Some("1"))]);
         assert!(!Arc::ptr_eq(&parent, &changed));
-        assert_eq!(changed.get("--tw").map(String::as_str), Some("1"));
+        assert_eq!(changed.get("--tw"), Some("1"));
         let unset = Engine::element_custom_properties(&parent, &[("--tw", None)]);
         assert!(unset.get("--tw").is_none(), "`initial` removes the property");
+    }
+
+    #[test]
+    fn layered_custom_properties_match_a_flat_map_at_every_depth() {
+        // Each element's layer holds only its changes over the parent's
+        // `Arc`; past the depth cap the chain is flattened. Walk a 20-deep
+        // chain against a plain map that copies at every step.
+        let mut root = HashMap::new();
+        root.insert("--base".to_string(), "1px".to_string());
+        root.insert("--keep".to_string(), "k".to_string());
+        let mut flat = root.clone();
+        let mut vars = Arc::new(CustomProperties::from_map(root));
+        for i in 0..20 {
+            let own = format!("--d{i}");
+            let val = format!("var(--base) {i}");
+            let mut declared: Vec<(&str, Option<&str>)> =
+                vec![(own.as_str(), Some(val.as_str()))];
+            if i == 7 {
+                declared.push(("--keep", None));
+            }
+            if i == 9 {
+                declared.push(("--base", Some("2px")));
+            }
+            if i == 13 {
+                declared.push(("--keep", Some("again")));
+            }
+            let next = Engine::element_custom_properties(&vars, &declared);
+            if i == 9 {
+                flat.insert("--base".into(), "2px".into());
+            }
+            let base = flat["--base"].clone();
+            flat.insert(own.clone(), format!("{base} {i}"));
+            match i {
+                7 => {
+                    flat.remove("--keep");
+                }
+                13 => {
+                    flat.insert("--keep".into(), "again".into());
+                }
+                _ => {}
+            }
+            assert_eq!(next.to_map(), flat, "depth {i}");
+            for (k, v) in &flat {
+                assert_eq!(next.get(k), Some(v.as_str()), "depth {i} {k}");
+            }
+            assert_eq!(next.get("--keep").is_some(), !(7..13).contains(&i), "depth {i}");
+            assert_eq!(*next, CustomProperties::from_map(flat.clone()));
+            vars = next;
+        }
     }
 
     #[test]
@@ -20475,6 +21674,38 @@ fn matching_close_paren(s: &str) -> Option<usize> {
     None
 }
 
+/// Where `var()` looks a custom property up: `(name as stored, value)`.
+trait VarSource {
+    fn var(&self, name: &str) -> Option<(&str, &str)>;
+}
+
+impl VarSource for HashMap<String, String> {
+    fn var(&self, name: &str) -> Option<(&str, &str)> {
+        self.get_key_value(name).map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+}
+
+impl VarSource for CustomProperties {
+    fn var(&self, name: &str) -> Option<(&str, &str)> {
+        self.get_key_value(name)
+    }
+}
+
+/// An inherited set with some names hidden (`initial`), without copying it.
+struct MaskedVars<'a> {
+    vars: &'a CustomProperties,
+    hidden: &'a [&'a str],
+}
+
+impl VarSource for MaskedVars<'_> {
+    fn var(&self, name: &str) -> Option<(&str, &str)> {
+        if self.hidden.contains(&name) {
+            return None;
+        }
+        self.vars.get_key_value(name)
+    }
+}
+
 /// Left-to-right `var()` substitution. The text a substitution produces is
 /// already fully resolved, so it is appended and never re-scanned; `stack`
 /// holds the variables being resolved (cycle detection). Every byte written
@@ -20483,13 +21714,15 @@ fn matching_close_paren(s: &str) -> Option<usize> {
 ///
 /// `layers` are searched in order, first hit wins (an element's own `--*`
 /// over the ones it inherited). `cycle` is set when a reference was refused
-/// because its variable was already on the stack.
+/// because its variable was already on the stack. `invalid` is set when a
+/// reference to an unset (or itself invalid) variable had no fallback.
 fn substitute_css_vars<'a>(
     value: &str,
-    layers: &[&'a HashMap<String, String>],
+    layers: &[&'a dyn VarSource],
     stack: &mut Vec<&'a str>,
     budget: &mut usize,
     cycle: &mut bool,
+    invalid: &mut bool,
 ) -> String {
     fn push(out: &mut String, s: &str, budget: &mut usize) {
         let n = s.len().min(*budget);
@@ -20522,22 +21755,33 @@ fn substitute_css_vars<'a>(
             Some(i) => (content[..i].trim(), Some(content[i + 1..].trim())),
             None => (content.trim(), None),
         };
-        let found = layers.iter().find_map(|l| l.get_key_value(name));
-        let piece = match found {
-            Some((key, raw)) if !stack.contains(&key.as_str()) => {
-                stack.push(key.as_str());
-                let r = substitute_css_vars(raw, layers, stack, budget, cycle);
+        let found = layers.iter().find_map(|l| l.var(name));
+        let resolved = match found {
+            Some((key, raw)) if !stack.contains(&key) => {
+                stack.push(key);
+                let mut raw_invalid = false;
+                let r = substitute_css_vars(raw, layers, stack, budget, cycle, &mut raw_invalid);
                 stack.pop();
-                r
+                // A variable whose own value is invalid counts as unset.
+                (!raw_invalid).then_some(r)
             }
-            // Missing, or part of a cycle: the fallback applies.
-            _ => {
-                if found.is_some() {
-                    *cycle = true;
-                }
-                fallback
-                    .map(|f| substitute_css_vars(f, layers, stack, budget, cycle))
-                    .unwrap_or_default()
+            Some(_) => {
+                *cycle = true;
+                None
+            }
+            None => None,
+        };
+        // Unset, invalid or part of a cycle: the fallback applies. With no
+        // fallback the value is invalid at computed-value time (CSS
+        // Variables 1 §3). A custom property must honour that: the "space
+        // toggle" `--on: var(--unset) red` is how sites switch themes, and
+        // substituting "" turned lyft's dark theme on.
+        let piece = match (resolved, fallback) {
+            (Some(r), _) => r,
+            (None, Some(f)) => substitute_css_vars(f, layers, stack, budget, cycle, invalid),
+            (None, None) => {
+                *invalid = true;
+                String::new()
             }
         };
         // The nested call already charged its bytes; appending is free.
@@ -20811,5 +22055,984 @@ mod svg_content_type_tests {
         let doc = engine.svg_cache.get(&typed).expect("image/svg+xml img must land in the SVG cache");
         assert_eq!(doc.get_size(0.0, 0.0), (40.0, 20.0));
         assert!(!engine.svg_cache.contains_key(&untyped), "SVG is never sniffed from bytes");
+    }
+}
+
+// ── grid-template-areas / grid-area / grid-template (wikipedia's page grid).
+//    Layout resolved named areas already, but no arm parsed any of the three
+//    properties, named lines parsed as `auto`, and `minmax(0,1fr)` / `rem`
+//    tracks were dropped, so every Vector 2022 grid stacked as one column. ──
+#[cfg(test)]
+mod grid_template_areas_tests {
+    use super::*;
+    use rustkit_css::{GridLine, TrackSize};
+    use rustkit_layout::{Dimensions, Rect};
+
+    /// Both layout entry points, as in `float_clear_tests`.
+    fn laid_out(html: &str) -> Vec<LayoutBox> {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let d = Document::parse_html(html).expect("parse");
+        let cb = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 0.0),
+            ..Default::default()
+        };
+        let mut plain = e.build_layout_from_document(&d, &[]);
+        plain.layout(&cb);
+        let mut engine_path = e.build_layout_from_document(&d, &[]);
+        engine_path.layout_with_collapse(
+            &cb,
+            &mut rustkit_layout::MarginCollapseContext::new(),
+            &mut rustkit_layout::FloatContext::new(),
+        );
+        vec![plain, engine_path]
+    }
+
+    fn by_id<'a>(b: &'a LayoutBox, id: &str) -> Option<&'a LayoutBox> {
+        if b.identity.as_ref().is_some_and(|i| i.selector == format!("#{id}")) {
+            return Some(b);
+        }
+        b.children.iter().find_map(|c| by_id(c, id))
+    }
+
+    fn rect(root: &LayoutBox, id: &str) -> (f32, f32, f32, f32) {
+        let b = by_id(root, id).unwrap_or_else(|| panic!("no box #{id}"));
+        let r = b.dimensions.border_box();
+        (r.x, r.y, r.width, r.height)
+    }
+
+    #[test]
+    fn a_three_by_three_areas_layout_places_each_item_in_its_area() {
+        // Items in reverse order, so auto-placement would put them elsewhere.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:grid;width:600px;"#,
+            r#"grid-template-columns:100px 1fr 100px;grid-template-rows:20px 50px 30px;"#,
+            r#"grid-template-areas:'head head head' 'nav main main' 'foot foot foot'">"#,
+            r#"<div id="f" style="grid-area:foot;font-size:8px">f</div>"#,
+            r#"<div id="m" style="grid-area:main;font-size:8px">m</div>"#,
+            r#"<div id="n" style="grid-area:nav;font-size:8px">n</div>"#,
+            r#"<div id="h" style="grid-area:head;font-size:8px">h</div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "h"), (0.0, 0.0, 600.0, 20.0), "head spans the top row");
+            assert_eq!(rect(&root, "n"), (0.0, 20.0, 100.0, 50.0), "nav is column 1, row 2");
+            assert_eq!(rect(&root, "m"), (100.0, 20.0, 500.0, 50.0), "main spans columns 2-3");
+            assert_eq!(rect(&root, "f"), (0.0, 70.0, 600.0, 30.0), "foot spans the bottom row");
+        }
+    }
+
+    #[test]
+    fn the_grid_template_shorthand_with_areas_places_items() {
+        // wikipedia's .mw-page-container-inner at 1120px+, in miniature.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:grid;width:700px;column-gap:24px;"#,
+            r#"grid-template:min-content 1fr min-content / 12.25rem minmax(0,1fr);"#,
+            r#"grid-template-areas:'siteNotice siteNotice' 'columnStart pageContent' 'footer footer'">"#,
+            r#"<div id="n" style="grid-area:siteNotice;height:10px"></div>"#,
+            r#"<div id="s" style="grid-area:columnStart;height:40px"></div>"#,
+            r#"<div id="c" style="grid-area:pageContent;height:40px"></div>"#,
+            r#"<div id="f" style="grid-area:footer;height:10px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "s"), (0.0, 10.0, 196.0, 40.0), "the 12.25rem column");
+            assert_eq!(rect(&root, "c"), (220.0, 10.0, 480.0, 40.0), "minmax(0,1fr) after a 24px gap");
+            assert_eq!(rect(&root, "f").1, 50.0, "footer is the third row");
+        }
+    }
+
+    #[test]
+    fn an_item_spanning_the_fr_row_grows_only_that_row() {
+        // wikipedia's .mw-body: the column-end sidebar spans two min-content
+        // rows and the 1fr row. Its height goes to the 1fr row; the
+        // min-content rows stay at their own content.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:grid;width:300px;"#,
+            r#"grid-template:min-content min-content 1fr / 200px 100px;"#,
+            r#"grid-template-areas:'t .' 'b side' 'c side'">"#,
+            r#"<div id="t" style="grid-area:t;height:10px"></div>"#,
+            r#"<div id="b" style="grid-area:b;height:10px"></div>"#,
+            r#"<div id="c" style="grid-area:c;height:10px"></div>"#,
+            r#"<div id="side" style="grid-area:side;height:500px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "b").1, 10.0, "row 2 starts after row 1's 10px");
+            assert_eq!(rect(&root, "c").1, 20.0, "row 2 keeps its own 10px");
+            assert_eq!(rect(&root, "side"), (200.0, 10.0, 100.0, 500.0));
+        }
+    }
+
+    #[test]
+    fn a_min_content_row_is_its_items_real_height_not_the_estimate() {
+        // wikipedia's titlebar: one line holding many text nodes. The
+        // pre-layout estimate charges a line per text node (20 x 10px); the
+        // row is the laid-out 10px, and the spanning sidebar still fits.
+        let spans = "<span>ab</span>".repeat(20);
+        let html = format!(
+            concat!(
+                r#"<body style="margin:0"><div style="display:grid;width:600px;"#,
+                r#"font-size:8px;line-height:10px;"#,
+                r#"grid-template:min-content min-content 1fr / 500px 100px;"#,
+                r#"grid-template-areas:'t side' 'b side' 'c side'">"#,
+                r#"<div id="t" style="grid-area:t;display:flex">{}</div>"#,
+                r#"<div id="b" style="grid-area:b;height:10px"></div>"#,
+                r#"<div id="c" style="grid-area:c;height:10px"></div>"#,
+                r#"<div id="side" style="grid-area:side;height:300px"></div>"#,
+                r#"</div></body>"#,
+            ),
+            spans
+        );
+        for root in laid_out(&html) {
+            assert_eq!(rect(&root, "t").3, 10.0, "the title row is one 10px line");
+            assert_eq!(rect(&root, "b").1, 10.0, "row 2 follows the real row 1");
+            assert_eq!(rect(&root, "c").1, 20.0);
+            assert_eq!(rect(&root, "side"), (500.0, 0.0, 100.0, 300.0));
+        }
+    }
+
+    #[test]
+    fn an_unknown_area_name_auto_places() {
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:grid;width:200px;"#,
+            r#"grid-template-columns:100px 100px;grid-template-areas:'a b'">"#,
+            r#"<div id="x" style="grid-area:nope;height:10px"></div>"#,
+            r#"<div id="y" style="grid-area:a;height:10px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            // `y` claims area a (column 1); `nope` auto-places into the
+            // first free cell, column 2.
+            assert_eq!(rect(&root, "y").0, 0.0);
+            assert_eq!(rect(&root, "x").0, 100.0);
+        }
+    }
+
+    #[test]
+    fn a_non_rectangular_areas_value_is_ignored() {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let mut s = ComputedStyle::new();
+        e.apply_style_property(&mut s, "grid-template-areas", "'a a' 'b c'");
+        assert!(s.grid_template_areas.is_some());
+        // L-shaped `a`: invalid, so the earlier value stands.
+        e.apply_style_property(&mut s, "grid-template-areas", "'a a' 'a b'");
+        assert!(s.grid_template_areas.as_ref().unwrap().get_area("c").is_some());
+        // Disjoint `a` and ragged rows are invalid too.
+        assert!(rustkit_css::GridTemplateAreas::parse("'a b a'").is_none());
+        assert!(rustkit_css::GridTemplateAreas::parse("'a b' 'c'").is_none());
+        e.apply_style_property(&mut s, "grid-template-areas", "none");
+        assert!(s.grid_template_areas.is_none());
+    }
+
+    #[test]
+    fn grid_area_and_line_names_parse() {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let mut s = ComputedStyle::new();
+        e.apply_style_property(&mut s, "grid-area", "main");
+        let main = GridLine::Name("main".into());
+        assert_eq!(
+            (&s.grid_row_start, &s.grid_column_start, &s.grid_row_end, &s.grid_column_end),
+            (&main, &main, &main, &main)
+        );
+        e.apply_style_property(&mut s, "grid-area", "1 / 2 / 3");
+        assert_eq!(s.grid_row_start, GridLine::Number(1));
+        assert_eq!(s.grid_column_start, GridLine::Number(2));
+        assert_eq!(s.grid_row_end, GridLine::Number(3));
+        assert_eq!(s.grid_column_end, GridLine::Auto);
+        e.apply_style_property(&mut s, "grid-column", "nav");
+        assert_eq!(s.grid_column_end, GridLine::Name("nav".into()));
+        e.apply_style_property(&mut s, "grid-row", "span hdr / 2");
+        assert_eq!(s.grid_row_start, GridLine::SpanName("hdr".into()));
+    }
+
+    #[test]
+    fn grid_template_shorthand_forms() {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let mut s = ComputedStyle::new();
+        e.apply_style_property(&mut s, "grid-template", "auto / 15.5rem minmax(0,1fr)");
+        assert_eq!(s.grid_template_rows.tracks.len(), 1);
+        assert_eq!(s.grid_template_columns.tracks[0].size, TrackSize::Px(248.0));
+        assert_eq!(
+            s.grid_template_columns.tracks[1].size,
+            TrackSize::MinMax(Box::new(TrackSize::Px(0.0)), Box::new(TrackSize::Fr(1.0)))
+        );
+        assert!(s.grid_template_areas.is_none());
+
+        e.apply_style_property(&mut s, "grid-template", "[top] 'a a' 40px [mid] 'b c' / 1fr 2fr");
+        let areas = s.grid_template_areas.as_ref().expect("areas from the strings");
+        assert_eq!(areas.get_area("c").unwrap().column_start, 2);
+        let rows = &s.grid_template_rows.tracks;
+        assert_eq!(rows[0].size, TrackSize::Px(40.0));
+        assert_eq!(rows[0].line_names, vec!["top".to_string()]);
+        assert_eq!(rows[1].size, TrackSize::Auto, "a string with no size is an auto row");
+        assert_eq!(rows[1].line_names, vec!["mid".to_string()]);
+
+        e.apply_style_property(&mut s, "grid-template", "none");
+        assert!(s.grid_template_areas.is_none());
+        assert!(s.grid_template_rows.tracks.is_empty());
+    }
+}
+
+#[cfg(all(test, feature = "headless"))]
+mod script_dom_flush_tests {
+    use super::*;
+
+    fn painted_text(engine: &Engine, view: EngineViewId) -> String {
+        let list = engine.views[&view].display_list.as_ref().expect("display list");
+        list.commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                rustkit_layout::DisplayCommand::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn loaded(html: &str) -> (Engine, EngineViewId) {
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        engine.load_html(view, html).expect("load");
+        (engine, view)
+    }
+
+    // A script that wires a listener goes on to its writes (it used to
+    // throw at addEventListener), and a handler's writes are painted when
+    // the script that fired it settles.
+    #[test]
+    fn a_script_that_wires_listeners_runs_on_and_is_painted() {
+        let (mut engine, view) =
+            loaded("<html><body><p id='b'>go</p><p id='out'>before</p></body></html>");
+        engine
+            .execute_script(
+                view,
+                "var b = document.getElementById('b'), out = document.getElementById('out'); \
+                 b.addEventListener('click', function () { out.textContent = 'clicked'; }); \
+                 out.textContent = 'wired'",
+            )
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "go wired");
+        engine
+            .execute_script(view, "document.getElementById('b').click()")
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "go clicked");
+    }
+
+    // Pin §3: a DOM write marked during script reaches the display list
+    // when the script settles.
+    #[test]
+    fn a_marked_dom_write_is_relaid_out_when_the_script_settles() {
+        let (mut engine, view) =
+            loaded("<html><body><p id='gone'>alpha</p><p>omega</p></body></html>");
+        assert!(painted_text(&engine, view).contains("alpha"));
+
+        // Stand in for the mutation surface: detach a node from Rust and
+        // mark the bucket the way a script's removeChild will.
+        let document = engine.views[&view].document.clone().unwrap();
+        document.get_element_by_id("gone").unwrap().remove_from_parent();
+        engine.views[&view]
+            .bindings
+            .as_ref()
+            .unwrap()
+            .mark_dirty(DomDirty::Style);
+
+        engine.execute_script(view, "1").unwrap();
+        let text = painted_text(&engine, view);
+        assert!(!text.contains("alpha") && text.contains("omega"), "painted: {text}");
+    }
+
+    // The mutation surface end to end: script tree moves mark the bucket
+    // themselves and the settle flush paints them.
+    #[test]
+    fn script_tree_moves_are_painted_when_the_script_settles() {
+        let (mut engine, view) = loaded(
+            "<html><body><p id='a'>alpha</p><p id='b'>beta</p><p id='c'>gamma</p></body></html>",
+        );
+        assert_eq!(painted_text(&engine, view), "alpha beta gamma");
+
+        engine
+            .execute_script(view, "document.body.removeChild(document.getElementById('b'))")
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "alpha gamma");
+
+        engine
+            .execute_script(
+                view,
+                "var a = document.getElementById('a'); document.body.appendChild(a); \
+                 document.body.insertBefore(document.getElementById('c'), a)",
+            )
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "gamma alpha");
+    }
+
+    // Writes to a node's own data (replace-on-write, same NodeId) and new
+    // nodes reach the display list through the same settle flush.
+    #[test]
+    fn script_data_writes_and_new_nodes_are_painted_when_the_script_settles() {
+        let (mut engine, view) = loaded(
+            "<html><head><style>.off { display: none }</style></head>\
+             <body><p id='a'>alpha</p><p id='b'>beta</p></body></html>",
+        );
+        assert_eq!(painted_text(&engine, view), "alpha beta");
+
+        engine
+            .execute_script(view, "document.getElementById('a').textContent = 'ALPHA'")
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "ALPHA beta");
+
+        engine
+            .execute_script(view, "document.getElementById('b').firstChild.data = 'BETA'")
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "ALPHA BETA");
+
+        // A class write restyles: the element's style now matches `.off`.
+        engine
+            .execute_script(view, "document.getElementById('a').classList.add('off')")
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "BETA");
+        engine
+            .execute_script(view, "document.getElementById('a').removeAttribute('class')")
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "ALPHA BETA");
+        // An inline style write reaches the cascade through the attribute.
+        engine
+            .execute_script(view, "document.getElementById('b').style.display = 'none'")
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "ALPHA");
+        engine
+            .execute_script(view, "document.getElementById('b').style.removeProperty('display')")
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "ALPHA BETA");
+
+        engine
+            .execute_script(
+                view,
+                "var p = document.createElement('p'); \
+                 p.appendChild(document.createTextNode('gamma')); document.body.appendChild(p)",
+            )
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "ALPHA BETA gamma");
+    }
+
+    // The node-or-string convenience ops ride the same insert/remove host
+    // op, so they are painted by the same settle flush.
+    #[test]
+    fn child_node_convenience_ops_are_painted_when_the_script_settles() {
+        let (mut engine, view) = loaded(
+            "<html><body><p id='a'>alpha</p><p id='b'>beta</p></body></html>",
+        );
+        engine
+            .execute_script(
+                view,
+                "var a = document.getElementById('a'), b = document.getElementById('b'); \
+                 var p = document.createElement('p'); p.append('gamma'); \
+                 b.after(p); a.before(b); \
+                 var q = document.createElement('p'); q.append('delta'); \
+                 document.body.replaceChild(q, a)",
+            )
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "beta delta gamma");
+    }
+
+    // innerHTML parses into the Rust DOM, so the cascade styles the new
+    // elements (class and tag rules both) and the settle flush paints them.
+    #[test]
+    fn inner_html_writes_are_styled_and_painted_when_the_script_settles() {
+        let (mut engine, view) = loaded(
+            "<html><head><style>.off { display: none } em { display: none }</style></head>\
+             <body><div id='d'><p>alpha</p></div><p>omega</p></body></html>",
+        );
+        assert_eq!(painted_text(&engine, view), "alpha omega");
+
+        engine
+            .execute_script(
+                view,
+                "document.getElementById('d').innerHTML = \
+                 '<p>beta</p><p class=\"off\">hidden</p><span>gamma <em>no</em></span>'",
+            )
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "beta gamma omega");
+
+        engine
+            .execute_script(view, "document.getElementById('d').innerHTML = ''")
+            .unwrap();
+        assert_eq!(painted_text(&engine, view), "omega");
+    }
+
+    // Pin §3.1: script that writes nothing costs no relayout.
+    #[test]
+    fn a_clean_script_does_not_relayout() {
+        let (mut engine, view) = loaded("<html><body><p>alpha</p></body></html>");
+        engine.views.get_mut(&view).unwrap().display_list = None;
+        engine.execute_script(view, "document.title").unwrap();
+        assert!(engine.views[&view].display_list.is_none());
+    }
+
+    // A script that throws after writing still gets its writes flushed.
+    #[test]
+    fn a_script_that_throws_still_flushes() {
+        let (mut engine, view) = loaded("<html><body><p>alpha</p></body></html>");
+        engine.views.get_mut(&view).unwrap().display_list = None;
+        engine.views[&view]
+            .bindings
+            .as_ref()
+            .unwrap()
+            .mark_dirty(DomDirty::Layout);
+        assert!(engine.execute_script(view, "throw new Error('x')").is_err());
+        assert!(engine.views[&view].display_list.is_some());
+        assert_eq!(
+            engine.views[&view].bindings.as_ref().unwrap().take_dirty(),
+            DomDirty::Clean
+        );
+    }
+}
+
+#[cfg(all(test, feature = "headless"))]
+mod script_selector_tests {
+    use super::*;
+
+    fn painted_text(engine: &Engine, view: EngineViewId) -> String {
+        let list = engine.views[&view].display_list.as_ref().expect("display list");
+        list.commands
+            .iter()
+            .filter_map(|cmd| match cmd {
+                rustkit_layout::DisplayCommand::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn loaded(html: &str) -> (Engine, EngineViewId) {
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 400, height: 200 })
+            .expect("view");
+        engine.load_html(view, html).expect("load");
+        (engine, view)
+    }
+
+    /// Evaluate `script` and read its completion value as JS `String()` does
+    /// (`execute_script` answers with the value's `Debug` form).
+    fn eval(engine: &mut Engine, view: EngineViewId, script: &str) -> String {
+        let out = engine
+            .execute_script(view, &format!("String(eval({script:?}))"))
+            .unwrap();
+        out.strip_prefix("String(\"")
+            .and_then(|s| s.strip_suffix("\")"))
+            .unwrap_or_else(|| panic!("{script} evaluated to {out}"))
+            .to_string()
+    }
+
+    const CARDS: &str = "<html><body>\
+        <div class='card featured'><p>a</p><p class='x'>b</p></div>\
+        <div class='card'><span><p id='deep'>c</p></span></div>\
+        </body></html>";
+
+    // querySelector runs the cascade's matcher over the live tree: compound,
+    // descendant, child, sibling and structural selectors that rustkit-dom's
+    // one-token matcher answered wrongly (or with nothing).
+    #[test]
+    fn query_selector_uses_the_cascade_matcher() {
+        let (mut engine, view) = loaded(CARDS);
+        let mut js = |s: &str| eval(&mut engine, view, s);
+        assert_eq!(js("document.querySelectorAll('.card p').length"), "3");
+        assert_eq!(js("document.querySelectorAll('.card > p').length"), "2");
+        assert_eq!(js("document.querySelector('div.card.featured p.x').textContent"), "b");
+        assert_eq!(js("document.querySelector('p:first-child').textContent"), "a");
+        assert_eq!(js("document.querySelector('p:last-child').textContent"), "b");
+        assert_eq!(js("document.querySelectorAll('p + p').length"), "1");
+        assert_eq!(js("document.querySelector('.featured ~ div').className"), "card");
+        // Known gap, shared with the cascade: `+`/`~` are only checked against
+        // the subject's own siblings, so `.featured ~ div span p` (a sibling
+        // combinator up the ancestor chain) matches nothing. Chrome finds #deep.
+        assert_eq!(js("document.querySelectorAll('.featured ~ div span p').length"), "0");
+        assert_eq!(js("document.querySelectorAll('.card, #deep').length"), "3");
+        assert_eq!(js("document.querySelectorAll('p:not(.x)').length"), "2");
+        // Scoped queries still match against the whole tree: `div p` finds
+        // #deep under the second card, whose `div` is the scope itself.
+        assert_eq!(js("document.querySelectorAll('.card')[1].querySelectorAll('div p').length"), "1");
+        assert_eq!(js("document.querySelectorAll('.card')[1].querySelectorAll('.featured p').length"), "0");
+    }
+
+    #[test]
+    fn matches_and_closest_use_the_cascade_matcher() {
+        let (mut engine, view) = loaded(CARDS);
+        let mut js = |s: &str| eval(&mut engine, view, s);
+        assert_eq!(js("document.getElementById('deep').matches('.card span > p')"), "true");
+        assert_eq!(js("document.getElementById('deep').matches('.featured p')"), "false");
+        assert_eq!(
+            js("document.getElementById('deep').closest('.card') === document.querySelectorAll('.card')[1]"),
+            "true"
+        );
+        assert_eq!(js("document.getElementById('deep').closest('.featured')"), "null");
+        assert_eq!(
+            js("try { document.querySelector('p:frobnicate'); 'no throw' } catch (e) { e.name }"),
+            "SyntaxError"
+        );
+    }
+
+    // The matcher reads the tree as it is now: script moves and class writes
+    // change what matches, and writes through a query result are painted.
+    #[test]
+    fn queries_see_script_writes() {
+        let (mut engine, view) = loaded(CARDS);
+        let mut js = |s: &str| eval(&mut engine, view, s);
+        js("document.querySelector('.card:not(.featured)').classList.add('featured')");
+        assert_eq!(js("document.querySelectorAll('.featured p').length"), "3");
+        js("document.body.appendChild(document.getElementById('deep'))");
+        assert_eq!(js("document.querySelector('body > p').id"), "deep");
+        assert_eq!(js("document.querySelectorAll('.card p').length"), "2");
+        js("document.querySelector('.card > p.x').textContent = 'B'");
+        assert_eq!(painted_text(&engine, view), "a B c");
+    }
+}
+
+#[cfg(test)]
+mod blockify_tests {
+    use super::*;
+    use rustkit_layout::{Dimensions, Rect};
+
+    /// Laid out through both entry points: `layout()` and
+    /// `layout_with_collapse` (what `relayout` runs for the page).
+    fn laid_out(html: &str) -> Vec<LayoutBox> {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let d = Document::parse_html(html).expect("parse");
+        let cb = Dimensions {
+            content: Rect::new(0.0, 0.0, 800.0, 0.0),
+            ..Default::default()
+        };
+        let mut plain = e.build_layout_from_document(&d, &[]);
+        plain.layout(&cb);
+        let mut engine_path = e.build_layout_from_document(&d, &[]);
+        engine_path.layout_with_collapse(
+            &cb,
+            &mut rustkit_layout::MarginCollapseContext::new(),
+            &mut rustkit_layout::FloatContext::new(),
+        );
+        vec![plain, engine_path]
+    }
+
+    fn by_id<'a>(b: &'a LayoutBox, id: &str) -> Option<&'a LayoutBox> {
+        if b.identity.as_ref().is_some_and(|i| i.selector == format!("#{id}")) {
+            return Some(b);
+        }
+        b.children.iter().find_map(|c| by_id(c, id))
+    }
+
+    fn height(root: &LayoutBox, id: &str) -> f32 {
+        let b = by_id(root, id).unwrap_or_else(|| panic!("no box #{id}"));
+        b.dimensions.border_box().height
+    }
+
+    #[test]
+    fn a_span_flex_item_is_its_line_height_tall_not_the_fonts_content_area() {
+        // Athena's repro (#419): as an inline box the span took Arial's
+        // content area, 8.9375px at 8px.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:flex;font:8px/8px Arial">"#,
+            r#"<span id="s">x</span></div></body>"#,
+        )) {
+            assert_eq!(height(&root, "s"), 8.0);
+        }
+    }
+
+    #[test]
+    fn a_span_flex_item_honours_a_small_line_height() {
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:flex;font:8px Arial;line-height:5px">"#,
+            r#"<span id="s">x</span></div></body>"#,
+        )) {
+            assert_eq!(height(&root, "s"), 5.0);
+        }
+    }
+
+    #[test]
+    fn a_span_grid_item_is_blockified() {
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:grid;font:8px/8px Arial">"#,
+            r#"<span id="s">x</span></div></body>"#,
+        )) {
+            let s = by_id(&root, "s").expect("span");
+            assert_eq!(s.style.display, rustkit_css::Display::Block);
+            assert_eq!(height(&root, "s"), 8.0);
+        }
+    }
+
+    #[test]
+    fn inline_level_items_compute_to_their_block_level_equivalent() {
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:inline-flex">"#,
+            r#"<span id="f" style="display:inline-flex">a</span>"#,
+            r#"<span id="g" style="display:inline-grid">b</span>"#,
+            r#"<span id="b" style="display:inline-block">c</span>"#,
+            r#"</div><span id="out" style="display:inline-block">d</span></body>"#,
+        )) {
+            let d = |id| by_id(&root, id).expect(id).style.display;
+            assert_eq!(d("f"), rustkit_css::Display::Flex);
+            assert_eq!(d("g"), rustkit_css::Display::Grid);
+            assert_eq!(d("b"), rustkit_css::Display::Block);
+            assert_eq!(d("out"), rustkit_css::Display::InlineBlock, "only flex/grid items");
+        }
+    }
+}
+
+#[cfg(test)]
+mod grid_relative_size_contribution_tests {
+    use super::*;
+    use rustkit_layout::{Dimensions, Rect};
+
+    /// Laid out through both entry points: `layout()` and
+    /// `layout_with_collapse` (what `relayout` runs for the page).
+    fn laid_out(html: &str) -> Vec<LayoutBox> {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let d = Document::parse_html(html).expect("parse");
+        let cb = Dimensions {
+            content: Rect::new(0.0, 0.0, 1280.0, 0.0),
+            ..Default::default()
+        };
+        let mut plain = e.build_layout_from_document(&d, &[]);
+        plain.layout(&cb);
+        let mut engine_path = e.build_layout_from_document(&d, &[]);
+        engine_path.layout_with_collapse(
+            &cb,
+            &mut rustkit_layout::MarginCollapseContext::new(),
+            &mut rustkit_layout::FloatContext::new(),
+        );
+        vec![plain, engine_path]
+    }
+
+    fn by_id<'a>(b: &'a LayoutBox, id: &str) -> Option<&'a LayoutBox> {
+        if b.identity.as_ref().is_some_and(|i| i.selector == format!("#{id}")) {
+            return Some(b);
+        }
+        b.children.iter().find_map(|c| by_id(c, id))
+    }
+
+    fn rect(root: &LayoutBox, id: &str) -> Rect {
+        by_id(root, id).unwrap_or_else(|| panic!("no box #{id}")).dimensions.border_box()
+    }
+
+    #[test]
+    fn a_rem_width_sizes_a_min_content_column() {
+        // wikipedia's page shell: a `min-content` column holding a
+        // `width: 12.25rem` nav. 12.25rem = 196px, so the 1fr column gets 804.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0;font:14px Arial"><div style="display:grid;width:1000px;"#,
+            r#"grid-template-columns:1fr min-content">"#,
+            r#"<div id="a">Article</div><nav id="n" style="width:12.25rem">Appearance</nav>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "a").width, 804.0);
+            assert_eq!(rect(&root, "n").x, 804.0);
+            assert_eq!(rect(&root, "n").width, 196.0);
+        }
+    }
+
+    #[test]
+    fn an_em_min_width_floors_a_min_content_column() {
+        // 10em at 14px = 140px.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0;font:14px Arial"><div style="display:grid;width:1000px;"#,
+            r#"grid-template-columns:1fr min-content">"#,
+            r#"<div id="a">Article</div><div id="n" style="min-width:10em">x</div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "n").x, 860.0);
+        }
+    }
+
+    #[test]
+    fn a_rem_height_sizes_a_min_content_row() {
+        // 3rem = 48px, so the second row starts at 48.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:grid;width:400px;"#,
+            r#"grid-template-rows:min-content min-content">"#,
+            r#"<div id="a" style="height:3rem"></div><div id="b">below</div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "b").y, 48.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod flex_relative_length_tests {
+    use super::*;
+    use rustkit_layout::{Dimensions, Rect};
+
+    /// Laid out through both entry points: `layout()` and
+    /// `layout_with_collapse` (what `relayout` runs for the page), with the
+    /// 1280x800 viewport the engine gives a view's root box.
+    fn laid_out(html: &str) -> Vec<LayoutBox> {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let d = Document::parse_html(html).expect("parse");
+        let cb = Dimensions {
+            content: Rect::new(0.0, 0.0, 1280.0, 0.0),
+            ..Default::default()
+        };
+        let mut plain = e.build_layout_from_document(&d, &[]);
+        plain.set_viewport(1280.0, 800.0);
+        plain.layout(&cb);
+        let mut engine_path = e.build_layout_from_document(&d, &[]);
+        engine_path.set_viewport(1280.0, 800.0);
+        engine_path.layout_with_collapse(
+            &cb,
+            &mut rustkit_layout::MarginCollapseContext::new(),
+            &mut rustkit_layout::FloatContext::new(),
+        );
+        vec![plain, engine_path]
+    }
+
+    fn by_id<'a>(b: &'a LayoutBox, id: &str) -> Option<&'a LayoutBox> {
+        if b.identity.as_ref().is_some_and(|i| i.selector == format!("#{id}")) {
+            return Some(b);
+        }
+        b.children.iter().find_map(|c| by_id(c, id))
+    }
+
+    fn rect(root: &LayoutBox, id: &str) -> Rect {
+        by_id(root, id).unwrap_or_else(|| panic!("no box #{id}")).dimensions.border_box()
+    }
+
+    #[test]
+    fn a_flex_items_em_margin_and_width_use_its_own_font_size() {
+        // At font-size 20px: margin-left 2em = 40, width 3em = 60 (not 32/48).
+        for root in laid_out(concat!(
+            r#"<body style="margin:0;font:20px Arial"><div style="display:flex">"#,
+            r#"<div id="i" style="margin-left:2em;width:3em;height:10px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "i").x, 40.0);
+            assert_eq!(rect(&root, "i").width, 60.0);
+        }
+    }
+
+    #[test]
+    fn a_flex_items_vw_width_uses_the_real_viewport() {
+        // 25vw of a 1280 viewport is 320, not 25% of a fixed 800.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:flex">"#,
+            r#"<div id="i" style="width:25vw;height:10px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "i").width, 320.0);
+        }
+    }
+
+    #[test]
+    fn an_em_gap_uses_the_containers_font_size() {
+        // column-gap 1em at 20px is 20, not 16. Flex: 10 + 20.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0;font:20px Arial"><div style="display:flex;column-gap:1em">"#,
+            r#"<div style="width:10px;height:10px"></div><div id="b" style="width:10px;height:10px"></div>"#,
+            r#"</div>"#,
+            r#"<div style="display:grid;grid-template-columns:30px 30px;column-gap:1em">"#,
+            r#"<div style="height:10px">a</div><div id="g" style="height:10px">b</div></div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "b").x, 30.0);
+            // Grid: 30 + 20.
+            assert_eq!(rect(&root, "g").x, 50.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod flex_zero_size_tests {
+    use super::*;
+    use rustkit_layout::{Dimensions, Rect};
+
+    /// Laid out through both entry points: `layout()` and
+    /// `layout_with_collapse` (what `relayout` runs for the page).
+    fn laid_out(html: &str) -> Vec<LayoutBox> {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let d = Document::parse_html(html).expect("parse");
+        let cb = Dimensions {
+            content: Rect::new(0.0, 0.0, 1280.0, 0.0),
+            ..Default::default()
+        };
+        let mut plain = e.build_layout_from_document(&d, &[]);
+        plain.set_viewport(1280.0, 800.0);
+        plain.layout(&cb);
+        let mut engine_path = e.build_layout_from_document(&d, &[]);
+        engine_path.set_viewport(1280.0, 800.0);
+        engine_path.layout_with_collapse(
+            &cb,
+            &mut rustkit_layout::MarginCollapseContext::new(),
+            &mut rustkit_layout::FloatContext::new(),
+        );
+        vec![plain, engine_path]
+    }
+
+    fn by_id<'a>(b: &'a LayoutBox, id: &str) -> Option<&'a LayoutBox> {
+        if b.identity.as_ref().is_some_and(|i| i.selector == format!("#{id}")) {
+            return Some(b);
+        }
+        b.children.iter().find_map(|c| by_id(c, id))
+    }
+
+    fn rect(root: &LayoutBox, id: &str) -> Rect {
+        by_id(root, id).unwrap_or_else(|| panic!("no box #{id}")).dimensions.border_box()
+    }
+
+    #[test]
+    fn an_authored_zero_width_flex_item_is_zero_wide() {
+        // `width:0` and `width:0px` are sizes, not `auto`: the item is 0
+        // wide and the next sibling starts at x=0.
+        for w in ["0", "0px"] {
+            let html = format!(
+                "<body style=\"margin:0\"><div style=\"display:flex\">\
+                 <div id=\"z\" style=\"width:{w};height:10px\"></div>\
+                 <div id=\"n\" style=\"width:10px;height:10px\"></div></div></body>"
+            );
+            for root in laid_out(&html) {
+                assert_eq!(rect(&root, "z").width, 0.0, "width:{w}");
+                assert_eq!(rect(&root, "n").x, 0.0, "width:{w}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_zero_width_flex_item_with_text_stays_zero_wide() {
+        // css-flexbox §4.5: the automatic minimum is the smaller of the
+        // specified size suggestion (0) and the content size, so the text
+        // overflows a 0-wide box instead of widening it.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0;font:16px Arial"><div style="display:flex">"#,
+            r#"<div id="z" style="width:0">Overflowing</div><div id="n" style="width:10px">b</div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "z").width, 0.0);
+            assert_eq!(rect(&root, "n").x, 0.0);
+        }
+    }
+
+    #[test]
+    fn a_specified_width_caps_the_automatic_minimum() {
+        // A 40px item holding a wider unbreakable word keeps its 40px when the
+        // row has room: min(specified 40, content) = 40, not the word's width.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0;font:16px Arial"><div style="display:flex;width:400px">"#,
+            r#"<div id="w" style="width:40px">Supercalifragilistic</div><div id="n">b</div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "w").width, 40.0);
+            assert_eq!(rect(&root, "n").x, 40.0);
+        }
+    }
+
+    #[test]
+    fn a_zero_height_column_item_with_content_stays_zero_tall() {
+        // The vertical axis: step 11d's automatic minimum is capped by the
+        // specified height, including an authored 0 (it only honoured Px).
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:flex;flex-direction:column;height:200px">"#,
+            r#"<div id="z" style="height:0"><div style="height:30px"></div></div>"#,
+            r#"<div id="n" style="height:10px"></div></div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "z").height, 0.0);
+            assert_eq!(rect(&root, "n").y, 0.0);
+        }
+    }
+
+    #[test]
+    fn a_percent_height_in_an_auto_height_column_still_behaves_as_auto() {
+        // Guard: `height:50%` against an indefinite column container has
+        // nothing to resolve against and must stay content-sized.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:flex;flex-direction:column">"#,
+            r#"<div id="p" style="height:50%"><div style="height:30px"></div></div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "p").height, 30.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod grid_fixed_track_tests {
+    use super::*;
+    use rustkit_layout::{Dimensions, Rect};
+
+    /// Laid out through both entry points: `layout()` and
+    /// `layout_with_collapse` (what `relayout` runs for the page).
+    fn laid_out(html: &str) -> Vec<LayoutBox> {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let d = Document::parse_html(html).expect("parse");
+        let cb = Dimensions {
+            content: Rect::new(0.0, 0.0, 1280.0, 0.0),
+            ..Default::default()
+        };
+        let mut plain = e.build_layout_from_document(&d, &[]);
+        plain.set_viewport(1280.0, 800.0);
+        plain.layout(&cb);
+        let mut engine_path = e.build_layout_from_document(&d, &[]);
+        engine_path.set_viewport(1280.0, 800.0);
+        engine_path.layout_with_collapse(
+            &cb,
+            &mut rustkit_layout::MarginCollapseContext::new(),
+            &mut rustkit_layout::FloatContext::new(),
+        );
+        vec![plain, engine_path]
+    }
+
+    fn by_id<'a>(b: &'a LayoutBox, id: &str) -> Option<&'a LayoutBox> {
+        if b.identity.as_ref().is_some_and(|i| i.selector == format!("#{id}")) {
+            return Some(b);
+        }
+        b.children.iter().find_map(|c| by_id(c, id))
+    }
+
+    fn rect(root: &LayoutBox, id: &str) -> Rect {
+        by_id(root, id).unwrap_or_else(|| panic!("no box #{id}")).dimensions.border_box()
+    }
+
+    #[test]
+    fn a_fixed_column_does_not_grow_to_fit_its_text() {
+        // css-grid-1 §12.5: items size intrinsic tracks only. "Wide" (~36px)
+        // overflows its 10px track; the second item starts at x=10.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0;font:16px Arial"><div style="display:grid;"#,
+            r#"grid-template-columns:10px 10px"><div id="a">Wide</div><div id="b">b</div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "a").width, 10.0);
+            assert_eq!(rect(&root, "b").x, 10.0);
+        }
+    }
+
+    #[test]
+    fn a_fixed_row_does_not_grow_to_fit_a_taller_item() {
+        // A 20px row holding a 50px item stays 20; the next row starts at 20.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:grid;width:100px;"#,
+            r#"grid-template-rows:20px 20px"><div style="height:50px"></div><div id="n" style="height:5px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "n").y, 20.0);
+        }
+    }
+
+    #[test]
+    fn a_spanning_item_over_fixed_tracks_leaves_them_alone() {
+        // span 2 over 30px + 30px (gap 0) with a 100px item: still 30 + 30.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:grid;grid-template-columns:30px 30px">"#,
+            r#"<div style="grid-column:span 2;width:100px;height:5px"></div>"#,
+            r#"<div style="height:5px"></div><div id="c" style="height:5px"></div>"#,
+            r#"</div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "c").x, 30.0);
+        }
+    }
+
+    #[test]
+    fn an_auto_column_still_grows_to_its_content() {
+        // Guard: `auto` is intrinsic and must keep taking the item's width.
+        for root in laid_out(concat!(
+            r#"<body style="margin:0"><div style="display:grid;width:500px;"#,
+            r#"grid-template-columns:auto 1fr"><div style="width:120px;height:5px"></div>"#,
+            r#"<div id="f" style="height:5px"></div></div></body>"#,
+        )) {
+            assert_eq!(rect(&root, "f").x, 120.0);
+        }
     }
 }

@@ -11922,6 +11922,169 @@ mod tests {
         );
     }
 
+
+    // ---- a flex container's main-axis GAP in max-content (n69) -----------
+    //
+    // `own_max_content_width` resolved the gap by matching for `Length::Px`,
+    // so a `rem`, `em` or viewport gap contributed ZERO to the container's
+    // contribution while `layout_flex`/`layout_grid` resolved it properly. The
+    // two readings of the same declaration disagreed, and the intrinsic one
+    // was short by every gap the container has: `settings`' `.btn-group`
+    // (`gap: 0.5rem`) measured 8px narrow with two buttons, and that deficit
+    // became spurious flex shrink on the buttons inside it.
+    //
+    // Chrome 148 ground truth, measured on this seat by
+    // `trench/tools/n69_gap_contribution_probe.mjs` against the corpus pages
+    // themselves. On every container whose items are inflexible the sum rule
+    // closes EXACTLY, gap term included:
+    //
+    //   settings  div.checkbox-group  gap 16  n=2   container max-content 309.719
+    //                                              items 293.719 + gaps 16.000  residual 0.000
+    //   settings  div.clear-options   gap 12  n=3   container 377.469
+    //                                              items 353.469 + gaps 24.000  residual 0.000
+    //   settings  div.btn-group       gap  8  n=2   container 195.375
+    //                                              items 187.375 + gaps  8.000  residual 0.000
+    //   settings  div.btn-group       gap  8  n=3   container 346.688
+    //                                              items 330.688 + gaps 16.000  residual 0.000
+    //
+    // So `(n-1) * gap` is not a convention this engine picked, it is the
+    // number Chrome produces, and the gaps here are authored in `rem`.
+
+    /// A row flex container holding `widths.len()` inflexible block items of
+    /// the given content widths, with `gap` as its `column-gap`. Nothing else
+    /// is set, so the contribution is exactly `sum(widths) + (n-1)*gap`.
+    fn n69_flex_row(widths: &[f32], gap: Length) -> LayoutBox {
+        let mut cs = ComputedStyle::new();
+        cs.display = rustkit_css::Display::Flex;
+        cs.column_gap = gap;
+        let mut c = LayoutBox::new(BoxType::Block, cs);
+        for w in widths {
+            let mut s = ComputedStyle::new();
+            s.width = Length::Px(*w);
+            c.children.push(LayoutBox::new(BoxType::Block, s));
+        }
+        c
+    }
+
+    #[test]
+    fn a_rem_gap_contributes_to_a_flex_containers_max_content() {
+        // `settings`' `.btn-group { gap: 0.5rem }`: the declaration layout
+        // resolves to 8px must resolve to 8px here too.
+        let c = n69_flex_row(&[100.0, 60.0], Length::Rem(0.5));
+        let got = crate::grid::own_max_content_width(&c);
+        assert!(
+            (got - 168.0).abs() < 0.01,
+            "a 0.5rem gap is 8px in the contribution: 100 + 60 + 8 = 168, got {got} \
+             (160 is the gap read as zero)"
+        );
+    }
+
+    #[test]
+    fn an_em_gap_resolves_against_the_containers_own_font_size() {
+        // Discriminates em from rem: at a 20px font size `0.5em` is 10, while
+        // the root-relative reading would give 8. A fix that routed every
+        // relative gap through the root font size passes the rem guard above
+        // and fails here.
+        let mut c = n69_flex_row(&[100.0, 60.0], Length::Em(0.5));
+        c.style.font_size = Length::Px(20.0);
+        let got = crate::grid::own_max_content_width(&c);
+        assert!(
+            (got - 170.0).abs() < 0.01,
+            "0.5em at a 20px font size is 10px: 100 + 60 + 10 = 170, got {got} \
+             (168 is em read as rem, 160 is the gap read as zero)"
+        );
+    }
+
+    #[test]
+    fn a_percentage_gap_contributes_nothing_to_an_intrinsic_contribution() {
+        // css-sizing-3 §4.1: percentages resolve against ZERO when computing
+        // an intrinsic size contribution. There is also no definite container
+        // size at this point to resolve against, so a fix that reached for the
+        // box's own used width would report a contribution that depends on the
+        // layout it is an input to.
+        let mut c = n69_flex_row(&[100.0, 60.0], Length::Percent(50.0));
+        c.dimensions.content.width = 400.0;
+        let got = crate::grid::own_max_content_width(&c);
+        assert!(
+            (got - 160.0).abs() < 0.01,
+            "a percentage gap contributes 0 to an intrinsic contribution: got {got} \
+             (360 is 50% of the box's own used width)"
+        );
+    }
+
+    #[test]
+    fn a_viewport_gap_resolves_against_the_viewport_width() {
+        // Viewport units ARE definite here, so unlike a percentage they
+        // resolve normally. The viewport is deliberately non-square so a
+        // resolution against the height is a different number.
+        let mut c = n69_flex_row(&[100.0, 60.0], Length::Vw(1.0));
+        c.set_viewport(800.0, 600.0);
+        let got = crate::grid::own_max_content_width(&c);
+        assert!(
+            (got - 168.0).abs() < 0.01,
+            "1vw of an 800px viewport is 8px: 100 + 60 + 8 = 168, got {got} \
+             (166 is 1vh of the 600px height)"
+        );
+    }
+
+    #[test]
+    fn a_rem_gap_is_counted_once_per_item_boundary_not_once_per_item() {
+        // Three items are TWO gaps. Guarded separately from the two-item case
+        // because with n=2 the off-by-one is invisible: one gap and one gap
+        // per item are the same number.
+        let c = n69_flex_row(&[100.0, 60.0, 40.0], Length::Rem(0.5));
+        let got = crate::grid::own_max_content_width(&c);
+        assert!(
+            (got - 216.0).abs() < 0.01,
+            "three items are two gaps: 100 + 60 + 40 + 16 = 216, got {got} \
+             (224 counts a gap per item, 200 reads the gap as zero)"
+        );
+    }
+
+    #[test]
+    fn the_row_gap_is_not_the_main_axis_gap_of_a_row_flex_container() {
+        // `gap: <row> <column>` sets both. A row container's MAIN axis gap is
+        // `column-gap`; reading `row-gap` there is a one-word slip that is
+        // invisible on the corpus, where the shorthand makes them equal.
+        let mut c = n69_flex_row(&[100.0, 60.0], Length::Rem(0.5));
+        c.style.row_gap = Length::Rem(4.0);
+        let got = crate::grid::own_max_content_width(&c);
+        assert!(
+            (got - 168.0).abs() < 0.01,
+            "the column gap (8px) is the main-axis gap of a row container, got {got} \
+             (224 is the 4rem row gap read instead)"
+        );
+    }
+
+    #[test]
+    fn a_column_direction_flex_container_takes_the_widest_item_and_no_gap() {
+        // In a column container the gaps run down the block axis, so they are
+        // not part of the max-content WIDTH at all — the width is the widest
+        // item. A gap term hoisted out of the row branch lands here.
+        let mut c = n69_flex_row(&[100.0, 60.0], Length::Rem(0.5));
+        c.style.flex_direction = rustkit_css::FlexDirection::Column;
+        let got = crate::grid::own_max_content_width(&c);
+        assert!(
+            (got - 100.0).abs() < 0.01,
+            "a column container's max-content width is its widest item (100), got {got} \
+             (108 adds the main-axis gap to a cross-axis measurement)"
+        );
+    }
+
+    #[test]
+    fn a_rem_gap_does_not_reach_the_contribution_past_an_explicit_width() {
+        // The gap only exists inside the flex arm, which sits below the
+        // `width: Px` check. Stated as its own claim because the arm's
+        // position is what keeps a specified width authoritative.
+        let mut c = n69_flex_row(&[100.0, 60.0], Length::Rem(0.5));
+        c.style.width = Length::Px(40.0);
+        let got = crate::grid::own_max_content_width(&c);
+        assert!(
+            (got - 40.0).abs() < 0.01,
+            "a specified border-box width is the contribution, got {got}"
+        );
+    }
+
     // ---- a form control's MIN-content contribution (n68) -----------------
     //
     // n67 gave `own_max_content_width` a FormControl arm and left

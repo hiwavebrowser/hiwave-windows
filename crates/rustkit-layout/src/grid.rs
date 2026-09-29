@@ -247,6 +247,9 @@ impl<'a> GridItem<'a> {
                 trace!("get_height_contribution: Percent {}% of {} = {}", p, container_height, result);
                 return result + margins;
             }
+            l if is_font_or_viewport_relative(l) => {
+                return self.layout_box.length_to_px(l, container_height) + margins;
+            }
             _ => {}
         }
 
@@ -254,6 +257,7 @@ impl<'a> GridItem<'a> {
         let min_height = match &style.min_height {
             Length::Px(h) => *h,
             Length::Percent(p) if container_height > 0.0 => container_height * p / 100.0,
+            l if is_font_or_viewport_relative(l) => self.layout_box.length_to_px(l, container_height),
             _ => 0.0,
         };
 
@@ -401,6 +405,9 @@ impl<'a> GridItem<'a> {
             Length::Percent(p) if container_width > 0.0 => {
                 return container_width * p / 100.0 + margins;
             }
+            l if is_font_or_viewport_relative(l) => {
+                return self.layout_box.length_to_px(l, container_width) + margins;
+            }
             _ => {}
         }
 
@@ -408,6 +415,7 @@ impl<'a> GridItem<'a> {
         let min_width = match &style.min_width {
             Length::Px(w) => *w,
             Length::Percent(p) if container_width > 0.0 => container_width * p / 100.0,
+            l if is_font_or_viewport_relative(l) => self.layout_box.length_to_px(l, container_width),
             _ => 0.0,
         };
 
@@ -1355,8 +1363,10 @@ pub fn layout_grid_container(
     );
 
     // Compute gaps
-    let column_gap = style.column_gap.to_px(16.0, 16.0, container_width);
-    let row_gap = style.row_gap.to_px(16.0, 16.0, container_height);
+    // Against the container's own font size and viewport, not a fixed 16px:
+    // `column-gap: 1em` at 20px is 20.
+    let column_gap = container.length_to_px(&style.column_gap, container_width);
+    let row_gap = container.length_to_px(&style.row_gap, container_height);
 
     // Create grid layout
     let mut grid = GridLayout::new(
@@ -2252,15 +2262,21 @@ pub fn layout_grid_container(
         let mut row_shrinkable: Vec<bool> = grid
             .rows
             .iter()
+            // `auto` and `min-content` rows (any track whose MIN sizing
+            // function is min-content): a block's min-content height is its
+            // laid-out height, so the real figure is the row. wikipedia's
+            // title rows are `min-content`; left grow-only, they kept an
+            // estimate that charged a line per link of a 145-link menu.
             .map(|t| {
                 t.is_min_content
-                    && t.is_max_content
                     && !t.is_flexible
                     && t.percent.is_none()
                     && t.max_percent.is_none()
                     && t.fit_content_limit.is_none()
             })
             .collect();
+        // Items spanning a flexible row: (rows, outer height needed).
+        let mut flex_spanners: Vec<(std::ops::Range<usize>, f32)> = Vec::new();
         {
             let mut idx = 0usize;
             for child in container.children.iter() {
@@ -2273,9 +2289,28 @@ pub fn layout_grid_container(
                     // contribution was spread over its rows by track sizing
                     // and this pass cannot re-derive it, so those rows stay
                     // grow-only.
+                    //
+                    // Except an item that crosses a flexible row: the
+                    // flexible row (unbounded) absorbs it, so the others are
+                    // free to shrink, and the flexible row is topped up below
+                    // if the item then needs more.
                     if r1 > r0 + 1 {
-                        for r in r0..r1.min(grid.rows.len()) {
-                            row_shrinkable[r] = false;
+                        let rows_spanned = r0..r1.min(grid.rows.len());
+                        if rows_spanned.clone().any(|r| grid.rows[r].is_flexible) {
+                            let pb = child.dimensions.padding.top
+                                + child.dimensions.padding.bottom
+                                + child.dimensions.border.top
+                                + child.dimensions.border.bottom;
+                            if let Some(Some(real_h)) = real_heights.get(idx) {
+                                flex_spanners.push((
+                                    rows_spanned,
+                                    real_h + pb + vertical_margins(&child.style),
+                                ));
+                            }
+                        } else {
+                            for r in rows_spanned {
+                                row_shrinkable[r] = false;
+                            }
                         }
                     }
                     if r1 <= r0 + 1 && r0 < grid.rows.len() {
@@ -2369,11 +2404,14 @@ pub fn layout_grid_container(
         // Per row: the change to apply. Growth wherever the items need
         // more; shrinkage only where the track is intrinsic and every item
         // in it reported a real height.
-        let row_delta: Vec<f32> = grid
+        let mut row_delta: Vec<f32> = grid
             .rows
             .iter()
             .enumerate()
             .map(|(i, track)| match row_real[i] {
+                // A fixed row (`20px`, `minmax(20px, 20px)`) keeps its size and
+                // the item overflows it (§12.5 sizes intrinsic tracks only).
+                Some(_) if track_is_fixed(track) => 0.0,
                 Some(real) => {
                     let delta = real - track.size;
                     if delta > 0.5 || (delta < -0.5 && row_shrinkable[i]) {
@@ -2385,6 +2423,21 @@ pub fn layout_grid_container(
                 None => 0.0,
             })
             .collect();
+        // A flexible-row spanner still gets its full height: whatever the
+        // re-sized rows leave short goes to its first flexible row.
+        for (rows_spanned, needed) in &flex_spanners {
+            let gaps = row_gap * (rows_spanned.len().saturating_sub(1)) as f32;
+            let span: f32 = rows_spanned
+                .clone()
+                .map(|r| grid.rows[r].size + row_delta[r])
+                .sum::<f32>()
+                + gaps;
+            if needed - span > 0.5 {
+                if let Some(r) = rows_spanned.clone().find(|&r| grid.rows[r].is_flexible) {
+                    row_delta[r] += needed - span;
+                }
+            }
+        }
 
         if row_delta.iter().any(|g| *g != 0.0) {
             let old_positions: Vec<f32> = grid.rows.iter().map(|t| t.position).collect();
@@ -2407,8 +2460,9 @@ pub fn layout_grid_container(
                 if child.style.display == Display::None {
                     continue;
                 }
-                if let Some(&(r0, _)) = row_spans.get(idx) {
+                if let Some(&(r0, r1)) = row_spans.get(idx) {
                     if r0 < grid.rows.len() {
+                        let r1 = r1.clamp(r0 + 1, grid.rows.len());
                         let dy = grid.rows[r0].position - old_positions[r0];
                         if dy.abs() > 0.01 {
                             crate::flex::translate_subtree(child, 0.0, dy);
@@ -2426,9 +2480,14 @@ pub fn layout_grid_container(
                                 + child.dimensions.padding.bottom
                                 + child.dimensions.border.top
                                 + child.dimensions.border.bottom;
-                            let target = grid.rows[r0].size - vertical_margins(&child.style) - pb;
+                            // The whole area: a spanning item stretches over
+                            // every row it spans, not just its first.
+                            let area = grid.rows[r1 - 1].position + grid.rows[r1 - 1].size
+                                - grid.rows[r0].position;
+                            let target = area - vertical_margins(&child.style) - pb;
+                            let shrunk = row_delta[r0..r1].iter().any(|d| *d < 0.0);
                             if child.dimensions.content.height < target
-                                || (row_delta[r0] < 0.0 && child.dimensions.content.height > target)
+                                || (shrunk && child.dimensions.content.height > target)
                             {
                                 child.dimensions.content.height = target;
                             }
@@ -2871,10 +2930,30 @@ pub(crate) fn own_max_content_width(layout_box: &LayoutBox) -> f32 {
     // narrow, then flex-shrink smashed every link to ~2px on re-layout.
     if style.display.is_flex() {
         let is_row = style.flex_direction.is_row();
-        let main_gap = match style.column_gap {
-            Length::Px(g) => g,
-            _ => 0.0,
-        };
+        // Resolved the way LAYOUT resolves it, not matched for `Px`. The old
+        // `match { Length::Px(g) => g, _ => 0.0 }` read a `rem`, `em` or
+        // viewport gap as ZERO here while `layout_grid` and `layout_flex`
+        // resolve the same declaration properly, so a relatively-gapped flex
+        // container's max-content contribution was short by every gap it has
+        // and the two readings of one declaration disagreed. On `settings`,
+        // `.btn-group { gap: 0.5rem }` measured 8px narrow with two buttons,
+        // and a container short of its own items becomes spurious flex shrink
+        // on the items inside it.
+        //
+        // A PERCENTAGE gap resolves against zero: css-sizing-3 §4.1 resolves
+        // percentages against zero when computing an intrinsic size
+        // contribution, and there is no definite container size here to
+        // resolve against in any case — reaching for the box's own used width
+        // would make a contribution depend on the layout it is an input to.
+        // Viewport units are definite and resolve normally.
+        //
+        // Chrome 148 ground truth for the `(n-1) * gap` term, measured on the
+        // corpus pages by `trench/tools/n69_gap_contribution_probe.mjs`: on
+        // every `settings` container whose items are inflexible the sum closes
+        // exactly — `.checkbox-group` 309.719 = 293.719 + 16, `.clear-options`
+        // 377.469 = 353.469 + 24, `.btn-group` 195.375 = 187.375 + 8 and
+        // 346.688 = 330.688 + 16. Those gaps are authored in `rem`.
+        let main_gap = layout_box.length_to_px(&style.column_gap, 0.0);
         let mut sum = 0.0f32;
         let mut widest = 0.0f32;
         let mut item_count = 0usize;
@@ -2932,6 +3011,18 @@ pub(crate) fn own_max_content_width(layout_box: &LayoutBox) -> f32 {
     max_contribution = max_contribution.max(inline_run);
 
     max_contribution + padding_border
+}
+
+/// A length that is definite at track-sizing time without a containing block:
+/// font-relative (`em`, `rem`) or viewport-relative. An item's
+/// `width: 12.25rem` is as explicit as `196px`, but the contribution arms only
+/// matched `Px`, so it fell through to the content estimate and a
+/// `min-content` track (wikipedia's page-tools column) came out too narrow.
+fn is_font_or_viewport_relative(l: &Length) -> bool {
+    matches!(
+        l,
+        Length::Em(_) | Length::Rem(_) | Length::Vw(_) | Length::Vh(_) | Length::Vmin(_) | Length::Vmax(_)
+    )
 }
 
 /// Resolve a length used in an intrinsic-size contribution to px.
@@ -3053,11 +3144,10 @@ fn distribute_span_contributions(
                 })
                 .collect();
             if growable.is_empty() {
-                // All tracks are fixed: distribute equally anyway.
-                let per_track = extra / (end - start) as f32;
-                for t in &mut tracks[start..end] {
-                    t.base_size += per_track;
-                }
+                // Every spanned track is fixed. §12.5 only lets items size
+                // INTRINSIC tracks, so the item overflows: `10px 10px` with
+                // the text "a" keeps 10px tracks in Chrome. Growing them here
+                // made the first track 11.12px.
                 continue;
             }
             let limits: Vec<f32> = growable
@@ -3323,6 +3413,18 @@ fn size_grid_tracks(tracks: &mut [GridTrack], container_size: f32, gap: f32) {
         position += track.size;
         prev_was_collapsed = track.size == 0.0;
     }
+}
+
+/// A track with no intrinsic, flexible or percentage sizing function: items
+/// never size it (css-grid-1 §12.5), they overflow it.
+fn track_is_fixed(t: &GridTrack) -> bool {
+    !t.is_min_content
+        && !t.is_max_content
+        && !t.is_flexible
+        && t.percent.is_none()
+        && t.max_percent.is_none()
+        && t.fit_content_limit.is_none()
+        && t.growth_limit <= t.base_size
 }
 
 /// Stretch auto tracks when align-content is stretch.

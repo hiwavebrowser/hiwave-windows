@@ -536,8 +536,14 @@ impl<S: TreeSink> TreeBuilder<S> {
 
         // Check if this element is already on the stack as the current node or near top
         // Simple heuristic: if the element name is anywhere in open_elements after the body, skip
-        let body_idx = self.open_elements.iter().position(|(n, _)| n == "body").unwrap_or(0);
-        for i in (body_idx + 1)..self.open_elements.len() {
+        // A fragment's stack has no body: then the whole stack counts (a
+        // formatting element at index 0 is open, not one to reopen).
+        let after_body = self
+            .open_elements
+            .iter()
+            .position(|(n, _)| n == "body")
+            .map_or(0, |i| i + 1);
+        for i in after_body..self.open_elements.len() {
             if self.open_elements[i].0 == last_name {
                 // Already have this formatting element open, don't reconstruct
                 return;
@@ -557,7 +563,7 @@ impl<S: TreeSink> TreeBuilder<S> {
                 }
                 FormattingEntry::Element { name, .. } => {
                     // Check if in open elements (after body)
-                    let in_stack = self.open_elements[body_idx + 1..].iter()
+                    let in_stack = self.open_elements[after_body..].iter()
                         .any(|(n, _)| n == name);
                     if in_stack {
                         reconstruct_start += 1;

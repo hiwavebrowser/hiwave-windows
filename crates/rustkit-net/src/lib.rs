@@ -416,7 +416,7 @@ pub struct LoaderConfig {
 impl Default for LoaderConfig {
     fn default() -> Self {
         Self {
-            user_agent: "RustKit/1.0".to_string(),
+            user_agent: rustkit_http::default_user_agent(),
             accept_language: "en-US,en;q=0.9".to_string(),
             default_timeout: Duration::from_secs(30),
             max_redirects: 10,
@@ -807,7 +807,12 @@ mod tests {
     #[test]
     fn test_loader_config_default() {
         let config = LoaderConfig::default();
-        assert_eq!(config.user_agent, "RustKit/1.0");
+        // The default is the honest per-platform HiWave UA (network lane);
+        // pin its invariants rather than one platform's exact string.
+        assert!(config.user_agent.starts_with("Mozilla/5.0 ("));
+        assert!(config.user_agent.contains("HiWave/1.0"));
+        assert!(config.user_agent.contains("RustKit/1.0"));
+        assert!(!config.user_agent.contains("Chrome"), "never Chrome's UA");
         assert!(config.cookies_enabled);
     }
 }

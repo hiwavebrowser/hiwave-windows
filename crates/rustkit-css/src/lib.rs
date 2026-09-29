@@ -1445,27 +1445,51 @@ pub struct GridTemplateAreas {
 }
 
 impl GridTemplateAreas {
-    /// Parse grid-template-areas value.
+    /// Parse a `grid-template-areas` value: one quoted string per row.
+    ///
+    /// Rows are the strings, not source lines. Stylesheets arrive minified
+    /// (`'a a' 'b c'` on one line), and splitting by line read that as a single
+    /// row whose cells kept their quotes. Returns `None` for an invalid value
+    /// (css-grid-1 §7.3): anything outside the strings, rows of unequal
+    /// length, or an area that isn't a filled rectangle. The declaration is
+    /// then ignored, as Chrome ignores it.
     pub fn parse(value: &str) -> Option<Self> {
         let mut rows = Vec::new();
+        let mut chars = value.trim().chars();
 
-        for line in value.lines() {
-            let line = line.trim();
-            if line.is_empty() {
+        while let Some(c) = chars.next() {
+            if c.is_whitespace() {
                 continue;
             }
-            // Remove quotes if present
-            let line = line.trim_matches('"').trim_matches('\'');
-
-            let cells: Vec<Option<String>> = line
+            if c != '"' && c != '\'' {
+                return None;
+            }
+            let mut row = String::new();
+            loop {
+                match chars.next() {
+                    Some(ch) if ch == c => break,
+                    Some(ch) => row.push(ch),
+                    None => return None,
+                }
+            }
+            // A run of one or more `.` is a null cell token.
+            let cells: Vec<Option<String>> = row
                 .split_whitespace()
-                .map(|s| if s == "." { None } else { Some(s.to_string()) })
+                .map(|s| {
+                    if s.chars().all(|ch| ch == '.') {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
+                })
                 .collect();
-
+            if cells.is_empty() {
+                return None;
+            }
             rows.push(cells);
         }
 
-        if rows.is_empty() {
+        if rows.is_empty() || rows.iter().any(|r| r.len() != rows[0].len()) {
             return None;
         }
 
@@ -1480,6 +1504,19 @@ impl GridTemplateAreas {
                         // Find extent of this area
                         let (row_end, col_end) =
                             Self::find_area_extent(&rows, row_idx, col_idx, name);
+                        // Rectangular: the name fills its bounding box and
+                        // appears nowhere else.
+                        let in_box = |r: usize, c: usize| {
+                            (row_idx..row_end).contains(&r) && (col_idx..col_end).contains(&c)
+                        };
+                        let rectangular = rows.iter().enumerate().all(|(r, row)| {
+                            row.iter().enumerate().all(|(c, cell)| {
+                                (cell.as_deref() == Some(name.as_str())) == in_box(r, c)
+                            })
+                        });
+                        if !rectangular {
+                            return None;
+                        }
                         areas.push(GridArea {
                             name: name.clone(),
                             row_start: row_idx as i32 + 1,
@@ -2257,6 +2294,124 @@ impl BorderStyle {
     }
 }
 
+/// The custom properties (`--*`) in effect on one element, as a chain of
+/// layers: the element's own changes over an `Arc` of its parent's set.
+/// Primer declares hundreds of `--*` on `:root`, and an element that
+/// overrode one of them used to copy every one of them (~11% of github's
+/// cascade). A lookup walks the chain, first layer that names the property
+/// wins; past `MAX_DEPTH` layers everything above the bottom layer is
+/// collapsed into one, so lookups stay bounded.
+#[derive(Clone, Default)]
+pub struct CustomProperties {
+    /// `None` hides an inherited value (`initial`, or a reference cycle).
+    own: std::collections::HashMap<String, Option<String>>,
+    parent: Option<std::sync::Arc<CustomProperties>>,
+    depth: u32,
+}
+
+impl CustomProperties {
+    const MAX_DEPTH: u32 = 6;
+
+    /// One flat layer.
+    pub fn from_map(map: std::collections::HashMap<String, String>) -> Self {
+        Self {
+            own: map.into_iter().map(|(k, v)| (k, Some(v))).collect(),
+            parent: None,
+            depth: 0,
+        }
+    }
+
+    /// `own` over `parent` (`None` removes the property).
+    pub fn over(
+        parent: &std::sync::Arc<Self>,
+        own: std::collections::HashMap<String, Option<String>>,
+    ) -> Self {
+        if parent.depth + 1 < Self::MAX_DEPTH {
+            return Self {
+                own,
+                parent: Some(parent.clone()),
+                depth: parent.depth + 1,
+            };
+        }
+        // Collapse the layers above the bottom one and keep the bottom shared.
+        // The bottom is usually `:root` with hundreds of entries (Primer);
+        // copying it at every sixth layer was ~15% of github's cascade. The
+        // upper layers are small, and a `None` in them still has to mask the
+        // bottom, so masks are kept.
+        let mut above = vec![parent];
+        while let Some(p) = above.last().and_then(|l| l.parent.as_ref()) {
+            above.push(p);
+        }
+        let bottom = above.pop().expect("chain has a parent").clone();
+        let mut merged: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+        for layer in above.into_iter().rev() {
+            for (k, v) in &layer.own {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        merged.extend(own);
+        Self {
+            own: merged,
+            depth: bottom.depth + 1,
+            parent: Some(bottom),
+        }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.get_key_value(name).map(|(_, v)| v)
+    }
+
+    pub fn get_key_value(&self, name: &str) -> Option<(&str, &str)> {
+        let mut layer = self;
+        loop {
+            if let Some((k, v)) = layer.own.get_key_value(name) {
+                return v.as_deref().map(|v| (k.as_str(), v));
+            }
+            layer = layer.parent.as_deref()?;
+        }
+    }
+
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    /// Every property in effect, flattened.
+    pub fn to_map(&self) -> std::collections::HashMap<String, String> {
+        let mut chain = vec![self];
+        while let Some(p) = chain.last().and_then(|l| l.parent.as_deref()) {
+            chain.push(p);
+        }
+        let mut map = std::collections::HashMap::new();
+        for layer in chain.into_iter().rev() {
+            for (k, v) in &layer.own {
+                match v {
+                    Some(v) => {
+                        map.insert(k.clone(), v.clone());
+                    }
+                    None => {
+                        map.remove(k);
+                    }
+                }
+            }
+        }
+        map
+    }
+}
+
+impl PartialEq for CustomProperties {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other) || self.to_map() == other.to_map()
+    }
+}
+
+impl std::fmt::Debug for CustomProperties {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sorted: std::collections::BTreeMap<_, _> = self.to_map().into_iter().collect();
+        f.debug_map().entries(sorted).finish()
+    }
+}
+
 /// Computed style for an element.
 #[derive(Debug, Clone, Default)]
 pub struct ComputedStyle {
@@ -2450,8 +2605,9 @@ pub struct ComputedStyle {
     /// Custom properties (`--*`) in effect on this element, with `var()`
     /// already substituted (CSS Variables 1 §2: they inherit, and resolve at
     /// computed-value time on the element that declares them). Shared with
-    /// the parent until this element declares a `--*` whose value differs.
-    pub custom_properties: std::sync::Arc<std::collections::HashMap<String, String>>,
+    /// the parent until this element declares a `--*` whose value differs,
+    /// and then only the differing ones are stored on this element's layer.
+    pub custom_properties: std::sync::Arc<CustomProperties>,
 }
 
 impl ComputedStyle {
@@ -3739,6 +3895,50 @@ mod object_fit_initial_value_tests {
     #[test]
     fn object_fit_initial_value_is_fill() {
         assert_eq!(ComputedStyle::new().object_fit, "fill");
+    }
+}
+
+#[cfg(test)]
+mod custom_properties_collapse_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn layer(pairs: &[(&str, Option<&str>)]) -> HashMap<String, Option<String>> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.map(str::to_string))).collect()
+    }
+
+    /// Past `MAX_DEPTH` the upper layers collapse, but the bottom (`:root`)
+    /// layer is shared, not copied, and masks in the upper layers still hide
+    /// the bottom's values.
+    #[test]
+    fn collapse_keeps_the_bottom_layer_shared_and_masks_it() {
+        let root: HashMap<String, String> = (0..300)
+            .map(|i| (format!("--r{i}"), format!("{i}")))
+            .collect();
+        let bottom = Arc::new(CustomProperties::from_map(root));
+        let mut cur = bottom.clone();
+        cur = Arc::new(CustomProperties::over(&cur, layer(&[("--r1", None)])));
+        cur = Arc::new(CustomProperties::over(&cur, layer(&[("--r2", Some("x"))])));
+        let mut depth = 2;
+        while depth + 1 < CustomProperties::MAX_DEPTH {
+            cur = Arc::new(CustomProperties::over(&cur, layer(&[("--a", Some("a"))])));
+            depth += 1;
+        }
+        let expected = {
+            let mut m = cur.to_map();
+            m.insert("--b".into(), "b".into());
+            m
+        };
+        let collapsed = CustomProperties::over(&cur, layer(&[("--b", Some("b"))]));
+
+        assert!(Arc::ptr_eq(collapsed.parent.as_ref().unwrap(), &bottom));
+        assert_eq!(collapsed.depth, 1);
+        assert_eq!(collapsed.get("--r1"), None, "the mask survives the collapse");
+        assert_eq!(collapsed.get("--r2"), Some("x"));
+        assert_eq!(collapsed.get("--r3"), Some("3"));
+        assert_eq!(collapsed.to_map(), expected);
+        assert!(collapsed.own.len() < 10, "only the upper layers were copied");
     }
 }
 
