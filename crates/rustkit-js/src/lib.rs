@@ -88,6 +88,13 @@ pub type ConsoleHandler = Box<dyn Fn(LogLevel, &str) + Send + Sync>;
 /// Timer callback.
 pub type TimerCallback = Box<dyn FnOnce() + Send + 'static>;
 
+/// A Rust function callable from script. It sees its arguments as plain
+/// values (objects arrive as the payload-less `Object`/`Array`/`Function`),
+/// and whatever it returns other than a primitive reaches script as
+/// `undefined`. That keeps every Boa-managed value on the Boa side: a host
+/// function can capture Rust state freely but can never hold a JS object.
+pub type HostFunction = Box<dyn Fn(&[JsValue]) -> JsValue>;
+
 /// Pending timer.
 #[allow(dead_code)]
 struct PendingTimer {
@@ -238,29 +245,42 @@ impl JsRuntime {
         // and call the console handler for each log entry
     }
 
+    /// Define a global function `name` that calls `function`.
+    pub fn register_host_function(
+        &mut self,
+        name: &str,
+        length: usize,
+        function: HostFunction,
+    ) -> Result<(), JsError> {
+        #[cfg(feature = "boa")]
+        {
+            use boa_engine::{JsString, NativeFunction};
+
+            // SAFETY: `HostFunction` only ever sees and returns the
+            // crate's own `JsValue`, which holds no GC-managed data, so the
+            // closure captures nothing the collector would need to trace.
+            let native = unsafe {
+                NativeFunction::from_closure(move |_this, args, _context| {
+                    let args: Vec<JsValue> = args.iter().map(from_boa_value).collect();
+                    Ok(to_boa_value(function(&args)))
+                })
+            };
+            self.context
+                .register_global_callable(JsString::from(name), length, native)
+                .map_err(|e| JsError::ExecutionError(e.to_string()))
+        }
+
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = (name, length, function);
+            Err(JsError::NotInitialized)
+        }
+    }
+
     /// Convert Boa value to JsValue.
     #[cfg(feature = "boa")]
     fn convert_boa_value(&self, value: &boa_engine::JsValue) -> JsValue {
-        use boa_engine::JsValue as BoaValue;
-
-        match value {
-            BoaValue::Undefined => JsValue::Undefined,
-            BoaValue::Null => JsValue::Null,
-            BoaValue::Boolean(b) => JsValue::Boolean(*b),
-            BoaValue::Integer(n) => JsValue::Number(*n as f64),
-            BoaValue::Rational(n) => JsValue::Number(*n),
-            BoaValue::String(s) => JsValue::String(s.to_std_string_escaped()),
-            BoaValue::Object(obj) => {
-                if obj.is_array() {
-                    JsValue::Array
-                } else if obj.is_callable() {
-                    JsValue::Function
-                } else {
-                    JsValue::Object
-                }
-            }
-            _ => JsValue::Undefined,
-        }
+        from_boa_value(value)
     }
 
     /// Set a global variable.
@@ -351,6 +371,45 @@ impl JsRuntime {
     pub fn has_global(&mut self, name: &str) -> bool {
         let check = format!("typeof {} !== 'undefined'", name);
         matches!(self.evaluate_script(&check), Ok(JsValue::Boolean(true)))
+    }
+}
+
+#[cfg(feature = "boa")]
+fn to_boa_value(value: JsValue) -> boa_engine::JsValue {
+    use boa_engine::{JsString, JsValue as BoaValue};
+
+    match value {
+        JsValue::Null => BoaValue::null(),
+        JsValue::Boolean(b) => BoaValue::from(b),
+        JsValue::Number(n) => BoaValue::from(n),
+        JsValue::String(s) => BoaValue::from(JsString::from(s.as_str())),
+        JsValue::Undefined | JsValue::Object | JsValue::Array | JsValue::Function => {
+            BoaValue::undefined()
+        }
+    }
+}
+
+#[cfg(feature = "boa")]
+fn from_boa_value(value: &boa_engine::JsValue) -> JsValue {
+    use boa_engine::JsValue as BoaValue;
+
+    match value {
+        BoaValue::Undefined => JsValue::Undefined,
+        BoaValue::Null => JsValue::Null,
+        BoaValue::Boolean(b) => JsValue::Boolean(*b),
+        BoaValue::Integer(n) => JsValue::Number(*n as f64),
+        BoaValue::Rational(n) => JsValue::Number(*n),
+        BoaValue::String(s) => JsValue::String(s.to_std_string_escaped()),
+        BoaValue::Object(obj) => {
+            if obj.is_array() {
+                JsValue::Array
+            } else if obj.is_callable() {
+                JsValue::Function
+            } else {
+                JsValue::Object
+            }
+        }
+        _ => JsValue::Undefined,
     }
 }
 
@@ -476,6 +535,31 @@ mod tests {
             .unwrap();
         let done = runtime.evaluate_script("done").unwrap();
         assert!(matches!(done, JsValue::Boolean(true)));
+    }
+
+    #[test]
+    fn host_functions_take_and_return_primitives() {
+        let mut runtime = JsRuntime::new().unwrap();
+        runtime
+            .register_host_function(
+                "__host_echo",
+                2,
+                Box::new(|args| match args {
+                    [JsValue::String(s), JsValue::Number(n)] => {
+                        JsValue::String(format!("{s}:{n}"))
+                    }
+                    [JsValue::Object] => JsValue::Object,
+                    _ => JsValue::Null,
+                }),
+            )
+            .unwrap();
+        let echoed = runtime.evaluate_script("__host_echo('a', 2)").unwrap();
+        assert!(matches!(echoed, JsValue::String(s) if s == "a:2"));
+        let none = runtime.evaluate_script("__host_echo()").unwrap();
+        assert!(matches!(none, JsValue::Null));
+        // A non-primitive return reaches script as undefined.
+        let object = runtime.evaluate_script("typeof __host_echo({})").unwrap();
+        assert!(matches!(object, JsValue::String(s) if s == "undefined"));
     }
 
     #[test]

@@ -241,6 +241,7 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                 &mut current_property,
                 &mut current_value,
                 &mut current_decls,
+                in_value,
             );
             let selector = current_selector.trim().to_string();
             if !selector.is_empty() && !current_decls.is_empty() {
@@ -298,6 +299,7 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                 &mut current_property,
                 &mut current_value,
                 &mut current_decls,
+                true,
             );
             in_value = false;
             continue;
@@ -313,6 +315,7 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
             &mut current_property,
             &mut current_value,
             &mut current_decls,
+            in_value,
         );
         let selector = current_selector.trim().to_string();
         if !selector.is_empty() && !current_decls.is_empty() {
@@ -331,10 +334,15 @@ fn flush_decl(
     current_property: &mut String,
     current_value: &mut String,
     decls: &mut Vec<DeclarationAst>,
+    saw_colon: bool,
 ) {
     let property = current_property.trim();
     let value_raw = current_value.trim();
-    if property.is_empty() || value_raw.is_empty() {
+    // An empty value is valid for a custom property (CSS Variables 1 §2):
+    // `--toggle: ;` is how "space toggles" switch on, and dropping it left
+    // the toggle unset, which is the OFF state.
+    let empty_custom = saw_colon && property.starts_with("--");
+    if property.is_empty() || (value_raw.is_empty() && !empty_custom) {
         current_property.clear();
         current_value.clear();
         return;
@@ -417,6 +425,18 @@ mod tests {
         assert_eq!(ast.rules[1].selector, ".container");
         assert_eq!(ast.rules[1].declarations.len(), 2);
         assert!(ast.rules[1].declarations[1].important);
+    }
+
+    #[test]
+    fn an_empty_custom_property_is_kept_and_an_empty_property_is_not() {
+        let ast = parse_stylesheet("a{--on: ;color:;--last:}b{--nocolon}").unwrap();
+        let decls: Vec<(&str, &str)> = ast.rules[0]
+            .declarations
+            .iter()
+            .map(|d| (d.property.as_str(), d.value.as_str()))
+            .collect();
+        assert_eq!(decls, vec![("--on", ""), ("--last", "")]);
+        assert_eq!(ast.rules.len(), 1, "`--nocolon` is not a declaration");
     }
 
     #[test]

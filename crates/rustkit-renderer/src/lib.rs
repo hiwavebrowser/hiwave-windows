@@ -2957,7 +2957,8 @@ impl Renderer {
     /// Draw a box shadow.
     /// 
     /// For now, this uses a simplified approach:
-    /// - Outer shadows: Draw multiple semi-transparent rectangles with increasing offsets
+    /// - Outer shadows: semi-transparent rectangles with increasing offsets,
+    ///   clipped to outside the border box (`outer_shadow_paint_rects`)
     /// - Inset shadows: Draw gradient-like rectangles inside the box
     fn draw_box_shadow(
         &mut self,
@@ -2995,36 +2996,32 @@ impl Renderer {
         if shadow_rect.width <= 0.0 || shadow_rect.height <= 0.0 {
             return;
         }
-        
-        // For blur, we draw multiple layers with decreasing opacity
-        // This is a simplified approximation - real blur would use GPU shaders
+
+        if !inset {
+            for (r, alpha) in Self::outer_shadow_paint_rects(rect, shadow_rect, blur_radius, color.a) {
+                self.draw_solid_rect(r, Color::new(color.r, color.g, color.b, alpha));
+            }
+            return;
+        }
+
+        // Inset: for blur, draw multiple layers with decreasing opacity, shrinking
+        // inward. This is a simplified approximation - real blur would use GPU shaders
         if blur_radius > 0.0 {
             let steps = (blur_radius / 2.0).ceil().max(1.0) as u32;
             let step_size = blur_radius / steps as f32;
-            
+
             for i in 0..steps {
                 let layer = steps - i; // Draw outer layers first
                 let expansion = step_size * layer as f32;
                 let layer_alpha = color.a / (steps as f32 * 1.5); // Fade out
-                
-                let layer_rect = if inset {
-                    // Inset shadows shrink inward
-                    Rect::new(
-                        shadow_rect.x + expansion,
-                        shadow_rect.y + expansion,
-                        shadow_rect.width - expansion * 2.0,
-                        shadow_rect.height - expansion * 2.0,
-                    )
-                } else {
-                    // Outer shadows expand outward
-                    Rect::new(
-                        shadow_rect.x - expansion,
-                        shadow_rect.y - expansion,
-                        shadow_rect.width + expansion * 2.0,
-                        shadow_rect.height + expansion * 2.0,
-                    )
-                };
-                
+
+                let layer_rect = Rect::new(
+                    shadow_rect.x + expansion,
+                    shadow_rect.y + expansion,
+                    shadow_rect.width - expansion * 2.0,
+                    shadow_rect.height - expansion * 2.0,
+                );
+
                 if layer_rect.width > 0.0 && layer_rect.height > 0.0 {
                     let layer_color = Color::new(color.r, color.g, color.b, layer_alpha);
                     self.draw_solid_rect(layer_rect, layer_color);
@@ -3034,6 +3031,62 @@ impl Renderer {
             // No blur - just draw solid shadow
             self.draw_solid_rect(shadow_rect, color);
         }
+    }
+
+    /// The rects (with alpha) that paint an outer box shadow. `shadow_rect`
+    /// is the border box moved by the offset and grown by the spread; blur
+    /// is approximated by expanding layers, outermost first. Each layer is
+    /// clipped to outside the border box (CSS Backgrounds 3 §7.1), so a
+    /// transparent box shows what is behind it, not its own shadow.
+    /// Rounded corners are not modelled: the hole is the square border box.
+    fn outer_shadow_paint_rects(
+        border_box: Rect,
+        shadow_rect: Rect,
+        blur_radius: f32,
+        alpha: f32,
+    ) -> Vec<(Rect, f32)> {
+        let mut layers = Vec::new();
+        if blur_radius > 0.0 {
+            let steps = (blur_radius / 2.0).ceil().max(1.0) as u32;
+            let step_size = blur_radius / steps as f32;
+            for i in 0..steps {
+                let expansion = step_size * (steps - i) as f32;
+                layers.push((
+                    Rect::new(
+                        shadow_rect.x - expansion,
+                        shadow_rect.y - expansion,
+                        shadow_rect.width + expansion * 2.0,
+                        shadow_rect.height + expansion * 2.0,
+                    ),
+                    alpha / (steps as f32 * 1.5),
+                ));
+            }
+        } else {
+            layers.push((shadow_rect, alpha));
+        }
+        layers
+            .into_iter()
+            .flat_map(|(r, a)| Self::rect_minus(r, border_box).into_iter().map(move |p| (p, a)))
+            .collect()
+    }
+
+    /// `a` minus `b`, as up to four disjoint rects: full-width bands above
+    /// and below `b`, then the left and right pieces beside it.
+    fn rect_minus(a: Rect, b: Rect) -> Vec<Rect> {
+        let Some(hole) = a.intersect(&b) else {
+            return vec![a];
+        };
+        let (a_right, a_bottom) = (a.x + a.width, a.y + a.height);
+        let (h_right, h_bottom) = (hole.x + hole.width, hole.y + hole.height);
+        [
+            Rect::new(a.x, a.y, a.width, hole.y - a.y),
+            Rect::new(a.x, h_bottom, a.width, a_bottom - h_bottom),
+            Rect::new(a.x, hole.y, hole.x - a.x, hole.height),
+            Rect::new(h_right, hole.y, a_right - h_right, hole.height),
+        ]
+        .into_iter()
+        .filter(|r| r.width > 0.0 && r.height > 0.0)
+        .collect()
     }
 
     /// Apply a backdrop filter (blur, grayscale, etc.) to pixels behind the element.
@@ -7465,6 +7518,66 @@ pub(crate) fn paint0_probe() -> bool {
     *ON.get_or_init(|| std::env::var("RUSTKIT_PAINT_PROBE").as_deref() == Ok("1"))
 }
 
+
+#[cfg(test)]
+mod outer_shadow_tests {
+    use super::*;
+
+    fn area(rects: &[(Rect, f32)]) -> f32 {
+        rects.iter().map(|(r, _)| r.width * r.height).sum()
+    }
+
+    fn assert_outside(rects: &[(Rect, f32)], border_box: Rect) {
+        for (r, _) in rects {
+            assert!(
+                r.intersect(&border_box).is_none(),
+                "shadow rect {r:?} paints inside the border box {border_box:?}"
+            );
+        }
+    }
+
+    /// CSS Backgrounds 3 §7.1: an outer shadow is clipped to outside the
+    /// border box. linkedin's "Sign in" is `box-shadow: 0 0 0 1px blue` on a
+    /// transparent background with blue text: a 1px ring, not a filled box.
+    #[test]
+    fn spread_only_ring_does_not_fill_the_box() {
+        let border_box = Rect::new(40.0, 40.0, 89.0, 38.0);
+        let shadow = Rect::new(39.0, 39.0, 91.0, 40.0);
+        let rects = Renderer::outer_shadow_paint_rects(border_box, shadow, 0.0, 1.0);
+        assert_outside(&rects, border_box);
+        let ring = 91.0 * 40.0 - 89.0 * 38.0;
+        assert!((area(&rects) - ring).abs() < 1e-3, "area {} != ring {ring}", area(&rects));
+    }
+
+    /// An offset shadow shows only where it sticks out past the box.
+    #[test]
+    fn offset_shadow_shows_only_outside_the_box() {
+        let border_box = Rect::new(40.0, 40.0, 200.0, 60.0);
+        let shadow = Rect::new(48.0, 48.0, 200.0, 60.0);
+        let rects = Renderer::outer_shadow_paint_rects(border_box, shadow, 0.0, 1.0);
+        assert_outside(&rects, border_box);
+        let visible = 200.0 * 60.0 - 192.0 * 52.0;
+        assert!((area(&rects) - visible).abs() < 1e-3);
+    }
+
+    /// Blurred layers are clipped the same way, and keep their alpha.
+    #[test]
+    fn blurred_layers_are_clipped_too() {
+        let border_box = Rect::new(10.0, 10.0, 50.0, 50.0);
+        let rects = Renderer::outer_shadow_paint_rects(border_box, border_box, 4.0, 0.9);
+        assert!(!rects.is_empty());
+        assert_outside(&rects, border_box);
+        assert!(rects.iter().all(|(_, a)| (*a - 0.9 / 3.0).abs() < 1e-6));
+    }
+
+    /// A shadow entirely hidden behind its box paints nothing.
+    #[test]
+    fn shadow_under_the_box_paints_nothing() {
+        let border_box = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let shadow = Rect::new(10.0, 10.0, 80.0, 80.0);
+        assert!(Renderer::outer_shadow_paint_rects(border_box, shadow, 0.0, 1.0).is_empty());
+    }
+}
 
 #[cfg(test)]
 mod form_text_seat_tests {

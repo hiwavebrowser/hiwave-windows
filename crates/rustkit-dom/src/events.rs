@@ -372,6 +372,11 @@ impl EventTarget {
         Self::default()
     }
 
+    /// Move `other`'s listeners onto this target, leaving `other` with none.
+    pub(crate) fn adopt_listeners(&self, other: &EventTarget) {
+        self.listeners.swap(&other.listeners);
+    }
+
     /// Add an event listener.
     pub fn add_event_listener(
         &self,

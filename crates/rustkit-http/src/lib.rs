@@ -2,20 +2,25 @@
 //!
 //! Minimal HTTP/1.1 client for the RustKit browser engine.
 //!
-//! This crate provides a simple async HTTP client using native-tls for TLS,
-//! eliminating the need for reqwest and its transitive dependencies.
+//! This crate provides a simple async HTTP client, eliminating the need for
+//! reqwest and its transitive dependencies. TLS is rustls with a
+//! browser-typical client profile (ALPN h2+http/1.1 advertised, negotiated
+//! http/1.1 fallback) — the network-lane change measured in exchange #276.
+//! The previous native-tls stack remains available for one release behind
+//! the `native-tls` feature as a rollback path (Atlas #535).
 
 use std::io::{self, Write};
 use std::time::Duration;
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version};
-use native_tls::TlsConnector as NativeTlsConnector;
+use std::sync::Arc;
+use tokio_rustls::rustls::pki_types::ServerName;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio_native_tls::TlsConnector;
+use tokio_rustls::TlsConnector;
 use tracing::{debug, trace, warn};
 use url::Url;
 
@@ -89,6 +94,23 @@ impl Response {
     }
 }
 
+/// The honest HiWave user agent: real product, real engine, real platform.
+///
+/// NEVER Chrome's UA — the network lane's constitution. The Mozilla/5.0
+/// prefix is the universal compatibility token every shipping browser keeps;
+/// everything after it says exactly what we are. amazon's WAF measurably
+/// scores UA/TLS coherence (diagnosis, exchange #276), so this string ships
+/// in the same change as the rustls profile, never separately.
+pub fn default_user_agent() -> String {
+    #[cfg(target_os = "macos")]
+    let platform = "Macintosh; Intel Mac OS X 10_15_7";
+    #[cfg(target_os = "windows")]
+    let platform = "Windows NT 10.0; Win64; x64";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let platform = "X11; Linux x86_64";
+    format!("Mozilla/5.0 ({platform}) HiWave/1.0 RustKit/1.0")
+}
+
 /// HTTP client configuration.
 #[derive(Clone)]
 pub struct ClientConfig2 {
@@ -105,7 +127,7 @@ pub struct ClientConfig2 {
 impl Default for ClientConfig2 {
     fn default() -> Self {
         Self {
-            user_agent: "RustKit/1.0".to_string(),
+            user_agent: default_user_agent(),
             timeout: Duration::from_secs(30),
             max_redirects: 10,
             follow_redirects: true,
@@ -116,7 +138,10 @@ impl Default for ClientConfig2 {
 /// HTTP client.
 pub struct Client {
     config: ClientConfig2,
+    #[cfg(not(feature = "native-tls"))]
     tls_connector: TlsConnector,
+    #[cfg(feature = "native-tls")]
+    tls_connector: tokio_native_tls::TlsConnector,
 }
 
 impl Client {
@@ -126,17 +151,129 @@ impl Client {
     }
 
     /// Create a new HTTP client with custom configuration.
+    /// Rollback constructor (Atlas #535): the pre-network-lane native-tls
+    /// handshake, byte-for-byte the old behaviour. One release only.
+    #[cfg(feature = "native-tls")]
     pub fn with_config(config: ClientConfig2) -> Result<Self, HttpError> {
-        // Build native-tls connector
-        let native_connector = NativeTlsConnector::new()
+        let native_connector = native_tls::TlsConnector::new()
             .map_err(|e| HttpError::TlsError(e.to_string()))?;
+        let tls_connector = tokio_native_tls::TlsConnector::from(native_connector);
+        Ok(Self {
+            config,
+            tls_connector,
+        })
+    }
 
-        let tls_connector = TlsConnector::from(native_connector);
+    #[cfg(feature = "native-tls")]
+    async fn connect_tls(
+        &self,
+        host: &str,
+        _addr: &str,
+        stream: tokio::net::TcpStream,
+    ) -> Result<tokio_native_tls::TlsStream<tokio::net::TcpStream>, HttpError> {
+        self.tls_connector
+            .connect(host, stream)
+            .await
+            .map_err(|e| HttpError::TlsError(e.to_string()))
+    }
+
+    #[cfg(not(feature = "native-tls"))]
+    pub fn with_config(config: ClientConfig2) -> Result<Self, HttpError> {
+        // rustls with a browser-typical client profile (network lane).
+        //
+        // MEASURED (2026-09-28 diagnosis, exchange #276): Cloudflare, Akamai
+        // and DataDome default-deny known-library TLS ClientHellos at request
+        // one; header shape and even real HTTP/2 do not flip the verdict, and
+        // amazon actively punishes browser-claiming headers that ride a
+        // library fingerprint. So the TLS layer is where coherence starts.
+        // The old native-tls connector was built with `::new()` and sent NO
+        // ALPN extension at all — an immediate tell.
+        //
+        // This is a WELL-FORMED MODERN CLIENT, not a Chrome imitation: rustls
+        // already produces a contemporary extension set (X25519/P-256 key
+        // shares, TLS 1.3 + 1.2, session tickets); we advertise ALPN
+        // h2+http/1.1 like every current browser. If the peer selects h2 we
+        // currently keep speaking HTTP/1.1 only when the peer permits it —
+        // see `connect_tls`, which records the negotiated protocol so the
+        // caller can refuse mismatches loudly instead of desyncing.
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        let native = rustls_native_certs::load_native_certs();
+        for cert in native.certs {
+            // A single unparseable platform cert must not kill the store.
+            let _ = roots.add(cert);
+        }
+        if roots.is_empty() {
+            return Err(HttpError::TlsError(
+                "no usable platform root certificates".into(),
+            ));
+        }
+
+        let mut tls_config = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        // Browser-typical ALPN advertisement. http/1.1 first would be a lie
+        // about preference; browsers prefer h2. Until this client SPEAKS h2,
+        // connect_tls() falls back to a second, http/1.1-only handshake when
+        // the peer selects h2 — an honest downgrade the peer agrees to, not
+        // a silent protocol desync.
+        tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+        let tls_connector = TlsConnector::from(Arc::new(tls_config));
 
         Ok(Self {
             config,
             tls_connector,
         })
+    }
+
+    /// Open a TLS connection speaking HTTP/1.1, honestly.
+    ///
+    /// Advertises h2+http/1.1 (what a modern client is), and if the peer
+    /// selects h2 — which this client cannot speak yet — re-handshakes with
+    /// an http/1.1-only offer. The downgrade is NEGOTIATED, never a desync:
+    /// the peer explicitly agrees to http/1.1 in the second handshake.
+    /// Full h2 support is the flagged follow-up (hyper adoption is a
+    /// dependency-philosophy decision above this lane).
+    #[cfg(not(feature = "native-tls"))]
+    async fn connect_tls(
+        &self,
+        host: &str,
+        addr: &str,
+        stream: tokio::net::TcpStream,
+    ) -> Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>, HttpError> {
+        let server_name = ServerName::try_from(host.to_string())
+            .map_err(|e| HttpError::TlsError(format!("invalid server name: {e}")))?;
+
+        let tls_stream = self
+            .tls_connector
+            .connect(server_name.clone(), stream)
+            .await
+            .map_err(|e| HttpError::TlsError(e.to_string()))?;
+
+        let negotiated = tls_stream.get_ref().1.alpn_protocol().map(|p| p.to_vec());
+        if negotiated.as_deref() == Some(b"h2") {
+            // Peer picked h2; we cannot speak it yet. Re-handshake offering
+            // only http/1.1 so the protocol on the wire matches the bytes we
+            // send. Costs one extra round trip on h2-capable origins.
+            let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+            for cert in rustls_native_certs::load_native_certs().certs {
+                let _ = roots.add(cert);
+            }
+            let mut h1_only = tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            h1_only.alpn_protocols = vec![b"http/1.1".to_vec()];
+            let connector = TlsConnector::from(Arc::new(h1_only));
+            let fresh = tokio::net::TcpStream::connect(addr)
+                .await
+                .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
+            return connector
+                .connect(server_name, fresh)
+                .await
+                .map_err(|e| HttpError::TlsError(e.to_string()));
+        }
+
+        Ok(tls_stream)
     }
 
     /// Create a client builder.
@@ -239,11 +376,7 @@ impl Client {
             .await
             .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
 
-        let tls_stream = self
-            .tls_connector
-            .connect(host, stream)
-            .await
-            .map_err(|e| HttpError::TlsError(e.to_string()))?;
+        let tls_stream = self.connect_tls(host, &addr, stream).await?;
 
         self.send_request(tls_stream, host, method, url, headers, body)
             .await
@@ -292,23 +425,78 @@ impl Client {
         };
         let path = if path.is_empty() { "/" } else { &path };
 
+        // BROWSER-SHAPED EMISSION (network lane). The old block wrote five
+        // Title-Case headers, `Accept: */*`, `Connection: close`, then every
+        // caller header in lowercase after them — three tells in one block
+        // (mixed casing, close-on-navigate, wildcard Accept). MEASURED
+        // (#276): header shape alone does not unblock any WAF vendor, but
+        // amazon scores header/TLS COHERENCE, so the shape ships together
+        // with the rustls profile as one coherent client identity.
+        //
+        // Order and casing follow shipping browsers' HTTP/1.1 form. Caller
+        // headers override any default; the ordered known set is emitted
+        // first, remaining caller headers after, all in canonical casing.
         let mut request = Vec::new();
         writeln!(request, "{} {} HTTP/1.1\r", method, path)?;
         writeln!(request, "Host: {}\r", host)?;
+        writeln!(request, "Connection: keep-alive\r")?;
         writeln!(request, "User-Agent: {}\r", self.config.user_agent)?;
-        writeln!(request, "Accept: */*\r")?;
-        // Every browser sends this, and some sites treat a client that
-        // doesn't as a bot (microsoft.com serves an "automated process"
-        // page). Only encodings decode_content_encoding can undo.
-        if !headers.contains_key("accept-encoding") {
-            writeln!(request, "Accept-Encoding: {}\r", ACCEPT_ENCODING)?;
-        }
-        writeln!(request, "Connection: close\r")?;
 
-        // Add custom headers
+        let canonical = |name: &str| -> String {
+            // HTTP/1.1 browser casing: Title-Case per hyphenated segment,
+            // with the Sec-* and *-CH-* families' internal caps preserved
+            // by the segment rule itself.
+            name.split('-')
+                .map(|seg| {
+                    let mut c = seg.chars();
+                    match c.next() {
+                        Some(f) => f.to_ascii_uppercase().to_string() + c.as_str(),
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("-")
+        };
+
+        // Known headers in browser order, caller value winning over default.
+        const ORDERED: &[(&str, Option<&str>)] = &[
+            (
+                "accept",
+                Some(
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,\
+image/avif,image/webp,*/*;q=0.8",
+                ),
+            ),
+            ("accept-language", None),
+            ("accept-encoding", Some(ACCEPT_ENCODING)),
+            ("upgrade-insecure-requests", Some("1")),
+            ("sec-fetch-dest", Some("document")),
+            ("sec-fetch-mode", Some("navigate")),
+            ("sec-fetch-site", Some("none")),
+            ("sec-fetch-user", Some("?1")),
+            ("referer", None),
+            ("cookie", None),
+        ];
+        let mut written: Vec<&str> = vec![];
+        for (name, default) in ORDERED {
+            let value = headers
+                .get(*name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .or_else(|| default.map(str::to_string));
+            if let Some(v) = value {
+                writeln!(request, "{}: {}\r", canonical(name), v)?;
+                written.push(name);
+            }
+        }
+
+        // Remaining caller headers, canonical casing, after the known set.
         for (name, value) in headers.iter() {
+            if written.contains(&name.as_str()) {
+                continue;
+            }
             if let Ok(v) = value.to_str() {
-                writeln!(request, "{}: {}\r", name, v)?;
+                writeln!(request, "{}: {}\r", canonical(name.as_str()), v)?;
             }
         }
 
@@ -649,11 +837,7 @@ impl Client {
             .await
             .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
 
-        let tls_stream = self
-            .tls_connector
-            .connect(host, stream)
-            .await
-            .map_err(|e| HttpError::TlsError(e.to_string()))?;
+        let tls_stream = self.connect_tls(host, &addr, stream).await?;
 
         self.send_streaming_request(tls_stream, host, url).await
     }
@@ -1014,7 +1198,10 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = ClientConfig2::default();
-        assert_eq!(config.user_agent, "RustKit/1.0");
+        assert!(config.user_agent.starts_with("Mozilla/5.0 ("));
+        assert!(config.user_agent.contains("HiWave/1.0"));
+        assert!(config.user_agent.contains("RustKit/1.0"));
+        assert!(!config.user_agent.contains("Chrome"), "never Chrome\'s UA");
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.max_redirects, 10);
         assert!(config.follow_redirects);
