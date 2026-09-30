@@ -38,6 +38,13 @@ The patches (all cfg(windows), so macOS and Linux behaviour is unchanged):
    a parallel run, none in a serial one. The mutex is redundant (the guard
    already serialises creation), so it is removed. Drop this patch when
    upstream removes the mutex; the script then reports it MISSING.
+
+Then the patch FILES in scripts/windows-patches/*.patch, in name order. Each
+is a `git format-patch` of an upstream PR that Windows needs before it lands
+(the file's own header names the PR). Applied with `git apply`; a patch that
+no longer applies AND whose marker (its first added test) is already in the
+tree counts as landed upstream, and the script says so: that is the cue to
+delete the file. Any other failure to apply is an error.
 """
 from __future__ import annotations
 
@@ -240,6 +247,51 @@ def patch_engine(text: str, state: list) -> str:
     return text
 
 
+PATCH_DIR = REPO / "scripts" / "windows-patches"
+
+
+def patch_files(check: bool, state: list) -> bool:
+    """Apply scripts/windows-patches/*.patch with git. Returns True if any
+    patch was (or, under --check, would be) applied."""
+    import subprocess
+    changed = False
+    for patch in sorted(PATCH_DIR.glob("*.patch")):
+        name = patch.name
+        # The marker is the first test the patch adds: present means applied
+        # (by this script, or because upstream landed the change).
+        text = patch.read_text(encoding="utf-8")
+        marker = None
+        for line in text.splitlines():
+            if line.startswith("+") and "fn " in line and line.rstrip().endswith("() {"):
+                marker = line[1:].strip()
+                break
+        tree_has_marker = False
+        if marker:
+            for f in {l[6:] for l in text.splitlines() if l.startswith("+++ b/")}:
+                fp = REPO / f
+                if fp.exists() and marker in fp.read_text(encoding="utf-8"):
+                    tree_has_marker = True
+                    break
+        if tree_has_marker:
+            state.append((name, "already applied (or landed upstream: delete the file if so)"))
+            continue
+        # Reduced context: sibling patches may touch the same test module.
+        # --ignore-whitespace: this repo checks out CRLF (core.autocrlf) and
+        # the patches come from an LF tree; git otherwise refuses the context.
+        cmd = ["git", "-C", str(REPO), "apply", "-C1", "--ignore-whitespace", "--check", str(patch)]
+        rc = subprocess.run(cmd, capture_output=True, text=True)
+        if rc.returncode != 0:
+            state.append((name, "MISSING: does not apply, upstream moved: " + rc.stderr.strip().splitlines()[-1][:80]))
+            continue
+        changed = True
+        if check:
+            state.append((name, "would apply"))
+            continue
+        subprocess.run(cmd[:-2] + [str(patch)], check=True)
+        state.append((name, "applied"))
+    return changed
+
+
 def main() -> int:
     check = "--check" in sys.argv[1:]
     state: list = []
@@ -251,6 +303,8 @@ def main() -> int:
             changed = True
             if not check:
                 write(path, new, nl)
+    if PATCH_DIR.is_dir():
+        changed = patch_files(check, state) or changed
     bad = 0
     for name, what in state:
         print(f"  {what:40} {name}")

@@ -117,6 +117,40 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-09-30, later (parity to 1 point, on top of refresh #8):** Pete lowered
+the bar to "within 1% of macOS measurements", read as every case within 1.0
+point of Mac's number. Two cases missed on the refresh #8 board:
+`gradient-no-radius` +1.34 and `image-gallery` +1.07. Both were engine bugs,
+both cross-platform in origin, both sent upstream, and both carried here until
+they land, as patch files under `scripts/windows-patches/` that
+`apply_windows_patches.py` applies after the string-edit patches:
+
+- **`0001-line-fit-epsilon.patch` (hiwave-macos #388).** A shrink-to-fit box
+  is sized from its text's max-content width, which comes back to the line
+  breaker a few f32 ulps smaller after `(width + padding) - padding` and the
+  flex sizing arithmetic. The exact `<=` then wrapped text measured to fit its
+  own box: "to right Pink-Blue" broke at the hyphen. The three fit comparisons
+  now allow 1/64 px, Chrome's LayoutUnit. gradient-no-radius 1.86 to 1.27,
+  gradient-backgrounds 1.29 to 0.74.
+- **`0002-windows-color-emoji.patch` (hiwave-macos #390).** RustKit on Windows
+  painted no emoji at all. The colour path existed for macOS; Windows returned
+  `None`. The rasterizer now draws the character from Segoe UI Emoji through
+  Direct2D's `DrawTextLayout` with `ENABLE_COLOR_FONT`, which renders the
+  COLRv1 artwork Chrome shows (DirectWrite's `TranslateColorGlyphRun` gives
+  only the flat COLRv0 layers and scored worse than the blank). The Windows
+  shaper also gives emoji Segoe UI Emoji's advance and variation selectors
+  none, which put every emoji 8 px right of Chrome's. image-gallery 1.59 to
+  0.51, about 3.98 to 3.45, card-grid 1.00 to 0.76, chrome_rustkit 1.23 to
+  0.74, sticky-scroll 0.79 to 0.45.
+
+A patch file whose first added test is already in the tree counts as applied
+(or landed upstream: delete it); one that no longer applies is an error.
+`git apply` runs with `--ignore-whitespace` because this repo checks out CRLF
+and the patches come from an LF tree.
+
+Board after both: **26 / 26, mean 1.27% (Mac 1.18%), every case within 0.87
+points** (worst `css-selectors`), nine cases better than Mac.
+
 **2026-09-30 (refresh #8, after #102 merged):** crates now verbatim from
 hiwave-macos develop `22092e6` (Merge #384), 36 upstream PRs past refresh #7
 (#348-#384). Highlights: `light-dark()` resolves to its light argument (#384,

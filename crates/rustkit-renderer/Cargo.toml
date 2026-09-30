@@ -36,7 +36,14 @@ windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Graphics_DirectWrite",
   "Win32_System_Com",
+  # Colour emoji: Direct2D draws the colour glyph into a WIC bitmap.
+  "Win32_Graphics_Direct2D",
+  "Win32_Graphics_Direct2D_Common",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Imaging",
 ] }
+# The origin argument of Direct2D's DrawTextLayout is a windows-numerics type.
+windows-numerics = "0.2"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
