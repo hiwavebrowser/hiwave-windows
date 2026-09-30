@@ -11050,8 +11050,13 @@ mod tests {
         // strut's descent extends the line box under them — Chrome does the
         // same (a lone 40px inline-block makes its container ~45px tall).
         let expected = 40.0 + parent.inline_strut_descent();
+        // `inline_strut_descent` is the font's raw fractional descent while
+        // the line box rounds ascent and descent to whole pixels (as Chrome
+        // does), so the two agree to within a pixel, not half of one. 0.5
+        // held for SF and Segoe UI by luck of their descents; Arial's
+        // 3.453 rounds up to 4.
         assert!(
-            (parent.dimensions.content.height - expected).abs() < 0.5,
+            (parent.dimensions.content.height - expected).abs() < 1.0,
             "parent should be one line tall ({expected}px incl. strut descent), got {}",
             parent.dimensions.content.height
         );
@@ -11134,8 +11139,10 @@ mod tests {
         assert!(sd > 0.0, "strut descent must be positive");
         let second_row = &parent.children[2].dimensions;
         let expected_y = 124.0 + sd + 10.0 + 2.0;
+        // Within a pixel: the raw fractional descent against a rounded line
+        // box (see test_inline_flex_children_share_a_line).
         assert!(
-            (second_row.content.y - expected_y).abs() < 0.5,
+            (second_row.content.y - expected_y).abs() < 1.0,
             "wrapped row must advance by line height incl. strut descent; expected content.y {expected_y}, got {}",
             second_row.content.y
         );
