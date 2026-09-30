@@ -111,6 +111,46 @@ pub fn default_user_agent() -> String {
     format!("Mozilla/5.0 ({platform}) HiWave/1.0 RustKit/1.0")
 }
 
+
+/// The platform root store, loaded ONCE per process.
+///
+/// `rustls_native_certs::load_native_certs` walks the macOS keychain's trust
+/// settings and costs SECONDS there. Loaded per `Client` (as #346 shipped
+/// it) it added ~5 s to every engine start — measured by the trench as the
+/// real-site board falling 16/30 -> 7/30 when develop picked #346 up, every
+/// lost site a 30 s-budget timeout, not a block. Linux reads a bundle file
+/// in milliseconds, which is why the author's probes never saw it: the
+/// platform-verification gap the network lane declared on day one, now with
+/// its first scar. Approach and measurements from Atlas's
+/// rs-tls-roots-once (307fc8e), rebuilt here against post-#355 develop —
+/// #355 already removed the second (per-connection) load site.
+#[cfg(not(feature = "native-tls"))]
+fn platform_roots() -> Result<Arc<tokio_rustls::rustls::RootCertStore>, HttpError> {
+    static ROOTS: std::sync::OnceLock<Arc<tokio_rustls::rustls::RootCertStore>> =
+        std::sync::OnceLock::new();
+    let roots = ROOTS.get_or_init(|| {
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for cert in rustls_native_certs::load_native_certs().certs {
+            // A single unparseable platform cert must not kill the store.
+            let _ = roots.add(cert);
+        }
+        Arc::new(roots)
+    });
+    if roots.is_empty() {
+        return Err(HttpError::TlsError(
+            "no usable platform root certificates".into(),
+        ));
+    }
+    Ok(roots.clone())
+}
+
+/// ALPN outcome of a TLS handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NegotiatedProtocol {
+    H2,
+    Http1,
+}
+
 /// HTTP client configuration.
 #[derive(Clone)]
 pub struct ClientConfig2 {
@@ -170,11 +210,15 @@ impl Client {
         host: &str,
         _addr: &str,
         stream: tokio::net::TcpStream,
-    ) -> Result<tokio_native_tls::TlsStream<tokio::net::TcpStream>, HttpError> {
-        self.tls_connector
+    ) -> Result<(tokio_native_tls::TlsStream<tokio::net::TcpStream>, NegotiatedProtocol), HttpError>
+    {
+        // Rollback stack: no ALPN configured, identical to pre-lane behavior.
+        let tls = self
+            .tls_connector
             .connect(host, stream)
             .await
-            .map_err(|e| HttpError::TlsError(e.to_string()))
+            .map_err(|e| HttpError::TlsError(e.to_string()))?;
+        Ok((tls, NegotiatedProtocol::Http1))
     }
 
     #[cfg(not(feature = "native-tls"))]
@@ -196,17 +240,7 @@ impl Client {
         // currently keep speaking HTTP/1.1 only when the peer permits it —
         // see `connect_tls`, which records the negotiated protocol so the
         // caller can refuse mismatches loudly instead of desyncing.
-        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
-        let native = rustls_native_certs::load_native_certs();
-        for cert in native.certs {
-            // A single unparseable platform cert must not kill the store.
-            let _ = roots.add(cert);
-        }
-        if roots.is_empty() {
-            return Err(HttpError::TlsError(
-                "no usable platform root certificates".into(),
-            ));
-        }
+        let roots = platform_roots()?;
 
         let mut tls_config = tokio_rustls::rustls::ClientConfig::builder()
             .with_root_certificates(roots)
@@ -226,54 +260,34 @@ impl Client {
         })
     }
 
-    /// Open a TLS connection speaking HTTP/1.1, honestly.
+    /// Open a TLS connection and report the ALPN-negotiated protocol.
     ///
-    /// Advertises h2+http/1.1 (what a modern client is), and if the peer
-    /// selects h2 — which this client cannot speak yet — re-handshakes with
-    /// an http/1.1-only offer. The downgrade is NEGOTIATED, never a desync:
-    /// the peer explicitly agrees to http/1.1 in the second handshake.
-    /// Full h2 support is the flagged follow-up (hyper adoption is a
-    /// dependency-philosophy decision above this lane).
+    /// PR 1 of the network lane advertised h2 but re-handshook http/1.1-only
+    /// when the peer selected it — disclosed as an odd, costly pattern.
+    /// PR 2 removes it: the caller now SPEAKS whichever protocol was
+    /// negotiated, h2 included, over this single handshake.
     #[cfg(not(feature = "native-tls"))]
     async fn connect_tls(
         &self,
         host: &str,
-        addr: &str,
+        _addr: &str,
         stream: tokio::net::TcpStream,
-    ) -> Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>, HttpError> {
+    ) -> Result<(tokio_rustls::client::TlsStream<tokio::net::TcpStream>, NegotiatedProtocol), HttpError>
+    {
         let server_name = ServerName::try_from(host.to_string())
             .map_err(|e| HttpError::TlsError(format!("invalid server name: {e}")))?;
 
         let tls_stream = self
             .tls_connector
-            .connect(server_name.clone(), stream)
+            .connect(server_name, stream)
             .await
             .map_err(|e| HttpError::TlsError(e.to_string()))?;
 
-        let negotiated = tls_stream.get_ref().1.alpn_protocol().map(|p| p.to_vec());
-        if negotiated.as_deref() == Some(b"h2") {
-            // Peer picked h2; we cannot speak it yet. Re-handshake offering
-            // only http/1.1 so the protocol on the wire matches the bytes we
-            // send. Costs one extra round trip on h2-capable origins.
-            let mut roots = tokio_rustls::rustls::RootCertStore::empty();
-            for cert in rustls_native_certs::load_native_certs().certs {
-                let _ = roots.add(cert);
-            }
-            let mut h1_only = tokio_rustls::rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
-            h1_only.alpn_protocols = vec![b"http/1.1".to_vec()];
-            let connector = TlsConnector::from(Arc::new(h1_only));
-            let fresh = tokio::net::TcpStream::connect(addr)
-                .await
-                .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
-            return connector
-                .connect(server_name, fresh)
-                .await
-                .map_err(|e| HttpError::TlsError(e.to_string()));
-        }
-
-        Ok(tls_stream)
+        let negotiated = match tls_stream.get_ref().1.alpn_protocol() {
+            Some(b"h2") => NegotiatedProtocol::H2,
+            _ => NegotiatedProtocol::Http1,
+        };
+        Ok((tls_stream, negotiated))
     }
 
     /// Create a client builder.
@@ -376,10 +390,141 @@ impl Client {
             .await
             .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
 
-        let tls_stream = self.connect_tls(host, &addr, stream).await?;
+        let (tls_stream, negotiated) = self.connect_tls(host, &addr, stream).await?;
 
-        self.send_request(tls_stream, host, method, url, headers, body)
+        match negotiated {
+            NegotiatedProtocol::H2 => {
+                self.send_request_h2(tls_stream, method, url, headers, body)
+                    .await
+            }
+            NegotiatedProtocol::Http1 => {
+                self.send_request(tls_stream, host, method, url, headers, body)
+                    .await
+            }
+        }
+    }
+
+    /// Send one request over a freshly negotiated HTTP/2 connection.
+    ///
+    /// Real h2 (the `h2` crate over the rustls stream), not a facade: HPACK,
+    /// flow control (capacity released as body chunks arrive), server
+    /// half-close honored. One request per connection for now — matching the
+    /// existing h1 path, which also reconnects per request; connection reuse
+    /// is a lane follow-up for BOTH protocols, not an h2 regression.
+    ///
+    /// Connection-specific headers (Connection family) are h2-ILLEGAL and are
+    /// not sent; the browser-shaped known set from the h1 emission carries
+    /// over minus those, callers' headers after, all lowercase per RFC 9113.
+    async fn send_request_h2<S>(
+        &self,
+        stream: S,
+        method: &Method,
+        url: &Url,
+        headers: &HeaderMap,
+        body: &Option<Bytes>,
+    ) -> Result<RawResponse, HttpError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (mut send_request, connection) = h2::client::handshake(stream)
             .await
+            .map_err(|e| HttpError::ConnectionFailed(format!("h2 handshake: {e}")))?;
+
+        // Drive the connection; ends when the request completes and both
+        // sides close. JoinHandle dropped deliberately: the task owns nothing
+        // beyond the connection it is draining.
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let mut request = http::Request::builder()
+            .method(method.clone())
+            .uri(url.as_str())
+            .version(http::Version::HTTP_2);
+
+        // Browser-shaped known set, minus h2-illegal connection headers.
+        const ORDERED_H2: &[(&str, Option<&str>)] = &[
+            (
+                "accept",
+                Some(
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,\
+image/avif,image/webp,*/*;q=0.8",
+                ),
+            ),
+            ("accept-language", None),
+            ("accept-encoding", Some(ACCEPT_ENCODING)),
+            ("upgrade-insecure-requests", Some("1")),
+            ("sec-fetch-dest", Some("document")),
+            ("sec-fetch-mode", Some("navigate")),
+            ("sec-fetch-site", Some("none")),
+            ("sec-fetch-user", Some("?1")),
+            ("referer", None),
+            ("cookie", None),
+        ];
+        const H2_ILLEGAL: &[&str] =
+            &["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "host"];
+
+        request = request.header("user-agent", &self.config.user_agent);
+        let mut written: Vec<&str> = vec![];
+        for (name, default) in ORDERED_H2 {
+            let value = headers
+                .get(*name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .or_else(|| default.map(str::to_string));
+            if let Some(v) = value {
+                request = request.header(*name, v);
+                written.push(name);
+            }
+        }
+        for (name, value) in headers.iter() {
+            let n = name.as_str();
+            if written.contains(&n) || H2_ILLEGAL.contains(&n) || n == "user-agent" {
+                continue;
+            }
+            request = request.header(name, value);
+        }
+
+        let request = request
+            .body(())
+            .map_err(|e| HttpError::InvalidResponse(format!("h2 request build: {e}")))?;
+
+        let has_body = body.is_some();
+        let (response_fut, mut send_stream) = send_request
+            .send_request(request, !has_body)
+            .map_err(|e| HttpError::ConnectionFailed(format!("h2 send: {e}")))?;
+        if let Some(b) = body {
+            send_stream
+                .send_data(b.clone(), true)
+                .map_err(|e| HttpError::ConnectionFailed(format!("h2 body: {e}")))?;
+        }
+
+        let response = response_fut
+            .await
+            .map_err(|e| HttpError::InvalidResponse(format!("h2 response: {e}")))?;
+        let status = response.status();
+        let mut response_headers = HeaderMap::new();
+        for (name, value) in response.headers() {
+            response_headers.insert(name.clone(), value.clone());
+        }
+
+        let mut recv = response.into_body();
+        let mut collected: Vec<u8> = Vec::new();
+        while let Some(chunk) = recv.data().await {
+            let chunk = chunk.map_err(|e| HttpError::InvalidResponse(format!("h2 body read: {e}")))?;
+            collected.extend_from_slice(&chunk);
+            // Flow control: hand the window back or the peer stalls at 64KB.
+            let _ = recv.flow_control().release_capacity(chunk.len());
+        }
+
+        let body = decode_content_encoding(Bytes::from(collected), &mut response_headers)?;
+
+        Ok(RawResponse {
+            status,
+            version: Version::HTTP_2,
+            headers: response_headers,
+            body,
+        })
     }
 
     /// HTTP request.
@@ -837,7 +982,23 @@ impl Client {
             .await
             .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
 
-        let tls_stream = self.connect_tls(host, &addr, stream).await?;
+        // Streaming stays HTTP/1.1 in this PR: the streaming reader is a
+        // BufRead line/chunk parser. When h2 is negotiated we buffer via the
+        // h2 path and stream from memory — correct, just not incremental;
+        // incremental h2 streaming is the follow-up.
+        let (tls_stream, negotiated) = self.connect_tls(host, &addr, stream).await?;
+        if negotiated == NegotiatedProtocol::H2 {
+            let raw = self
+                .send_request_h2(tls_stream, &Method::GET, url, &HeaderMap::new(), &None)
+                .await?;
+            let len = raw.body.len() as u64;
+            return Ok(StreamingResponse {
+                status: raw.status,
+                headers: raw.headers,
+                content_length: Some(len),
+                reader: Box::new(std::io::Cursor::new(raw.body)),
+            });
+        }
 
         self.send_streaming_request(tls_stream, host, url).await
     }

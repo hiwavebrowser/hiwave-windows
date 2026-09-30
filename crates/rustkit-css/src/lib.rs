@@ -2506,6 +2506,12 @@ pub struct ComputedStyle {
     // Transforms
     pub transform: TransformList,
     pub transform_origin: TransformOrigin,
+    /// The individual transform properties (css-transforms-2 §5). Each
+    /// cascades on its own; `None` is `none`. Composed ahead of `transform`
+    /// by [`ComputedStyle::effective_transform`].
+    pub translate: Option<TransformOp>,
+    pub rotate: Option<TransformOp>,
+    pub scale: Option<TransformOp>,
 
     // Transitions (parsed but not executed during parity capture)
     pub transition_property: String,
@@ -2611,6 +2617,22 @@ pub struct ComputedStyle {
 }
 
 impl ComputedStyle {
+    /// The transform actually applied: `translate`, then `rotate`, then
+    /// `scale`, then `transform` (css-transforms-2 §6, "the transformation
+    /// matrix"). Borrows when no individual property is set.
+    pub fn effective_transform(&self) -> std::borrow::Cow<'_, TransformList> {
+        if self.translate.is_none() && self.rotate.is_none() && self.scale.is_none() {
+            return std::borrow::Cow::Borrowed(&self.transform);
+        }
+        let ops = [&self.translate, &self.rotate, &self.scale]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .chain(self.transform.ops.iter().cloned())
+            .collect();
+        std::borrow::Cow::Owned(TransformList { ops })
+    }
+
     /// Create default style.
     pub fn new() -> Self {
         Self {
@@ -2717,6 +2739,113 @@ pub struct Rule {
     /// Media query lists of the enclosing `@media` blocks, outermost first;
     /// the rule applies only where all of them match (`Rule::applies_at`).
     pub media: Vec<String>,
+    /// Full dotted name of the rule's cascade layer; `None` when unlayered.
+    pub layer: Option<String>,
+    /// The layer's rank in the document's layer order (`assign_layer_order`):
+    /// lower loses to higher among normal declarations. Unlayered rules, and
+    /// every rule until the order is assigned, are `UNLAYERED`.
+    pub layer_order: u32,
+}
+
+/// `Rule::layer_order` of an unlayered rule: above every layer, since
+/// unlayered normal declarations win over layered ones (CSS Cascade 5 §6.4).
+pub const UNLAYERED: u32 = u32::MAX;
+
+/// A cascade layer name declared at a point in a stylesheet (see
+/// `rustkit_cssparser::LayerStatementAst`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerStatement {
+    /// How many rules of the sheet precede the declaration.
+    pub position: usize,
+    pub name: String,
+    pub media: Vec<String>,
+}
+
+impl LayerStatement {
+    /// Whether the statement's `@media` conditions hold (as `Rule::applies_at`).
+    pub fn applies_at(&self, width: f32, height: f32) -> bool {
+        self.media
+            .iter()
+            .all(|m| media::media_query_list_matches(m, width, height))
+    }
+}
+
+/// Rank every rule's cascade layer across `sheets`, taken in document order
+/// (CSS Cascade 5 §6.4.3). Layers are ordered by where their names are first
+/// declared, by a statement or a block, and a nested layer's sublayers come
+/// before the rules placed directly in it; unlayered rules stay `UNLAYERED`.
+/// Returns whether any rule is layered.
+pub fn assign_layer_order(sheets: &mut [Stylesheet]) -> bool {
+    #[derive(Default)]
+    struct Node {
+        children: Vec<(String, Node)>,
+    }
+    fn declare(root: &mut Node, name: &str) {
+        let mut node = root;
+        for segment in name.split('.').map(str::trim) {
+            let i = match node.children.iter().position(|(n, _)| n == segment) {
+                Some(i) => i,
+                None => {
+                    node.children.push((segment.to_string(), Node::default()));
+                    node.children.len() - 1
+                }
+            };
+            node = &mut node.children[i].1;
+        }
+    }
+    // Post-order: a layer ranks after all of its sublayers.
+    fn rank(
+        node: &Node,
+        path: &str,
+        next: &mut u32,
+        out: &mut std::collections::HashMap<String, u32>,
+    ) {
+        for (name, child) in &node.children {
+            let full = if path.is_empty() {
+                name.clone()
+            } else {
+                format!("{path}.{name}")
+            };
+            rank(child, &full, next, out);
+            out.insert(full, *next);
+            *next += 1;
+        }
+    }
+
+    if sheets
+        .iter()
+        .all(|s| s.layer_statements.is_empty() && s.rules.iter().all(|r| r.layer.is_none()))
+    {
+        return false;
+    }
+    let mut root = Node::default();
+    for sheet in sheets.iter() {
+        let mut statements = sheet.layer_statements.iter().peekable();
+        for (i, rule) in sheet.rules.iter().enumerate() {
+            while let Some(s) = statements.next_if(|s| s.position <= i) {
+                declare(&mut root, &s.name);
+            }
+            if let Some(layer) = &rule.layer {
+                declare(&mut root, layer);
+            }
+        }
+        for s in statements {
+            declare(&mut root, &s.name);
+        }
+    }
+    let mut ranks = std::collections::HashMap::new();
+    rank(&root, "", &mut 0, &mut ranks);
+    let mut layered = false;
+    for rule in sheets.iter_mut().flat_map(|s| s.rules.iter_mut()) {
+        rule.layer_order = match &rule.layer {
+            Some(layer) => {
+                layered = true;
+                ranks.get(layer.as_str()).copied().unwrap_or(UNLAYERED)
+            }
+            None => UNLAYERED,
+        };
+    }
+    layered
 }
 
 impl Rule {
@@ -2733,12 +2862,14 @@ impl Rule {
 #[derive(Debug, Default, Clone)]
 pub struct Stylesheet {
     pub rules: Vec<Rule>,
+    /// The cascade layer names the sheet declares, in declaration order.
+    pub layer_statements: Vec<LayerStatement>,
 }
 
 impl Stylesheet {
     /// Create an empty stylesheet.
     pub fn new() -> Self {
-        Self { rules: Vec::new() }
+        Self::default()
     }
 
     /// Parse a CSS string into a stylesheet.
@@ -2751,6 +2882,8 @@ impl Stylesheet {
             .into_iter()
             .map(|r| Rule {
                 media: r.media,
+                layer: r.layer,
+                layer_order: UNLAYERED,
                 selector: match encode_selector_escapes(&r.selector) {
                     std::borrow::Cow::Borrowed(_) => r.selector,
                     std::borrow::Cow::Owned(encoded) => encoded,
@@ -2767,8 +2900,21 @@ impl Stylesheet {
             })
             .collect::<Vec<_>>();
 
+        let layer_statements = ast
+            .layer_statements
+            .into_iter()
+            .map(|s| LayerStatement {
+                position: s.position,
+                name: s.name,
+                media: s.media,
+            })
+            .collect();
+
         debug!(rule_count = rules.len(), "CSS parsed");
-        Ok(Stylesheet { rules })
+        Ok(Stylesheet {
+            rules,
+            layer_statements,
+        })
     }
 
     /// Get the number of rules in this stylesheet.
@@ -3429,6 +3575,37 @@ pub fn parse_display(value: &str) -> Option<Display> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn layer_orders(sheets: &[&str]) -> Vec<(String, u32)> {
+        let mut sheets: Vec<Stylesheet> = sheets
+            .iter()
+            .map(|c| Stylesheet::parse(c).expect("css"))
+            .collect();
+        assign_layer_order(&mut sheets);
+        sheets
+            .iter()
+            .flat_map(|s| s.rules.iter())
+            .map(|r| (r.selector.clone(), r.layer_order))
+            .collect()
+    }
+
+    #[test]
+    fn layers_rank_by_first_declaration_across_sheets() {
+        let got = layer_orders(&[
+            "@layer b; @layer a { .a { color: red } } .u { color: red }",
+            "@layer b { .b { color: red } @layer inner { .bi { color: red } } } @layer c { .c { color: red } }",
+        ]);
+        let rank = |sel: &str| got.iter().find(|(s, _)| s == sel).unwrap().1;
+        // b (with b.inner below b's own rules) < a < c < unlayered.
+        assert!(rank(".bi") < rank(".b"), "{got:?}");
+        assert!(rank(".b") < rank(".a"), "{got:?}");
+        assert!(rank(".a") < rank(".c"), "{got:?}");
+        assert_eq!(rank(".u"), UNLAYERED);
+        let got = layer_orders(&[
+            "@layer b; @layer a { #x.c { background: #0f0 } } @layer b { div#x.c { background: #f00 } }",
+        ]);
+        assert!(got[0].1 > got[1].1, "{got:?}");
+    }
 
     #[test]
     fn display_takes_flow_root_list_item_and_two_value_syntax() {

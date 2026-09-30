@@ -85,6 +85,27 @@ impl Default for RequestId {
 }
 
 /// HTTP request.
+/// What the fetched bytes are FOR — the fetch-spec "destination", carried on
+/// the request so the shield can classify it (adblock filter lists key rules
+/// on resource type: a script blocked on example.com may be fine as a
+/// document). Privacy pin 2026-09-29: interception happens BEFORE bytes and
+/// the census reports per destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RequestDestination {
+    /// Top-level navigation HTML.
+    Document,
+    /// External stylesheet.
+    Style,
+    /// External script.
+    Script,
+    /// Raster or SVG image.
+    Image,
+    /// Web font.
+    Font,
+    /// Anything else (API fetches, unknown).
+    Other,
+}
+
 #[derive(Debug, Clone)]
 pub struct Request {
     pub id: RequestId,
@@ -94,6 +115,10 @@ pub struct Request {
     pub body: Option<Bytes>,
     pub timeout: Option<Duration>,
     pub credentials: CredentialsMode,
+    /// Fetch destination for shield classification; `Other` when the caller
+    /// has not said. Conservative default: unknown types still hit the
+    /// shield, just without type-specific rules.
+    pub destination: RequestDestination,
     /// The URL of the document that made the request. The `Referer` header
     /// is derived from it through `referrer_policy`; this URL itself is
     /// never sent as-is.
@@ -114,6 +139,7 @@ impl Request {
             credentials: CredentialsMode::SameOrigin,
             referrer: None,
             referrer_policy: ReferrerPolicy::default(),
+            destination: RequestDestination::Other,
         }
     }
 
@@ -129,6 +155,7 @@ impl Request {
             credentials: CredentialsMode::SameOrigin,
             referrer: None,
             referrer_policy: ReferrerPolicy::default(),
+            destination: RequestDestination::Other,
         }
     }
 
@@ -151,6 +178,12 @@ impl Request {
     }
 
     /// Set the referrer policy (default strict-origin-when-cross-origin).
+    /// Tag what the fetched bytes are for (shield classification).
+    pub fn destination(mut self, destination: RequestDestination) -> Self {
+        self.destination = destination;
+        self
+    }
+
     pub fn referrer_policy(mut self, policy: ReferrerPolicy) -> Self {
         self.referrer_policy = policy;
         self

@@ -13,6 +13,11 @@ rustls = "0.23"
 tokio-rustls = "0.26"
 rustls-native-certs = "0.8"
 
+# Real HTTP/2 over the rustls stream (network lane PR 2, Atlas directive:
+# h2 before any header tuning — advertising h2 then re-handshaking h1 was
+# itself an odd client pattern and a wasted round trip).
+h2 = "0.4"
+
 # Rollback path (Atlas #535: native-tls stays reachable behind a feature
 # flag for one release). Optional deps, activated by `--features native-tls`.
 native-tls = { version = "0.2", optional = true }

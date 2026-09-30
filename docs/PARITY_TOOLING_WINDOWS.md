@@ -25,7 +25,9 @@ Windows-only files it never touches:
 - `scripts/collect_metrics.py`, which CI uses
 - `tools/parity_oracle/parity_score.mjs`
 - `scripts/conftest.py`
-- `baselines/`
+- `baselines/chrome-148/` (the Windows captures). `baselines/common/` IS synced:
+  the freeze script, the reset stylesheet and the Noto fonts are tooling that
+  every capture injects, not captures.
 
 ## Running
 
@@ -65,6 +67,14 @@ changed (`new_tab`, `about`, `settings`, `card-grid`, `image-gallery`,
 had not applied the micro-suite parity reset the way the current tooling does,
 so the micro cases read `line-height: 1.5` on one side and `normal` on the
 other. `scripts/audit_baselines.py` now reports all 32 cases clean.
+
+On 2026-09-30 three more changed (`about`, `new_tab`, `settings`), the three
+built-ins with CSS animations. `baselines/common/parity-freeze.js` had been
+excluded from the sync, so Windows captured with a freeze script that threw
+before attaching its `animation: none` style (macOS fixed it on 2026-07-09).
+Animated pages were captured mid-animation, at whatever frame the clock gave.
+The sync now copies `baselines/common/`. If a recapture ever changes an
+animated case again, check that file first.
 
 ## Where Windows stands against macOS
 
@@ -108,9 +118,16 @@ Rule #528: platform-specific differences live in this repo, not upstream.
 
 - `crates/rustkit-layout/src/text.rs`: on Windows, `sans-serif` resolves to
   Arial first, and the macOS-only `-apple-system` / `BlinkMacSystemFont` names
-  are skipped. Both are `cfg(windows)`, so macOS and Linux are unchanged. A
-  refresh copies the crate verbatim and then re-applies this patch, the same way
-  it re-applies the sidecar pin.
+  are skipped. Both are `cfg(windows)`, so macOS and Linux are unchanged.
+- `crates/rustkit-layout/src/lib.rs`: two strut-descent tests allow one pixel
+  instead of half of one (a raw fractional descent against a rounded line box;
+  Arial's 3.453 rounds up to 4).
+
+All of these are applied by `scripts/apply_windows_patches.py`. A refresh
+copies the crate verbatim, re-appends the sidecar pin, then runs the script.
+It is idempotent and fails loudly if upstream moved the code it edits.
+`python scripts/apply_windows_patches.py --check` verifies a tree without
+writing; it is one of the refresh gates.
 
 ## Not synced
 

@@ -20,7 +20,7 @@
 use rustkit_css::{
     AlignContent, AlignItems, AlignSelf, BoxSizing, ComputedStyle, Display, GridAutoFlow,
     GridLine, GridPlacement, GridTemplate, GridTemplateAreas, JustifyContent, JustifyItems,
-    JustifySelf, Length, Overflow, TrackDefinition, TrackRepeat, TrackSize, WhiteSpace,
+    FlexWrap, JustifySelf, Length, Overflow, TrackDefinition, TrackRepeat, TrackSize, WhiteSpace,
 };
 use tracing::{debug, trace};
 
@@ -2678,6 +2678,76 @@ pub(crate) fn own_min_content_width(layout_box: &LayoutBox) -> f32 {
     // specified width still wins.
     if let BoxType::FormControl(control) = &layout_box.box_type {
         return form_control_min_content_width(style, control);
+    }
+
+    // A single-line ROW flex container's min-content main size SUMS its items'
+    // min-content contributions and adds its main-axis gaps. css-flexbox-1
+    // §9.9.1: the min-content main size is computed exactly as the max-content
+    // main size with each item's MIN-content contribution in place of its
+    // max-content one — and the max-content arm in `own_max_content_width`
+    // already sums plus gaps. This function had no flex arm at all, so the
+    // generic walk below answered the LARGEST block-level child and dropped
+    // every gap: two items of 100 and 90 with a 16px gap read 100 where Chrome
+    // reads 206.
+    //
+    // Chrome 148 ground truth, measured on all 26 gating cases by
+    // `trench/tools/n70_flex_fraction_probe.mjs` (83 comparable row flex
+    // containers): the sum-plus-gaps rule closes to 0.000 on **81**, and the
+    // largest-child rule this function currently applies closes on **none**.
+    // The two remaining containers are the sum rule clamped up by the
+    // container's own `min-width` (`settings`' `.setting-control` 140px,
+    // `chrome_rustkit`'s `.tab` 120px), which is the caller's clamp and not
+    // this function's business.
+    //
+    // WRAP is excluded, and that is measured rather than reasoned: a
+    // multi-line container may put every item on its own line, so its
+    // min-content main size is the LARGEST contribution with no gap term —
+    // which is what the generic walk below already answers. On all 19 wrapping
+    // row containers in the corpus (`bg-pure`'s `.row`, `card-grid`'s `.grid`,
+    // `about`'s `.links`, `settings`' `.clear-options`,
+    // `gpu-gradient-regression`'s rows, `form-elements`' `.button-row`) Chrome's
+    // min-content equals the largest child to 0.000, so this arm must not take
+    // them.
+    //
+    // A COLUMN container is excluded for the same reason: width is then its
+    // CROSS axis, whose min-content is the widest item, which the generic walk
+    // also already answers.
+    if style.display.is_flex()
+        && style.flex_direction.is_row()
+        && matches!(style.flex_wrap, FlexWrap::NoWrap)
+    {
+        // Resolved the way LAYOUT resolves it, not matched for `Px` — the same
+        // hole n69 closed in the max-content arm, not reopened here. A
+        // percentage gap resolves against zero (css-sizing-3 §4.1: percentages
+        // resolve against zero when computing an intrinsic contribution).
+        let main_gap = layout_box.length_to_px(&style.column_gap, 0.0);
+        let mut sum = 0.0f32;
+        let mut item_count = 0usize;
+        for child in &layout_box.children {
+            if child.style.display == Display::None {
+                continue;
+            }
+            // css-flexbox-1 §4: an out-of-flow child is not a flex item, so it
+            // contributes neither width nor a gap slot.
+            if matches!(
+                child.position,
+                crate::Position::Absolute | crate::Position::Fixed
+            ) {
+                continue;
+            }
+            // A white-space-only run never becomes a flex item either, so it
+            // takes no gap slot. A run WITH content does — `new_tab`'s
+            // `.shortcut` has a `/` and a `+` between its `<kbd>`s and they are
+            // two anonymous items.
+            if let BoxType::Text(t) = &child.box_type {
+                if t.trim().is_empty() {
+                    continue;
+                }
+            }
+            sum += estimate_min_content_width(child) + horizontal_margins(&child.style);
+            item_count += 1;
+        }
+        return sum + main_gap * item_count.saturating_sub(1) as f32 + padding_border;
     }
 
     // Content-derived width. Under white-space that forbids wrapping,
