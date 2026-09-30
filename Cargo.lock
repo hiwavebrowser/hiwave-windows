@@ -5156,6 +5156,7 @@ dependencies = [
  "bytes",
  "flate2",
  "futures",
+ "h2",
  "http",
  "native-tls",
  "rustls",

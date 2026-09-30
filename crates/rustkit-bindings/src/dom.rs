@@ -21,10 +21,11 @@
 //! (attributes, text) go through `Document::replace_node_data`, which keeps
 //! the NodeId, so wrappers and the identity cache are untouched by them.
 
-use crate::DomDirty;
+use crate::{inner_text, DomDirty};
 use rustkit_dom::{Document, Node, NodeId, NodeType, QuerySelector};
 use rustkit_js::{JsError, JsRuntime, JsValue};
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// Does this element match this selector list? `None` means the list is
@@ -38,6 +39,13 @@ pub(crate) struct DomHost {
     generation: u32,
     /// The injected selector matcher (`DomBindings::set_selector_matcher`).
     pub(crate) matcher: Option<SelectorMatchFn>,
+    /// HTML §4.10.5.4 "dirty value" of the `<input>`/`<textarea>` controls
+    /// that script or the user changed, by NodeId. A control missing here
+    /// shows its default value (the `value` attribute, or a textarea's text).
+    values: HashMap<usize, String>,
+    /// Script value writes the engine has not yet copied into its edit
+    /// state, which is what layout paints (`DomBindings::take_value_writes`).
+    value_writes: Vec<(usize, String)>,
 }
 
 pub(crate) type SharedDomHost = Rc<RefCell<DomHost>>;
@@ -47,7 +55,18 @@ impl DomHost {
     pub(crate) fn bind(&mut self, document: Rc<Document>) -> u32 {
         self.document = Some(document);
         self.generation += 1;
+        self.values.clear();
+        self.value_writes.clear();
         self.generation
+    }
+
+    /// Record the value the user typed into a control, so script reads it.
+    pub(crate) fn sync_value(&mut self, node: usize, value: String) {
+        self.values.insert(node, value);
+    }
+
+    pub(crate) fn take_value_writes(&mut self) -> Vec<(usize, String)> {
+        std::mem::take(&mut self.value_writes)
     }
 
     fn document_for(&self, generation: &JsValue) -> Option<&Rc<Document>> {
@@ -127,9 +146,9 @@ fn pre_insert(
     node: &Rc<Node>,
     child: Option<Rc<Node>>,
 ) -> Result<(), &'static str> {
-    // Only elements take children here; a Document's one-element rules and
-    // DocumentFragment come with a later rung.
-    if !parent.is_element() {
+    // Only elements and fragments take children here; a Document's
+    // one-element rules come with a later rung.
+    if !parent.is_element() && !is_fragment(parent) {
         return Err("HierarchyRequestError");
     }
     if is_inclusive_ancestor(node, parent) {
@@ -149,12 +168,24 @@ fn pre_insert(
         Some(c) if c.id == node.id => node.next_sibling(),
         other => other,
     };
-    node.remove_from_parent();
-    match child {
-        Some(c) => parent.insert_before(node.clone(), c),
-        None => parent.append_child(node.clone()),
+    // Inserting a fragment inserts its children, in order, and empties it.
+    let nodes = if is_fragment(node) {
+        node.children()
+    } else {
+        vec![node.clone()]
+    };
+    for node in nodes {
+        node.remove_from_parent();
+        match &child {
+            Some(c) => parent.insert_before(node, c.clone()),
+            None => parent.append_child(node),
+        }
     }
     Ok(())
+}
+
+fn is_fragment(node: &Node) -> bool {
+    matches!(node.node_type, NodeType::DocumentFragment)
 }
 
 /// `mutate(gen, op, parentId, nodeId, childId)`: one tree write. Answers
@@ -211,6 +242,7 @@ fn write(host: &DomHost, args: &[JsValue]) -> Result<(JsValue, DomDirty), &'stat
             "element" => return Err("InvalidCharacterError"),
             "text" => NodeType::Text(data),
             "comment" => NodeType::Comment(data),
+            "fragment" => NodeType::DocumentFragment,
             _ => return Err("NotSupportedError"),
         };
         // A detached node is in no tree, so nothing needs a restyle yet.
@@ -270,9 +302,9 @@ fn write(host: &DomHost, args: &[JsValue]) -> Result<(JsValue, DomDirty), &'stat
             // Pin §3.3: a text change relayouts.
             Ok((JsValue::Null, DomDirty::Layout))
         }
-        // DOM §4.4 textContent setter on an element: replace all children
-        // with one Text node (none for the empty string).
-        ("setText", NodeType::Element { .. }) => {
+        // DOM §4.4 textContent setter on an element or fragment: replace
+        // all children with one Text node (none for the empty string).
+        ("setText", NodeType::Element { .. } | NodeType::DocumentFragment) => {
             for child in node.children() {
                 child.remove_from_parent();
             }
@@ -284,6 +316,16 @@ fn write(host: &DomHost, args: &[JsValue]) -> Result<(JsValue, DomDirty), &'stat
         }
         // Documents and doctypes ignore textContent writes.
         ("setText", _) => Ok((JsValue::Null, DomDirty::Clean)),
+        // Cloning a document needs a second Document; not yet.
+        ("clone", NodeType::Document) => Err("NotSupportedError"),
+        // The clone is detached, so nothing needs a restyle yet.
+        ("clone", _) => {
+            let deep = matches!(args.get(3), Some(JsValue::Boolean(true)));
+            Ok((
+                node_id(Some(clone_node(document, &node, deep))),
+                DomDirty::Clean,
+            ))
+        }
         // HTML §8.5 innerHTML setter: parse as the element's contents (the
         // fragment parsing algorithm), then replace all children with it.
         ("setHTML", NodeType::Element { tag_name, .. }) => {
@@ -299,8 +341,71 @@ fn write(host: &DomHost, args: &[JsValue]) -> Result<(JsValue, DomDirty), &'stat
             }
             Ok((JsValue::Null, DomDirty::Style))
         }
+        ("setInnerText", NodeType::Element { .. }) => {
+            inner_text::set_inner_text(document, &node, string_arg(args, 3).unwrap_or(""));
+            Ok((JsValue::Null, DomDirty::Style))
+        }
         _ => Err("NotSupportedError"),
     }
+}
+
+/// `value(gen, id[, v])`: a text control's value (HTML §4.10.5.4, value
+/// mode "value"). With `v` a string, sets it; with `v` null, resets the
+/// control to its default (form reset). Answers the value, or null when
+/// the node is stale or not an `<input>`/`<textarea>`. A write marks
+/// `Layout`: the engine repaints the control from its edit state.
+fn control_value(host: &mut DomHost, args: &[JsValue]) -> (JsValue, DomDirty) {
+    let Some(node) = host.node(args) else {
+        return (JsValue::Null, DomDirty::Clean);
+    };
+    let textarea = match node.tag_name() {
+        Some(t) if t.eq_ignore_ascii_case("textarea") => true,
+        Some(t) if t.eq_ignore_ascii_case("input") => false,
+        _ => return (JsValue::Null, DomDirty::Clean),
+    };
+    let default = || {
+        if textarea {
+            node.text_content()
+        } else {
+            node.get_attribute("value").unwrap_or("").to_string()
+        }
+    };
+    let raw = node.id.raw();
+    let value = match args.get(2) {
+        Some(JsValue::String(v)) => {
+            // The value sanitization algorithms: a text input drops line
+            // breaks; a textarea normalizes them to LF.
+            let v = if textarea {
+                v.replace("\r\n", "\n").replace('\r', "\n")
+            } else {
+                v.chars().filter(|c| !matches!(c, '\r' | '\n')).collect()
+            };
+            host.values.insert(raw, v.clone());
+            v
+        }
+        Some(JsValue::Null) => {
+            host.values.remove(&raw);
+            default()
+        }
+        _ => {
+            let v = host.values.get(&raw).cloned().unwrap_or_else(default);
+            return (JsValue::String(v), DomDirty::Clean);
+        }
+    };
+    host.value_writes.push((raw, value.clone()));
+    (JsValue::String(value), DomDirty::Layout)
+}
+
+/// DOM §4.4 "clone a node": a detached copy with fresh NodeIds, its
+/// descendants copied too when `deep`.
+fn clone_node(document: &Document, node: &Rc<Node>, deep: bool) -> Rc<Node> {
+    let copy = document.create_node(node.node_type.clone());
+    if deep {
+        for child in node.children() {
+            copy.append_child(clone_node(document, &child, true));
+        }
+    }
+    copy
 }
 
 fn node_id(node: Option<Rc<Node>>) -> JsValue {
@@ -404,7 +509,7 @@ fn serialize_node(node: &Rc<Node>, out: &mut String) {
             out.push_str(name);
             out.push('>');
         }
-        NodeType::Document => serialize_children(node, out),
+        NodeType::Document | NodeType::DocumentFragment => serialize_children(node, out),
     }
 }
 
@@ -440,6 +545,7 @@ fn node_info(node: &Rc<Node>, field: &str) -> JsValue {
             NodeType::Comment(_) => 8.0,
             NodeType::Document => 9.0,
             NodeType::DocumentType { .. } => 10.0,
+            NodeType::DocumentFragment => 11.0,
         }),
         "name" => JsValue::String(match &node.node_type {
             NodeType::Element { tag_name, .. } if is_html_element(node) => {
@@ -451,6 +557,7 @@ fn node_info(node: &Rc<Node>, field: &str) -> JsValue {
             NodeType::Document => "#document".to_string(),
             NodeType::DocumentType { name, .. } => name.clone(),
             NodeType::ProcessingInstruction { target, .. } => target.clone(),
+            NodeType::DocumentFragment => "#document-fragment".to_string(),
         }),
         "local" => match &node.node_type {
             NodeType::Element { tag_name, .. } => JsValue::String(tag_name.clone()),
@@ -463,7 +570,9 @@ fn node_info(node: &Rc<Node>, field: &str) -> JsValue {
             NodeType::Document | NodeType::DocumentType { .. } => JsValue::Null,
             NodeType::Text(data) | NodeType::Comment(data) => JsValue::String(data.clone()),
             NodeType::ProcessingInstruction { data, .. } => JsValue::String(data.clone()),
-            NodeType::Element { .. } => JsValue::String(node.text_content()),
+            NodeType::Element { .. } | NodeType::DocumentFragment => {
+                JsValue::String(node.text_content())
+            }
         },
         "parent" => node_id(node.parent()),
         "first" => node_id(node.first_child()),
@@ -471,6 +580,16 @@ fn node_info(node: &Rc<Node>, field: &str) -> JsValue {
         "next" => node_id(node.next_sibling()),
         "prev" => node_id(node.previous_sibling()),
         "children" => id_list(node.children()),
+        // Space-separated (a name never holds whitespace) and sorted:
+        // rustkit-dom keeps attributes in a HashMap, so source order is gone.
+        "attrNames" => match &node.node_type {
+            NodeType::Element { attributes, .. } => {
+                let mut names: Vec<&str> = attributes.keys().map(String::as_str).collect();
+                names.sort_unstable();
+                JsValue::String(names.join(" "))
+            }
+            _ => JsValue::Null,
+        },
         "innerHTML" => {
             let mut out = String::new();
             serialize_children(node, &mut out);
@@ -481,6 +600,7 @@ fn node_info(node: &Rc<Node>, field: &str) -> JsValue {
             serialize_node(node, &mut out);
             JsValue::String(out)
         }
+        "innerText" if node.is_element() => JsValue::String(inner_text::inner_text(node)),
         _ => JsValue::Undefined,
     }
 }
@@ -681,6 +801,18 @@ pub(crate) fn install(
         }),
     )?;
 
+    let h = host.clone();
+    let d = dirty.clone();
+    runtime.register_host_function(
+        "__rustkit_dom_value",
+        3,
+        Box::new(move |args| {
+            let (result, bucket) = control_value(&mut h.borrow_mut(), args);
+            d.set(d.get().max(bucket));
+            result
+        }),
+    )?;
+
     runtime.evaluate_script(WRAPPERS_JS)?;
     Ok(())
 }
@@ -693,9 +825,10 @@ const WRAPPERS_JS: &str = r#"
         root: __rustkit_dom_root, byId: __rustkit_dom_by_id,
         collect: __rustkit_dom_collect, info: __rustkit_dom_info,
         attr: __rustkit_dom_attr, mutate: __rustkit_dom_mutate,
-        write: __rustkit_dom_write, matches: __rustkit_dom_matches
+        write: __rustkit_dom_write, matches: __rustkit_dom_matches,
+        value: __rustkit_dom_value
     };
-    ['root', 'by_id', 'collect', 'info', 'attr', 'mutate', 'write', 'matches'].forEach(function (n) {
+    ['root', 'by_id', 'collect', 'info', 'attr', 'mutate', 'write', 'matches', 'value'].forEach(function (n) {
         delete g['__rustkit_dom_' + n];
     });
 
@@ -732,11 +865,18 @@ const WRAPPERS_JS: &str = r#"
     var Comment = iface('Comment', CharacterData);
     var Element = iface('Element', Node);
     var HTMLElement = iface('HTMLElement', Element);
+    var HTMLInputElement = iface('HTMLInputElement', HTMLElement);
+    var HTMLTextAreaElement = iface('HTMLTextAreaElement', HTMLElement);
+    var HTMLFormElement = iface('HTMLFormElement', HTMLElement);
+    var elementProtos = { input: HTMLInputElement.prototype,
+                          textarea: HTMLTextAreaElement.prototype, form: HTMLFormElement.prototype };
+    var DocumentFragment = iface('DocumentFragment', Node);
     var NodeList = iface('NodeList');
     var HTMLCollection = iface('HTMLCollection');
 
     var types = { ELEMENT_NODE: 1, TEXT_NODE: 3, PROCESSING_INSTRUCTION_NODE: 7,
-                  COMMENT_NODE: 8, DOCUMENT_NODE: 9, DOCUMENT_TYPE_NODE: 10 };
+                  COMMENT_NODE: 8, DOCUMENT_NODE: 9, DOCUMENT_TYPE_NODE: 10,
+                  DOCUMENT_FRAGMENT_NODE: 11 };
     Object.keys(types).forEach(function (k) { Node[k] = Node.prototype[k] = types[k]; });
 
     function slotOf(o) {
@@ -749,8 +889,10 @@ const WRAPPERS_JS: &str = r#"
         var w = cache.get(id);
         if (w) return w;
         var t = N.info(gen, id, 'type');
-        var proto = t === 1 ? HTMLElement.prototype : t === 3 ? Text.prototype
-                  : t === 8 ? Comment.prototype : Node.prototype;
+        var proto = t === 1 ? elementProtos[N.info(gen, id, 'local')] || HTMLElement.prototype
+                  : t === 3 ? Text.prototype
+                  : t === 8 ? Comment.prototype : t === 11 ? DocumentFragment.prototype
+                  : Node.prototype;
         w = Object.create(proto);
         Object.defineProperty(w, SLOT, { value: { id: id, gen: gen } });
         cache.set(id, w);
@@ -908,18 +1050,20 @@ const WRAPPERS_JS: &str = r#"
         while (s && nodes.indexOf(s) >= 0) s = s[field];
         return s;
     }
-    Element.prototype.append = function () {
-        insertAll(this, toNodes(arguments), null, 'append');
-    };
-    Element.prototype.prepend = function () {
-        var nodes = toNodes(arguments);
-        insertAll(this, nodes, this.firstChild, 'prepend');
-    };
-    Element.prototype.replaceChildren = function () {
-        var nodes = toNodes(arguments);
-        while (this.firstChild) this.removeChild(this.firstChild);
-        insertAll(this, nodes, null, 'replaceChildren');
-    };
+    [Element, DocumentFragment].forEach(function (C) {
+        C.prototype.append = function () {
+            insertAll(this, toNodes(arguments), null, 'append');
+        };
+        C.prototype.prepend = function () {
+            var nodes = toNodes(arguments);
+            insertAll(this, nodes, this.firstChild, 'prepend');
+        };
+        C.prototype.replaceChildren = function () {
+            var nodes = toNodes(arguments);
+            while (this.firstChild) this.removeChild(this.firstChild);
+            insertAll(this, nodes, null, 'replaceChildren');
+        };
+    });
     [Element, CharacterData].forEach(function (C) {
         C.prototype.before = function () {
             var p = this.parentNode;
@@ -954,6 +1098,79 @@ const WRAPPERS_JS: &str = r#"
         for (var n = other; n; n = n.parentNode) if (n === this) return true;
         return false;
     };
+    Node.prototype.isSameNode = function (other) { return this === other; };
+    Node.prototype.getRootNode = function () {
+        var n = this;
+        while (n.parentNode) n = n.parentNode;
+        return n;
+    };
+    Node.prototype.cloneNode = function (deep) {
+        return wrap(setData(this, 'clone', !!deep, null, 'cloneNode'));
+    };
+    // DOM §4.4 "equals": same type, name, attributes (in any order) and
+    // data, and equal children in order.
+    function equalNodes(a, b) {
+        if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName) return false;
+        if (a.nodeType === 1) {
+            var names = a.getAttributeNames();
+            if (names.join(' ') !== b.getAttributeNames().join(' ')) return false;
+            for (var k = 0; k < names.length; k++) {
+                if (a.getAttribute(names[k]) !== b.getAttribute(names[k])) return false;
+            }
+        } else if (a.nodeType === 3 || a.nodeType === 7 || a.nodeType === 8) {
+            if (a.textContent !== b.textContent) return false;
+        }
+        var ac = a.childNodes, bc = b.childNodes;
+        if (ac.length !== bc.length) return false;
+        for (var i = 0; i < ac.length; i++) if (!equalNodes(ac[i], bc[i])) return false;
+        return true;
+    }
+    Node.prototype.isEqualNode = function (other) {
+        slotOf(this);
+        if (other === null) return false;
+        nodeArg(other, 'isEqualNode');
+        return equalNodes(this, other);
+    };
+    var positions = { DOCUMENT_POSITION_DISCONNECTED: 1, DOCUMENT_POSITION_PRECEDING: 2,
+                      DOCUMENT_POSITION_FOLLOWING: 4, DOCUMENT_POSITION_CONTAINS: 8,
+                      DOCUMENT_POSITION_CONTAINED_BY: 16,
+                      DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: 32 };
+    Object.keys(positions).forEach(function (k) { Node[k] = Node.prototype[k] = positions[k]; });
+    function ancestry(n) { var out = []; for (; n; n = n.parentNode) out.unshift(n); return out; }
+    // DOM §4.4 compareDocumentPosition, answered for `other` relative to
+    // `this`. Nodes in different trees get a consistent order by NodeId.
+    Node.prototype.compareDocumentPosition = function (other) {
+        var o = nodeArg(other, 'compareDocumentPosition'), s = slotOf(this);
+        if (this === other) return 0;
+        var a = ancestry(this), b = ancestry(other);
+        if (a[0] !== b[0]) return 1 | 32 | (s.id < o.id ? 4 : 2);
+        var i = 0;
+        while (i < a.length && i < b.length && a[i] === b[i]) i++;
+        if (i === a.length) return 16 | 4;
+        if (i === b.length) return 8 | 2;
+        for (var n = a[i]; n; n = n.nextSibling) if (n === b[i]) return 4;
+        return 2;
+    };
+    // DOM §4.4 normalize: merge adjacent Text nodes, drop empty ones.
+    Node.prototype.normalize = function () {
+        for (var n = this.firstChild; n; ) {
+            var next = n.nextSibling;
+            if (n.nodeType === 3) {
+                var data = n.data;
+                while (next && next.nodeType === 3) {
+                    data += next.data;
+                    var after = next.nextSibling;
+                    this.removeChild(next);
+                    next = after;
+                }
+                if (data === '') this.removeChild(n);
+                else if (data !== n.data) n.data = data;
+            } else {
+                n.normalize();
+            }
+            n = next;
+        }
+    };
     ['data', 'nodeValue'].forEach(function (k) {
         accessor(CharacterData.prototype, k, function () { return info(this, 'text'); },
             function (v) { setData(this, 'setText', text(v), null, k); });
@@ -965,6 +1182,8 @@ const WRAPPERS_JS: &str = r#"
         function (v) { setData(this, 'setHTML', text(v), null, 'innerHTML'); });
     getter(Element.prototype, 'outerHTML', function () { return info(this, 'outerHTML'); });
     getter(Element.prototype, 'localName', function () { return info(this, 'local'); });
+    accessor(HTMLElement.prototype, 'innerText', function () { return info(this, 'innerText'); },
+        function (v) { setData(this, 'setInnerText', text(v), null, 'innerText'); });
     [['id', 'id'], ['className', 'class']].forEach(function (p) {
         accessor(Element.prototype, p[0], function () { return this.getAttribute(p[1]) || ''; },
             function (v) { this.setAttribute(p[1], v); });
@@ -984,16 +1203,18 @@ const WRAPPERS_JS: &str = r#"
         while (n && n.nodeType !== 1) n = n[field];
         return n;
     }
-    [Element, Document].forEach(function (C) {
+    [Element, Document, DocumentFragment].forEach(function (C) {
         getter(C.prototype, 'firstElementChild', function () { return elementChildren(this)[0] || null; });
         getter(C.prototype, 'lastElementChild', function () {
             var c = elementChildren(this); return c[c.length - 1] || null;
         });
         getter(C.prototype, 'childElementCount', function () { return elementChildren(this).length; });
     });
-    getter(Document.prototype, 'children', function () {
-        var s = slotOf(this);
-        return list(HTMLCollection.prototype, s.gen === gen ? N.info(s.gen, s.id, 'children') : '', true);
+    [Document, DocumentFragment].forEach(function (C) {
+        getter(C.prototype, 'children', function () {
+            var s = slotOf(this);
+            return list(HTMLCollection.prototype, s.gen === gen ? N.info(s.gen, s.id, 'children') : '', true);
+        });
     });
     [Element, CharacterData].forEach(function (C) {
         getter(C.prototype, 'nextElementSibling', function () { return elementSibling(this, 'nextSibling'); });
@@ -1052,6 +1273,162 @@ const WRAPPERS_JS: &str = r#"
         return d;
     });
 
+    // Form controls (HTML §4.10). A text control's value lives host-side
+    // (its dirty value, which the engine's edit state mirrors for paint);
+    // the other input value modes read and write the `value` attribute.
+    function controlValue(el, v) {
+        var s = slotOf(el);
+        var r = s.gen === gen ? (v === undefined ? N.value(s.gen, s.id) : N.value(s.gen, s.id, v)) : null;
+        return r === null ? '' : r;
+    }
+    function inputMode(el) {
+        var t = el.type;
+        if (t === 'checkbox' || t === 'radio') return 'default/on';
+        return /^(hidden|submit|image|reset|button)$/.test(t) ? 'default' : 'value';
+    }
+    var INPUT_TYPES = /^(hidden|text|search|tel|url|email|password|date|month|week|time|datetime-local|number|range|color|checkbox|radio|file|submit|image|reset|button)$/;
+    accessor(HTMLInputElement.prototype, 'type', function () {
+        var t = (this.getAttribute('type') || '').toLowerCase();
+        return INPUT_TYPES.test(t) ? t : 'text';
+    }, function (v) { this.setAttribute('type', v); });
+    accessor(HTMLInputElement.prototype, 'value', function () {
+        var m = inputMode(this);
+        if (m === 'value') return controlValue(this);
+        var a = this.getAttribute('value');
+        return a === null ? (m === 'default/on' ? 'on' : '') : a;
+    }, function (v) {
+        v = v === null ? '' : String(v);
+        if (inputMode(this) !== 'value') return this.setAttribute('value', v);
+        var n = controlValue(this, v).length;
+        selectionOf(this).start = selectionOf(this).end = n;
+    });
+    accessor(HTMLTextAreaElement.prototype, 'value', function () { return controlValue(this); },
+        function (v) {
+            var n = controlValue(this, v === null ? '' : String(v)).length;
+            selectionOf(this).start = selectionOf(this).end = n;
+        });
+    // Script's view of the selection (HTML §4.10.5.2.10). The engine's caret
+    // is not synced to it yet; setting a value moves both ends to its end.
+    var selections = new WeakMap();
+    function selectionOf(el) {
+        var s = selections.get(el);
+        if (!s) { s = { start: 0, end: 0, dir: 'none' }; selections.set(el, s); }
+        var n = controlValue(el).length;
+        s.start = Math.min(s.start, n); s.end = Math.min(s.end, n);
+        return s;
+    }
+    function setSelection(el, start, end, dir) {
+        var s = selectionOf(el), n = el.value.length;
+        s.end = Math.min(end >>> 0, n);
+        s.start = Math.min(start >>> 0, s.end);
+        s.dir = dir === 'forward' || dir === 'backward' ? dir : 'none';
+    }
+    // Validity (HTML §4.10.20.3) for the constraints this rung models.
+    var customValidity = new WeakMap();
+    function validityOf(el) {
+        var v = el.value, min = el.minLength, max = el.maxLength, pat = el.getAttribute('pattern');
+        var patternMismatch = false;
+        if (pat !== null && v !== '') {
+            try { patternMismatch = !new RegExp('^(?:' + pat + ')$').test(v); } catch (e) {}
+        }
+        var r = {
+            valueMissing: el.required && v === '',
+            tooShort: min > 0 && v !== '' && v.length < min,
+            tooLong: max >= 0 && v.length > max,
+            patternMismatch: patternMismatch,
+            typeMismatch: false, stepMismatch: false, rangeUnderflow: false,
+            rangeOverflow: false, badInput: false,
+            customError: !!customValidity.get(el)
+        };
+        r.valid = !Object.keys(r).some(function (k) { return r[k]; });
+        return r;
+    }
+    [HTMLInputElement, HTMLTextAreaElement].forEach(function (C) {
+        var P = C.prototype;
+        getter(P, 'selectionStart', function () { return selectionOf(this).start; });
+        getter(P, 'selectionEnd', function () { return selectionOf(this).end; });
+        getter(P, 'selectionDirection', function () { return selectionOf(this).dir; });
+        P.setSelectionRange = function (start, end, dir) { setSelection(this, start, end, dir); };
+        P.select = function () { setSelection(this, 0, this.value.length); };
+        getter(P, 'validity', function () { return validityOf(this); });
+        getter(P, 'willValidate', function () { return !this.disabled && !this.readOnly; });
+        getter(P, 'validationMessage', function () { return customValidity.get(this) || ''; });
+        P.setCustomValidity = function (msg) { customValidity.set(this, String(msg)); };
+        P.checkValidity = function () {
+            if (!this.willValidate || validityOf(this).valid) return true;
+            this.dispatchEvent(new Event('invalid', { cancelable: true }));
+            return false;
+        };
+        P.reportValidity = P.checkValidity;
+        [['maxLength', 'maxlength'], ['minLength', 'minlength']].forEach(function (p) {
+            accessor(P, p[0], function () {
+                var n = parseInt(this.getAttribute(p[1]), 10);
+                return n >= 0 ? n : -1;
+            }, function (v) { this.setAttribute(p[1], String(v)); });
+        });
+    });
+    [['rows', 2], ['cols', 20]].forEach(function (p) {
+        accessor(HTMLTextAreaElement.prototype, p[0], function () {
+            var n = parseInt(this.getAttribute(p[0]), 10);
+            return n > 0 ? n : p[1];
+        }, function (v) { this.setAttribute(p[0], String(v)); });
+    });
+    getter(HTMLTextAreaElement.prototype, 'textLength', function () { return this.value.length; });
+    getter(HTMLTextAreaElement.prototype, 'type', function () { return 'textarea'; });
+    accessor(HTMLTextAreaElement.prototype, 'defaultValue', function () { return this.textContent; },
+        function (v) { this.textContent = v; });
+    accessor(HTMLInputElement.prototype, 'defaultValue', function () {
+        return this.getAttribute('value') || '';
+    }, function (v) { this.setAttribute('value', v); });
+    [HTMLInputElement, HTMLTextAreaElement].forEach(function (C) {
+        ['name', 'placeholder'].forEach(function (k) {
+            accessor(C.prototype, k, function () { return this.getAttribute(k) || ''; },
+                function (v) { this.setAttribute(k, v); });
+        });
+        [['disabled', 'disabled'], ['readOnly', 'readonly'], ['required', 'required']].forEach(function (p) {
+            accessor(C.prototype, p[0], function () { return this.hasAttribute(p[1]); },
+                function (v) { this.toggleAttribute(p[1], !!v); });
+        });
+        getter(C.prototype, 'form', function () { return this.closest('form'); });
+    });
+    // HTML §4.10.21 form reset, for the controls this rung models: each text
+    // control drops its dirty value and shows its default again.
+    function controls(form, tags) {
+        return Array.prototype.filter.call(form.getElementsByTagName('*'), function (el) {
+            return tags.test(el.localName);
+        });
+    }
+    HTMLFormElement.prototype.reset = function () {
+        if (!this.dispatchEvent(new Event('reset', { bubbles: true, cancelable: true }))) return;
+        controls(this, /^(input|textarea)$/).forEach(function (el) {
+            var s = slotOf(el);
+            if (s.gen === gen && (el.localName === 'textarea' || inputMode(el) === 'value')) {
+                N.value(s.gen, s.id, null);
+            }
+        });
+    };
+    // Navigation from script is not wired; submission stays engine-side.
+    HTMLFormElement.prototype.submit = function () {};
+    [['name', 'name'], ['action', 'action'], ['target', 'target']].forEach(function (p) {
+        accessor(HTMLFormElement.prototype, p[0], function () { return this.getAttribute(p[1]) || ''; },
+            function (v) { this.setAttribute(p[1], v); });
+    });
+    getter(HTMLFormElement.prototype, 'method', function () {
+        return (this.getAttribute('method') || '').toLowerCase() === 'post' ? 'post' : 'get';
+    });
+    // A static snapshot, like the other collections here.
+    getter(HTMLFormElement.prototype, 'elements', function () {
+        var els = controls(this, /^(input|textarea|select|button)$/);
+        var out = Object.create(HTMLCollection.prototype);
+        els.forEach(function (el, i) { out[i] = el; });
+        Object.defineProperty(out, 'length', { value: els.length });
+        return out;
+    });
+    // Focus is engine-side (pin §4) and not reachable from script yet; these
+    // keep handlers that call them (`input.focus()` after a submit) running.
+    HTMLElement.prototype.focus = function () {};
+    HTMLElement.prototype.blur = function () {};
+
     Element.prototype.getAttribute = function (name) {
         var s = slotOf(this); return N.attr(s.gen, s.id, String(name));
     };
@@ -1071,6 +1448,53 @@ const WRAPPERS_JS: &str = r#"
         if (want && !has) this.setAttribute(name, '');
         if (!want && has) this.removeAttribute(name);
         return want;
+    };
+    Element.prototype.getAttributeNames = function () {
+        var names = info(this, 'attrNames');
+        return names ? names.split(' ') : [];
+    };
+    Element.prototype.hasAttributes = function () { return this.getAttributeNames().length > 0; };
+
+    // DOM "insert adjacent" (insertAdjacentElement/Text) and HTML §8.5
+    // insertAdjacentHTML. Answers the parent and the node to insert before.
+    function adjacentSpot(el, where, method) {
+        var w = String(where).toLowerCase();
+        if (w === 'beforebegin') return [el.parentNode, el];
+        if (w === 'afterbegin') return [el, el.firstChild];
+        if (w === 'beforeend') return [el, null];
+        if (w === 'afterend') return [el.parentNode, el.nextSibling];
+        throw new DOMException("Failed to execute '" + method + "' on 'Element': The value provided ('" +
+            where + "') is not one of 'beforeBegin', 'afterBegin', 'beforeEnd', or 'afterEnd'.",
+            'SyntaxError');
+    }
+    Element.prototype.insertAdjacentElement = function (where, element) {
+        if (!(element instanceof Element)) {
+            throw new TypeError("Failed to execute 'insertAdjacentElement' on 'Element': " +
+                "parameter 2 is not of type 'Element'.");
+        }
+        var spot = adjacentSpot(this, where, 'insertAdjacentElement');
+        if (!spot[0]) return null;
+        return spot[0].insertBefore(element, spot[1]);
+    };
+    Element.prototype.insertAdjacentText = function (where, data) {
+        var t = g.document.createTextNode(String(data));
+        var spot = adjacentSpot(this, where, 'insertAdjacentText');
+        if (spot[0]) spot[0].insertBefore(t, spot[1]);
+    };
+    Element.prototype.insertAdjacentHTML = function (where, html) {
+        var spot = adjacentSpot(this, where, 'insertAdjacentHTML');
+        if (!spot[0] || spot[0].nodeType === 9) {
+            throw new DOMException("Failed to execute 'insertAdjacentHTML' on 'Element': " +
+                "The element has no parent.", 'NoModificationAllowedError');
+        }
+        // The fragment parses in the context of the element it lands in
+        // (<html> parses as <body>), through a detached holder of that name.
+        var ctx = spot[0].localName === 'html' ? 'body' : spot[0].localName;
+        var holder = create('element', ctx, 'insertAdjacentHTML');
+        holder.innerHTML = String(html);
+        Array.prototype.slice.call(holder.childNodes).forEach(function (n) {
+            spot[0].insertBefore(n, spot[1]);
+        });
     };
 
     // classList: a DOMTokenList over the class attribute, one per element.
@@ -1260,6 +1684,23 @@ const WRAPPERS_JS: &str = r#"
         Element.prototype[k] = queries[k];
         Document.prototype[k] = queries[k];
     });
+    DocumentFragment.prototype.querySelector = queries.querySelector;
+    DocumentFragment.prototype.querySelectorAll = queries.querySelectorAll;
+    // NonElementParentNode on a fragment: the id table only knows the
+    // document, so walk the fragment's own subtree.
+    DocumentFragment.prototype.getElementById = function (id) {
+        id = String(id);
+        function find(n) {
+            for (var c = n.firstChild; c; c = c.nextSibling) {
+                if (c.nodeType !== 1) continue;
+                if (id !== '' && c.getAttribute('id') === id) return c;
+                var hit = find(c);
+                if (hit) return hit;
+            }
+            return null;
+        }
+        return find(this);
+    };
     function matches(el, sel, method) {
         var s = slotOf(el);
         if (s.gen !== gen) return false;
@@ -1282,9 +1723,6 @@ const WRAPPERS_JS: &str = r#"
     };
     Document.prototype.createElement = function (tag) {
         tag = String(tag);
-        // Form controls keep their JS stubs for now: their editing state
-        // (value, selection) lives there, not in the Rust DOM.
-        if (/^(input|textarea|form)$/i.test(tag)) return stubCreateElement.call(this, tag);
         return create('element', tag, 'createElement');
     };
     Document.prototype.createTextNode = function (data) {
@@ -1292,6 +1730,9 @@ const WRAPPERS_JS: &str = r#"
     };
     Document.prototype.createComment = function (data) {
         return create('comment', String(data), 'createComment');
+    };
+    Document.prototype.createDocumentFragment = function () {
+        return create('fragment', '', 'createDocumentFragment');
     };
     Document.prototype.getElementById = function (id) {
         var s = slotOf(this);
@@ -1442,9 +1883,9 @@ const WRAPPERS_JS: &str = r#"
     var doc = g.document;
     Object.setPrototypeOf(doc, Document.prototype);
     // The stub's own factories would shadow the Rust-backed ones.
-    var stubCreateElement = doc.createElement;
     delete doc.createElement;
     delete doc.createTextNode;
+    delete doc.createDocumentFragment;
     // Document and window trade the lifecycle's per-object listener lists
     // for the shared EventTarget, so element events bubble up to them.
     ['addEventListener', 'removeEventListener', 'dispatchEvent'].forEach(function (k) {
@@ -1462,3 +1903,298 @@ const WRAPPERS_JS: &str = r#"
     g.__rustkit_dom_reset(0);
 })(globalThis);
 "#;
+
+#[cfg(test)]
+mod tests {
+    use crate::{DomBindings, DomDirty};
+    use rustkit_dom::Document;
+    use rustkit_js::{JsRuntime, JsValue};
+    use std::rc::Rc;
+
+    const PAGE: &str = r#"<!DOCTYPE html><html><head><title>T</title></head>
+<body><div id="main" class="box"><p class="x">Hello, <b>world</b>!</p><!--c--><p class="x">Two</p></div>
+<p id="outside" class="x">Out</p></body></html>"#;
+
+    fn bound(html: &str) -> (DomBindings, Rc<Document>) {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let document = Rc::new(Document::parse_html(html).unwrap());
+        bindings.set_document(document.clone()).unwrap();
+        (bindings, document)
+    }
+
+    fn eval_string(bindings: &DomBindings, script: &str) -> String {
+        match bindings.evaluate(script).unwrap() {
+            JsValue::String(s) => s,
+            other => panic!("{script} evaluated to {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clone_node_copies_into_fresh_detached_nodes() {
+        let (b, doc) = bound(PAGE);
+        assert_eq!(
+            eval_string(
+                &b,
+                "var m = document.getElementById('main'), s = m.cloneNode(), d = m.cloneNode(true); \
+                 var t = m.firstChild.firstChild.cloneNode(); \
+                 [s.parentNode === null, s.childNodes.length, s.className, s.id, \
+                  d.childNodes.length, d.textContent, d.firstChild !== m.firstChild, \
+                  d.firstChild.className, d.innerHTML === m.innerHTML, \
+                  t.data, t.parentNode === null, document.getElementById('main') === m, \
+                  document.querySelectorAll('.box').length].join('|')"
+            ),
+            "true|0|box|main|3|Hello, world!Two|true|x|true|Hello, |true|true|1"
+        );
+        assert_eq!(
+            b.take_dirty(),
+            DomDirty::Clean,
+            "a detached clone marks nothing"
+        );
+        assert_eq!(
+            eval_string(
+                &b,
+                "document.body.appendChild(d); \
+                 var r = [document.querySelectorAll('.box').length]; \
+                 try { document.cloneNode(); } catch (e) { r.push(e.name); } r.join('|')"
+            ),
+            "2|NotSupportedError"
+        );
+        assert_eq!(b.take_dirty(), DomDirty::Style);
+        // The clone is in the Rust tree the cascade reads.
+        let body = doc.body().unwrap();
+        assert_eq!(
+            body.last_child().unwrap().text_content(),
+            "Hello, world!Two"
+        );
+    }
+
+    #[test]
+    fn attribute_names_and_node_equality() {
+        let (b, _) = bound(PAGE);
+        assert_eq!(
+            eval_string(
+                &b,
+                "var m = document.getElementById('main'), r = []; m.setAttribute('data-z', '1'); \
+                 var i = document.createElement('i'); \
+                 r.push(m.getAttributeNames().join(','), i.getAttributeNames().length, \
+                        i.hasAttributes(), m.hasAttributes()); \
+                 var ps = document.querySelectorAll('.x'), c = m.cloneNode(true); \
+                 r.push(ps[0].isEqualNode(ps[1]), c.isEqualNode(m), m.isEqualNode(null), \
+                        m.isSameNode(m), c.isSameNode(m)); \
+                 c.lastChild.textContent = 'Changed'; r.push(c.isEqualNode(m)); \
+                 var x = document.createElement('a'), y = document.createElement('a'); \
+                 x.setAttribute('p', '1'); x.setAttribute('q', '2'); \
+                 y.setAttribute('q', '2'); y.setAttribute('p', '1'); r.push(x.isEqualNode(y)); \
+                 y.setAttribute('p', '3'); r.push(x.isEqualNode(y)); \
+                 try { m.isEqualNode({}); } catch (e) { r.push(e.name); } \
+                 r.join('|')"
+            ),
+            "class,data-z,id|0|false|true|false|true|false|true|false|false|true|false|TypeError"
+        );
+    }
+
+    #[test]
+    fn compare_document_position_orders_nodes() {
+        let (b, _) = bound(PAGE);
+        assert_eq!(
+            eval_string(
+                &b,
+                "var m = document.getElementById('main'), o = document.getElementById('outside'), \
+                     w = document.querySelector('b'); \
+                 [m.compareDocumentPosition(o), o.compareDocumentPosition(m), \
+                  m.compareDocumentPosition(w), w.compareDocumentPosition(m), \
+                  m.compareDocumentPosition(m), document.compareDocumentPosition(w), \
+                  Node.DOCUMENT_POSITION_FOLLOWING, m.DOCUMENT_POSITION_CONTAINED_BY].join('|')"
+            ),
+            "4|2|20|10|0|20|4|16"
+        );
+        // Disconnected nodes: flagged, and ordered one way consistently.
+        assert_eq!(
+            eval_string(
+                &b,
+                "var x = document.createElement('x'), p = m.compareDocumentPosition(x), \
+                     q = x.compareDocumentPosition(m); \
+                 [p & 33, q & 33, (p & 6) + (q & 6)].join('|')"
+            ),
+            "33|33|6"
+        );
+    }
+
+    #[test]
+    fn normalize_merges_adjacent_text_and_drops_empty_text() {
+        let (b, _) = bound(PAGE);
+        assert_eq!(
+            eval_string(
+                &b,
+                "var m = document.getElementById('main'); m.textContent = ''; \
+                 ['a', '', 'b'].forEach(function (s) { m.appendChild(document.createTextNode(s)); }); \
+                 var i = document.createElement('i'); i.appendChild(document.createTextNode('')); \
+                 m.appendChild(i); m.appendChild(document.createTextNode('c')); \
+                 var first = m.firstChild; m.normalize(); \
+                 [m.childNodes.length, m.firstChild === first, first.data, \
+                  i.childNodes.length, m.lastChild.data].join('|')"
+            ),
+            "3|true|ab|0|c"
+        );
+    }
+
+    #[test]
+    fn insert_adjacent_html_element_and_text() {
+        let (b, doc) = bound(PAGE);
+        assert_eq!(
+            eval_string(
+                &b,
+                "var m = document.getElementById('main'), r = []; \
+                 m.insertAdjacentHTML('beforebegin', '<h1 id=h>T</h1>'); \
+                 m.insertAdjacentHTML('afterBegin', '<span>s1</span><span>s2</span>'); \
+                 m.insertAdjacentHTML('beforeend', 'end<em>!</em>'); \
+                 m.insertAdjacentHTML('afterend', '<hr id=r>'); \
+                 r.push(m.previousSibling.id, m.firstChild.textContent, \
+                        m.firstChild.nextSibling.textContent, m.lastChild.tagName, \
+                        m.lastChild.previousSibling.data, m.nextSibling.id); \
+                 var e = document.createElement('u'), d = document.createElement('div'); \
+                 r.push(m.insertAdjacentElement('afterend', e) === e, m.nextSibling === e, \
+                        d.insertAdjacentElement('beforebegin', e) === null, \
+                        e.parentNode === document.body); \
+                 m.insertAdjacentText('afterbegin', 'txt'); r.push(m.firstChild.data); \
+                 try { m.insertAdjacentHTML('middle', 'x'); } catch (x) { r.push(x.name); } \
+                 try { document.documentElement.insertAdjacentHTML('beforebegin', 'x'); } \
+                 catch (x) { r.push(x.name); } \
+                 try { d.insertAdjacentHTML('afterend', 'x'); } catch (x) { r.push(x.name); } \
+                 try { m.insertAdjacentElement('beforeend', 'str'); } catch (x) { r.push(x.name); } \
+                 document.documentElement.insertAdjacentHTML('beforeend', '<p id=late>L</p>'); \
+                 r.push(document.getElementById('late').parentNode === document.documentElement); \
+                 r.join('|')"
+            ),
+            "h|s1|s2|EM|end|r|true|true|true|true|txt|\
+             SyntaxError|NoModificationAllowedError|NoModificationAllowedError|TypeError|true"
+        );
+        assert_eq!(b.take_dirty(), DomDirty::Style);
+        assert_eq!(
+            doc.get_element_by_id("main").unwrap().text_content(),
+            "txts1s2Hello, world!Twoend!"
+        );
+    }
+
+    const FORM: &str = r#"<!DOCTYPE html><html><body><form id="f">
+<input id="i" value="ab"><textarea id="t">hi</textarea><input id="c" type="checkbox">
+<input id="h" type="HIDDEN" value="hv"><button id="b">Go</button></form></body></html>"#;
+
+    #[test]
+    fn text_control_value_is_a_dirty_value_the_engine_is_told_about() {
+        let (b, doc) = bound(FORM);
+        let raw = |id: &str| doc.get_element_by_id(id).unwrap().id.raw();
+        assert_eq!(
+            eval_string(
+                &b,
+                "var i = document.getElementById('i'), t = document.getElementById('t'), r = []; \
+                 r.push(i instanceof HTMLInputElement, t instanceof HTMLTextAreaElement, \
+                        document.getElementById('f') instanceof HTMLFormElement, \
+                        i.value, i.defaultValue, i.type, t.value, t.defaultValue, t.type); \
+                 i.value = 'x\\ny'; t.value = 'a\\r\\nb'; \
+                 r.push(i.value, i.getAttribute('value'), t.value, t.textLength, t.textContent); \
+                 r.join('|')"
+            ),
+            "true|true|true|ab|ab|text|hi|hi|textarea|xy|ab|a\nb|3|hi"
+        );
+        assert_eq!(b.take_dirty(), DomDirty::Layout, "a value write repaints");
+        assert_eq!(
+            b.take_value_writes(),
+            vec![(raw("i"), "xy".to_string()), (raw("t"), "a\nb".to_string())]
+        );
+        assert!(b.take_value_writes().is_empty());
+        assert_eq!(
+            doc.get_element_by_id("i").unwrap().get_attribute("value"),
+            Some("ab"),
+            "the value attribute is the default, not the value"
+        );
+    }
+
+    #[test]
+    fn other_input_modes_and_reflected_control_attributes() {
+        let (b, _doc) = bound(FORM);
+        assert_eq!(
+            eval_string(
+                &b,
+                "var c = document.getElementById('c'), h = document.getElementById('h'), r = []; \
+                 r.push(c.value, h.type, h.value); c.value = 'yes'; h.value = 'hw'; \
+                 r.push(c.getAttribute('value'), h.getAttribute('value')); \
+                 var i = document.getElementById('i'); i.disabled = true; i.readOnly = true; \
+                 i.name = 'q'; i.placeholder = 'p'; \
+                 r.push(i.getAttribute('disabled'), i.hasAttribute('readonly'), i.name, \
+                        i.placeholder, i.required, i.form.id, document.body.value); \
+                 var f = document.getElementById('f'); \
+                 r.push(f.elements.length, f.elements[4].id, f.method); \
+                 i.focus(); i.blur(); r.join('|')"
+            ),
+            "on|hidden|hv|yes|hw||true|q|p|false|f||5|b|get"
+        );
+        assert!(
+            b.take_value_writes().is_empty(),
+            "attribute modes queue no value"
+        );
+    }
+
+    #[test]
+    fn created_controls_are_rust_backed() {
+        let (b, doc) = bound(FORM);
+        assert_eq!(
+            eval_string(
+                &b,
+                "var i = document.createElement('INPUT'), t = document.createElement('textarea'); \
+                 var f = document.createElement('form'); \
+                 f.appendChild(i); f.appendChild(t); document.body.appendChild(f); \
+                 i.id = 'made'; i.value = 'v'; \
+                 [i instanceof HTMLInputElement, t instanceof HTMLTextAreaElement, \
+                  f instanceof HTMLFormElement, i.parentNode === f, i.value, \
+                  document.querySelector('#made') === i].join('|')"
+            ),
+            "true|true|true|true|v|true"
+        );
+        assert!(doc.get_element_by_id("made").is_some());
+    }
+
+    #[test]
+    fn typed_text_reads_back_and_reset_or_navigate_drop_it() {
+        let (b, doc) = bound(FORM);
+        let i = doc.get_element_by_id("i").unwrap().id.raw();
+        b.sync_control_value(i, "typed".to_string());
+        assert_eq!(
+            eval_string(&b, "document.getElementById('i').value"),
+            "typed"
+        );
+        assert_eq!(
+            b.take_dirty(),
+            DomDirty::Clean,
+            "a read or a sync marks nothing"
+        );
+        assert_eq!(
+            eval_string(
+                &b,
+                "var f = document.getElementById('f'), n = 0; \
+                 f.addEventListener('reset', function () { n++; }); \
+                 document.getElementById('t').value = 'edited'; f.reset(); \
+                 [n, document.getElementById('i').value, document.getElementById('t').value].join('|')"
+            ),
+            "1|ab|hi"
+        );
+        assert_eq!(b.take_dirty(), DomDirty::Layout);
+        let t = doc.get_element_by_id("t").unwrap().id.raw();
+        assert_eq!(
+            b.take_value_writes(),
+            vec![
+                (t, "edited".to_string()),
+                (i, "ab".to_string()),
+                (t, "hi".to_string())
+            ],
+            "reset repaints each text control's default, and only those"
+        );
+
+        // A new document starts with no dirty values, even at a reused NodeId.
+        b.sync_control_value(i, "stale".to_string());
+        b.set_document(Rc::new(Document::parse_html(FORM).unwrap()))
+            .unwrap();
+        assert_eq!(eval_string(&b, "document.getElementById('i').value"), "ab");
+        assert!(b.take_value_writes().is_empty());
+    }
+}

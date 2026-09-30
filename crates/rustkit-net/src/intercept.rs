@@ -246,6 +246,7 @@ mod tests {
             credentials: Default::default(),
             referrer: None,
             referrer_policy: Default::default(),
+            destination: crate::RequestDestination::Other,
         }
     }
 

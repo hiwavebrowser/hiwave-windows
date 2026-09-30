@@ -1440,8 +1440,10 @@ pub struct LayoutBox {
     pub box_type: BoxType,
     /// Computed dimensions.
     pub dimensions: Dimensions,
-    /// Computed style.
-    pub style: ComputedStyle,
+    /// Computed style. Boxed: a style is ~1.5 KB, and a layout box is moved
+    /// by value many times while the tree is built (returns, `Vec` pushes
+    /// and regrowth), so an inline style made every move a ~2 KB copy.
+    pub style: Box<ComputedStyle>,
     /// Child boxes.
     pub children: Vec<LayoutBox>,
     /// CSS position property.
@@ -1516,11 +1518,11 @@ pub struct LayoutBox {
 
 impl LayoutBox {
     /// Create a new layout box.
-    pub fn new(box_type: BoxType, style: ComputedStyle) -> Self {
+    pub fn new(box_type: BoxType, style: impl Into<Box<ComputedStyle>>) -> Self {
         Self {
             box_type,
             dimensions: Dimensions::default(),
-            style,
+            style: style.into(),
             children: Vec::new(),
             position: Position::Static,
             offsets: PositionOffsets::default(),
@@ -6719,14 +6721,12 @@ impl DisplayList {
         }
 
         // Check if this box has a transform
-        let has_transform = !layout_box.style.transform.is_identity();
+        let transform = layout_box.style.effective_transform();
+        let has_transform = !transform.is_identity();
         if has_transform {
             let border_box = layout_box.dimensions.border_box();
             // Compute transform matrix
-            let matrix = layout_box
-                .style
-                .transform
-                .to_matrix(border_box.width, border_box.height);
+            let matrix = transform.to_matrix(border_box.width, border_box.height);
             // Compute origin in absolute coordinates
             let origin_x = border_box.x
                 + layout_box
@@ -12086,6 +12086,274 @@ mod tests {
         let mut c = n69_flex_row(&[100.0, 60.0], Length::Rem(0.5));
         c.style.width = Length::Px(40.0);
         let got = crate::grid::own_max_content_width(&c);
+        assert!(
+            (got - 40.0).abs() < 0.01,
+            "a specified border-box width is the contribution, got {got}"
+        );
+    }
+
+
+    // ---- a row flex container's MIN-content main size (n70) ---------------
+    //
+    // `own_min_content_width` had no flex arm at all. Its generic walk answers
+    // the LARGEST block-level child and drops every gap, so a nowrap row flex
+    // container's min-content read one item wide: two items of 100 and 90 with
+    // a 16px gap measured 100 where Chrome measures 206. css-flexbox-1 §9.9.1
+    // computes the min-content main size exactly as the max-content main size
+    // with each item's MIN-content contribution in place of its max-content
+    // one, and the max-content arm next door already sums plus gaps.
+    //
+    // Chrome 148 ground truth, measured on all 26 gating cases by
+    // `trench/tools/n70_flex_fraction_probe.mjs`. 83 row flex containers were
+    // comparable (nowrap, no anonymous text run, laid out, and not themselves a
+    // flex item whose basis swallows the forced width):
+    //
+    //   sum(item min-content contributions) + (n-1)*gap + pb   closes on  81
+    //   largest child (what this function answered)            closes on   0
+    //
+    // The two that close on neither are the sum rule clamped UP by the
+    // container's own `min-width` — `settings`' `.setting-control` (140px,
+    // sum 110.906) and `chrome_rustkit`'s `.tab` (120px, sum 108.344). That
+    // clamp belongs to the caller, not to a contribution.
+    //
+    // WRAP is measured, not reasoned: on all 19 wrapping row containers in the
+    // corpus Chrome's min-content equals the largest child to 0.000 —
+    // `bg-pure`'s `.row` 130.000, `card-grid`'s `.grid` 300.000, `about`'s
+    // `.links` 66.406, `settings`' `.clear-options` 95.000,
+    // `form-elements`' `.button-row` 124.500 — because a multi-line container
+    // may put every item on its own line. So the arm must NOT take them.
+
+    /// A nowrap row flex container holding `widths.len()` inflexible block
+    /// items of those border-box widths, with `gap` as its `column-gap`.
+    fn n70_flex_row(widths: &[f32], gap: Length) -> LayoutBox {
+        let mut cs = ComputedStyle::new();
+        cs.display = rustkit_css::Display::Flex;
+        cs.column_gap = gap;
+        let mut c = LayoutBox::new(BoxType::Block, cs);
+        for w in widths {
+            let mut s = ComputedStyle::new();
+            s.width = Length::Px(*w);
+            c.children.push(LayoutBox::new(BoxType::Block, s));
+        }
+        c
+    }
+
+    #[test]
+    fn a_row_flex_containers_min_content_sums_its_items_and_gaps() {
+        // The defect itself. Two items and one 0.5rem (8px) gap.
+        let c = n70_flex_row(&[100.0, 90.0], Length::Rem(0.5));
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 198.0).abs() < 0.01,
+            "100 + 90 + 8 = 198, got {got} (100 is the largest child, which is \
+             what the generic walk answers with no flex arm; 190 reads the rem \
+             gap as zero)"
+        );
+    }
+
+    #[test]
+    fn min_content_sums_the_items_min_content_not_their_max_content() {
+        // The arm must read the MIN-content contribution of each item. A
+        // wrappable two-word text item's min-content is its longest word and
+        // its max-content is the whole run, so an arm that called
+        // `estimate_max_content_width` (the neighbouring function, six lines
+        // away and textually near-identical) passes every guard above and
+        // fails here. Expected is computed through the per-child helpers rather
+        // than hardcoded, so the guard does not depend on this seat's advances.
+        let mut cs = ComputedStyle::new();
+        cs.display = rustkit_css::Display::Flex;
+        cs.column_gap = Length::Px(10.0);
+        let mut c = LayoutBox::new(BoxType::Block, cs);
+        let mut ts = ComputedStyle::new();
+        ts.font_size = Length::Px(16.0);
+        c.children.push(LayoutBox::new(
+            BoxType::Text("wrappable words here".to_string()),
+            ts.clone(),
+        ));
+        c.children
+            .push(LayoutBox::new(BoxType::Text("another run".to_string()), ts));
+        let want: f32 = c
+            .children
+            .iter()
+            .map(crate::grid::estimate_min_content_width)
+            .sum::<f32>()
+            + 10.0;
+        let max_sum: f32 = c
+            .children
+            .iter()
+            .map(crate::grid::estimate_max_content_width)
+            .sum::<f32>()
+            + 10.0;
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            max_sum > want + 1.0,
+            "the fixture must be able to tell min from max (min {want}, max {max_sum})"
+        );
+        assert!(
+            (got - want).abs() < 0.01,
+            "min-content sums the items' MIN-content ({want}), got {got} \
+             (the max-content sum is {max_sum})"
+        );
+    }
+
+    #[test]
+    fn a_wrapping_row_flex_container_min_content_takes_its_widest_item() {
+        // Measured on 19 corpus containers: a multi-line container may put
+        // every item on its own line, so its min-content main size is the
+        // largest contribution with NO gap term. An arm that ignores
+        // `flex-wrap` reports 198 here.
+        let mut c = n70_flex_row(&[100.0, 90.0], Length::Rem(0.5));
+        c.style.flex_wrap = rustkit_css::FlexWrap::Wrap;
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 100.0).abs() < 0.01,
+            "a wrapping container's min-content is its widest item (100), got {got} \
+             (198 applies the single-line sum rule to a multi-line container)"
+        );
+    }
+
+    #[test]
+    fn a_column_flex_container_min_content_takes_its_widest_item() {
+        // In a column container width is the CROSS axis, so the main-axis gaps
+        // are not part of it and the items do not sum. A sum hoisted out of the
+        // row branch lands here.
+        let mut c = n70_flex_row(&[100.0, 90.0], Length::Rem(0.5));
+        c.style.flex_direction = rustkit_css::FlexDirection::Column;
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 100.0).abs() < 0.01,
+            "a column container's min-content width is its widest item (100), got {got} \
+             (198 sums a cross-axis measurement and adds a main-axis gap)"
+        );
+    }
+
+    #[test]
+    fn three_items_are_two_gaps_in_min_content() {
+        // With n=2 one gap and one gap per item are the same number, so the
+        // off-by-one is only visible from three items up.
+        let c = n70_flex_row(&[100.0, 90.0, 40.0], Length::Rem(0.5));
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 246.0).abs() < 0.01,
+            "three items are two gaps: 100 + 90 + 40 + 16 = 246, got {got} \
+             (254 counts a gap per item, 230 reads the gap as zero)"
+        );
+    }
+
+    #[test]
+    fn the_row_gap_is_not_the_main_axis_gap_in_min_content() {
+        // `gap: <row> <column>` sets both, and the corpus authors the shorthand
+        // so they are equal there — a `row_gap` slip is invisible on the pages
+        // and only a fixture can separate them.
+        let mut c = n70_flex_row(&[100.0, 90.0], Length::Rem(0.5));
+        c.style.row_gap = Length::Rem(4.0);
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 198.0).abs() < 0.01,
+            "the column gap (8px) is a row container's main-axis gap, got {got} \
+             (254 is the 4rem row gap read instead)"
+        );
+    }
+
+    #[test]
+    fn a_percentage_gap_contributes_nothing_to_the_min_content_sum() {
+        // css-sizing-3 §4.1: percentages resolve against zero when computing an
+        // intrinsic contribution. Reaching for the box's own used width would
+        // make the contribution depend on the layout it is an input to.
+        let mut c = n70_flex_row(&[100.0, 90.0], Length::Percent(50.0));
+        c.dimensions.content.width = 400.0;
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 190.0).abs() < 0.01,
+            "a percentage gap contributes 0 to an intrinsic contribution: got {got} \
+             (390 is 50% of the box's own used width)"
+        );
+    }
+
+    #[test]
+    fn an_out_of_flow_child_is_not_a_flex_item_in_min_content() {
+        // css-flexbox-1 §4: an absolutely-positioned child is not a flex item,
+        // so it contributes neither its width NOR a gap slot. `settings`'
+        // `.toggle-slider { position: absolute }` is the corpus's instance —
+        // counting it made a `label.toggle` read 48px wider than Chrome.
+        let mut c = n70_flex_row(&[100.0, 90.0], Length::Rem(0.5));
+        let mut abs_style = ComputedStyle::new();
+        abs_style.width = Length::Px(500.0);
+        abs_style.position = rustkit_css::Position::Absolute;
+        let mut abs_child = LayoutBox::new(BoxType::Block, abs_style);
+        abs_child.position = crate::Position::Absolute;
+        c.children.push(abs_child);
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 198.0).abs() < 0.01,
+            "an out-of-flow child is neither a width nor a gap slot: 100 + 90 + 8 = 198, \
+             got {got} (706 counts its width and a third gap slot, 206 counts only \
+             the extra gap)"
+        );
+    }
+
+    #[test]
+    fn a_whitespace_only_text_child_takes_no_gap_slot_in_min_content() {
+        // css-flexbox-1 §4 wraps a contiguous text run in an anonymous flex
+        // item, but a white-space-only run is not rendered and is not an item.
+        // It contributes 0 width either way, so the only thing this guard can
+        // catch is the GAP SLOT — which is why it asserts the total and not the
+        // child's own contribution.
+        let mut c = n70_flex_row(&[100.0, 90.0], Length::Rem(0.5));
+        let mut ws = ComputedStyle::new();
+        ws.font_size = Length::Px(16.0);
+        c.children
+            .insert(1, LayoutBox::new(BoxType::Text("   \n ".to_string()), ws));
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 198.0).abs() < 0.01,
+            "a white-space-only run takes no gap slot: 100 + 90 + 8 = 198, got {got} \
+             (206 gives it a slot)"
+        );
+    }
+
+    #[test]
+    fn the_items_inline_margins_are_inside_the_min_content_sum() {
+        // An item's contribution is its OUTER size. `settings`' checkbox items
+        // carry a 7px inline margin, so dropping margins here understates every
+        // `label.toggle` and `label.checkbox-label` in the corpus.
+        let mut c = n70_flex_row(&[100.0, 90.0], Length::Rem(0.5));
+        c.children[0].style.margin_left = Length::Px(5.0);
+        c.children[0].style.margin_right = Length::Px(6.0);
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 209.0).abs() < 0.01,
+            "the item's inline margins are inside the sum: 100 + 5 + 6 + 90 + 8 = 209, \
+             got {got} (198 drops them, 203 counts one side)"
+        );
+    }
+
+    #[test]
+    fn the_containers_own_padding_and_border_are_added_to_the_min_content_sum() {
+        // The items sum to a CONTENT width and the function answers a BORDER
+        // box, exactly as the max-content arm does.
+        let mut c = n70_flex_row(&[100.0, 90.0], Length::Rem(0.5));
+        c.style.padding_left = Length::Px(11.0);
+        c.style.padding_right = Length::Px(12.0);
+        c.style.border_left_width = Length::Px(2.0);
+        c.style.border_right_width = Length::Px(3.0);
+        let got = crate::grid::own_min_content_width(&c);
+        assert!(
+            (got - 226.0).abs() < 0.01,
+            "the container's own padding and border are added: 198 + 11 + 12 + 2 + 3 = 226, \
+             got {got} (198 answers a content box)"
+        );
+    }
+
+    #[test]
+    fn a_specified_width_still_wins_over_the_min_content_flex_sum() {
+        // The arm sits BELOW the `width: Px` check, like the max-content arm's.
+        // Stated as its own claim because the arm's POSITION is what keeps a
+        // specified width authoritative, and position is not something the
+        // other guards can see.
+        let mut c = n70_flex_row(&[100.0, 90.0], Length::Rem(0.5));
+        c.style.width = Length::Px(40.0);
+        let got = crate::grid::own_min_content_width(&c);
         assert!(
             (got - 40.0).abs() < 0.01,
             "a specified border-box width is the contribution, got {got}"

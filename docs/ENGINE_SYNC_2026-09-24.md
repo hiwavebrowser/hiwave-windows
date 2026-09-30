@@ -117,6 +117,80 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-09-30 (refresh #8, after #102 merged):** crates now verbatim from
+hiwave-macos develop `22092e6` (Merge #384), 36 upstream PRs past refresh #7
+(#348-#384). Highlights: `light-dark()` resolves to its light argument (#384,
+one of the two example.com gaps noted under refresh #7), cascade layers and
+`id` compound selectors, cascade phases and restyle-by-default in the engine,
+pseudo-element block display and inline pseudo line boxes, five flex fixes
+(collapse-through, indefinite column, empty cross, max-content clamp), the
+individual transform properties, hidden UA styles, `innerText`, `cloneNode`,
+fragments and form values in the Rust DOM, HTTP/2 in rustkit-http (#355, the
+`h2` crate), fetch destinations on `rustkit-net::Request` (#364), and the MDN
+JS ladder (`scripts/js_ladder.py`, `websuite/js-ladder/01-mdn`).
+
+Outside `crates/rustkit-*`:
+
+- **`scripts/apply_windows_patches.py` (new).** The Windows-local engine
+  patches from #101 (Arial-first `sans-serif`, the macOS-only font aliases
+  skipped, and the two strut-test tolerances) are now re-applied by a script
+  instead of by hand. It is idempotent, looks for its own markers, and stops
+  with an error if upstream moved the code it edits. `--check` verifies a tree
+  without writing. Refresh procedure: copy crates, re-append the sidecar pin,
+  run this script, run `sync_parity_tooling.py`.
+- **`crates/hiwave-app/src/shield_adapter.rs`.** One test line: the test
+  helper's `Request` literal gains `destination: RequestDestination::Other`,
+  the new field from #364. Same shape as the `referrer_policy` line from #94.
+  The Windows shell does not carry #364's EasyList interceptor yet; the Windows
+  file is otherwise the pre-#364 upstream file, so that is a separate port.
+- **`Cargo.lock`.** `h2` and its dependencies for HTTP/2.
+- **`crates/rustkit-engine/src/lib.rs`, a TEMPORARY test patch, cross-platform,
+  reported upstream.** Four test modules wrap `Engine::new` in a module mutex,
+  `ENGINE_INIT`. `Engine::new` itself takes the GPU test guard, which the thread
+  then holds until it exits. #380 adds `the_layer_pins_selectors_match_the_box`,
+  which builds four engines on one thread: after the first it holds the guard
+  and waits for the mutex, while another test holds the mutex inside
+  `Engine::new` and waits 120 s for the guard, then panics and poisons the
+  mutex. Parallel run: 16 of 220 fail, all with the guard's own message naming
+  that test; serial run: clean. The mutex predates the guard and is redundant
+  (the guard already serialises creation), so `apply_windows_patches.py`
+  removes it from the four helpers. Parallel run after: 220 / 0 in 40 s. The
+  script reports the patch MISSING once upstream removes the mutex, which is
+  the cue to delete it.
+- The parity tooling sync against the same commit brought the JS ladder
+  scripts, `tools/parity_oracle/capture_url.mjs`, and no changes to the
+  scripts already here.
+- **`baselines/common/` is now in the sync set, and three baselines are
+  recaptured.** Chasing `about` (7.58 on Windows against 3.75 on Mac) led to
+  the Chrome baseline, not the engine: card 3 sat at a fractional y of 376.83
+  and painted at 60% opacity, mid `fadeInUp`. `baselines/common/parity-freeze.js`
+  is the init script that disables animations before a capture. Its
+  `document.documentElement.appendChild(style)` ran before a `file://`
+  document had a root element, threw, and took the `matchMedia` shim down with
+  it, so animated fixtures were captured wherever the clock happened to be.
+  macOS fixed that on 2026-07-09 (8443b8b), but `sync_parity_tooling.py`
+  excluded all of `baselines/`, so Windows kept the broken script for eleven
+  weeks, through yesterday's recapture in #102. The sync now copies
+  `baselines/common/*` (shared tooling: the freeze script, the reset
+  stylesheet, the Noto fonts), and leaves `baselines/chrome-148/` alone as
+  before. A full recapture into a scratch set with the fixed script changed
+  exactly three of 32 baselines, the three animated built-ins: `about`,
+  `new_tab`, `settings`. The other 29 were byte-identical. Two consecutive
+  captures of `about` with the fix are byte-identical too; without it they
+  differ in 43% of pixels.
+
+Gates:
+
+| Gate | Result |
+|---|---|
+| workspace minus `rustkit-engine` | **1439 / 0 / 5** |
+| `rustkit-engine`, `--test-threads=1` | **220 / 0** |
+| `rustkit-engine`, parallel | **220 / 0** in 40 s (16 / 220 failed in 518 s before the ENGINE_INIT patch, see below) |
+| total | **1659 / 0 / 5** (refresh #7: 1593 / 0 / 5) |
+| both shells, release `parity-capture` | build |
+| parity board (`parity_swarm --scope all`, 3 iterations) | **26 / 26, mean 1.42%** (Mac 1.18%); every case within 1.34 points of Mac, worst `gradient-no-radius`; `about` 3.98 against Mac's 3.75 |
+| `apply_windows_patches.py --check` | clean; `pytest scripts/tests` 239 / 5 skipped / 2 xfailed; `audit_baselines.py` 32 clean |
+
 **2026-09-29 (refresh #7, after #98 merged):** crates now verbatim from
 hiwave-macos develop `675156a` (Merge #347), 25 upstream PRs past refresh #6
 (#323-#347). Highlights: grid-template-areas and fixed tracks, blockified flex

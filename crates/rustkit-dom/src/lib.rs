@@ -83,6 +83,9 @@ pub enum NodeType {
         target: String,
         data: String,
     },
+    /// A script-created `DocumentFragment`. Never in the document tree:
+    /// inserting one moves its children instead.
+    DocumentFragment,
 }
 
 /// A DOM node.

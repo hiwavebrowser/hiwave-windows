@@ -9,10 +9,17 @@ is one command and a reviewer can re-run it to check a sync PR byte for byte:
 
 What it copies VERBATIM from macOS (tracked files only):
   scripts/*.py, scripts/tests/**, tools/parity_oracle/*.mjs + package.json,
-  cases/*.json, websuite/*.json, docs/VISUAL_DIFF_POLICY.md (the gates parse it)
+  cases/*.json, websuite/*.json, docs/VISUAL_DIFF_POLICY.md (the gates parse it),
+  baselines/common/* (the freeze script and reset stylesheet every Chrome
+  capture injects: tooling, not captures)
 What it does NOT copy:
-  - baselines/: Windows keeps its own Chrome-for-Testing-148 captures
-    (baselines/chrome-148/metadata.json says platform win32).
+  - baselines/chrome-148/: Windows keeps its own Chrome-for-Testing-148 captures
+    (baselines/chrome-148/metadata.json says platform win32). Until 2026-09-30
+    baselines/common/ was excluded too, so Windows captured for eleven weeks
+    with a freeze script macOS had fixed on 2026-07-09 (8443b8b: the init
+    script ran before file:// documents had a root element, so the
+    animation:none style was never attached and animated fixtures were
+    captured mid-animation).
   - *.sh: Windows has .ps1 equivalents; those stay as they are.
   - the two tests of the macOS parity CI lanes (MACOS_CI_TESTS below).
   - tools/parity_oracle/node_modules (gitignored here; `npm ci` locally),
@@ -65,7 +72,7 @@ def tracked(src: Path, *patterns: str) -> list[str]:
 def copy_set(src: Path) -> list[str]:
     files = tracked(src, "scripts/*.py", "scripts/tests", "tools/parity_oracle/*.mjs",
                     "tools/parity_oracle/package.json", "cases/*.json", "websuite/*.json",
-                    "docs/VISUAL_DIFF_POLICY.md")
+                    "docs/VISUAL_DIFF_POLICY.md", "baselines/common/*")
     return [f for f in files if "/node_modules/" not in f and f != THIS and f not in MACOS_CI_TESTS]
 
 

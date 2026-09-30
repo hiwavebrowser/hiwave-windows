@@ -22,6 +22,22 @@ pub enum ParseError {
 #[derive(Debug, Default, Clone)]
 pub struct StylesheetAst {
     pub rules: Vec<RuleAst>,
+    /// Every cascade layer name the sheet declares, in the order it declares
+    /// them: `@layer a, b;` statements and the name of each `@layer` block.
+    /// Layer order is the order names are FIRST declared (CSS Cascade 5
+    /// §6.4.3), and a statement can declare a layer before any rule is in it.
+    pub layer_statements: Vec<LayerStatementAst>,
+}
+
+/// A layer name declared at a point in the sheet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerStatementAst {
+    /// How many rules of the sheet precede the declaration.
+    pub position: usize,
+    /// Full dotted layer name (`outer.inner` for a nested layer).
+    pub name: String,
+    /// Media query lists of the enclosing `@media` blocks, as on a rule.
+    pub media: Vec<String>,
 }
 
 /// A parsed rule AST.
@@ -32,13 +48,20 @@ pub struct RuleAst {
     /// Media query lists of the `@media` blocks enclosing this rule,
     /// outermost first. The rule applies only where every one matches.
     pub media: Vec<String>,
+    /// Full dotted name of the cascade layer the rule is in, or `None` for
+    /// an unlayered rule. An anonymous `@layer { }` block gets a name no
+    /// author can write (see `anonymous_layer_name`).
+    pub layer: Option<String>,
 }
 
 /// What an at-rule with a `{ ... }` block contributes to the stylesheet.
 enum AtBlock {
-    /// Its body is a list of rules (`@media`, `@supports`, `@layer`); an
-    /// `@media` query list is recorded on each of them.
+    /// Its body is a list of rules (`@media`, `@supports`); an `@media`
+    /// query list is recorded on each of them.
     Rules(Option<String>),
+    /// An `@layer` block: its rules are in the named layer (anonymous when
+    /// the prelude names none).
+    Layer(String),
     /// Its body is declarations (`@font-face`, `@page`): kept as one rule
     /// whose selector is the at-rule prelude, as before.
     Declarations,
@@ -60,11 +83,31 @@ fn at_block_kind(prelude: &str) -> AtBlock {
         // query on the board's sites names something Chrome supports, and a
         // property RustKit lacks is ignored at apply time anyway.
         "supports" if condition.to_ascii_lowercase().starts_with("not") => AtBlock::Skip,
-        "supports" | "layer" => AtBlock::Rules(None),
+        "supports" => AtBlock::Rules(None),
+        "layer" if condition.is_empty() => AtBlock::Layer(anonymous_layer_name()),
+        "layer" => AtBlock::Layer(condition.to_string()),
         "font-face" | "page" | "property" | "counter-style" | "font-palette-values" => {
             AtBlock::Declarations
         }
         _ => AtBlock::Skip,
+    }
+}
+
+/// A name for an anonymous `@layer { }` block. Each anonymous block is a
+/// layer of its own (CSS Cascade 5 §6.4.2), unique across every sheet the
+/// process parses; the control character keeps it from colliding with an
+/// author's identifier, and it has no `.` so it is one path segment.
+fn anonymous_layer_name() -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("\u{1}anonymous{n}")
+}
+
+/// `inner` as a sublayer of `outer`.
+fn sublayer(outer: &str, inner: Option<&str>) -> String {
+    match inner {
+        Some(inner) => format!("{outer}.{inner}"),
+        None => outer.to_string(),
     }
 }
 
@@ -198,8 +241,26 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
         if !in_block {
             let at_rule = current_selector.trim_start().starts_with('@');
             if c == ';' && at_rule {
-                // A statement at-rule (`@charset "UTF-8";`, `@import ...;`,
-                // `@layer a, b;`) ends here and styles nothing.
+                // A statement at-rule (`@charset "UTF-8";`, `@import ...;`)
+                // ends here and styles nothing. `@layer a, b;` styles nothing
+                // either, but it fixes the order of the layers it names.
+                let statement = current_selector.trim();
+                if let Some(names) = statement
+                    .strip_prefix('@')
+                    .filter(|s| {
+                        s.get(..5).is_some_and(|k| k.eq_ignore_ascii_case("layer"))
+                            && s[5..].starts_with(char::is_whitespace)
+                    })
+                    .map(|s| &s[5..])
+                {
+                    for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+                        out.layer_statements.push(LayerStatementAst {
+                            position: out.rules.len(),
+                            name: name.to_string(),
+                            media: Vec::new(),
+                        });
+                    }
+                }
                 current_selector.clear();
                 continue;
             }
@@ -209,13 +270,43 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                     AtBlock::Declarations => {}
                     kind => {
                         let body = take_block(&mut chars);
-                        if let AtBlock::Rules(media) = kind {
-                            for mut rule in parse_stylesheet(&body)?.rules {
-                                if let Some(m) = &media {
-                                    rule.media.insert(0, m.clone());
-                                }
-                                out.rules.push(rule);
+                        let (media, layer) = match kind {
+                            AtBlock::Rules(media) => (media, None),
+                            AtBlock::Layer(name) => (None, Some(name)),
+                            _ => {
+                                current_selector.clear();
+                                continue;
                             }
+                        };
+                        let inner = parse_stylesheet(&body)?;
+                        let base = out.rules.len();
+                        if let Some(name) = &layer {
+                            // The block declares its layer where it opens,
+                            // even when it is empty.
+                            out.layer_statements.push(LayerStatementAst {
+                                position: base,
+                                name: name.clone(),
+                                media: media.iter().cloned().collect(),
+                            });
+                        }
+                        for mut statement in inner.layer_statements {
+                            statement.position += base;
+                            if let Some(m) = &media {
+                                statement.media.insert(0, m.clone());
+                            }
+                            if let Some(outer) = &layer {
+                                statement.name = sublayer(outer, Some(&statement.name));
+                            }
+                            out.layer_statements.push(statement);
+                        }
+                        for mut rule in inner.rules {
+                            if let Some(m) = &media {
+                                rule.media.insert(0, m.clone());
+                            }
+                            if let Some(outer) = &layer {
+                                rule.layer = Some(sublayer(outer, rule.layer.as_deref()));
+                            }
+                            out.rules.push(rule);
                         }
                         current_selector.clear();
                         continue;
@@ -249,6 +340,7 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                     selector,
                     declarations: current_decls.clone(),
                     media: Vec::new(),
+                    layer: None,
                 });
             }
 
@@ -323,6 +415,7 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                 selector,
                 declarations: current_decls,
                 media: Vec::new(),
+                layer: None,
             });
         }
     }
@@ -543,6 +636,58 @@ mod tests {
                 rule(".after", &[]),
             ]
         );
+    }
+
+    #[test]
+    fn layer_blocks_name_their_rules_and_statements_declare_the_order() {
+        let css = r#"
+            @layer reset, theme;
+            .plain { color: black }
+            @layer theme { .t { color: red } @layer dark { .d { color: blue } } }
+            @media (min-width: 1px) { @layer reset { .r { margin: 0 } } }
+            @LAYER x.y;
+        "#;
+        let ast = parse_stylesheet(css).expect("parse");
+        let layers: Vec<(&str, Option<&str>)> = ast
+            .rules
+            .iter()
+            .map(|r| (r.selector.as_str(), r.layer.as_deref()))
+            .collect();
+        assert_eq!(
+            layers,
+            vec![
+                (".plain", None),
+                (".t", Some("theme")),
+                (".d", Some("theme.dark")),
+                (".r", Some("reset")),
+            ]
+        );
+        assert_eq!(ast.rules[3].media, vec!["(min-width: 1px)".to_string()]);
+        let statements: Vec<(usize, &str, usize)> = ast
+            .layer_statements
+            .iter()
+            .map(|s| (s.position, s.name.as_str(), s.media.len()))
+            .collect();
+        assert_eq!(
+            statements,
+            vec![
+                (0, "reset", 0),
+                (0, "theme", 0),
+                (1, "theme", 0),
+                (2, "theme.dark", 0),
+                (3, "reset", 1),
+                (4, "x.y", 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_anonymous_layer_block_is_its_own_layer() {
+        let ast = parse_stylesheet("@layer { .a { color: red } } @layer { .b { color: blue } }")
+            .expect("parse");
+        let (a, b) = (ast.rules[0].layer.clone(), ast.rules[1].layer.clone());
+        assert!(a.is_some() && b.is_some());
+        assert_ne!(a, b);
     }
 
     #[test]

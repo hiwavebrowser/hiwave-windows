@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-09-29T21:12:41.333Z",
+  "timestamp": "2026-09-30T19:02:40.484Z",
   "viewport": {
     "width": 1024,
     "height": 768
@@ -1789,7 +1789,7 @@
         "background-image": "none",
         "background-size": "auto",
         "background-position": "0% 0%",
-        "opacity": "0.990008",
+        "opacity": "1",
         "visibility": "visible",
         "overflow": "visible",
         "overflow-x": "visible",
@@ -3238,7 +3238,7 @@
         "background-image": "none",
         "background-size": "auto",
         "background-position": "0% 0%",
-        "opacity": "0.911627",
+        "opacity": "1",
         "visibility": "visible",
         "overflow": "visible",
         "overflow-x": "visible",
@@ -3859,7 +3859,7 @@
         "background-image": "none",
         "background-size": "auto",
         "background-position": "0% 0%",
-        "opacity": "0.776652",
+        "opacity": "1",
         "visibility": "visible",
         "overflow": "visible",
         "overflow-x": "visible",
@@ -6895,7 +6895,7 @@
         "background-image": "none",
         "background-size": "auto",
         "background-position": "0% 0%",
-        "opacity": "0.599664",
+        "opacity": "1",
         "visibility": "visible",
         "overflow": "visible",
         "overflow-x": "visible",
