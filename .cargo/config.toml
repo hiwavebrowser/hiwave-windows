@@ -1,0 +1,10 @@
+# Windows: the PE default main-thread stack is 1 MB; macOS gives the main
+# thread 8 MB. RustKit lays out some real pages more than 1 MB deep in
+# recursion, so nine of the top-80 live sites (autotrader, kbb, carmax, walmart,
+# linode, rackspace, ford, chevy, gmc) overflowed the main thread here; the same
+# binary with its stack reserve patched to 8 MB loads all nine. 16 MB is
+# reserve, not commit: a page touches only what it uses. This applies to every
+# binary in the workspace, so parity-capture, hiwave-smoke and the shell all
+# get it. Non-executable artifacts accept the flag and ignore it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:16777216"]
