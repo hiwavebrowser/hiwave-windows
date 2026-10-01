@@ -1,0 +1,11 @@
+{
+ "seat": "athena",
+ "platform": "windows",
+ "pr": "hiwave-windows#105",
+ "head": "277d151154cffe069ea8c4b994f1b7dbdec6f8a3",
+ "engine": "hiwave-macos 22092e6 + hiwave-macos#388 + #390 (as scripts/windows-patches)",
+ "chrome": "148.0.7778.216 win64",
+ "board_run": "parity-results/20260930-171201-bcad60e6 (iter-1 frames; score is the 3-iteration median)",
+ "cases": 26,
+ "note": "frames are iter-1 of a 3-iteration run; chrome.png is the committed Windows baseline (baselines/chrome-148), NOT the canonical macOS one"
+}
