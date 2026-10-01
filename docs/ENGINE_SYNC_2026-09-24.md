@@ -132,7 +132,7 @@ they land, as patch files under `scripts/windows-patches/` that
   own box: "to right Pink-Blue" broke at the hyphen. The three fit comparisons
   now allow 1/64 px, Chrome's LayoutUnit. gradient-no-radius 1.86 to 1.27,
   gradient-backgrounds 1.29 to 0.74.
-- **`0002-windows-color-emoji.patch` (hiwave-macos #390).** RustKit on Windows
+- **`0002-windows-color-emoji.patch` (hiwave-macos #390, landed; file deleted in the next PR).** RustKit on Windows
   painted no emoji at all. The colour path existed for macOS; Windows returned
   `None`. The rasterizer now draws the character from Segoe UI Emoji through
   Direct2D's `DrawTextLayout` with `ENABLE_COLOR_FONT`, which renders the
