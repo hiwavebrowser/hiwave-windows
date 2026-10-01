@@ -135,6 +135,22 @@ def geometry_verdict(case: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return _unmeasured("absent_from_gate_a")
     if not case.get("measured"):
         return _unmeasured(case.get("reason") or "unmeasured")
+    # A capture whose text advances came from no font is MEASURED and
+    # UNATTRIBUTABLE, and the metric has no cell for that: the conjunction
+    # would read its geometry column as a fact about RustKit's box math. It is
+    # a fact about a 0.5em-per-character ruler. Gate A refuses to be green on
+    # such a board (see its `gate_passes`); the receipt is where that refusal
+    # has to stop being a number, because the receipt is the thing that gets
+    # quoted as N/26.
+    #
+    # Deliberately UNMEASURED and not RED. Red says "RustKit got this wrong
+    # here", which is a claim this board cannot support in either direction —
+    # the stub can mask a defect as easily as invent one.
+    if case.get("attributable") is not True:
+        return _unmeasured(
+            "text_metrics_not_font_derived",
+            text_backend=case.get("text_backend", "unknown"),
+        )
     return {
         "measured": True,
         "green": bool(case.get("green")),

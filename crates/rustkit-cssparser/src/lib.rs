@@ -181,7 +181,9 @@ pub struct DeclarationAst {
 ///   in the block but the first leaked out and applied at every width, and
 ///   the `}` closing the block was glued onto the next selector, so the
 ///   first rule after every `@media` block (and after `@charset`) was lost.
-/// - It does not support CSS nesting or complex tokenization.
+/// - Nested style rules and nested `@media`/`@supports`/`@layer` (CSS
+///   Nesting 1) are flattened into ordinary rules with `&` resolved.
+/// - It does not do complex tokenization.
 /// - It attempts to be robust for common author CSS and RustKit test inputs.
 pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
     let mut out = StylesheetAst::default();
@@ -279,35 +281,7 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                             }
                         };
                         let inner = parse_stylesheet(&body)?;
-                        let base = out.rules.len();
-                        if let Some(name) = &layer {
-                            // The block declares its layer where it opens,
-                            // even when it is empty.
-                            out.layer_statements.push(LayerStatementAst {
-                                position: base,
-                                name: name.clone(),
-                                media: media.iter().cloned().collect(),
-                            });
-                        }
-                        for mut statement in inner.layer_statements {
-                            statement.position += base;
-                            if let Some(m) = &media {
-                                statement.media.insert(0, m.clone());
-                            }
-                            if let Some(outer) = &layer {
-                                statement.name = sublayer(outer, Some(&statement.name));
-                            }
-                            out.layer_statements.push(statement);
-                        }
-                        for mut rule in inner.rules {
-                            if let Some(m) = &media {
-                                rule.media.insert(0, m.clone());
-                            }
-                            if let Some(outer) = &layer {
-                                rule.layer = Some(sublayer(outer, rule.layer.as_deref()));
-                            }
-                            out.rules.push(rule);
-                        }
+                        merge_block(&mut out, inner, media, layer);
                         current_selector.clear();
                         continue;
                     }
@@ -370,6 +344,60 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
 
         let structural = quote.is_none() && depth == 0;
 
+        // A `{` at the top level of a declaration block opens a nested rule
+        // (CSS Nesting 1): `& > * { ... }`, `&:hover { ... }` (whose `:` put
+        // the reader in value position), `.child { ... }`, `@media (...) { ... }`.
+        // Before, its `}` closed the PARENT rule, and the parent's own `}`
+        // then glued onto the next selector, losing that rule as well.
+        // A custom property's value may hold a `{}` block; that stays a value.
+        if c == '{' && structural && in_value && current_property.trim().starts_with("--") {
+            current_value.push('{');
+            current_value.push_str(&take_block(&mut chars));
+            current_value.push('}');
+            continue;
+        }
+        if c == '{' && structural {
+            let prelude = if in_value {
+                format!("{}:{}", current_property, current_value)
+            } else {
+                current_property.clone()
+            };
+            current_property.clear();
+            current_value.clear();
+            in_value = false;
+            // Declarations before a nested rule stay with the parent, and
+            // come before the nested rule in source order.
+            let parent = current_selector.trim().to_string();
+            if !parent.is_empty() && !current_decls.is_empty() {
+                out.rules.push(RuleAst {
+                    selector: parent.clone(),
+                    declarations: std::mem::take(&mut current_decls),
+                    media: Vec::new(),
+                    layer: None,
+                });
+            }
+            let body = take_block(&mut chars);
+            let prelude = prelude.trim();
+            if parent.is_empty() || prelude.is_empty() {
+                continue;
+            }
+            let (css, media, layer) = if prelude.starts_with('@') {
+                // A conditional group rule inside a style rule: its bare
+                // declarations apply to the parent selector.
+                match at_block_kind(prelude) {
+                    AtBlock::Rules(media) => (format!("{parent}{{{body}}}"), media, None),
+                    AtBlock::Layer(name) => (format!("{parent}{{{body}}}"), None, Some(name)),
+                    _ => continue,
+                }
+            } else {
+                let selector = nest_selector(&parent, prelude);
+                (format!("{selector}{{{body}}}"), None, None)
+            };
+            let inner = parse_stylesheet(&css)?;
+            merge_block(&mut out, inner, media, layer);
+            continue;
+        }
+
         if !in_value {
             // NOTE: no `structural` check here, deliberately. It looks like it
             // belongs -- a colon inside url(data:...) is part of the scheme --
@@ -421,6 +449,154 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
     }
 
     Ok(out)
+}
+
+/// Append the rules and layer statements of a block's body to `out`, each
+/// inside the block's `@media` query list and cascade layer.
+fn merge_block(
+    out: &mut StylesheetAst,
+    inner: StylesheetAst,
+    media: Option<String>,
+    layer: Option<String>,
+) {
+    let base = out.rules.len();
+    if let Some(name) = &layer {
+        // The block declares its layer where it opens, even when it is empty.
+        out.layer_statements.push(LayerStatementAst {
+            position: base,
+            name: name.clone(),
+            media: media.iter().cloned().collect(),
+        });
+    }
+    for mut statement in inner.layer_statements {
+        statement.position += base;
+        if let Some(m) = &media {
+            statement.media.insert(0, m.clone());
+        }
+        if let Some(outer) = &layer {
+            statement.name = sublayer(outer, Some(&statement.name));
+        }
+        out.layer_statements.push(statement);
+    }
+    for mut rule in inner.rules {
+        if let Some(m) = &media {
+            rule.media.insert(0, m.clone());
+        }
+        if let Some(outer) = &layer {
+            rule.layer = Some(sublayer(outer, rule.layer.as_deref()));
+        }
+        out.rules.push(rule);
+    }
+}
+
+/// Split a selector list at its top-level commas (not inside `()`, `[]`,
+/// strings or escapes).
+fn split_selector_list(list: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut depth, mut quote, mut start) = (0usize, None::<char>, 0usize);
+    let mut chars = list.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            _ if quote == Some(c) => quote = None,
+            _ if quote.is_some() => {}
+            '"' | '\'' => quote = Some(c),
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(list[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(list[start..].trim());
+    parts.retain(|p| !p.is_empty());
+    parts
+}
+
+/// Past this many selectors, a nested rule's parent list is kept as one
+/// `:is(...)` instead of being expanded (see `nest_selector`).
+const MAX_NESTED_EXPANSION: usize = 64;
+
+/// The selector a nested style rule matches (CSS Nesting 1 §3): `&` stands
+/// for the parent's selector list, and a nested selector without `&` is
+/// relative to it (`.c` is `& .c`, `> .c` is `& > .c`).
+///
+/// The spec reads `&` as `:is(<parent>)`, but the matcher's `:is()` takes
+/// compound arguments only, so a parent list is expanded instead, one
+/// selector per (parent, nested) pair, as preprocessors do: `.a, .b > p
+/// { & span {} }` is `.a span, .b > p span`. That matches the same elements
+/// wherever `&` leads its selector (every nested rule on the board's sites).
+/// Two known differences: each expanded selector keeps its own specificity
+/// rather than the list's maximum, and a `&` after a combinator
+/// (`.c &` under `.a .b`) requires `.c` above `.a` rather than anywhere
+/// above `.b`.
+fn nest_selector(parent: &str, nested: &str) -> String {
+    let parents = split_selector_list(parent);
+    let nested = split_selector_list(nested);
+    let parents: Vec<String> = if parents.len() * nested.len() <= MAX_NESTED_EXPANSION {
+        parents.into_iter().map(str::to_string).collect()
+    } else {
+        vec![format!(":is({})", parents.join(", "))]
+    };
+    nested
+        .iter()
+        .flat_map(|sel| parents.iter().map(move |amp| substitute_nesting(sel, amp)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `sel` with `amp` in place of each `&`, or `amp sel` when it has none.
+fn substitute_nesting(sel: &str, amp: &str) -> String {
+    if !has_nesting_selector(sel) {
+        return format!("{amp} {sel}");
+    }
+    let mut out = String::with_capacity(sel.len() + amp.len());
+    let mut quote = None::<char>;
+    let mut chars = sel.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                out.push(c);
+                if let Some(n) = chars.next() {
+                    out.push(n);
+                }
+                continue;
+            }
+            _ if quote == Some(c) => quote = None,
+            _ if quote.is_some() => {}
+            '"' | '\'' => quote = Some(c),
+            '&' => {
+                out.push_str(amp);
+                continue;
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Whether a selector contains `&` outside strings and escapes.
+fn has_nesting_selector(sel: &str) -> bool {
+    let mut quote = None::<char>;
+    let mut chars = sel.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            _ if quote == Some(c) => quote = None,
+            _ if quote.is_some() => {}
+            '"' | '\'' => quote = Some(c),
+            '&' => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn flush_decl(
@@ -678,6 +854,132 @@ mod tests {
                 (3, "reset", 1),
                 (4, "x.y", 0),
             ]
+        );
+    }
+
+    fn selectors_and_decls(css: &str) -> Vec<(String, Vec<String>)> {
+        parse_stylesheet(css)
+            .expect("parse")
+            .rules
+            .into_iter()
+            .map(|r| {
+                let decls = r
+                    .declarations
+                    .into_iter()
+                    .map(|d| format!("{}:{}", d.property, d.value))
+                    .collect();
+                (r.selector, decls)
+            })
+            .collect()
+    }
+
+    fn sd(selector: &str, decls: &[&str]) -> (String, Vec<String>) {
+        (selector.to_string(), decls.iter().map(|d| d.to_string()).collect())
+    }
+
+    #[test]
+    fn nested_style_rules_resolve_against_the_parent_and_the_next_rule_survives() {
+        // linkedin's layered bundle stacks its hero with exactly this. Before,
+        // the nested `}` closed `.stack`, `grid-area` became part of a garbage
+        // property, and the stray `}` swallowed `.next`.
+        let css = ".stack { display: grid; & > * { grid-area: 1/-1; min-width: 0 } \
+                   & > [popover]:popover-open { grid-area: auto } } .next { color: red }";
+        assert_eq!(
+            selectors_and_decls(css),
+            vec![
+                sd(".stack", &["display:grid"]),
+                sd(".stack > *", &["grid-area:1/-1", "min-width:0"]),
+                sd(".stack > [popover]:popover-open", &["grid-area:auto"]),
+                sd(".next", &["color:red"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_selector_forms() {
+        let css = ".a { &:hover { color: red } &.b, .c & { color: blue } \
+                   .d { color: green } + .e { color: black } }";
+        assert_eq!(
+            selectors_and_decls(css),
+            vec![
+                sd(".a:hover", &["color:red"]),
+                sd(".a.b, .c .a", &["color:blue"]),
+                sd(".a .d", &["color:green"]),
+                sd(".a + .e", &["color:black"]),
+            ]
+        );
+        // A parent list expands per parent (the matcher's `:is()` takes
+        // compounds only), and nesting goes deep.
+        let css = ".x, .y > p { & span { color: red; &:first-child { color: blue } } }";
+        assert_eq!(
+            selectors_and_decls(css),
+            vec![
+                sd(".x span, .y > p span", &["color:red"]),
+                sd(".x span:first-child, .y > p span:first-child", &["color:blue"]),
+            ]
+        );
+        // Past the expansion cap, the parent list stays one `:is()`.
+        let parents: Vec<String> = (0..9).map(|i| format!(".p{i}")).collect();
+        let nested: Vec<String> = (0..8).map(|i| format!("& .n{i}")).collect();
+        let css = format!("{} {{ {} {{ color: red }} }}", parents.join(", "), nested.join(", "));
+        let ast = parse_stylesheet(&css).expect("parse");
+        assert!(ast.rules[0].selector.starts_with(":is(.p0, .p1,"), "{}", ast.rules[0].selector);
+        assert_eq!(split_selector_list(&ast.rules[0].selector).len(), 8);
+        // `&` inside a string or escaped is not the nesting selector.
+        let css = ".a { [data-x=\"&\"] & { color: red } }";
+        assert_eq!(selectors_and_decls(css), vec![sd("[data-x=\"&\"] .a", &["color:red"])]);
+    }
+
+    #[test]
+    fn declarations_after_a_nested_rule_stay_with_the_parent_in_source_order() {
+        let css = ".a { color: red; & .b { color: blue } width: 1px }";
+        assert_eq!(
+            selectors_and_decls(css),
+            vec![
+                sd(".a", &["color:red"]),
+                sd(".a .b", &["color:blue"]),
+                sd(".a", &["width:1px"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_group_rules_apply_to_the_parent() {
+        let css = ".a { color: red; @media (min-width: 800px) { color: blue; & .b { color: green } } \
+                   @layer top { width: 1px } @container (min-width: 1px) { width: 2px } } .c { color: black }";
+        let ast = parse_stylesheet(css).expect("parse");
+        let got: Vec<(&str, Vec<String>, Vec<String>, Option<&str>)> = ast
+            .rules
+            .iter()
+            .map(|r| {
+                (
+                    r.selector.as_str(),
+                    r.declarations.iter().map(|d| d.value.clone()).collect(),
+                    r.media.clone(),
+                    r.layer.as_deref(),
+                )
+            })
+            .collect();
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            got,
+            vec![
+                (".a", s(&["red"]), vec![], None),
+                (".a", s(&["blue"]), s(&["(min-width: 800px)"]), None),
+                (".a .b", s(&["green"]), s(&["(min-width: 800px)"]), None),
+                (".a", s(&["1px"]), vec![], Some("top")),
+                (".c", s(&["black"]), vec![], None),
+            ]
+        );
+        assert_eq!(ast.layer_statements[0].name, "top");
+    }
+
+    #[test]
+    fn a_custom_property_value_may_hold_a_block() {
+        let css = ".a { --x: { b: c }; color: red } .n { color: blue }";
+        assert_eq!(
+            selectors_and_decls(css),
+            vec![sd(".a", &["--x:{ b: c }", "color:red"]), sd(".n", &["color:blue"])]
         );
     }
 

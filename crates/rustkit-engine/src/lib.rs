@@ -3071,6 +3071,43 @@ impl Engine {
     ) -> LayoutBox {
         let parse_started = cascade_timing_enabled().then(std::time::Instant::now);
 
+        // `@media` rules apply only where their queries match this view's
+        // viewport. Without a view (ad-hoc builds) there is no viewport to
+        // ask, so conditional rules stay out rather than guessing a size.
+        let viewport = self
+            .building_view
+            .get()
+            .and_then(|id| self.view_viewport(id));
+        let memo_key = StyleMemoKey {
+            view: self.building_view.get(),
+            document: document as *const Document,
+            external_sheets: external_stylesheets.len(),
+            viewport,
+            focus: self.building_focus.get(),
+            fonts: self.web_font_count(),
+        };
+
+        // RUSTKIT_TREE_REUSE=1: the images relayout takes the box tree the
+        // sheets relayout built instead of walking the DOM again.
+        let traced = self.style_trace.borrow().is_some();
+        if !traced && !self.building_view_has_edits() {
+            if let Some(tree) = self.reused_tree(&memo_key) {
+                if let Some(started) = parse_started {
+                    let ms = started.elapsed().as_secs_f64() * 1000.0;
+                    info!(
+                        parse_ms = 0.0,
+                        cascade_ms = ms,
+                        sheets_ms = 0.0,
+                        vars_ms = 0.0,
+                        index_ms = 0.0,
+                        walk_ms = ms,
+                        "Cascade timing"
+                    );
+                }
+                return tree;
+            }
+        }
+
         // Extract stylesheets from <style> elements
         let mut stylesheets = self.extract_stylesheets(document);
 
@@ -3081,13 +3118,6 @@ impl Engine {
         // Add external stylesheets (loaded from <link> elements)
         stylesheets.extend(external_stylesheets.iter().cloned());
 
-        // `@media` rules apply only where their queries match this view's
-        // viewport. Without a view (ad-hoc builds) there is no viewport to
-        // ask, so conditional rules stay out rather than guessing a size.
-        let viewport = self
-            .building_view
-            .get()
-            .and_then(|id| self.view_viewport(id));
         for sheet in &mut stylesheets {
             // A layer named inside an `@media` block that doesn't apply is
             // not declared, so its statement goes too. A statement's position
@@ -3126,20 +3156,8 @@ impl Engine {
 
         // A replayed style records no trace entries, so a traced build
         // always cascades in full.
-        let style_memo = self
-            .style_trace
-            .borrow()
-            .is_none()
-            .then(|| {
-                StyleMemoBuild::begin(StyleMemoKey {
-                    view: self.building_view.get(),
-                    document: document as *const Document,
-                    external_sheets: external_stylesheets.len(),
-                    viewport,
-                    focus: self.building_focus.get(),
-                    fonts: self.web_font_count(),
-                })
-            })
+        let style_memo = (!traced)
+            .then(|| StyleMemoBuild::begin(memo_key))
             .flatten();
 
         // Every element's cascade below consults this; it is dropped (and
@@ -3302,7 +3320,150 @@ impl Engine {
                 "Cascade timing"
             );
         }
+        if let Some(build) = &style_memo {
+            self.snapshot_tree(build, &root_box);
+        }
         root_box
+    }
+
+    /// True when the view being built holds typed text: a form control's
+    /// box carries it, and the style memo's key does not cover it.
+    fn building_view_has_edits(&self) -> bool {
+        self.building_view
+            .get()
+            .and_then(|id| self.views.get(&id))
+            .is_some_and(|v| !v.edit_states.is_empty())
+    }
+
+    /// The box tree an earlier build with this key left in the memo, with
+    /// every `<img>` box's natural size resolved again: images are what
+    /// loads between the two builds.
+    fn reused_tree(&self, key: &StyleMemoKey) -> Option<LayoutBox> {
+        let (mut tree, images) = STYLE_MEMO.with(|m| {
+            let mut slot = m.borrow_mut();
+            let memo = slot.as_mut()?;
+            if memo.tree_reuse != TreeReuse::Reuse || memo.key.as_ref() != Some(key) {
+                return None;
+            }
+            Some((memo.tree.take()?, std::mem::take(&mut memo.tree_images)))
+        })?;
+        let boxes = self.refresh_image_sizes(&mut tree, &images);
+        info!(boxes, images = images.len(), "Tree reuse");
+        Some(tree)
+    }
+
+    /// Leave a recording build's tree for the next build with its key, or
+    /// (RUSTKIT_TREE_REUSE=verify) compare it with the tree a replaying
+    /// build has just walked.
+    fn snapshot_tree(&self, build: &StyleMemoBuild, root_box: &LayoutBox) {
+        let mode = STYLE_MEMO.with(|m| m.borrow().as_ref().map(|memo| memo.tree_reuse));
+        if matches!(mode, None | Some(TreeReuse::Off)) || self.building_view_has_edits() {
+            return;
+        }
+        if build.use_ == MemoUse::Record {
+            STYLE_MEMO.with(|m| {
+                if let Some(memo) = m.borrow_mut().as_mut() {
+                    if !memo.tree_unusable {
+                        memo.tree = Some(root_box.clone());
+                    }
+                }
+            });
+        } else if mode == Some(TreeReuse::Verify) {
+            let taken = STYLE_MEMO.with(|m| {
+                let mut slot = m.borrow_mut();
+                let memo = slot.as_mut()?;
+                Some((memo.tree.take()?, std::mem::take(&mut memo.tree_images)))
+            });
+            let Some((mut tree, images)) = taken else {
+                return;
+            };
+            let boxes = self.refresh_image_sizes(&mut tree, &images);
+            let mut mismatches = 0usize;
+            count_tree_differences(&tree, root_box, &mut mismatches);
+            match mismatches {
+                0 => info!(boxes, mismatches, "Tree reuse verify"),
+                _ => warn!(boxes, mismatches, "Tree reuse verify"),
+            }
+            STYLE_MEMO.with(|m| {
+                if let Some(memo) = m.borrow_mut().as_mut() {
+                    memo.tree_mismatches = mismatches;
+                }
+            });
+        }
+    }
+
+    /// Resolve the natural size of every `<img>` box in a reused tree again,
+    /// as the walk would now. Returns the number of boxes in the tree.
+    fn refresh_image_sizes(
+        &self,
+        layout_box: &mut LayoutBox,
+        images: &HashMap<usize, (Option<f32>, Option<f32>)>,
+    ) -> usize {
+        // An inline `<svg>` box has no identity and nothing to refresh: its
+        // size comes from the DOM subtree, which has not changed.
+        let hints = layout_box
+            .identity
+            .as_ref()
+            .and_then(|identity| images.get(&identity.element_id));
+        if let (
+            BoxType::Image {
+                url,
+                natural_width,
+                natural_height,
+            },
+            Some((w, h)),
+        ) = (&mut layout_box.box_type, hints)
+        {
+            (*natural_width, *natural_height) = self.img_natural_size(url, *w, *h);
+        }
+        1 + layout_box
+            .children
+            .iter_mut()
+            .map(|child| self.refresh_image_sizes(child, images))
+            .sum::<usize>()
+    }
+
+    /// An `<img>`'s natural size, from what is loaded at layout time.
+    /// `src` is absolute; the hints are its `width=`/`height=` attributes.
+    fn img_natural_size(
+        &self,
+        src: &str,
+        explicit_width: Option<f32>,
+        explicit_height: Option<f32>,
+    ) -> (f32, f32) {
+        let loaded = Url::parse(src).ok().and_then(|parsed_url| {
+            if let Some(cached) = self.image_manager.get_cached(&parsed_url) {
+                Some(cached)
+            } else if parsed_url.scheme() == "data" {
+                self.image_manager.load_blocking(parsed_url).ok()
+            } else {
+                None
+            }
+        });
+
+        // Vector images: the SVG's own sizing (viewBox/width/height)
+        // is the natural size the raster cache can't provide.
+        let svg_size = Url::parse(src).ok().and_then(|u| {
+            self.svg_cache.get(u.as_str()).map(|svg| {
+                svg.get_size(
+                    explicit_width.unwrap_or(300.0),
+                    explicit_height.unwrap_or(150.0),
+                )
+            })
+        });
+
+        match (&loaded, svg_size) {
+            (Some(image), _) => (image.natural_width as f32, image.natural_height as f32),
+            (None, Some((w, h))) => (w, h),
+            // Image unavailable at layout time: fall back to the
+            // width=/height= attributes, then the placeholder size.
+            (None, None) => match (explicit_width, explicit_height) {
+                (Some(w), Some(h)) => (w, h),
+                (Some(w), None) => (w, w), // Assume square if only width
+                (None, Some(h)) => (h, h), // Assume square if only height
+                (None, None) => (150.0, 150.0), // Default placeholder size
+            },
+        }
     }
 
     /// Build a layout box from a DOM node with stylesheet support.
@@ -3700,41 +3861,8 @@ impl Engine {
                         .map(|u| u.to_string())
                         .unwrap_or(src);
 
-                    let loaded = Url::parse(&src).ok().and_then(|parsed_url| {
-                        if let Some(cached) = self.image_manager.get_cached(&parsed_url) {
-                            Some(cached)
-                        } else if parsed_url.scheme() == "data" {
-                            self.image_manager.load_blocking(parsed_url).ok()
-                        } else {
-                            None
-                        }
-                    });
-
-                    // Vector images: the SVG's own sizing (viewBox/width/height)
-                    // is the natural size the raster cache can't provide.
-                    let svg_size = Url::parse(&src).ok().and_then(|u| {
-                        self.svg_cache.get(u.as_str()).map(|svg| {
-                            svg.get_size(
-                                explicit_width.unwrap_or(300.0),
-                                explicit_height.unwrap_or(150.0),
-                            )
-                        })
-                    });
-
-                    let (natural_width, natural_height) = match (&loaded, svg_size) {
-                        (Some(image), _) => {
-                            (image.natural_width as f32, image.natural_height as f32)
-                        }
-                        (None, Some((w, h))) => (w, h),
-                        // Image unavailable at layout time: fall back to the
-                        // width=/height= attributes, then the placeholder size.
-                        (None, None) => match (explicit_width, explicit_height) {
-                            (Some(w), Some(h)) => (w, h),
-                            (Some(w), None) => (w, w), // Assume square if only width
-                            (None, Some(h)) => (h, h), // Assume square if only height
-                            (None, None) => (150.0, 150.0), // Default placeholder size
-                        },
-                    };
+                    let (natural_width, natural_height) =
+                        self.img_natural_size(&src, explicit_width, explicit_height);
 
                     let mut b = LayoutBox::new(
                         BoxType::Image {
@@ -3751,6 +3879,7 @@ impl Engine {
                         &tag_lower,
                         element_ids,
                     );
+                    note_snapshot_image(&b, explicit_width, explicit_height);
                     return b;
                 }
 
@@ -4031,6 +4160,20 @@ impl Engine {
                     } else {
                         Some(entries.iter().rposition(|(_, s)| *s).unwrap_or(0))
                     };
+                    // What a list box highlights: with `multiple`, every
+                    // option carrying `selected`; without, only the last
+                    // one. No fallback to the first option — that is the
+                    // drop-down's rule (`selected_index` above).
+                    let multiple = attributes.contains_key("multiple");
+                    let mut selected: Vec<usize> = entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, s))| *s)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if !multiple && selected.len() > 1 {
+                        selected.drain(..selected.len() - 1);
+                    }
                     let options: Vec<String> = entries.into_iter().map(|(t, _)| t).collect();
 
                     // size > 1 (or `multiple` without size, which Chrome
@@ -4038,13 +4181,14 @@ impl Engine {
                     let size = attributes
                         .get("size")
                         .and_then(|s| s.parse().ok())
-                        .unwrap_or(if attributes.contains_key("multiple") { 4 } else { 0 });
+                        .unwrap_or(if multiple { 4 } else { 0 });
 
                     let mut b = LayoutBox::new(
                         BoxType::FormControl(rustkit_layout::FormControlType::Select {
                             options,
                             selected_index,
                             size,
+                            selected,
                         }),
                         style,
                     );
@@ -4542,27 +4686,34 @@ impl Engine {
         // for every element, half of all cascade time.
         if let (Some(ix), Some(buckets)) = (index.as_ref(), indexed) {
             // Every rule in these buckets ends in the pseudo, and the index
-            // holds its prepared base selector, base keys and specificity:
-            // the same tests as the string path below, computed once.
+            // holds its prepared base selector and specificity. As in the
+            // cascade, a candidate goes straight to the matcher: the bucket
+            // it came from already stands in for the subject prefilter.
             for g in buckets.candidates(tag_name, attributes) {
                 let gi = g as usize;
                 let Some(prepared) = ix.pseudo_prepared[gi].as_deref() else {
                     continue;
                 };
+                #[cfg(test)]
+                CANDIDATE_VISITS.with(|n| n.set(n.get() + 1));
+                let matched = SelectorMatcher.selector_matches_prepared(
+                    prepared,
+                    tag_name,
+                    attributes,
+                    ancestors,
+                    siblings_before,
+                    sib,
+                );
                 // No base keys means an empty base, which admits any element.
-                let admitted = ix.pseudo_keys[gi]
-                    .as_deref()
-                    .is_none_or(|keys| Self::keys_may_match(keys, tag_name, attributes));
-                if admitted
-                    && SelectorMatcher.selector_matches_prepared(
-                        prepared,
-                        tag_name,
-                        attributes,
-                        ancestors,
-                        siblings_before,
-                        sib,
-                    )
-                {
+                debug_assert!(
+                    !matched
+                        || ix.pseudo_keys[gi]
+                            .as_deref()
+                            .is_none_or(|keys| Self::keys_may_match(keys, tag_name, attributes)),
+                    "the subject prefilter rejects {:?}, which matches <{tag_name}>",
+                    ix.rule(stylesheets, g).selector
+                );
+                if matched {
                     matching_rules.push((ix.specificity[gi], ix.rule(stylesheets, g)));
                 }
             }
@@ -4667,9 +4818,15 @@ impl Engine {
             } else {
                 &matching_rules
             };
+            let reverted = reverted_layer_properties(rules.iter().map(|r| r.1), important_pass);
             for (_, rule) in rules {
                 for declaration in &rule.declarations {
                     if declaration.important != important_pass {
+                        continue;
+                    }
+                    if !reverted.is_empty()
+                        && reverted.contains(&(rule.layer_order, declaration.property.as_str()))
+                    {
                         continue;
                     }
                     let value_str = match &declaration.value {
@@ -5190,25 +5347,38 @@ impl Engine {
 
         for (rule_index, rule) in rules {
             // With an index, `rule_index` is the global index `g`.
-            let may_match = match index.as_ref() {
-                Some(ix) => Self::keys_may_match(&ix.keys[rule_index], tag_name, attributes),
-                None => self.rule_may_match(&rule.selector, tag_name, attributes),
-            };
-            if !may_match {
-                continue;
-            }
             let matched = match index.as_ref() {
-                Some(ix) => SelectorMatcher.matched_specificity(
-                    &ix.prepared[rule_index],
-                    &ix.member_specificity[rule_index],
-                    ix.specificity[rule_index],
-                    tag_name,
-                    attributes,
-                    ancestors,
-                    siblings_before,
-                    sib,
-                ),
+                // No subject prefilter here: a candidate is already filed
+                // under one of this element's own keys, so the prefilter
+                // passed 95-99.6% of them (wikipedia, cnn, github) and cost
+                // 7-8% of github's and cnn's cascade to say so. The matcher
+                // tests the same subject compound first. Debug builds hold
+                // the prefilter to its contract instead.
+                Some(ix) => {
+                    #[cfg(test)]
+                    CANDIDATE_VISITS.with(|n| n.set(n.get() + 1));
+                    let matched = SelectorMatcher.matched_specificity(
+                        &ix.prepared[rule_index],
+                        &ix.member_specificity[rule_index],
+                        ix.specificity[rule_index],
+                        tag_name,
+                        attributes,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                    );
+                    debug_assert!(
+                        matched.is_none()
+                            || Self::keys_may_match(&ix.keys[rule_index], tag_name, attributes),
+                        "the subject prefilter rejects {:?}, which matches <{tag_name}>",
+                        rule.selector
+                    );
+                    matched
+                }
                 None => {
+                    if !self.rule_may_match(&rule.selector, tag_name, attributes) {
+                        continue;
+                    }
                     let selector = rule.selector.trim();
                     SelectorMatcher.matched_specificity(
                         &SelectorMatcher.prepared_selector(selector),
@@ -5312,9 +5482,18 @@ impl Engine {
         // `style="color: red !important"` handed "red !important" to the
         // value parser, which dropped the declaration.
         for important_pass in [false, true] {
+            let reverted = reverted_layer_properties(
+                rules_for(important_pass).iter().map(|r| r.0),
+                important_pass,
+            );
             for (rule, specificity, _) in rules_for(important_pass) {
                 for decl in &rule.declarations {
                     if decl.important != important_pass {
+                        continue;
+                    }
+                    if !reverted.is_empty()
+                        && reverted.contains(&(rule.layer_order, decl.property.as_str()))
+                    {
                         continue;
                     }
                     // Extract string value from PropertyValue
@@ -5656,7 +5835,9 @@ impl Engine {
             match physical {
                 LogicalMapping::Side(p) => self.apply_style_property(style, p, value),
                 LogicalMapping::Pair(start, end) => {
-                    let parts: Vec<&str> = value.split_whitespace().collect();
+                    // Split at top-level whitespace: one value may be
+                    // `rgb(1, 2, 3)` or `calc(1px + 2px)`.
+                    let parts = split_top_level_whitespace(value);
                     let (a, b) = match parts.as_slice() {
                         [one] => (*one, *one),
                         [a, b] => (*a, *b),
@@ -5664,6 +5845,10 @@ impl Engine {
                     };
                     self.apply_style_property(style, start, a);
                     self.apply_style_property(style, end, b);
+                }
+                LogicalMapping::Both(start, end) => {
+                    self.apply_style_property(style, start, value);
+                    self.apply_style_property(style, end, value);
                 }
             }
             return;
@@ -6297,36 +6482,37 @@ impl Engine {
                 // the one-value form used to parse; `8px 8px 0 0` (the
                 // top-rounded card/tab idiom) failed parse_length and the
                 // whole declaration was dropped, leaving square corners.
-                // The `h / v` elliptical form: radii are one scalar per
-                // corner, so take the horizontal radii and drop the vertical
-                // ones (hiwave-windows #75 recorded this as the decision;
-                // dropping the whole declaration left the box square).
-                let horizontal = value.split('/').next().unwrap_or(value).trim();
-                if let Some([tl, tr, br, bl]) = parse_border_radius_shorthand(horizontal) {
+                // `h / v` gives each corner a horizontal and a vertical
+                // radius, each side of the slash expanded by the same 1–4
+                // rule.
+                if let Some([tl, tr, br, bl]) = parse_border_radius_shorthand(value) {
                     style.border_top_left_radius = tl;
                     style.border_top_right_radius = tr;
                     style.border_bottom_right_radius = br;
                     style.border_bottom_left_radius = bl;
                 }
             }
-            "border-top-left-radius" => {
-                if let Some(length) = rustkit_css::parse_length(value) {
-                    style.border_top_left_radius = length;
+            // The flow-relative names map onto the physical corners of a
+            // horizontal-tb, left-to-right box (css-logical-1 §4.5); other
+            // writing modes are not mapped.
+            "border-top-left-radius" | "border-start-start-radius" => {
+                if let Some(corner) = parse_corner_radius(value) {
+                    style.border_top_left_radius = corner;
                 }
             }
-            "border-top-right-radius" => {
-                if let Some(length) = rustkit_css::parse_length(value) {
-                    style.border_top_right_radius = length;
+            "border-top-right-radius" | "border-start-end-radius" => {
+                if let Some(corner) = parse_corner_radius(value) {
+                    style.border_top_right_radius = corner;
                 }
             }
-            "border-bottom-right-radius" => {
-                if let Some(length) = rustkit_css::parse_length(value) {
-                    style.border_bottom_right_radius = length;
+            "border-bottom-right-radius" | "border-end-end-radius" => {
+                if let Some(corner) = parse_corner_radius(value) {
+                    style.border_bottom_right_radius = corner;
                 }
             }
-            "border-bottom-left-radius" => {
-                if let Some(length) = rustkit_css::parse_length(value) {
-                    style.border_bottom_left_radius = length;
+            "border-bottom-left-radius" | "border-end-start-radius" => {
+                if let Some(corner) = parse_corner_radius(value) {
+                    style.border_bottom_left_radius = corner;
                 }
             }
             "box-shadow" => {
@@ -8130,9 +8316,17 @@ impl Engine {
                     ix.main.file(key, g);
                 }
                 ix.keys.push(keys);
-                ix.specificity.push(SelectorMatcher.selector_specificity(&rule.selector));
-                ix.member_specificity
-                    .push(SelectorMatcher.list_member_specificity(rule.selector.trim()));
+                let members = SelectorMatcher.list_member_specificity(rule.selector.trim());
+                // `selector_specificity` splits a list with the same
+                // `split_top_level_commas` and takes its members' max, so a
+                // list's specificity is the max of the members just computed.
+                // A single selector (no members) is scored whole.
+                let whole = match members.iter().map(|&(_, spec)| spec).max() {
+                    Some(max) => max,
+                    None => SelectorMatcher.selector_specificity(&rule.selector),
+                };
+                ix.specificity.push(whole);
+                ix.member_specificity.push(members);
                 ix.prepared.push(SelectorMatcher.prepared_selector(rule.selector.trim()));
                 let mut pseudo_keys = None;
                 let mut pseudo_prepared = None;
@@ -8220,20 +8414,27 @@ impl Engine {
         tag_name: &str,
         attributes: &HashMap<String, String>,
     ) -> bool {
-        #[cfg(test)]
-        PREFILTER_VISITS.with(|n| n.set(n.get() + 1));
+        Self::keys_may_match_keyed(keys, &KeyedElement::of(tag_name, attributes))
+    }
+
+    /// `keys_may_match` for a caller that tests many rules against one
+    /// element: `KeyedElement::of` looks the element's `id` and `class` up
+    /// once, instead of once per key of every candidate rule (11% of
+    /// wikipedia's cascade went to those repeated attribute lookups).
+    fn keys_may_match_keyed(keys: &[SubjectKey], element: &KeyedElement) -> bool {
         keys.iter().any(|k| {
-            k.id.as_deref()
-                .map_or(true, |id| attributes.get("id").map(String::as_str) == Some(id))
+            k.id.as_deref().map_or(true, |id| element.id == Some(id))
                 && k.tag
                     .as_deref()
-                    .map_or(true, |t| t.eq_ignore_ascii_case(tag_name))
+                    .map_or(true, |t| t.eq_ignore_ascii_case(element.tag_name))
                 && k.class.as_deref().map_or(true, |c| {
-                    attributes
-                        .get("class")
+                    element
+                        .class
                         .is_some_and(|cl| cl.split_whitespace().any(|x| x == c))
                 })
-                && k.attr.as_deref().map_or(true, |a| attributes.contains_key(a))
+                && k.attr
+                    .as_deref()
+                    .map_or(true, |a| element.attributes.contains_key(a))
         })
     }
 
@@ -8318,34 +8519,23 @@ impl Engine {
             out.push(key)
         }
 
-        fn keys_for(engine: &Engine, selector: &str, out: &mut Vec<SubjectKey>) {
-            let selector = selector.trim();
-            if !SelectorMatcher::selector_list_is_valid(selector) {
-                return;
-            }
-            if selector.contains(',') {
-                let members = SelectorMatcher::split_top_level_commas(selector);
-                if members.len() != 1 || members[0] != selector {
+        // Read off the prepared selector, which has already validated, split
+        // and tokenized the string the way the matcher does (`Never` for an
+        // invalid, pseudo-element or subject-less selector), so the index
+        // no longer repeats that work per rule (~150 ms of github's index).
+        fn keys_for(engine: &Engine, prepared: &PreparedSelector, out: &mut Vec<SubjectKey>) {
+            match prepared {
+                PreparedSelector::Never => {}
+                PreparedSelector::List(members) => {
                     for m in members {
                         keys_for(engine, m, out);
                     }
-                    return;
                 }
-            }
-            if selector.contains("::")
-                || selector.ends_with(":before")
-                || selector.ends_with(":after")
-                || selector.contains(":before ")
-                || selector.contains(":after ")
-            {
-                return;
-            }
-            let tokens = SelectorMatcher.tokenize_selector(selector);
-            match tokens.last() {
-                Some((compound, combinator)) if combinator.is_empty() => {
-                    keys_for_compound(engine, compound, out)
+                PreparedSelector::Complex { tokens, .. } => {
+                    if let Some((compound, _)) = tokens.last() {
+                        keys_for_compound(engine, compound, out)
+                    }
                 }
-                _ => {}
             }
         }
 
@@ -8354,7 +8544,7 @@ impl Engine {
                 return k.clone();
             }
             let mut v = Vec::new();
-            keys_for(self, selector, &mut v);
+            keys_for(self, &SelectorMatcher.prepared_selector(selector.trim()), &mut v);
             let v = Rc::new(v);
             let mut cache = cache.borrow_mut();
             // Selectors are page-controlled; keep a runaway page from
@@ -9501,11 +9691,20 @@ impl SelectorMatcher {
         let mut classes = 0; // (b)
         let mut tags = 0; // (c)
 
-        // Handle comma-separated selectors - take max specificity
-        if selector.contains(',') {
+        // A selector list takes the specificity of its most specific member.
+        // Split on top-level commas only: `:is( a, b)` is one member, and a
+        // plain `split(',')` cut it into `:is( a` and `b)`. Then the
+        // whitespace split below severed `:is(` from its argument, and the
+        // functional-pseudo-class branch sliced an inverted range and
+        // panicked. Five of the top-80 live sites (nytimes, hbo, uber,
+        // caranddriver, salesforce) put whitespace or newlines inside `:is()`.
+        // Only a list of two or more members recurses: a lone `:is(a, b)`
+        // splits to itself and would recurse without end.
+        let members = SelectorMatcher::split_top_level_commas(selector);
+        if members.len() > 1 {
             let mut max_spec = (0, 0, 0);
-            for part in selector.split(',') {
-                let spec = SelectorMatcher.selector_specificity(part.trim());
+            for part in members {
+                let spec = SelectorMatcher.selector_specificity(part);
                 if spec > max_spec {
                     max_spec = spec;
                 }
@@ -9513,14 +9712,12 @@ impl SelectorMatcher {
             return max_spec;
         }
 
-        // Process each part of the selector (space-separated for descendants)
-        for part in selector.split_whitespace() {
-            // Skip combinators
-            if part == ">" || part == "+" || part == "~" {
-                continue;
-            }
-
-            let chars: Vec<char> = part.chars().collect();
+        // Walk the whole member. Whitespace and the combinators fall through
+        // the `_` arm, and the functional pseudo-class arms consume their
+        // parenthesised argument whole, whitespace included, so no
+        // pre-splitting on whitespace is needed (or safe).
+        {
+            let chars: Vec<char> = selector.chars().collect();
             let mut i = 0;
 
             while i < chars.len() {
@@ -9601,8 +9798,11 @@ impl SelectorMatcher {
                                         }
                                         i += 1;
                                     }
-                                    let arg: String =
-                                        chars[arg_start..i.saturating_sub(1)].iter().collect();
+                                    // An unclosed `:is(` ends the walk at
+                                    // `i == arg_start`; the range must not
+                                    // run backwards.
+                                    let arg_end = i.saturating_sub(1).max(arg_start);
+                                    let arg: String = chars[arg_start..arg_end].iter().collect();
                                     let (a, b, c) = SelectorMatcher.selector_specificity(&arg);
                                     ids += a;
                                     classes += b;
@@ -9767,14 +9967,7 @@ impl Engine {
             .get_surface_size(view.viewhost_id)
             .unwrap_or((0, 0));
 
-        let wrapper = serde_json::json!({
-            "version": 1,
-            "viewport": {
-                "width": width,
-                "height": height
-            },
-            "root": layout_json
-        });
+        let wrapper = layout_export_wrapper(layout_json, width, height);
 
         let json_str = serde_json::to_string_pretty(&wrapper)
             .map_err(|e| EngineError::RenderError(format!("JSON serialization failed: {}", e)))?;
@@ -9834,11 +10027,19 @@ impl Engine {
         }
 
         fn radius(r: &rustkit_layout::BorderRadius) -> serde_json::Value {
+            // The four scalar keys are the horizontal radii, as before radii
+            // had two axes; `vertical` carries the other axis.
             serde_json::json!({
-                "top_left": r.top_left,
-                "top_right": r.top_right,
-                "bottom_right": r.bottom_right,
-                "bottom_left": r.bottom_left
+                "top_left": r.top_left.h,
+                "top_right": r.top_right.h,
+                "bottom_right": r.bottom_right.h,
+                "bottom_left": r.bottom_left.h,
+                "vertical": {
+                    "top_left": r.top_left.v,
+                    "top_right": r.top_right.v,
+                    "bottom_right": r.bottom_right.v,
+                    "bottom_left": r.bottom_left.v
+                }
             })
         }
 
@@ -10062,6 +10263,7 @@ impl Engine {
         fn display_command_op_name(cmd: &Cmd) -> &'static str {
             match cmd {
                 Cmd::TextInput { .. } => "text_input",
+                Cmd::ListBox { .. } => "list_box",
                 Cmd::Button { .. } => "button",
                 Cmd::FocusRing { .. } => "focus_ring",
                 Cmd::Caret { .. } => "caret",
@@ -12102,13 +12304,65 @@ enum LogicalMapping {
     Side(&'static str),
     /// A two-value shorthand: `(start, end)`.
     Pair(&'static str, &'static str),
+    /// A shorthand whose whole value goes to both sides (`border-inline:
+    /// 1px solid red`).
+    Both(&'static str, &'static str),
 }
 
-/// css-logical-1 flow-relative margin / padding / inset names, mapped for
-/// horizontal-tb, ltr: inline-start = left, block-start = top.
+/// `value` split at whitespace outside parentheses.
+fn split_top_level_whitespace(value: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = None;
+    for (i, ch) in value.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0 && ch.is_whitespace() {
+            if let Some(from) = start.take() {
+                parts.push(&value[from..i]);
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(from) = start {
+        parts.push(&value[from..]);
+    }
+    parts
+}
+
+/// css-logical-1 flow-relative margin / padding / inset / border names,
+/// mapped for horizontal-tb, ltr: inline-start = left, block-start = top.
 fn logical_to_physical(property: &str) -> Option<LogicalMapping> {
-    use LogicalMapping::{Pair, Side};
+    use LogicalMapping::{Both, Pair, Side};
     Some(match property {
+        "border-inline-start" => Side("border-left"),
+        "border-inline-end" => Side("border-right"),
+        "border-block-start" => Side("border-top"),
+        "border-block-end" => Side("border-bottom"),
+        "border-inline" => Both("border-left", "border-right"),
+        "border-block" => Both("border-top", "border-bottom"),
+        "border-inline-start-width" => Side("border-left-width"),
+        "border-inline-end-width" => Side("border-right-width"),
+        "border-block-start-width" => Side("border-top-width"),
+        "border-block-end-width" => Side("border-bottom-width"),
+        "border-inline-width" => Pair("border-left-width", "border-right-width"),
+        "border-block-width" => Pair("border-top-width", "border-bottom-width"),
+        "border-inline-start-style" => Side("border-left-style"),
+        "border-inline-end-style" => Side("border-right-style"),
+        "border-block-start-style" => Side("border-top-style"),
+        "border-block-end-style" => Side("border-bottom-style"),
+        "border-inline-style" => Pair("border-left-style", "border-right-style"),
+        "border-block-style" => Pair("border-top-style", "border-bottom-style"),
+        "border-inline-start-color" => Side("border-left-color"),
+        "border-inline-end-color" => Side("border-right-color"),
+        "border-block-start-color" => Side("border-top-color"),
+        "border-block-end-color" => Side("border-bottom-color"),
+        "border-inline-color" => Pair("border-left-color", "border-right-color"),
+        "border-block-color" => Pair("border-top-color", "border-bottom-color"),
         "margin-inline-start" => Side("margin-left"),
         "margin-inline-end" => Side("margin-right"),
         "margin-block-start" => Side("margin-top"),
@@ -12155,23 +12409,101 @@ fn is_inherited_property(property: &str) -> bool {
     )
 }
 
-/// `border-radius` shorthand without the `/` part: 1–4 lengths expanded to
-/// `[top-left, top-right, bottom-right, bottom-left]`. None for anything it
-/// cannot read whole (a `/`, a bad token, more than four values).
-fn parse_border_radius_shorthand(value: &str) -> Option<[rustkit_css::Length; 4]> {
-    if value.contains('/') {
+/// Split a declaration value at top-level whitespace and `/`, keeping
+/// anything inside parentheses whole (`calc(1px / 2)` is one token). The
+/// slash comes back as its own `"/"` token.
+fn split_radius_tokens(value: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut depth = 0usize;
+    let mut start = None;
+    for (i, ch) in value.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        let boundary = depth == 0 && (ch.is_whitespace() || ch == '/');
+        if boundary {
+            if let Some(from) = start.take() {
+                tokens.push(&value[from..i]);
+            }
+            if ch == '/' {
+                tokens.push(&value[i..i + 1]);
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(from) = start {
+        tokens.push(&value[from..]);
+    }
+    tokens
+}
+
+/// 1–4 radii expanded to `[top-left, top-right, bottom-right, bottom-left]`
+/// (CSS Backgrounds 3 §5.1). None for a bad token, no value, or more than
+/// four. A negative radius is invalid.
+fn expand_radius_values(tokens: &[&str]) -> Option<[rustkit_css::Length; 4]> {
+    let v: Vec<rustkit_css::Length> = tokens
+        .iter()
+        .map(|t| rustkit_css::parse_length(t))
+        .collect::<Option<_>>()?;
+    if v.iter()
+        .any(|l| matches!(l, rustkit_css::Length::Px(px) if *px < 0.0))
+    {
         return None;
     }
-    let v: Vec<rustkit_css::Length> = value
-        .split_whitespace()
-        .map(rustkit_css::parse_length)
-        .collect::<Option<_>>()?;
     Some(match v.as_slice() {
         [a] => [a.clone(), a.clone(), a.clone(), a.clone()],
         [a, b] => [a.clone(), b.clone(), a.clone(), b.clone()],
         [a, b, c] => [a.clone(), b.clone(), c.clone(), b.clone()],
         [a, b, c, d] => [a.clone(), b.clone(), c.clone(), d.clone()],
         _ => return None,
+    })
+}
+
+/// The `border-radius` shorthand: 1–4 horizontal radii, then optionally `/`
+/// and 1–4 vertical radii, as `[top-left, top-right, bottom-right,
+/// bottom-left]`. Without a slash each corner's vertical radius is its
+/// horizontal one. None for anything it cannot read whole.
+fn parse_border_radius_shorthand(value: &str) -> Option<[rustkit_css::CornerRadius; 4]> {
+    let tokens = split_radius_tokens(value);
+    let mut halves = tokens.split(|t| *t == "/");
+    let horizontal = expand_radius_values(halves.next()?)?;
+    let vertical = match halves.next() {
+        Some(half) => expand_radius_values(half)?,
+        None => horizontal.clone(),
+    };
+    if halves.next().is_some() {
+        return None;
+    }
+    let [h0, h1, h2, h3] = horizontal;
+    let [v0, v1, v2, v3] = vertical;
+    let corner = |horizontal, vertical| rustkit_css::CornerRadius {
+        horizontal,
+        vertical,
+    };
+    Some([
+        corner(h0, v0),
+        corner(h1, v1),
+        corner(h2, v2),
+        corner(h3, v3),
+    ])
+}
+
+/// One corner's longhand (`border-top-left-radius`): one radius for both
+/// axes, or a horizontal then a vertical one. There is no slash here.
+fn parse_corner_radius(value: &str) -> Option<rustkit_css::CornerRadius> {
+    let tokens = split_radius_tokens(value);
+    let (horizontal, vertical) = match tokens.as_slice() {
+        [both] => (*both, *both),
+        [horizontal, vertical] => (*horizontal, *vertical),
+        _ => return None,
+    };
+    let [horizontal, vertical, ..] = expand_radius_values(&[horizontal, vertical])?;
+    Some(rustkit_css::CornerRadius {
+        horizontal,
+        vertical,
     })
 }
 
@@ -13149,6 +13481,37 @@ fn transformed_bounds(m: [f32; 6], x: f32, y: f32, w: f32, h: f32) -> (f32, f32,
     let min_y = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min);
     let max_y = corners.iter().map(|c| c.1).fold(f32::NEG_INFINITY, f32::max);
     (min_x, min_y, max_x - min_x, max_y - min_y)
+}
+
+/// Wrap a serialised layout tree with the provenance an oracle needs.
+///
+/// Split out of `export_layout_json` so it can be asserted on directly. The
+/// two text fields are the provenance a capture carries so a gate can REFUSE,
+/// not a feature flag: nothing in layout or paint reads them back.
+///
+/// `TextShaper::shape` has three bodies. The one compiled on any target that is
+/// neither Windows nor macOS is a stub — it assigns `font_size * 0.5` to each
+/// ASCII character, reads no font, and returns `Ok`. A capture taken on such a
+/// build carries geometry measured against a fixed ruler while looking exactly
+/// like a capture that shaped, and Gate A cannot tell the two apart from the
+/// rects alone. For 57 nights it did not try, and the Linux trench seat's
+/// boards were read as RustKit box-math deltas throughout
+/// (trench/digest-parity-finish-line.md, 2026-10-01).
+fn layout_export_wrapper(
+    layout_json: serde_json::Value,
+    width: u32,
+    height: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "viewport": {
+            "width": width,
+            "height": height
+        },
+        "text_backend": rustkit_layout::TEXT_SHAPER_BACKEND,
+        "text_metrics_font_derived": rustkit_layout::TEXT_METRICS_ARE_FONT_DERIVED,
+        "root": layout_json
+    })
 }
 
 /// Convert one layout box to its JSON form for `export_layout_json`.
@@ -15535,22 +15898,72 @@ mod tests {
 
     #[test]
     fn border_radius_shorthand_expands_one_to_four_values() {
-        use rustkit_css::Length::Px;
-        assert_eq!(parse_border_radius_shorthand("8px"), Some([Px(8.0), Px(8.0), Px(8.0), Px(8.0)]));
+        use rustkit_css::Length::{Percent, Px, Zero};
+        let circular = |value: &str| {
+            parse_border_radius_shorthand(value).map(|corners| {
+                corners.map(|c| {
+                    assert_eq!(
+                        c.horizontal, c.vertical,
+                        "{value}: no slash, one radius per corner"
+                    );
+                    c.horizontal
+                })
+            })
+        };
+        assert_eq!(circular("8px"), Some([Px(8.0), Px(8.0), Px(8.0), Px(8.0)]));
         assert_eq!(
-            parse_border_radius_shorthand("8px 8px 0 0"),
-            Some([Px(8.0), Px(8.0), rustkit_css::Length::Zero, rustkit_css::Length::Zero])
+            circular("8px 8px 0 0"),
+            Some([Px(8.0), Px(8.0), Zero, Zero])
         );
         assert_eq!(
-            parse_border_radius_shorthand("1px 2px"),
+            circular("1px 2px"),
             Some([Px(1.0), Px(2.0), Px(1.0), Px(2.0)])
         );
         assert_eq!(
-            parse_border_radius_shorthand("1px 2px 3px"),
+            circular("1px 2px 3px"),
             Some([Px(1.0), Px(2.0), Px(3.0), Px(2.0)])
         );
-        assert_eq!(parse_border_radius_shorthand("50px / 25px"), None);
         assert_eq!(parse_border_radius_shorthand("1px 2px 3px 4px 5px"), None);
+        assert_eq!(parse_border_radius_shorthand("8px bogus"), None);
+        assert_eq!(parse_border_radius_shorthand("-8px"), None);
+
+        // `h / v`: each side of the slash expands on its own.
+        let pairs = |value: &str| {
+            parse_border_radius_shorthand(value)
+                .map(|corners| corners.map(|c| (c.horizontal, c.vertical)))
+        };
+        assert_eq!(
+            pairs("50px / 25px"),
+            Some([
+                (Px(50.0), Px(25.0)),
+                (Px(50.0), Px(25.0)),
+                (Px(50.0), Px(25.0)),
+                (Px(50.0), Px(25.0)),
+            ])
+        );
+        assert_eq!(
+            pairs("1px 2px 3px 4px/50% 6px"),
+            Some([
+                (Px(1.0), Percent(50.0)),
+                (Px(2.0), Px(6.0)),
+                (Px(3.0), Percent(50.0)),
+                (Px(4.0), Px(6.0)),
+            ])
+        );
+        assert_eq!(parse_border_radius_shorthand("1px / 2px / 3px"), None);
+        assert_eq!(parse_border_radius_shorthand("1px /"), None);
+        assert_eq!(parse_border_radius_shorthand("/ 1px"), None);
+    }
+
+    #[test]
+    fn a_corner_longhand_takes_one_or_two_radii() {
+        use rustkit_css::Length::{Percent, Px};
+        let pair = |value: &str| parse_corner_radius(value).map(|c| (c.horizontal, c.vertical));
+        assert_eq!(pair("10px"), Some((Px(10.0), Px(10.0))));
+        assert_eq!(pair("10px 20%"), Some((Px(10.0), Percent(20.0))));
+        assert_eq!(pair("10px 20px 30px"), None);
+        assert_eq!(pair("10px / 20px"), None);
+        assert_eq!(pair(""), None);
     }
 
     #[test]
@@ -15621,6 +16034,56 @@ mod tests {
             id_spec > multi_class_spec,
             "ID should beat multiple classes"
         );
+    }
+
+    #[test]
+    fn specificity_of_is_and_not_with_whitespace_inside_the_parens() {
+        // nytimes: newlines inside `:is(...)`. The old splitter cut on the
+        // comma inside the parens, then on the whitespace, and panicked on
+        // the `:is(` fragment.
+        assert_eq!(SelectorMatcher.selector_specificity(":is( a, b)"), (0, 0, 1));
+        assert_eq!(SelectorMatcher.selector_specificity(":is(
+  #a,
+  .b
+) c"), (1, 0, 1));
+        assert_eq!(SelectorMatcher.selector_specificity(":not( .x )"), (0, 1, 0));
+        assert_eq!(SelectorMatcher.selector_specificity(":where( #a, .b )"), (0, 0, 0));
+        // Descendants and combinators still count, with any spacing.
+        assert_eq!(SelectorMatcher.selector_specificity("div  >  .a ~ #b"), (1, 1, 1));
+        assert_eq!(SelectorMatcher.selector_specificity("ul li a"), (0, 0, 3));
+        // A list still takes its most specific member, split at the top level.
+        assert_eq!(SelectorMatcher.selector_specificity(":is(a, b), #c"), (1, 0, 0));
+    }
+
+    #[test]
+    fn an_unclosed_functional_pseudo_class_does_not_panic() {
+        // Malformed input must not take the whole page down.
+        assert_eq!(SelectorMatcher.selector_specificity(":is("), (0, 0, 0));
+        assert_eq!(SelectorMatcher.selector_specificity(":not("), (0, 0, 0));
+        // The unclosed argument is dropped, not counted; only the `a` remains.
+        assert_eq!(SelectorMatcher.selector_specificity("a :is( b"), (0, 0, 1));
+    }
+
+    #[test]
+    fn a_list_scores_the_max_of_its_member_specificities() {
+        // build_rule_index takes a list's specificity from the members it
+        // has already scored instead of rescanning the whole selector.
+        for sel in [
+            "a, .b, #c",
+            " ul li ,  .x > .y ",
+            ":is(a, b), #c",
+            ":is( #a, .b ) c, d",
+            "[data-x=\"a,b\"], .c",
+            "a:not(.x, .y), b",
+            "a,,b",
+        ] {
+            let members = SelectorMatcher.list_member_specificity(sel.trim());
+            let max = members.iter().map(|&(_, spec)| spec).max();
+            assert_eq!(max, Some(SelectorMatcher.selector_specificity(sel)), "{sel}");
+        }
+        // A single selector has no members and is scored whole.
+        assert!(SelectorMatcher.list_member_specificity(":is(a, b)").is_empty());
+        assert!(SelectorMatcher.list_member_specificity("div > p").is_empty());
     }
 }
 
@@ -18138,8 +18601,9 @@ mod visual_rect_tests {
 thread_local! {
     /// How many times the full selector matcher ran on this thread.
     static FULL_SELECTOR_MATCHES: Cell<u64> = const { Cell::new(0) };
-    /// How many rules the subject prefilter was asked about on this thread.
-    static PREFILTER_VISITS: Cell<u64> = const { Cell::new(0) };
+    /// How many rule-index candidates were tried against an element on this
+    /// thread (the cascade's and the `::before`/`::after` lists').
+    static CANDIDATE_VISITS: Cell<u64> = const { Cell::new(0) };
     /// How many times a selector string was tokenized on this thread.
     static SELECTOR_TOKENIZATIONS: Cell<u64> = const { Cell::new(0) };
     /// How many selectors the ancestor filter rejected on this thread.
@@ -18534,7 +18998,7 @@ mod rule_prefilter_tests {
         let vars = HashMap::new();
 
         let _scope = RuleIndexScope::install(engine.build_rule_index(sheets));
-        PREFILTER_VISITS.with(|n| n.set(0));
+        CANDIDATE_VISITS.with(|n| n.set(0));
         let style = engine.compute_style_for_element(
             "div",
             &attrs(&[("class", "hit"), ("id", "main")]),
@@ -18545,13 +19009,13 @@ mod rule_prefilter_tests {
             SiblingContext::SOLE,
             None,
         );
-        let visits = PREFILTER_VISITS.with(|n| n.get());
+        let visits = CANDIDATE_VISITS.with(|n| n.get());
 
         assert_eq!(style.color, rustkit_css::Color::new(0, 0, 255, 1.0));
         assert!(
             visits <= 1,
             "1,500 rules filed under other subjects must not be visited; \
-             the prefilter ran {visits} times"
+             {visits} candidates were"
         );
     }
 
@@ -18803,7 +19267,7 @@ mod rule_prefilter_tests {
         let vars = HashMap::new();
 
         let _scope = RuleIndexScope::install(engine.build_rule_index(sheets));
-        PREFILTER_VISITS.with(|n| n.set(0));
+        CANDIDATE_VISITS.with(|n| n.set(0));
         let host = attrs(&[("class", "hit"), ("id", "main")]);
         let before = engine.create_pseudo_element(
             "div", &host, sheets, &vars, &[], &[], SiblingContext::SOLE, "::before",
@@ -18811,14 +19275,14 @@ mod rule_prefilter_tests {
         let after = engine.create_pseudo_element(
             "div", &host, sheets, &vars, &[], &[], SiblingContext::SOLE, "::after",
         );
-        let visits = PREFILTER_VISITS.with(|n| n.get());
+        let visits = CANDIDATE_VISITS.with(|n| n.get());
 
         assert!(before.is_some(), ".hit::before must still generate its box");
         assert!(after.is_none());
         assert!(
             visits <= 1,
             "1,200 pseudo rules filed under other subjects must not be \
-             visited; the prefilter ran {visits} times"
+             visited; {visits} candidates were"
         );
     }
 
@@ -19031,7 +19495,7 @@ mod rule_prefilter_tests {
         let vars = HashMap::new();
 
         let _scope = RuleIndexScope::install(engine.build_rule_index(sheets));
-        PREFILTER_VISITS.with(|n| n.set(0));
+        CANDIDATE_VISITS.with(|n| n.set(0));
         let style = engine.compute_style_for_element(
             "div",
             &attrs(&[("data-hit", ""), ("class", "card")]),
@@ -19042,13 +19506,13 @@ mod rule_prefilter_tests {
             SiblingContext::SOLE,
             None,
         );
-        let visits = PREFILTER_VISITS.with(|n| n.get());
+        let visits = CANDIDATE_VISITS.with(|n| n.get());
 
         assert_eq!(style.color, rustkit_css::Color::new(0, 0, 255, 1.0));
         assert!(
             visits <= 1,
             "1,500 attribute / :where / :is / :root rules the element can't \
-             match must not be visited; the prefilter ran {visits} times"
+             match must not be visited; {visits} candidates were"
         );
     }
 
@@ -19271,6 +19735,116 @@ mod cascade_wire_tests {
         let css = "@layer a, b; @layer b { #x::before { content: \"\"; display: block; width: 7px; background: #0f0 } } \
                    @layer a { #x::before { background: #f00 } }";
         assert_eq!(background_of(css, X, 7.0), GREEN);
+    }
+
+    // `revert-layer` (CSS Cascade 5 §7.3.3): linkedin's layered bundle hides
+    // its hero with `display: none` and shows it on desktop with
+    // `display: revert-layer`, both in the `overrides` layer.
+    const RED: (u8, u8, u8) = (255, 0, 0);
+
+    #[test]
+    fn revert_layer_rolls_back_to_the_layer_below() {
+        let css = "@layer a, b; @layer a { .c { background-color: #0f0 } } \
+                   @layer b { .c { background-color: #f00 } #x { background-color: revert-layer } }";
+        assert_eq!(background_of(css, X, 50.0), GREEN);
+    }
+
+    #[test]
+    fn revert_layer_only_counts_when_it_wins_its_own_layer() {
+        // The layer's winner is the id rule's red, so the lower-specificity
+        // `revert-layer` is an ordinary loser.
+        let css = "@layer a, b; @layer a { .c { background-color: #0f0 } } \
+                   @layer b { #x { background-color: #f00 } .c { background-color: revert-layer } }";
+        assert_eq!(background_of(css, X, 50.0), RED);
+    }
+
+    #[test]
+    fn revert_layer_leaves_the_layers_above_alone() {
+        let css = "@layer a, b, c; @layer a { .c { background-color: #f00 } } \
+                   @layer b { .c { background-color: revert-layer } } \
+                   @layer c { .c { background-color: #0f0 } }";
+        assert_eq!(background_of(css, X, 50.0), GREEN);
+    }
+
+    #[test]
+    fn an_unlayered_revert_layer_rolls_back_to_the_layered_result() {
+        let css = "@layer a { .c { background-color: #0f0 } } \
+                   .c { background-color: #f00 } #x { background-color: revert-layer }";
+        assert_eq!(background_of(css, X, 50.0), GREEN);
+    }
+
+    #[test]
+    fn an_important_revert_layer_rolls_back_among_important_declarations() {
+        // Important layers run in reverse, so `b` is the lower one here.
+        let css = "@layer a, b; @layer b { .c { background-color: #0f0 !important } } \
+                   @layer a { .c { background-color: #f00 !important } \
+                              #x { background-color: revert-layer !important } }";
+        assert_eq!(background_of(css, X, 50.0), GREEN);
+    }
+
+    #[test]
+    fn revert_layer_shows_what_the_same_layer_hid() {
+        // linkedin's shape: `display: none`, then `revert-layer` in the same
+        // layer, back to the atoms layer's display. A hidden box is not in
+        // the tree at all, so `background_of` panics without the rollback.
+        // (linkedin puts the `revert-layer` under `@media`; an ad-hoc build
+        // has no viewport and keeps no conditional rule, so that part is
+        // checked on the saved page with a release build instead.)
+        let css = "@layer atoms, overrides; \
+                   @layer atoms { .c { display: grid; background-color: #0f0 } } \
+                   @layer overrides { .c { display: none } #x { display: revert-layer } }";
+        assert_eq!(background_of(css, X, 50.0), GREEN);
+    }
+
+    #[test]
+    fn a_pseudo_element_reverts_its_layer_too() {
+        let css = "@layer a, b; \
+                   @layer a { #x::before { content: \"\"; display: block; width: 7px; background-color: #0f0 } } \
+                   @layer b { #x::before { background-color: #f00 } #x::before { background-color: revert-layer } }";
+        assert_eq!(background_of(css, X, 7.0), GREEN);
+    }
+
+    // CSS nesting: linkedin's layered bundle stacks its hero with
+    // `.stack { display: grid; & > * { grid-area: 1/-1 } }`.
+    const IN_P: &str = r#"<div class="p"><div id="x" class="c" style="width:50px;height:10px"></div></div>"#;
+
+    #[test]
+    fn a_nested_rule_styles_the_parents_child() {
+        assert_eq!(background_of(".p { & > .c { background: #0f0 } }", IN_P, 50.0), GREEN);
+        assert_eq!(background_of(".p { .c { background: #0f0 } }", IN_P, 50.0), GREEN);
+    }
+
+    #[test]
+    fn a_nested_rule_under_a_complex_parent_list_matches() {
+        let css = ".q, .p > div { & { background: #0f0 } }";
+        assert_eq!(background_of(css, IN_P, 50.0), GREEN);
+    }
+
+    #[test]
+    fn the_rule_after_a_nested_rule_still_applies() {
+        let css = ".p { & .zz { color: red } } #x { background: #0f0 }";
+        assert_eq!(background_of(css, IN_P, 50.0), GREEN);
+    }
+
+    #[test]
+    fn nested_grid_area_stacks_the_children() {
+        let e = engine();
+        let html = r#"<html><head><style>
+            body { margin: 0 }
+            .stack { display: grid; & > * { grid-area: 1/-1; min-width: 0 } }
+            </style></head><body><div class="stack">
+            <div style="width:30px;height:20px"></div><div style="width:40px;height:20px"></div>
+            </div></body></html>"#;
+        let d = Document::parse_html(html).expect("parse");
+        let layout = e.build_layout_from_document(&d, &[]);
+        let y = |w: f32| {
+            find(&layout, &|b| matches!(b.style.width, rustkit_css::Length::Px(v) if v == w))
+                .expect("box")
+                .dimensions
+                .content
+                .y
+        };
+        assert_eq!(y(30.0), y(40.0), "both items sit in the one stacked cell");
     }
 
     // transform (#48)
@@ -20635,6 +21209,27 @@ impl RuleBuckets {
     }
 }
 
+/// What a rule's subject keys are tested against, read off an element once:
+/// its tag, its `id` and `class` attribute values, and (for a key that names
+/// an attribute) the attribute map itself.
+struct KeyedElement<'a> {
+    tag_name: &'a str,
+    id: Option<&'a str>,
+    class: Option<&'a str>,
+    attributes: &'a HashMap<String, String>,
+}
+
+impl<'a> KeyedElement<'a> {
+    fn of(tag_name: &'a str, attributes: &'a HashMap<String, String>) -> Self {
+        KeyedElement {
+            tag_name,
+            id: attributes.get("id").map(String::as_str),
+            class: attributes.get("class").map(String::as_str),
+            attributes,
+        }
+    }
+}
+
 /// The order `!important` declarations cascade in when layers are involved:
 /// layer order reversed (CSS Cascade 5 §6.4), then specificity and source
 /// order as usual. `rules` is already in normal order. `None` when that order
@@ -20653,6 +21248,51 @@ fn layered_important_order<'a>(
             .cmp(&(std::cmp::Reverse(b.0.layer_order), b.1, b.2))
     });
     Some(out)
+}
+
+/// CSS Cascade 5 §7.3.3, `revert-layer`: the (layer, property) pairs one
+/// importance pass must skip. When the declaration that wins a property
+/// WITHIN a layer is `revert-layer`, that layer contributes nothing for the
+/// property and the result of the layers below it stands. In the unlayered
+/// rules it rolls back to the layered result. `rules` is in the pass's cascade
+/// order, so the last declaration seen for a pair is its winner.
+///
+/// The keyword was dropped as an unknown value, which left the same layer's
+/// earlier declaration in force: linkedin hides its hero with
+/// `.h { display: none }` and shows it on desktop with
+/// `@media (min-width: 768px) { .d { display: revert-layer } }`, both in one
+/// layer, so the hero never appeared.
+///
+/// Pairs are matched by property name, so a `revert-layer` longhand does not
+/// roll back a shorthand declared in the same layer. Empty (no allocation) on
+/// any element no `revert-layer` declaration reaches.
+fn reverted_layer_properties<'a>(
+    rules: impl Iterator<Item = &'a Rule>,
+    important: bool,
+) -> Vec<(u32, &'a str)> {
+    let mut winners: Vec<((u32, &'a str), bool)> = Vec::new();
+    for rule in rules {
+        for decl in &rule.declarations {
+            if decl.important != important {
+                continue;
+            }
+            let reverts = matches!(
+                &decl.value,
+                rustkit_css::PropertyValue::Specified(s)
+                    if s.len() >= 12 && s.trim().eq_ignore_ascii_case("revert-layer")
+            );
+            if !reverts && winners.is_empty() {
+                continue;
+            }
+            let key = (rule.layer_order, decl.property.as_str());
+            match winners.iter_mut().find(|w| w.0 == key) {
+                Some(w) => w.1 = reverts,
+                None if reverts => winners.push((key, true)),
+                None => {}
+            }
+        }
+    }
+    winners.into_iter().filter(|w| w.1).map(|w| w.0).collect()
 }
 
 /// The selector a `…::before`/`…:before` rule matches its host with, as
@@ -20760,6 +21400,72 @@ fn incremental_restyle_mode() -> RestyleMode {
     })
 }
 
+/// `RUSTKIT_TREE_REUSE`: off by default. `1` or `on` makes the images
+/// relayout take the box tree the sheets relayout built (with image sizes
+/// resolved again) instead of walking the DOM a second time; `verify` walks
+/// anyway and counts the boxes that differ from that tree. It rides the
+/// style memo, so it does nothing under `RUSTKIT_INCREMENTAL_RESTYLE=0`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TreeReuse {
+    Off,
+    Reuse,
+    Verify,
+}
+
+fn tree_reuse_from(value: Option<&str>) -> TreeReuse {
+    match value {
+        Some("1") | Some("on") => TreeReuse::Reuse,
+        Some("verify") => TreeReuse::Verify,
+        _ => TreeReuse::Off,
+    }
+}
+
+fn tree_reuse_mode() -> TreeReuse {
+    static MODE: std::sync::OnceLock<TreeReuse> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| tree_reuse_from(std::env::var("RUSTKIT_TREE_REUSE").ok().as_deref()))
+}
+
+/// A recording build with tree reuse on notes each `<img>` box's size
+/// hints under its identity, for `refresh_image_sizes`.
+fn note_snapshot_image(image_box: &LayoutBox, width: Option<f32>, height: Option<f32>) {
+    STYLE_MEMO.with(|m| {
+        if let Some(memo) = m.borrow_mut().as_mut() {
+            if memo.tree_reuse == TreeReuse::Off || memo.in_build != Some(MemoUse::Record) {
+                return;
+            }
+            match &image_box.identity {
+                Some(identity) => {
+                    memo.tree_images
+                        .insert(identity.element_id, (width, height));
+                }
+                None => memo.tree_unusable = true,
+            }
+        }
+    });
+}
+
+/// Count the boxes of `kept` that differ from the box at the same place in
+/// `fresh`; a box with a different number of children counts once.
+fn count_tree_differences(kept: &LayoutBox, fresh: &LayoutBox, differences: &mut usize) {
+    let shallow = |b: &LayoutBox| {
+        format!(
+            "{:?}",
+            (
+                (&b.box_type, &b.dimensions, &b.position, &b.offsets, &b.float, &b.clear),
+                (b.z_index, &b.stacking_context, &b.viewport, &b.sticky_state, &b.element_id),
+                (&b.identity, &b.link_href, &b.focused_caret, &b.node_id, &b.text_lines),
+                (&b.text_flow_first_offset, &b.root_element_height, b.children.len()),
+            )
+        )
+    };
+    if shallow(kept) != shallow(fresh) || !same_computed_style(&kept.style, &fresh.style) {
+        *differences += 1;
+    }
+    for (kept, fresh) in kept.children.iter().zip(&fresh.children) {
+        count_tree_differences(kept, fresh, differences);
+    }
+}
+
 /// The positioning a layout box takes from its computed style.
 struct BoxPositioning {
     position: Position,
@@ -20819,9 +21525,28 @@ struct StyleMemo {
     /// full, without a rule index (a replaying build does not build one).
     misses: usize,
     mismatches: usize,
+    tree_reuse: TreeReuse,
+    /// The recording build's finished, not yet laid out box tree.
+    tree: Option<LayoutBox>,
+    /// `width=`/`height=` of every `<img>` box in `tree`, by the box's
+    /// identity: what a reuse needs to resolve its natural size again.
+    tree_images: HashMap<usize, (Option<f32>, Option<f32>)>,
+    /// An `<img>` box the recording could not name. No tree is kept.
+    tree_unusable: bool,
+    /// Boxes a verifying build found different from the kept tree.
+    tree_mismatches: usize,
 }
 
 impl StyleMemo {
+    /// A recording starts: nothing kept for an earlier one describes it.
+    fn forget_tree(&mut self) {
+        self.tree = None;
+        self.tree_images.clear();
+        self.tree_unusable = false;
+        self.tree_mismatches = 0;
+    }
+
+
     fn memoized(&self) -> usize {
         self.styles.len() + self.pseudos.len()
     }
@@ -20851,10 +21576,15 @@ struct StyleMemoScope {
 
 impl StyleMemoScope {
     fn arm() -> Option<Self> {
-        Self::arm_with(incremental_restyle_mode())
+        Self::arm_with_tree(incremental_restyle_mode(), tree_reuse_mode())
     }
 
+    #[cfg(test)]
     fn arm_with(mode: RestyleMode) -> Option<Self> {
+        Self::arm_with_tree(mode, TreeReuse::Off)
+    }
+
+    fn arm_with_tree(mode: RestyleMode, tree_reuse: TreeReuse) -> Option<Self> {
         if mode == RestyleMode::Off {
             return None;
         }
@@ -20871,6 +21601,11 @@ impl StyleMemoScope {
                 hits: 0,
                 misses: 0,
                 mismatches: 0,
+                tree_reuse,
+                tree: None,
+                tree_images: HashMap::new(),
+                tree_unusable: false,
+                tree_mismatches: 0,
             })
         });
         Some(StyleMemoScope { owner: true })
@@ -20907,6 +21642,7 @@ impl StyleMemoBuild {
             let use_ = match &memo.key {
                 None => {
                     memo.key = Some(key);
+                    memo.forget_tree();
                     MemoUse::Record
                 }
                 Some(recorded) if *recorded == key => match memo.verify {
@@ -20920,6 +21656,7 @@ impl StyleMemoBuild {
                     memo.key = Some(key);
                     memo.styles.clear();
                     memo.pseudos.clear();
+                    memo.forget_tree();
                     MemoUse::Record
                 }
             };
@@ -21211,6 +21948,198 @@ mod incremental_restyle_tests {
         assert!(memo_counts().is_some(), "only the outer scope discards the memo");
     }
 
+    const IMG_PAGE: &str = r#"<!DOCTYPE html><html><head><style>
+        .card { padding: 8px; }
+        .card::before { content: ">"; }
+        img { display: block; }
+        </style></head><body>
+        <div class="card"><p>One <b>two</b> three</p>
+        <img src="https://tree-reuse.test/a.png" width="40" height="30">
+        <img src="https://tree-reuse.test/b.png" width="25"></div>
+        <svg width="10" height="10"><rect width="10" height="10"/></svg>
+        <input type="text" value="typed"><ul><li>a</li><li>b</li></ul>
+        </body></html>"#;
+
+    fn kept_tree() -> Option<bool> {
+        STYLE_MEMO.with(|m| m.borrow().as_ref().map(|memo| memo.tree.is_some()))
+    }
+
+    #[test]
+    fn tree_reuse_reads_its_flag() {
+        assert_eq!(tree_reuse_from(None), TreeReuse::Off);
+        assert_eq!(tree_reuse_from(Some("0")), TreeReuse::Off);
+        assert_eq!(tree_reuse_from(Some("1")), TreeReuse::Reuse);
+        assert_eq!(tree_reuse_from(Some("on")), TreeReuse::Reuse);
+        assert_eq!(tree_reuse_from(Some("verify")), TreeReuse::Verify);
+    }
+
+    #[test]
+    fn a_reused_tree_paints_what_a_fresh_walk_paints() {
+        let e = engine();
+        for page in [PAGE, IMG_PAGE] {
+            let d = Document::parse_html(page).expect("parse");
+            let full = paint(&e, &d);
+
+            let _scope =
+                StyleMemoScope::arm_with_tree(RestyleMode::Reuse, TreeReuse::Reuse).expect("armed");
+            assert_eq!(paint(&e, &d), full);
+            assert_eq!(kept_tree(), Some(true), "the recording build keeps its tree");
+            assert_eq!(paint(&e, &d), full, "the reused tree lays out and paints the same");
+            assert_eq!(kept_tree(), Some(false), "the second build took the tree");
+            let (hits, _, _) = memo_counts().expect("memo");
+            assert_eq!(hits, 0, "a reused tree replays no style");
+            assert_eq!(paint(&e, &d), full, "a third build walks again");
+        }
+    }
+
+    #[test]
+    fn tree_reuse_off_keeps_no_tree() {
+        let e = engine();
+        let d = Document::parse_html(IMG_PAGE).expect("parse");
+        let _scope = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+        paint(&e, &d);
+        assert_eq!(kept_tree(), Some(false));
+    }
+
+    #[test]
+    fn tree_reuse_verify_finds_no_difference_from_a_fresh_walk() {
+        let e = engine();
+        for page in [PAGE, IMG_PAGE] {
+            let d = Document::parse_html(page).expect("parse");
+            let _scope = StyleMemoScope::arm_with_tree(RestyleMode::Reuse, TreeReuse::Verify)
+                .expect("armed");
+            paint(&e, &d);
+            assert_eq!(kept_tree(), Some(true));
+            paint(&e, &d);
+            assert_eq!(kept_tree(), Some(false), "the verifying build compared the tree");
+            let mismatches =
+                STYLE_MEMO.with(|m| m.borrow().as_ref().map(|memo| memo.tree_mismatches));
+            assert_eq!(mismatches, Some(0));
+        }
+    }
+
+    #[test]
+    fn tree_reuse_verify_counts_a_box_that_differs() {
+        let e = engine();
+        let d = Document::parse_html(IMG_PAGE).expect("parse");
+        let _scope =
+            StyleMemoScope::arm_with_tree(RestyleMode::Reuse, TreeReuse::Verify).expect("armed");
+        paint(&e, &d);
+        STYLE_MEMO.with(|m| {
+            let mut slot = m.borrow_mut();
+            let tree = slot.as_mut().and_then(|memo| memo.tree.as_mut()).expect("kept");
+            tree.children[0].z_index += 1;
+        });
+        paint(&e, &d);
+        let mismatches = STYLE_MEMO.with(|m| m.borrow().as_ref().map(|memo| memo.tree_mismatches));
+        assert_eq!(mismatches, Some(1));
+    }
+
+    /// The natural sizes of every `<img>` box, in tree order.
+    fn image_sizes(b: &LayoutBox, out: &mut Vec<(String, f32, f32)>) {
+        if let BoxType::Image {
+            url,
+            natural_width,
+            natural_height,
+        } = &b.box_type
+        {
+            if b.identity.is_some() {
+                out.push((url.clone(), *natural_width, *natural_height));
+            }
+        }
+        for child in &b.children {
+            image_sizes(child, out);
+        }
+    }
+
+    #[test]
+    fn a_reused_tree_resolves_image_sizes_again() {
+        fn zero_images(b: &mut LayoutBox) {
+            if let BoxType::Image {
+                natural_width,
+                natural_height,
+                ..
+            } = &mut b.box_type
+            {
+                (*natural_width, *natural_height) = (0.0, 0.0);
+            }
+            b.children.iter_mut().for_each(zero_images);
+        }
+
+        let e = engine();
+        let d = Document::parse_html(IMG_PAGE).expect("parse");
+        let mut fresh = Vec::new();
+        image_sizes(&e.build_layout_from_document(&d, &[]), &mut fresh);
+        assert_eq!(
+            fresh.iter().map(|(_, w, h)| (*w, *h)).collect::<Vec<_>>(),
+            [(40.0, 30.0), (25.0, 25.0)]
+        );
+
+        let _scope =
+            StyleMemoScope::arm_with_tree(RestyleMode::Reuse, TreeReuse::Reuse).expect("armed");
+        e.build_layout_from_document(&d, &[]);
+        // Stand in for sizes the recording build could not know yet.
+        STYLE_MEMO.with(|m| {
+            let mut slot = m.borrow_mut();
+            zero_images(slot.as_mut().and_then(|memo| memo.tree.as_mut()).expect("kept"));
+        });
+        let mut reused = Vec::new();
+        image_sizes(&e.build_layout_from_document(&d, &[]), &mut reused);
+        assert_eq!(kept_tree(), Some(false), "the build reused the tree");
+        assert_eq!(reused, fresh);
+    }
+
+    #[test]
+    fn a_tree_is_not_reused_under_another_key() {
+        let e = engine();
+        let first = Document::parse_html(IMG_PAGE).expect("parse");
+        let other_html = IMG_PAGE.replace("8px", "9px");
+        let other = Document::parse_html(&other_html).expect("parse");
+        let other_full = paint(&e, &other);
+
+        let _scope =
+            StyleMemoScope::arm_with_tree(RestyleMode::Reuse, TreeReuse::Reuse).expect("armed");
+        paint(&e, &first);
+        assert_eq!(paint(&e, &other), other_full, "another document walks its own tree");
+        assert_eq!(kept_tree(), Some(true), "and keeps that one");
+        assert_eq!(paint(&e, &other), other_full);
+    }
+
+    #[cfg(feature = "headless")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_image_relayout_reuses_the_tree_through_the_real_view_path() {
+        const HTML: &str = r#"<!DOCTYPE html><html><head><style>
+                p { color: rgb(1, 2, 3); font-weight: 700; }
+                img { width: 100px; height: auto; }
+            </style></head><body>
+                <p>styled</p>
+                <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==">
+            </body></html>"#;
+        for tree_reuse in [TreeReuse::Reuse, TreeReuse::Verify] {
+            let mut e = engine();
+            let id = e
+                .create_headless_view(Bounds::new(0, 0, 800, 600))
+                .expect("headless view");
+            e.load_html(id, HTML).expect("initial view load");
+
+            let _scope =
+                StyleMemoScope::arm_with_tree(RestyleMode::Reuse, tree_reuse).expect("armed");
+            e.relayout(id).expect("sheets relayout keeps its tree");
+            assert_eq!(kept_tree(), Some(true));
+            assert_eq!(e.load_images(id).await.expect("load data image"), 1);
+            e.relayout(id).expect("images relayout");
+            assert_eq!(kept_tree(), Some(false), "{tree_reuse:?} must take the kept tree");
+            let (hits, _, memoized) = memo_counts().expect("memo");
+            match tree_reuse {
+                TreeReuse::Reuse => assert_eq!(hits, 0, "a reused tree replays no style"),
+                _ => assert_eq!(hits, memoized, "a verifying build walks"),
+            }
+            let mismatches =
+                STYLE_MEMO.with(|m| m.borrow().as_ref().map(|memo| memo.tree_mismatches));
+            assert_eq!(mismatches, Some(0));
+        }
+    }
+
     #[cfg(feature = "headless")]
     #[tokio::test(flavor = "current_thread")]
     async fn an_image_relayout_replays_styles_through_the_real_view_path() {
@@ -21422,13 +22351,122 @@ mod windows_engine_pins {
         assert_eq!(rounded_rect_count(&e, "border-radius:1rem"), 1);
     }
 
-    /// Elliptical radii take the horizontal half rather than failing to
-    /// parse. Pinned so the behaviour is a recorded decision, not an
-    /// accident.
+    /// The radius of the one rounded rect a 200x100 box with `style_decls`
+    /// paints, as the display list prints it.
+    fn painted_radius(e: &Engine, style_decls: &str) -> String {
+        let html = format!(
+            r#"<!DOCTYPE html><html><body><div style="width:200px;height:100px;background-color:#3366cc;font-size:10px;{style_decls}"></div></body></html>"#
+        );
+        let list = dl(e, &html);
+        let line = list
+            .lines()
+            .find(|c| c.starts_with("RoundedRect"))
+            .unwrap_or_else(|| panic!("no RoundedRect for `{style_decls}`:\n{list}"));
+        line[line.find("radius:").expect("radius field")..].to_string()
+    }
+
+    /// `h / v` reaches paint as an ellipse per corner. This used to keep the
+    /// horizontal half and paint a 10px circle.
     #[test]
-    fn an_elliptical_radius_takes_the_horizontal_half() {
+    fn an_elliptical_radius_reaches_paint_with_both_axes() {
         let e = engine();
         assert_eq!(rounded_rect_count(&e, "border-radius:10px / 20px"), 1);
+        let radius = painted_radius(&e, "border-radius:10px / 20px");
+        assert_eq!(
+            radius.matches("CornerRadius { h: 10.0, v: 20.0 }").count(),
+            4,
+            "{radius}"
+        );
+    }
+
+    /// A longhand with two values is one corner's horizontal then vertical
+    /// radius; the whole declaration used to be dropped.
+    #[test]
+    fn a_two_value_corner_longhand_rounds_that_corner() {
+        let e = engine();
+        let radius = painted_radius(&e, "border-top-left-radius:30px 15px");
+        assert!(
+            radius.contains("top_left: CornerRadius { h: 30.0, v: 15.0 }"),
+            "{radius}"
+        );
+        assert!(
+            radius.contains("top_right: CornerRadius { h: 0.0, v: 0.0 }"),
+            "{radius}"
+        );
+    }
+
+    /// The flow-relative longhands land on the physical corners of an
+    /// ltr horizontal box.
+    #[test]
+    fn a_logical_corner_longhand_rounds_its_physical_corner() {
+        let e = engine();
+        let radius = painted_radius(&e, "border-end-end-radius:12px");
+        assert!(
+            radius.contains("bottom_right: CornerRadius { h: 12.0, v: 12.0 }"),
+            "{radius}"
+        );
+        let radius = painted_radius(&e, "border-start-end-radius:12px");
+        assert!(
+            radius.contains("top_right: CornerRadius { h: 12.0, v: 12.0 }"),
+            "{radius}"
+        );
+    }
+
+    /// A percentage is of the width for the horizontal radius and of the
+    /// height for the vertical one: `50%` on 200x100 is a 100x50 ellipse,
+    /// not a 50px pill end.
+    #[test]
+    fn a_percentage_radius_resolves_per_axis() {
+        let e = engine();
+        let radius = painted_radius(&e, "border-radius:50%");
+        assert_eq!(
+            radius.matches("CornerRadius { h: 100.0, v: 50.0 }").count(),
+            4,
+            "{radius}"
+        );
+        let radius = painted_radius(&e, "border-radius:10% / 25%");
+        assert_eq!(
+            radius.matches("CornerRadius { h: 20.0, v: 25.0 }").count(),
+            4,
+            "{radius}"
+        );
+    }
+
+    /// Radii that overlap are all scaled by one factor (CSS Backgrounds 3
+    /// §5.5), so corners keep their proportions. Two 150px-wide top corners
+    /// on a 200px-wide box scale by 200/300, both axes; they are not each
+    /// cut to half the shorter side.
+    #[test]
+    fn overlapping_radii_are_reduced_by_one_factor() {
+        let e = engine();
+        let radius = painted_radius(
+            &e,
+            "border-radius:150px 150px 30px 30px / 60px 60px 15px 15px",
+        );
+        assert!(
+            radius.contains("top_left: CornerRadius { h: 100.0, v: 40.0 }"),
+            "{radius}"
+        );
+        assert!(
+            radius.contains("bottom_left: CornerRadius { h: 20.0, v: 10.0 }"),
+            "{radius}"
+        );
+
+        // Top-only radii as tall as the box stay whole: nothing on the left
+        // or right side overlaps them.
+        let radius = painted_radius(&e, "border-radius:100px 100px 0 0");
+        assert!(
+            radius.contains("top_left: CornerRadius { h: 100.0, v: 100.0 }"),
+            "{radius}"
+        );
+
+        // The pill: a huge radius is half the shorter side.
+        let radius = painted_radius(&e, "border-radius:9999px");
+        assert_eq!(
+            radius.matches("CornerRadius { h: 50.0, v: 50.0 }").count(),
+            4,
+            "{radius}"
+        );
     }
 
     // ── box-shadow paint order (#74) ──
@@ -22208,6 +23246,56 @@ mod logical_property_tests {
         e.apply_style_property(&mut style, "margin-inline", "1px 2px 3px");
         assert_eq!(style.margin_left, ComputedStyle::new().margin_left);
     }
+
+    /// The flow-relative border properties had no arms, so a box styled
+    /// with `border-inline-*` / `border-block-*` (what StyleX and Tailwind
+    /// v4 emit) lost those sides: facebook's login inputs painted a top and
+    /// a bottom border and no left or right one.
+    #[test]
+    fn logical_border_properties_map_to_physical_sides() {
+        use rustkit_css::{BorderStyle, Color, Length};
+        let root = laid_out(concat!(
+            r#"<body style="margin:0"><div style="width:400px">"#,
+            r#"<div id="w" style="height:10px;border-style:solid;border-width:0;border-inline-width:2px 5px;border-block-end-width:7px"></div>"#,
+            r#"<div id="s" style="height:10px;border-inline-start:3px solid red;border-block:4px solid rgb(1, 2, 3)"></div>"#,
+            r#"<div id="i" style="height:10px;border-inline:6px solid blue"></div>"#,
+            r#"</div></body>"#,
+        ));
+        let border = |id: &str| {
+            let b = by_id(&root, id).unwrap_or_else(|| panic!("#{id}"));
+            let e = &b.dimensions.border;
+            (e.top, e.right, e.bottom, e.left)
+        };
+        assert_eq!(border("w"), (0.0, 5.0, 7.0, 2.0), "inline-width is `start end`");
+        assert_eq!(border("s"), (4.0, 0.0, 4.0, 3.0), "inline-start is left; block is top and bottom");
+        assert_eq!(border("i"), (0.0, 6.0, 0.0, 6.0), "inline is left and right");
+        let s = &by_id(&root, "s").expect("#s").style;
+        assert_eq!(s.border_left_color, Color::from_rgb(255, 0, 0));
+        assert_eq!(s.border_top_color, Color::from_rgb(1, 2, 3), "a colour with spaces stays one value");
+        assert_eq!(s.border_bottom_color, Color::from_rgb(1, 2, 3));
+
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let mut style = ComputedStyle::new();
+        e.apply_style_property(&mut style, "border-inline-end-style", "dashed");
+        e.apply_style_property(&mut style, "border-block-start-style", "solid");
+        assert_eq!(style.border_right_style, BorderStyle::Dashed);
+        assert_eq!(style.border_top_style, BorderStyle::Solid);
+        e.apply_style_property(&mut style, "border-inline-style", "dotted solid");
+        assert_eq!((style.border_left_style, style.border_right_style), (BorderStyle::Dotted, BorderStyle::Solid));
+        e.apply_style_property(&mut style, "border-inline-end-width", "9px");
+        e.apply_style_property(&mut style, "border-block-start-width", "8px");
+        assert_eq!(style.border_right_width, Length::Px(9.0));
+        assert_eq!(style.border_top_width, Length::Px(8.0));
+        // Each colour may contain spaces: split at the top level only.
+        e.apply_style_property(&mut style, "border-inline-color", "rgb(10, 20, 30) rgba(0, 0, 0, 0.5)");
+        assert_eq!(style.border_left_color, Color::from_rgb(10, 20, 30));
+        assert_eq!(style.border_right_color.a, 0.5);
+        e.apply_style_property(&mut style, "border-block-color", "rgb(4, 5, 6)");
+        assert_eq!(style.border_top_color, Color::from_rgb(4, 5, 6));
+        assert_eq!(style.border_bottom_color, Color::from_rgb(4, 5, 6));
+        e.apply_style_property(&mut style, "border-block-end-color", "rgb(7, 8, 9)");
+        assert_eq!(style.border_bottom_color, Color::from_rgb(7, 8, 9));
+    }
 }
 
 // ── float / clear (realsite B3). Nothing parsed the two properties, and
@@ -22632,6 +23720,136 @@ mod css_url_base_engine_tests {
         let paths = requested.lock().unwrap().clone();
         assert!(paths.iter().any(|p| p == "/assets/font.woff2"), "font not fetched from the sheet's directory: {paths:?}");
         assert!(!paths.iter().any(|p| p == "/font.woff2"), "font fetched against the document URL: {paths:?}");
+    }
+}
+
+// Needs a headless view: `cargo test -p rustkit-engine --features headless`.
+#[cfg(all(test, target_os = "macos", feature = "headless"))]
+mod web_font_format_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    const AHEM_TTF: &[u8] = include_bytes!("../../rustkit-text/tests/fixtures/Ahem.ttf");
+    const AHEM_WOFF: &[u8] = include_bytes!("../../rustkit-text/tests/fixtures/Ahem.woff");
+    const AHEM_WOFF2: &[u8] = include_bytes!("../../rustkit-text/tests/fixtures/Ahem.woff2");
+
+    // Four 20px lines of "XXXXX" at x=20, 30px apart from y=20. Ahem's "X"
+    // is a solid em square; Helvetica's is two strokes.
+    const PAGE: &str = r#"<!DOCTYPE html><html><head><style>
+@font-face { font-family: FormatTtf; src: url(/Ahem.ttf) format("truetype"); }
+@font-face { font-family: FormatWoff; src: url(/Ahem.woff) format("woff"); }
+@font-face { font-family: FormatWoff2; src: url(/Ahem.woff2) format("woff2"); }
+body { margin: 20px; font-size: 20px; background: white; color: black; }
+p { margin: 0 0 10px 0; line-height: 20px; }
+</style></head><body>
+<p style="font-family: FormatTtf">XXXXX</p>
+<p style="font-family: FormatWoff">XXXXX</p>
+<p style="font-family: FormatWoff2">XXXXX</p>
+<p style="font-family: Helvetica">XXXXX</p>
+</body></html>"#;
+
+    fn serve() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let (ctype, body): (&str, &[u8]) =
+                    match head.split_whitespace().nth(1).unwrap_or("") {
+                        "/" => ("text/html", PAGE.as_bytes()),
+                        "/Ahem.ttf" => ("font/ttf", AHEM_TTF),
+                        "/Ahem.woff" => ("font/woff", AHEM_WOFF),
+                        "/Ahem.woff2" => ("font/woff2", AHEM_WOFF2),
+                        _ => ("text/plain", b""),
+                    };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(body);
+            }
+        });
+        port
+    }
+
+    /// Share of dark pixels in the 96x16 block inside line `line`'s five
+    /// glyph cells (2px in from every edge), read from a binary PPM.
+    fn ink(ppm: &[u8], line: usize) -> f32 {
+        let mut fields = Vec::new();
+        let mut pos = 0;
+        while fields.len() < 4 {
+            let start = pos;
+            while !ppm[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
+            fields.push(std::str::from_utf8(&ppm[start..pos]).unwrap());
+            pos += 1;
+        }
+        assert_eq!(fields[0], "P6");
+        let width: usize = fields[1].parse().unwrap();
+        let pixels = &ppm[pos..];
+        let top = 20 + 30 * line;
+        let mut dark = 0;
+        for y in top + 2..top + 18 {
+            for x in 22..118 {
+                let p = &pixels[(y * width + x) * 3..][..3];
+                if p.iter().all(|&c| c < 96) {
+                    dark += 1;
+                }
+            }
+        }
+        dark as f32 / (96.0 * 16.0)
+    }
+
+    #[test]
+    fn ttf_woff_and_woff2_faces_paint_their_own_glyphs_after_a_fallback_first_paint() {
+        let port = serve();
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds {
+                x: 0,
+                y: 0,
+                width: 400,
+                height: 200,
+            })
+            .expect("view");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // The document is laid out and painted once before its fonts are
+        // fetched, so the fallback has already drawn every "X" by the time
+        // the three faces install.
+        rt.block_on(engine.load_url(
+            view,
+            Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+        ))
+        .expect("load_url");
+        engine.render_view(view).expect("render");
+        let path = std::env::temp_dir().join(format!("rustkit-web-font-formats-{port}.ppm"));
+        engine
+            .capture_frame(view, path.to_str().unwrap())
+            .expect("capture");
+        let ppm = std::fs::read(&path).expect("frame");
+        let _ = std::fs::remove_file(&path);
+
+        for (line, format) in ["ttf", "woff", "woff2"].into_iter().enumerate() {
+            let share = ink(&ppm, line);
+            assert!(
+                share > 0.98,
+                "{format}: {:.0}% of the glyph cells are ink; Ahem fills them, a fallback font does not",
+                share * 100.0
+            );
+        }
+        let control = ink(&ppm, 3);
+        assert!(
+            (0.02..0.6).contains(&control),
+            "the Helvetica control line is {:.0}% ink; the probe is not reading glyph cells",
+            control * 100.0
+        );
     }
 }
 
@@ -24637,5 +25855,223 @@ mod pseudo_element_display_tests {
         ).into_iter().enumerate() {
             assert_eq!(rect(&root, "a").height, 32.0, "path {path}");
         }
+    }
+}
+
+#[cfg(test)]
+mod text_provenance_tests {
+    //! The capture must declare which shaper produced its advances, and the
+    //! declaration must match what the shaper actually does.
+    //!
+    //! Two halves, and they fail differently. `layout_export_wrapper` emitting
+    //! the fields is what lets Gate A refuse; the constants being TRUE of this
+    //! build is what makes the refusal mean something. A declaration that says
+    //! `coretext` on a stub build is worse than no declaration at all, because
+    //! the gate would then trust it.
+
+    use super::layout_export_wrapper;
+
+    #[test]
+    fn the_layout_export_declares_its_text_shaper() {
+        let doc = layout_export_wrapper(serde_json::json!({"type": "block"}), 800, 600);
+
+        assert_eq!(
+            doc["text_backend"],
+            serde_json::json!(rustkit_layout::TEXT_SHAPER_BACKEND),
+            "a capture that does not name its shaper cannot be attributed, and \
+             Gate A treats an absent field as untrusted rather than as a font"
+        );
+        assert_eq!(
+            doc["text_metrics_font_derived"],
+            serde_json::json!(rustkit_layout::TEXT_METRICS_ARE_FONT_DERIVED),
+            "the boolean is what the gate branches on; the name is for humans"
+        );
+        assert!(
+            doc["text_metrics_font_derived"].is_boolean(),
+            "the gate reads only a real boolean as a yes, so a string or a \
+             number here would silently read as 'did not say'"
+        );
+        // The pre-existing shape is part of the contract: every consumer of
+        // layout.json joins on `root` and filters on `viewport`.
+        assert_eq!(doc["version"], serde_json::json!(1));
+        assert_eq!(doc["viewport"]["width"], serde_json::json!(800));
+        assert_eq!(doc["viewport"]["height"], serde_json::json!(600));
+        assert_eq!(doc["root"]["type"], serde_json::json!("block"));
+    }
+
+    #[test]
+    fn the_declared_backend_matches_what_shaping_actually_does() {
+        // The stub's closed form, transcribed from the non-Windows, non-macOS
+        // body of `TextShaper::shape` (crates/rustkit-layout/src/text.rs):
+        //     let advance = if c.is_ascii() { size * 0.5 } else { size };
+        // Measuring it is the only way to catch a constant that says one thing
+        // while the compiled `shape` does another.
+        let measure = |s: &str| {
+            rustkit_layout::measure_text_advanced(
+                s,
+                "system-ui, sans-serif",
+                16.0,
+                rustkit_css::FontWeight::NORMAL,
+                rustkit_css::FontStyle::Normal,
+            )
+            .width
+        };
+        let stub_holds = (measure(" ") - 8.0).abs() < 1e-3
+            && (measure("mm") - 16.0).abs() < 1e-3
+            && (measure("iiii") - 32.0).abs() < 1e-3;
+
+        if rustkit_layout::TEXT_METRICS_ARE_FONT_DERIVED {
+            assert!(
+                !stub_holds,
+                "this build claims font-derived advances, but ' ', 'mm' and \
+                 'iiii' all measure exactly font_size * 0.5 per character. No \
+                 real face gives a space and an 'm' the same advance, so the \
+                 stub is what ran and the claim is false — a parity receipt \
+                 taken here would be measured against a ruler, not a font."
+            );
+            assert!(
+                rustkit_layout::TEXT_SHAPER_BACKEND == "coretext"
+                    || rustkit_layout::TEXT_SHAPER_BACKEND == "directwrite",
+                "a font-derived build must name the backend that read the font"
+            );
+        } else {
+            assert!(
+                stub_holds,
+                "this build declares the stub, so the stub's closed form must \
+                 hold. If it no longer does, a real shaper was wired in on this \
+                 target and TEXT_METRICS_ARE_FONT_DERIVED is now understating \
+                 it — which makes every gate here refuse a board it could \
+                 attribute."
+            );
+            assert_eq!(
+                rustkit_layout::TEXT_SHAPER_BACKEND, "stub-0.5em",
+                "the name carried into the capture must say it is a stub, since \
+                 that string is what a reader of the board sees"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod control_semantics_tests {
+    use super::*;
+    use rustkit_layout::{Dimensions, DisplayList, Rect};
+
+    /// The page's display list, one `Debug` string per command — what
+    /// `--dump-display-list` writes for a control, and what the renderer is
+    /// handed.
+    fn painted(html: &str) -> Vec<String> {
+        let e = Engine::new(EngineConfig::default()).expect("engine");
+        let d = Document::parse_html(html).expect("parse");
+        let mut root = e.build_layout_from_document(&d, &[]);
+        let mut cb = Dimensions::default();
+        cb.content = Rect::new(0.0, 0.0, 800.0, 600.0);
+        root.layout(&cb);
+        DisplayList::build(&root)
+            .commands
+            .iter()
+            .map(|c| format!("{c:?}"))
+            .collect()
+    }
+
+    #[test]
+    fn a_password_value_never_reaches_the_display_list() {
+        // The control-paint path dropped `input_type`, so a password's value
+        // was handed to the renderer (and written to every display-list
+        // dump) as plain text. Chrome paints one bullet per character.
+        let ops = painted(
+            r#"<!DOCTYPE html><body><input type="password" value="hunter2secret">
+               <input type="PASSWORD" value="swordfish">
+               <input type="text" value="visible text">
+               <input type="password" placeholder="Your password"></body>"#,
+        );
+        let all = ops.join("\n");
+        assert!(
+            !all.contains("hunter2secret"),
+            "password value in the display list:\n{all}"
+        );
+        assert!(
+            !all.contains("swordfish"),
+            "type is ASCII case-insensitive:\n{all}"
+        );
+        let bullets = |n: usize| format!("value: \"{}\"", "\u{2022}".repeat(n));
+        assert!(
+            all.contains(&bullets(13)),
+            "13 characters paint 13 bullets:\n{all}"
+        );
+        assert!(
+            all.contains(&bullets(9)),
+            "9 characters paint 9 bullets:\n{all}"
+        );
+        // Guards: other input types and a password's placeholder still paint.
+        assert!(all.contains("visible text"));
+        assert!(all.contains("Your password"));
+    }
+
+    #[test]
+    fn a_list_box_reaches_paint_with_every_option_and_its_selection() {
+        // `<select size>` / `<select multiple>` painted as a text input
+        // showing one option. Chrome paints a row per option and highlights
+        // the selected ones.
+        let ops = painted(
+            r#"<!DOCTYPE html><body>
+               <select multiple size="3"><option>Item 1</option><option selected>Item 2</option>
+                 <option selected>Item 3</option><option>Item 4</option></select>
+               <select size="2"><option selected>one</option><option selected>two</option><option>three</option></select>
+               <select size="4"><option>alpha</option><option>beta</option></select>
+               <select multiple><option>m1</option><option>m2</option></select></body>"#,
+        );
+        let boxes: Vec<&String> = ops.iter().filter(|o| o.starts_with("ListBox")).collect();
+        assert_eq!(boxes.len(), 4, "four list boxes, got:\n{}", ops.join("\n"));
+        assert!(
+            boxes[0].contains(r#"options: ["Item 1", "Item 2", "Item 3", "Item 4"]"#),
+            "{}",
+            boxes[0]
+        );
+        assert!(
+            boxes[0].contains("selected: [1, 2]"),
+            "multiple keeps both: {}",
+            boxes[0]
+        );
+        assert!(
+            boxes[1].contains("selected: [1]"),
+            "single keeps the last: {}",
+            boxes[1]
+        );
+        assert!(
+            boxes[2].contains("selected: []"),
+            "no fallback to the first option: {}",
+            boxes[2]
+        );
+        assert!(
+            boxes[3].contains(r#"options: ["m1", "m2"]"#),
+            "{}",
+            boxes[3]
+        );
+        assert!(boxes[3].contains("selected: []"), "{}", boxes[3]);
+    }
+
+    #[test]
+    fn a_drop_down_reaches_paint_as_a_menu_list() {
+        // A `<select>` and an `<input>` were the same command, so the
+        // renderer could not draw the arrow.
+        let ops = painted(
+            r#"<!DOCTYPE html><body>
+               <select><option>hours</option><option selected>days</option></select>
+               <input value="typed"><textarea>notes</textarea></body>"#,
+        );
+        let kind_of = |value: &str| {
+            let op = ops
+                .iter()
+                .find(|o| o.contains(&format!("value: \"{value}\"")))
+                .unwrap_or_else(|| panic!("no control showing {value}:\n{}", ops.join("\n")));
+            ["MenuList", "TextArea", "Password", "Text"]
+                .into_iter()
+                .find(|k| op.contains(&format!("kind: {k}")))
+                .unwrap_or("none")
+        };
+        assert_eq!(kind_of("days"), "MenuList");
+        assert_eq!(kind_of("typed"), "Text");
+        assert_eq!(kind_of("notes"), "TextArea");
     }
 }

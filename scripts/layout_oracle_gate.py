@@ -285,6 +285,91 @@ def border_box(box: Dict[str, Any]) -> Optional[Dict[str, float]]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Text-metric provenance
+# ---------------------------------------------------------------------------
+
+# A capture whose text advances did not come from a font cannot be attributed.
+# `rustkit_layout::TEXT_SHAPER_BACKEND` names the backend that produced them;
+# the non-Windows, non-macOS body of `TextShaper::shape` is a stub that assigns
+# `font_size * 0.5` to every ASCII character, reads no font, and returns `Ok`.
+# A capture from it looks exactly like a capture that shaped, so this gate
+# reported 2419 confident geometry deltas against a fixed ruler on the Linux
+# trench seat and the stub was invisible for 57 nights
+# (trench/digest-parity-finish-line.md, 2026-10-01).
+FONT_DERIVED_KEY = "text_metrics_font_derived"
+BACKEND_KEY = "text_backend"
+UNKNOWN_BACKEND = "unknown"
+
+
+def text_provenance(rustkit: Dict[str, Any]) -> Tuple[str, Optional[bool]]:
+    """(backend name, whether its advances come from a real font face).
+
+    A capture that carries no provenance returns None for the second element
+    rather than True. The field was added after the gate existed, so "absent"
+    means "taken by a binary that does not say", and a gate that reads absence
+    as trustworthy is the hole this closes rather than a compatibility shim.
+    """
+    backend = rustkit.get(BACKEND_KEY) or UNKNOWN_BACKEND
+    derived = rustkit.get(FONT_DERIVED_KEY)
+    return str(backend), derived if isinstance(derived, bool) else None
+
+
+def text_exposure_index(root: Dict[str, Any]) -> Dict[str, str]:
+    """Per box path, its relationship to a text measurement, or absent.
+
+    Two relations, both DOWNWARD or SIDEWAYS from the box:
+
+      ``own``   the box's own subtree contains a text box at any depth, so its
+                content size is a text measurement or is built out of one
+      ``flow``  a PRECEDING sibling's subtree contains text, so inline flow
+                hands that advance along to this box's inline position
+
+    The relation deliberately NOT claimed is ANCESTRY: that some box above
+    this one contains words. That is true of nearly every box on a page with
+    any text on it, so claiming it would make the column read 100% and tell a
+    reader nothing. Depth downward is a different matter and IS claimed — a box
+    whose text sits two levels below still gets its content size from that
+    text, through the intermediate box.
+
+    The consequence of the exclusion is that a box with NEITHER relation is
+    still not proven clean: intrinsic sizing propagates a text measurement
+    upward through any ancestor, and this index does not model that. Which is
+    why the stub makes a whole capture unattributable rather than merely its
+    text rows.
+    """
+    exposure: Dict[str, str] = {}
+    subtree_has_text: Dict[str, bool] = {}
+
+    def visit(node: Dict[str, Any], path: Tuple[int, ...]) -> bool:
+        key = ".".join(str(i) for i in path)
+        sub = node.get("type") == "text"
+        for index, child in enumerate(node.get("children") or []):
+            sub = visit(child, path + (index,)) or sub
+        subtree_has_text[key] = sub
+        if sub:
+            exposure[key] = "own"
+        return sub
+
+    visit(root, ())
+
+    def visit_flow(node: Dict[str, Any], path: Tuple[int, ...]) -> None:
+        prefix = ".".join(str(i) for i in path)
+        children = node.get("children") or []
+        for index, child in enumerate(children):
+            key = f"{prefix}.{index}" if prefix else str(index)
+            if key not in exposure:
+                for earlier in range(index):
+                    sib = f"{prefix}.{earlier}" if prefix else str(earlier)
+                    if subtree_has_text.get(sib):
+                        exposure[key] = "flow"
+                        break
+            visit_flow(child, path + (index,))
+
+    visit_flow(root, ())
+    return exposure
+
+
 def compare_case(
     case_id: str,
     chrome: Dict[str, Any],
@@ -294,6 +379,8 @@ def compare_case(
     """Score one case. Returns a per-case record with its failure list."""
     root = rustkit.get("root", rustkit)
     index, identified, total_boxes = index_rustkit(root)
+    backend, font_derived = text_provenance(rustkit)
+    exposure = text_exposure_index(root)
 
     failures: List[Failure] = []
     compared = 0
@@ -366,6 +453,20 @@ def compare_case(
     geometry_failures = [f for f in failures if f.kind in Failure.GEOMETRY_KINDS]
     join_failures = [f for f in failures if f.kind not in Failure.GEOMETRY_KINDS]
 
+    # Attribution, reported as its own column rather than folded into the count.
+    # `geometry_failures` stays exactly what it was so the ratchet's committed
+    # floors and every prior receipt remain comparable; what is new is that a
+    # reader can see how much of that count this seat is entitled to work.
+    failure_json = []
+    text_exposed = 0
+    for failure in failures:
+        blob = failure.to_json()
+        relation = exposure.get(failure.path) if failure.axis else None
+        blob["text_exposure"] = relation
+        if failure.kind in Failure.GEOMETRY_KINDS and relation is not None:
+            text_exposed += 1
+        failure_json.append(blob)
+
     return {
         "case_id": case_id,
         "measured": True,
@@ -376,7 +477,11 @@ def compare_case(
         "compared": compared,
         "geometry_failures": len(geometry_failures),
         "join_failures": len(join_failures),
-        "failures": [f.to_json() for f in failures],
+        "text_backend": backend,
+        "text_metrics_font_derived": font_derived,
+        "text_exposed_failures": text_exposed,
+        "attributable": font_derived is True,
+        "failures": failure_json,
         "receipts": [f.receipt() for f in failures],
     }
 
@@ -399,6 +504,10 @@ def unmeasured_case(case_id: str, reason: str) -> Dict[str, Any]:
         "compared": 0,
         "geometry_failures": 0,
         "join_failures": 0,
+        "text_backend": UNKNOWN_BACKEND,
+        "text_metrics_font_derived": None,
+        "text_exposed_failures": 0,
+        "attributable": False,
         "failures": [],
         "receipts": [],
     }
@@ -477,6 +586,8 @@ def run_gate(
 
     measured = [c for c in cases if c["measured"]]
     green = [c for c in cases if c["green"]]
+    unattributable = [c for c in measured if not c["attributable"]]
+    backends = sorted({c["text_backend"] for c in measured})
 
     return {
         "gate": "A-geometry",
@@ -491,6 +602,14 @@ def run_gate(
             "red": len(cases) - len(green),
             "geometry_failures": sum(c["geometry_failures"] for c in cases),
             "join_failures": sum(c["join_failures"] for c in cases),
+            # Attribution is a separate column, never a correction to the one
+            # above. A seat may read the raw count and compare it with any
+            # earlier run; what it may not do is call the delta a RustKit
+            # defect while this number is non-zero.
+            "text_exposed_failures": sum(c["text_exposed_failures"] for c in cases),
+            "text_backends": backends,
+            "unattributable_cases": len(unattributable),
+            "attributable": not unattributable and bool(measured),
         },
     }
 
@@ -508,6 +627,14 @@ def gate_passes(report: Dict[str, Any]) -> bool:
     and "26 cases, none of which the capture produced".
     """
     if report["summary"]["measured"] == 0:
+        return False
+    # A capture whose text advances did not come from a font cannot PASS, and
+    # this is the half that matters: a stub seat is red today only because the
+    # stub happens to disagree with Chrome. Make the stub agree -- change the
+    # corpus's font stack, or pick a page with no words on it -- and the same
+    # gate would print PASS over numbers no font ever produced. Red is not the
+    # safeguard; refusing to be green is.
+    if not report["summary"]["attributable"]:
         return False
     return report["summary"]["red"] == 0
 
@@ -530,6 +657,22 @@ def print_report(report: Dict[str, Any], verbose: bool = False) -> None:
         f"  failures:   {summary['geometry_failures']} geometry,"
         f" {summary['join_failures']} join"
     )
+    print(
+        f"  text:       {'/'.join(summary['text_backends']) or '—'} backend,"
+        f" {summary['text_exposed_failures']} of {summary['geometry_failures']}"
+        f" geometry failures text-exposed"
+    )
+    if not summary["attributable"]:
+        print()
+        print("  " + "=" * 72)
+        print("  NOT ATTRIBUTABLE — these geometry deltas are MECHANICS, not defects.")
+        print(f"  {summary['unattributable_cases']} measured case(s) were captured by a build whose")
+        print("  text advances do not come from a font face. `TextShaper::shape` on any")
+        print("  target that is neither Windows nor macOS assigns font_size * 0.5 to each")
+        print("  ASCII character, reads no font, and returns Ok. Every box whose size or")
+        print("  inline position depends on a text measurement is therefore reporting that")
+        print("  constant. Do NOT pick a unit from this board and do NOT quote it as N/26.")
+        print("  " + "=" * 72)
     print()
 
     for case in report["cases"]:
@@ -537,10 +680,15 @@ def print_report(report: Dict[str, Any], verbose: bool = False) -> None:
             print(f"  UNMEASURED {case['case_id']}: {case['reason']}")
             continue
         mark = "GREEN" if case["green"] else "RED  "
+        if not case["attributable"]:
+            mark = "MECH " if case["green"] else "RED* "
+        attribution = ""
+        if case["geometry_failures"]:
+            attribution = f", {case['text_exposed_failures']} text-exposed"
         print(
             f"  {mark} {case['case_id']}: {case['compared']}/{case['chrome_boxes']}"
             f" boxes compared, {case['geometry_failures']} geometry,"
-            f" {case['join_failures']} join"
+            f" {case['join_failures']} join{attribution}"
         )
         receipts = case["receipts"] if verbose else case["receipts"][:5]
         for line in receipts:

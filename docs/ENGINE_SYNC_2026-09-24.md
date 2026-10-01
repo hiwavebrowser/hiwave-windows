@@ -117,6 +117,41 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-10-01 (refresh #9, after #107 merged):** crates now verbatim from
+hiwave-macos develop `44c61ff` (Merge #406), 25 upstream PRs past refresh #8.
+Highlights: CSS nesting (#389), `@layer` revert (#392), flex item intrinsic
+height (#391), control semantics (#396), WOFF web fonts (#398), logical borders
+(#403) and elliptical corners (#401), cascade speed work (#387 index build,
+#395 prefilter hoist, #399 prefilter skip, #400 large var layers, #404 tree
+reuse), and the three fixes Windows sent upstream: `:is( a, b)` specificity and
+oversized textures (#386), the line-fit epsilon (#388), and Windows colour emoji
+(#390). Those three are now in the crates, which is why
+`scripts/windows-patches/` is empty.
+
+Outside `crates/rustkit-*`:
+
+- **Windows patches.** `apply_windows_patches.py` applies all seven string edits
+  unchanged (Arial-first `sans-serif`, the macOS-only font aliases, the two strut
+  tolerances, the `ENGINE_INIT` test mutex).
+- **Parity tooling.** The sync brings `geometry_attribution.py`,
+  `merge_test_module.py`, updates to `finish_line_receipt.py` and
+  `layout_oracle_gate.py` with their tests, and `websuite/realsite-top20.json`
+  (#406: the list Mac and Linux score, so the Windows live board is comparable
+  for the first time).
+- **Cargo.lock.** Resolved by cargo.
+
+Gates:
+
+| Gate | Result |
+|---|---|
+| workspace minus `rustkit-engine` | **1479 / 0 / 5** |
+| `rustkit-engine`, `--test-threads=1` | **252 / 0** |
+| `rustkit-engine`, parallel | **252 / 0** |
+| total | **1731 / 0 / 5** (refresh #8: 1662) |
+| both shells, release `parity-capture` | build |
+| parity board (`parity_swarm --scope all`, 3 iterations) | **26 / 26, mean 1.24%** (Mac 1.18%), worst `css-selectors` +0.87, nine cases better than Mac |
+| live-site board (`realsite_board.py`, Mac's list from #406) | **29 / 60** (loads 17, readable 8, looks-right 4); Mac 28 / 60 at `7ae0e68`; was 23 / 60 on the old list at refresh #8 |
+
 **2026-09-30, later (parity to 1 point, on top of refresh #8):** Pete lowered
 the bar to "within 1% of macOS measurements", read as every case within 1.0
 point of Mac's number. Two cases missed on the refresh #8 board:
