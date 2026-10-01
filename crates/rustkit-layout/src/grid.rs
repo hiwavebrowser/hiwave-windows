@@ -1385,6 +1385,23 @@ pub fn layout_grid_container(
     // Expand auto-fill/auto-fit patterns now that we have container size
     grid.expand_auto_repeats(container_width, container_height);
 
+    // Negative line numbers count back from the end of the EXPLICIT grid
+    // (CSS Grid §8.3): with no explicit columns, `-1` is line 1. Resolve
+    // them here, before the implicit tracks below exist and before an
+    // `auto` end is taken as start + 1 (which made `grid-area: 1 / -1`, the
+    // grid-stack idiom, end at line 0 and land the item in a stray column).
+    let explicit_columns = grid.columns.len() as i32;
+    let explicit_rows = grid.rows.len() as i32;
+    let explicit_line = |line: &GridLine, explicit: i32| -> GridLine {
+        match line {
+            // A line before the explicit grid's start would need implicit
+            // tracks on the start side, which this layout does not create;
+            // line 1 is the nearest line it has.
+            GridLine::Number(n) if *n < 0 => GridLine::Number((explicit + 2 + n).max(1)),
+            other => other.clone(),
+        }
+    };
+
     // Ensure at least one column and row
     if grid.columns.is_empty() {
         grid.columns.push(GridTrack::implicit(&TrackSize::Auto));
@@ -1403,10 +1420,10 @@ pub fn layout_grid_container(
             let mut item = GridItem::new(child);
             // Set placement from style, resolving named lines via grid
             let placement = GridPlacement {
-                column_start: child.style.grid_column_start.clone(),
-                column_end: child.style.grid_column_end.clone(),
-                row_start: child.style.grid_row_start.clone(),
-                row_end: child.style.grid_row_end.clone(),
+                column_start: explicit_line(&child.style.grid_column_start, explicit_columns),
+                column_end: explicit_line(&child.style.grid_column_end, explicit_columns),
+                row_start: explicit_line(&child.style.grid_row_start, explicit_rows),
+                row_end: explicit_line(&child.style.grid_row_end, explicit_rows),
             };
             item.set_placement_with_grid(&placement, &grid);
             item
@@ -6109,6 +6126,33 @@ mod tests {
         // Negative line resolution happens in layout_grid_container, not set_placement_with_grid
         assert_eq!(item.column_start, 1);
         assert_eq!(item.column_end, -1);  // Will be resolved later to 4
+    }
+
+    /// `grid-area: 1 / -1` on every child of a template-less grid (the
+    /// grid-stack idiom; linkedin's hero and topic pills). There are no
+    /// explicit columns, so `-1` is line 1 and every child shares cell (1, 1).
+    /// Before, `-1` counted from the implicit column and the auto end became
+    /// line 0, so the children landed in a stray second column.
+    #[test]
+    fn negative_lines_count_from_the_explicit_grid_so_grid_area_1_neg1_stacks() {
+        let mut gs = ComputedStyle::new();
+        gs.display = Display::Grid;
+        let mut grid = LayoutBox::new(BoxType::Block, gs);
+        grid.dimensions.content = crate::Rect::new(0.0, 0.0, 288.0, 0.0);
+        for h in [50.0, 30.0] {
+            let mut is = ComputedStyle::new();
+            is.height = Length::Px(h);
+            is.grid_row_start = GridLine::Number(1);
+            is.grid_column_start = GridLine::Number(-1);
+            grid.children.push(LayoutBox::new(BoxType::Block, is));
+        }
+        layout_grid_container(&mut grid, 288.0, 0.0);
+        let rect = |i: usize| {
+            let c = &grid.children[i].dimensions.content;
+            (c.x, c.y, c.width)
+        };
+        assert_eq!(rect(0), (0.0, 0.0, 288.0), "first child fills the one column");
+        assert_eq!(rect(1), (0.0, 0.0, 288.0), "second child stacks on the first");
     }
 
     // ==================== Phase 5: Alignment Tests ====================

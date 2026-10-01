@@ -51,7 +51,8 @@ SCRIPT = REPO_ROOT / "scripts" / "finish_line_receipt.py"
 # ---------------------------------------------------------------------------
 
 
-def a_case(case_id, green=True, geometry_failures=0, join_failures=0):
+def a_case(case_id, green=True, geometry_failures=0, join_failures=0,
+           attributable=True, text_backend="coretext"):
     return {
         "case_id": case_id,
         "measured": True,
@@ -59,6 +60,13 @@ def a_case(case_id, green=True, geometry_failures=0, join_failures=0):
         "geometry_failures": geometry_failures,
         "join_failures": join_failures,
         "compared": 40,
+        # The default is a macOS capture, because that is the only kind the
+        # metric is defined against. A board of unattributable captures is
+        # exercised by its own test below.
+        "attributable": attributable,
+        "text_backend": text_backend,
+        "text_metrics_font_derived": attributable,
+        "text_exposed_failures": 0,
     }
 
 
@@ -675,6 +683,73 @@ def test_this_very_guard_file_is_matched_by_the_ci_glob():
 
     matched = _glob.glob(str(REPO_ROOT / "scripts" / "tests" / "test_*.py"))
     assert str(Path(__file__).resolve()) in {str(Path(m).resolve()) for m in matched}
+
+
+def test_a_stub_shaper_board_produces_no_n_over_26_at_all():
+    """The receipt is what gets quoted, so it is where the refusal must land.
+
+    Gate A refuses to be GREEN on a capture whose text advances came from no
+    font, but it still prints per-case geometry counts -- those are useful
+    mechanics. The receipt is different: its whole output is the number people
+    repeat. A board of stub captures must therefore yield an N/26 of zero with
+    every case NOT FULLY MEASURED, not a confident conjunction over a column
+    that measures a 0.5em-per-character ruler.
+    """
+    gate_a, gate_b, aggregate = green_board()
+    gate_a = {
+        "tolerance_px": 0.5,
+        "cases": [
+            a_case(c["case_id"], attributable=False, text_backend="stub-0.5em")
+            for c in gate_a["cases"]
+        ],
+    }
+    receipt = build_receipt(gate_a, gate_b, aggregate)
+
+    assert receipt["summary"]["finish_line_green"] == 0, (
+        "a board measured against a fixed ruler cannot contribute a single "
+        "finish-line-green case"
+    )
+    assert receipt["summary"]["fully_measured"] == 0, \
+        "every case on such a board is unmeasured on geometry"
+    for case in receipt["cases"]:
+        geom = case["geometry"]
+        assert geom["measured"] is False
+        assert geom["green"] is False
+        assert geom["reason"] == "text_metrics_not_font_derived", (
+            "the reason has to name the cause, or a future reader rediscovers "
+            f"the stub from scratch; got {geom['reason']!r}"
+        )
+        assert geom["text_backend"] == "stub-0.5em", \
+            "and it has to name the backend, so the refusal is checkable"
+
+    # A gate-a.json written BEFORE the provenance field existed carries no
+    # `attributable` key at all, and that is the likeliest shape to meet in the
+    # wild: every report on disk from the 57 nights before 2026-10-01. Absent
+    # must refuse exactly as False does. Written as its own board because the
+    # builder above always sets the key, and a guard that only ever sees the
+    # key set cannot tell `is not True` from `is False`.
+    silent_a = {"tolerance_px": 0.5, "cases": []}
+    for case in green_board()[0]["cases"]:
+        row = dict(case)
+        del row["attributable"]
+        del row["text_metrics_font_derived"]
+        del row["text_backend"]
+        silent_a["cases"].append(row)
+    silent = build_receipt(silent_a, gate_b, aggregate)
+    assert silent["summary"]["finish_line_green"] == 0, (
+        "a report that does not say which shaper produced it must refuse: "
+        "absent is not a yes, and every pre-2026-10-01 report is absent"
+    )
+    for case in silent["cases"]:
+        assert case["geometry"]["reason"] == "text_metrics_not_font_derived"
+        assert case["geometry"]["text_backend"] == "unknown", \
+            "a report that did not say must be reported as not having said"
+
+    # The control: the SAME board with font-derived captures is fully green. If
+    # this does not hold, the assertions above pass for the wrong reason.
+    control = build_receipt(*green_board())
+    assert control["summary"]["finish_line_green"] == 26, \
+        "the control board must be fully green or the refusal proves nothing"
 
 
 if __name__ == "__main__":

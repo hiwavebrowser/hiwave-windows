@@ -36,6 +36,24 @@ pub struct GlyphKey {
     /// one pixel different. The call-site flip belongs in the same commit as
     /// the rasterizer that can honor it.
     pub subpixel_phase: u8,
+    /// Which document-registered (`@font-face`) file `font_family` resolves
+    /// to, from [`GlyphKey::web_face_for`]; 0 when it is a platform font.
+    ///
+    /// WHY THIS EXISTS: a family name does not say which face draws it. The
+    /// first paint of a page runs before its web fonts arrive, so the
+    /// fallback's bitmaps were cached under the web font's NAME and every
+    /// later frame reused them: text measured with the web font and drawn
+    /// with Helvetica's glyphs. The same collision let a second document
+    /// that declares the same family name with another file reuse the first
+    /// document's glyphs.
+    pub web_face: u64,
+}
+
+impl GlyphKey {
+    /// The `web_face` of a run: one registry lookup per run, not per glyph.
+    pub fn web_face_for(font_family: &str, font_weight: u16, font_style: u8) -> u64 {
+        rustkit_text::webfonts::face_id(font_family, font_weight, font_style == 1)
+    }
 }
 
 /// Number of horizontal subpixel phases a glyph may be rasterized at.
@@ -963,7 +981,59 @@ mod tests {
             font_weight: 400,
             font_style: 0,
             subpixel_phase: phase,
+            web_face: 0,
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_web_font_that_arrives_later_does_not_reuse_the_fallbacks_glyphs() {
+        use rustkit_text::webfonts::{self, WebFontFace};
+        use std::sync::Arc;
+        let face = |bytes: &[u8]| WebFontFace {
+            family: "GlyphKeyLateFont".to_string(),
+            weight: 400,
+            italic: false,
+            data: Arc::new(bytes.to_vec()),
+        };
+        let key = || GlyphKey {
+            web_face: GlyphKey::web_face_for("GlyphKeyLateFont, sans-serif", 400, 0),
+            font_family: "GlyphKeyLateFont, sans-serif".to_string(),
+            ..key_at(0)
+        };
+
+        // First paint: the document's font has not arrived, the fallback draws.
+        webfonts::clear();
+        let before = key();
+        assert_eq!(before.web_face, 0);
+
+        // The font arrives. Same family string, another cache entry.
+        let ttf = include_bytes!("../../rustkit-text/tests/fixtures/Ahem.ttf");
+        webfonts::install("glyph-key-a", &[face(ttf)]);
+        let loaded = key();
+        assert_ne!(
+            loaded, before,
+            "the fallback's bitmap was reused for the web font"
+        );
+        assert_eq!(
+            key(),
+            loaded,
+            "one face is one entry however often it is drawn"
+        );
+
+        // Another document, the same family name, another file.
+        let woff2 = include_bytes!("../../rustkit-text/tests/fixtures/Ahem.woff2");
+        webfonts::install("glyph-key-b", &[face(woff2)]);
+        assert_ne!(
+            key(),
+            loaded,
+            "another document's file drew this document's text"
+        );
+
+        // Back on the first document its glyphs are still cached.
+        webfonts::install("glyph-key-c", &[face(ttf)]);
+        assert_eq!(key(), loaded);
+        webfonts::clear();
     }
 
     #[test]
@@ -1058,6 +1128,7 @@ mod tests {
             font_size: 160,
             font_weight: 400,
             font_style: 0,
+            web_face: 0,
         };
 
         let key2 = GlyphKey {
@@ -1067,6 +1138,7 @@ mod tests {
             font_size: 160,
             font_weight: 400,
             font_style: 0,
+            web_face: 0,
         };
 
         assert_eq!(key1, key2);
@@ -1081,6 +1153,7 @@ mod tests {
             font_size: 160,
             font_weight: 400,
             font_style: 0,
+            web_face: 0,
         };
 
         let key2 = GlyphKey {
@@ -1090,6 +1163,7 @@ mod tests {
             font_size: 160,
             font_weight: 400,
             font_style: 0,
+            web_face: 0,
         };
 
         assert_ne!(key1, key2);

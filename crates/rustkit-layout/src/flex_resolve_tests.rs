@@ -279,6 +279,94 @@ fn a_column_item_is_not_shrunk_below_its_content() {
     }
 }
 
+/// An auto-height column holding a `flex: 1 1 0%; height: fit-content` item
+/// (two 40px boxes inside) and then a 20px box. Returns the item's content
+/// height and the 20px box's y. `grid` makes the item a grid container, as
+/// linkedin's hero wrapper is.
+fn fit_content_item_in_auto_column(grid: bool, collapse: bool) -> (f32, f32) {
+    let mut s = zero_pct();
+    s.height = Length::FitContent;
+    if grid {
+        s.display = Display::Grid;
+    }
+    let mut it = LayoutBox::new(BoxType::Block, s);
+    if grid {
+        let mut col_s = ComputedStyle::new();
+        col_s.display = Display::Flex;
+        col_s.flex_direction = rustkit_css::FlexDirection::Column;
+        let mut col = LayoutBox::new(BoxType::Block, col_s);
+        col.children.push(sized_block(100.0, 40.0));
+        col.children.push(sized_block(100.0, 40.0));
+        it.children.push(col);
+    } else {
+        it.children.push(sized_block(100.0, 40.0));
+        it.children.push(sized_block(100.0, 40.0));
+    }
+    let mut c_s = ComputedStyle::new();
+    c_s.display = Display::Flex;
+    c_s.flex_direction = rustkit_css::FlexDirection::Column;
+    let mut c = LayoutBox::new(BoxType::Block, c_s);
+    c.children.push(it);
+    c.children.push(sized_block(100.0, 20.0));
+    let root = laid_out(c, collapse);
+    (
+        root.children[0].dimensions.content.height,
+        root.children[1].dimensions.content.y - root.dimensions.content.y,
+    )
+}
+
+/// `height: fit-content` is content-sized, so the automatic minimum (§4.5)
+/// floors a basis-0 column item at its content exactly as `height: auto`
+/// does. Chrome 148: the item is 80 tall and the next box sits at 80; the
+/// item was 0 tall with the next box drawn over its content.
+#[test]
+fn a_fit_content_height_column_item_keeps_its_content() {
+    for collapse in [false, true] {
+        for grid in [false, true] {
+            let (h, next_y) = fit_content_item_in_auto_column(grid, collapse);
+            assert!(
+                (h - 80.0).abs() < 0.5 && (next_y - 80.0).abs() < 0.5,
+                "grid={grid} collapse={collapse}: Chrome 148 has the item 80 tall and the \
+                 next box at 80; got {h} and {next_y}"
+            );
+        }
+    }
+}
+
+/// A `height: fit-content` flex CONTAINER is sized by its lines, as an
+/// auto-height one is. Six 60x32 pills fit one line of a 400px row, with or
+/// without `flex-wrap`: Chrome 148 has every pill and the container 32 tall.
+/// The block pre-pass had stacked the pills to 192, and counted as a definite
+/// height that became the container's height and its line's stretch target.
+#[test]
+fn a_fit_content_height_flex_container_is_sized_by_its_lines() {
+    for collapse in [false, true] {
+        for wrap in [false, true] {
+            let mut s = ComputedStyle::new();
+            s.display = Display::Flex;
+            s.height = Length::FitContent;
+            if wrap {
+                s.flex_wrap = rustkit_css::FlexWrap::Wrap;
+            }
+            let mut c = LayoutBox::new(BoxType::Block, s);
+            for _ in 0..6 {
+                let mut pill_s = ComputedStyle::new();
+                pill_s.width = Length::Px(60.0);
+                pill_s.min_height = Length::Px(32.0);
+                c.children.push(LayoutBox::new(BoxType::Block, pill_s));
+            }
+            let root = laid_out(c, collapse);
+            let pill = root.children[0].dimensions.content.height;
+            let h = root.dimensions.content.height;
+            assert!(
+                (pill - 32.0).abs() < 0.5 && (h - 32.0).abs() < 0.5,
+                "wrap={wrap} collapse={collapse}: Chrome 148 has the pills and the container \
+                 32 tall; got pill {pill}, container {h}"
+            );
+        }
+    }
+}
+
 /// The shelf (hiwave-app `ui/shelf.html`), with Chrome 148's rects from
 /// `baselines/chrome-148/builtins/shelf/layout-rects.json`: a 120px column
 /// body, a 41px header, and a `flex: 1` palette (padding 12) holding a 43px

@@ -448,7 +448,9 @@ def test_gate_passes_refuses_any_report_that_measured_nothing():
     """
     def report(**summary):
         base = {"total_cases": 26, "measured": 26, "unmeasured": 0, "green": 26,
-                "red": 0, "geometry_failures": 0, "join_failures": 0}
+                "red": 0, "geometry_failures": 0, "join_failures": 0,
+                "attributable": True, "text_exposed_failures": 0,
+                "text_backends": ["coretext"], "unattributable_cases": 0}
         base.update(summary)
         return {"summary": base}
 
@@ -457,6 +459,160 @@ def test_gate_passes_refuses_any_report_that_measured_nothing():
         "zero cases discovered is a pipeline bug, not a pass"
     assert not gate_passes(report(measured=0, unmeasured=26)), \
         "26 cases none of which were measured is not a pass"
+
+
+# ---------------------------------------------------------------------------
+# Text-metric provenance: a capture whose advances came from no font
+# ---------------------------------------------------------------------------
+
+
+def _rk_doc_with(backend, derived, *children):
+    doc = rk_doc(*children)
+    if backend is not None:
+        doc["text_backend"] = backend
+    if derived is not None:
+        doc["text_metrics_font_derived"] = derived
+    return doc
+
+
+def test_a_stub_shaper_capture_can_never_be_green_even_with_zero_failures():
+    """The property that matters, and the one red does not give.
+
+    On the Linux trench seat the stub shaper's numbers disagree with Chrome, so
+    every case is red and it LOOKS as though red is protecting the receipt. It
+    is not. Red is a coincidence of this corpus: change the font stack, or
+    score a page with no words on it, and a capture measured with a
+    0.5em-per-character ruler scores zero failures and the gate prints PASS.
+    """
+    chrome = chrome_doc(chrome_el("body > div", "div", rect(0, 0, 100, 50)))
+    identity = [rk_box(selector="body > div", tag="div", r=rect(0, 0, 100, 50))]
+
+    stub = compare_case("c", chrome, _rk_doc_with("stub-0.5em", False, *identity))
+    assert stub["geometry_failures"] == 0, "the fixture is the identity case"
+    assert stub["green"], "zero failures is still zero failures"
+    assert not stub["attributable"], (
+        "a capture whose advances came from no font must not be attributable "
+        "however few boxes it failed"
+    )
+
+    real = compare_case("c", chrome, _rk_doc_with("coretext", True, *identity))
+    assert real["attributable"], "a Core Text capture is attributable"
+
+    # And the predicate, not only the record: this is the half that stops a
+    # green stub board being quoted as an N/26.
+    def summary_of(records):
+        measured = [r for r in records if r["measured"]]
+        return {"summary": {
+            "total_cases": len(records), "measured": len(measured), "unmeasured": 0,
+            "green": sum(1 for r in records if r["green"]), "red": 0,
+            "geometry_failures": 0, "join_failures": 0, "text_exposed_failures": 0,
+            "text_backends": sorted({r["text_backend"] for r in measured}),
+            "unattributable_cases": sum(1 for r in measured if not r["attributable"]),
+            "attributable": all(r["attributable"] for r in measured) and bool(measured),
+        }}
+
+    assert not gate_passes(summary_of([stub])), \
+        "an all-green stub board is not a pass"
+    assert gate_passes(summary_of([real])), \
+        "an all-green Core Text board is still a pass"
+
+
+def test_a_capture_that_declares_no_provenance_is_not_trusted():
+    """Absent is not True.
+
+    The field was added on 2026-10-01; every capture taken before it is silent
+    about its shaper. A gate that reads silence as "a font produced this"
+    re-opens the hole for exactly the captures most likely to predate the fix.
+    """
+    chrome = chrome_doc(chrome_el("body > div", "div", rect(0, 0, 100, 50)))
+    identity = [rk_box(selector="body > div", tag="div", r=rect(0, 0, 100, 50))]
+
+    silent = compare_case("c", chrome, _rk_doc_with(None, None, *identity))
+    assert silent["green"], "the fixture is the identity case"
+    assert not silent["attributable"], "a capture that does not say is not trusted"
+    assert silent["text_backend"] == "unknown"
+    assert silent["text_metrics_font_derived"] is None, (
+        "None and False are different findings: 'did not say' and 'said no'"
+    )
+
+    # A non-boolean in the field is also not a yes.
+    for bogus in ("true", 1, {}, []):
+        doc = rk_doc(*identity)
+        doc["text_metrics_font_derived"] = bogus
+        assert not compare_case("c", chrome, doc)["attributable"], (
+            f"{bogus!r} in the provenance field must not read as True"
+        )
+
+
+def test_text_exposure_claims_downward_and_sideways_but_never_ancestry():
+    """The classifier has to exclude the USELESS relation, not a useful one.
+
+    The first version of this guard asserted that a box whose text sits two
+    levels below is NOT claimed, and the mutation sweep showed the assertion
+    never fired: the fixture had no such box. Widening `own` from "has a text
+    child" to "has text anywhere beneath" left every test green, which means
+    the narrower rule was a choice no guard held — and the narrower rule was
+    also wrong. A box two levels above its text still takes its content size
+    from that text.
+
+    What must stay excluded is ANCESTRY: some box ABOVE this one contains
+    words. That is true of nearly every box on a page with text on it, so a
+    column that claims it reads 100% and informs nobody.
+    """
+    chrome = chrome_doc(
+        chrome_el("body > div.deep", "div", rect(0, 0, 100, 50)),
+        chrome_el("body > div.deep > div.mid", "div", rect(0, 0, 100, 50)),
+        chrome_el("body > div.after", "div", rect(0, 60, 100, 50)),
+        chrome_el("body > div.quiet", "div", rect(0, 120, 100, 50)),
+        chrome_el("body > div.quiet > div.inner", "div", rect(0, 120, 50, 50)),
+    )
+    # `div.quiet` precedes the text that its PARENT (the synthetic root) holds,
+    # so neither it nor `div.inner` has a downward or sideways relation while
+    # the root above them does. That is the ancestry-only case.
+    doc = rk_doc(
+        rk_box(selector="body > div.deep", tag="div", r=rect(9, 0, 100, 50), children=[
+            rk_box(selector="body > div.deep > div.mid", tag="div", r=rect(9, 0, 100, 50),
+                   children=[rk_box(box_type="text", rect=rect(0, 0, 10, 10))]),
+        ]),
+        rk_box(selector="body > div.after", tag="div", r=rect(9, 60, 100, 50)),
+        rk_box(selector="body > div.quiet", tag="div", r=rect(9, 120, 100, 50), children=[
+            rk_box(selector="body > div.quiet > div.inner", tag="div", r=rect(9, 120, 50, 50)),
+        ]),
+    )
+    result = compare_case("c", chrome, doc)
+    by_sel = {f["selector"]: f["text_exposure"] for f in result["failures"] if f["axis"] == "x"}
+
+    assert by_sel["body > div.deep > div.mid"] == "own", \
+        "a box with a text child is sized by a text measurement"
+    assert by_sel["body > div.deep"] == "own", (
+        "and so is a box whose text sits two levels below — it takes its "
+        "content size from that text through the box between them"
+    )
+    assert by_sel["body > div.after"] == "flow", \
+        "a preceding sibling subtree carrying text hands its advance along"
+    assert by_sel["body > div.quiet"] == "flow", \
+        "the relation is the preceding SUBTREE's text, not a preceding text box"
+    assert by_sel["body > div.quiet > div.inner"] is None, (
+        "a box whose only text is in an ANCESTOR is not claimed: that relation "
+        "is true of almost every box and classifying it would make the column "
+        "read 100% and mean nothing"
+    )
+
+
+def test_the_exposure_count_never_silently_corrects_the_failure_count():
+    """`geometry_failures` must stay exactly what every prior receipt measured.
+
+    The ratchet carries committed per-case floors and the digest carries fifty
+    nights of counts. Netting exposure out of the headline number would make
+    all of them incomparable while looking like an improvement.
+    """
+    chrome = chrome_doc(chrome_el("body > div", "div", rect(0, 0, 100, 50)))
+    doc = rk_doc(rk_box(selector="body > div", tag="div", r=rect(9, 0, 100, 50),
+                        children=[rk_box(box_type="text", rect=rect(0, 0, 10, 10))]))
+    result = compare_case("c", chrome, doc)
+    assert result["geometry_failures"] == 1, "one perturbed axis is one failure"
+    assert result["text_exposed_failures"] == 1, "and it is text-exposed"
+    assert len(result["receipts"]) == 1, "the receipt schema is unchanged"
 
 
 def test_an_unknown_case_filter_discovers_nothing_and_fails():
