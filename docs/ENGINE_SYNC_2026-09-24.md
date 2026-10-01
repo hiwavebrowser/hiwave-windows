@@ -125,7 +125,7 @@ both cross-platform in origin, both sent upstream, and both carried here until
 they land, as patch files under `scripts/windows-patches/` that
 `apply_windows_patches.py` applies after the string-edit patches:
 
-- **`0001-line-fit-epsilon.patch` (hiwave-macos #388).** A shrink-to-fit box
+- **`0001-line-fit-epsilon.patch` (hiwave-macos #388, landed; file deleted in the next PR).** A shrink-to-fit box
   is sized from its text's max-content width, which comes back to the line
   breaker a few f32 ulps smaller after `(width + padding) - padding` and the
   flex sizing arithmetic. The exact `<=` then wrapped text measured to fit its
