@@ -5283,6 +5283,7 @@ dependencies = [
  "tracing-subscriber",
  "wgpu 24.0.5",
  "windows 0.61.3",
+ "windows-numerics",
 ]
 
 [[package]]

@@ -284,7 +284,9 @@ impl GlyphCache {
             );
             rasterizer.rasterize_char_color(key.codepoint)
         };
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        let raster = rasterize_glyph_directwrite_color(key, key.font_size as f32 / 10.0);
+        #[cfg(not(any(target_os = "macos", windows)))]
         let raster: Option<(Vec<u8>, u32, u32, f32, f32, f32)> = None;
 
         let (rgba, gw, gh, advance, bearing_x, bearing_y) = raster?;
@@ -798,6 +800,155 @@ fn rasterize_glyph_directwrite(
         let bearing_x = bounds.left as f32;
         let bearing_y = -(bounds.top as f32);
         Some((alpha_values, tex_width, tex_height, advance_width, bearing_x, bearing_y))
+    }
+}
+
+/// Rasterize a colour glyph (emoji) to premultiplied RGBA, the Windows
+/// counterpart of `rasterize_char_color` on macOS.
+///
+/// Chrome on Windows draws emoji from **Segoe UI Emoji**, so that family is
+/// used whatever the run's `font-family` says: the point of the colour path
+/// is to paint the artwork the baseline shows. The drawing goes through
+/// Direct2D's `DrawTextLayout` with `ENABLE_COLOR_FONT`, which renders every
+/// colour glyph format the OS knows (COLRv0 layers, and on Windows 11 the
+/// COLRv1 paint trees Segoe UI Emoji now ships), into a WIC bitmap that is
+/// then cropped to its ink. `IDWriteFactory2::TranslateColorGlyphRun` was
+/// tried first: it only yields the flat COLRv0 layers, which differ from
+/// Chrome's COLRv1 rendering more than the missing glyph did.
+///
+/// Returns `(rgba, width, height, advance, bearing_x, bearing_y)` with the
+/// same bitmap-edge contract as the grayscale rasterizer: `bearing_x` and
+/// `bearing_y` place the bitmap's top-left at `(pen + bearing_x,
+/// baseline - bearing_y)`. `None` means "nothing painted" and the caller
+/// falls back to the grayscale path.
+#[cfg(windows)]
+fn rasterize_glyph_directwrite_color(
+    key: &GlyphKey,
+    font_size: f32,
+) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
+    use windows::core::w;
+    use windows::Win32::Graphics::Direct2D::Common::*;
+    use windows::Win32::Graphics::Direct2D::*;
+    use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+    use windows::Win32::Graphics::Imaging::*;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+
+    if font_size <= 0.0 || !font_size.is_finite() {
+        return None;
+    }
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+
+        let dwrite: IDWriteFactory =
+            DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED).ok()?;
+        let format = dwrite
+            .CreateTextFormat(
+                w!("Segoe UI Emoji"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                font_size,
+                w!("en-us"),
+            )
+            .ok()?;
+        // No wrapping: the layout is one glyph, and the box below is sized
+        // to hold any emoji at this size with room for overhang.
+        let _ = format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        let mut text: Vec<u16> = [0u16; 2].to_vec();
+        let n = key.codepoint.encode_utf16(&mut text).len();
+        text.truncate(n);
+        let pad = (font_size * 0.5).ceil();
+        let box_w = (font_size * 2.0 + pad * 2.0).ceil();
+        let box_h = (font_size * 2.0 + pad * 2.0).ceil();
+        let layout = dwrite.CreateTextLayout(&text, &format, box_w, box_h).ok()?;
+
+        // Where DirectWrite puts the baseline inside the layout, and the
+        // glyph's advance.
+        let mut line_metrics = [DWRITE_LINE_METRICS::default()];
+        let mut line_count = 0u32;
+        let _ = layout.GetLineMetrics(Some(&mut line_metrics), &mut line_count);
+        if line_count == 0 {
+            return None;
+        }
+        let baseline_in_layout = line_metrics[0].baseline;
+        let mut text_metrics = DWRITE_TEXT_METRICS::default();
+        layout.GetMetrics(&mut text_metrics).ok()?;
+        let advance = text_metrics.widthIncludingTrailingWhitespace;
+
+        // A transparent premultiplied BGRA bitmap for Direct2D to draw into.
+        let wic: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let (bw, bh) = (box_w as u32, box_h as u32);
+        let bitmap = wic
+            .CreateBitmap(bw, bh, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand)
+            .ok()?;
+        let d2d: ID2D1Factory =
+            D2D1CreateFactory::<ID2D1Factory>(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).ok()?;
+        let props = D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            usage: D2D1_RENDER_TARGET_USAGE_NONE,
+            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+        };
+        let rt = d2d.CreateWicBitmapRenderTarget(&bitmap, &props).ok()?;
+        // Grayscale antialiasing: there is no opaque background to ClearType
+        // against, and the atlas is sampled with plain alpha blending.
+        rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        let black = D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+        let brush = rt.CreateSolidColorBrush(&black, None).ok()?;
+        let origin = windows_numerics::Vector2 { X: pad, Y: pad };
+        rt.BeginDraw();
+        rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+        // The brush only colours layers that ask for the text colour; the
+        // rest is the font's own palette.
+        rt.DrawTextLayout(origin, &layout, &brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+        rt.EndDraw(None, None).ok()?;
+
+        let stride = bw * 4;
+        let mut pixels = vec![0u8; (stride * bh) as usize];
+        bitmap.CopyPixels(std::ptr::null(), stride, &mut pixels).ok()?;
+
+        // Crop to the ink. Everything is relative to `origin` (the pen) and
+        // the baseline row inside the box.
+        let (mut x0, mut y0, mut x1, mut y1) = (bw, bh, 0u32, 0u32);
+        for y in 0..bh {
+            for x in 0..bw {
+                if pixels[((y * bw + x) * 4 + 3) as usize] != 0 {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
+        }
+        if x1 <= x0 || y1 <= y0 {
+            return None;
+        }
+        let width = x1 - x0;
+        let height = y1 - y0;
+        if width > 256 || height > 256 {
+            return None;
+        }
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let o = ((y * bw + x) * 4) as usize;
+                // PBGRA to premultiplied RGBA.
+                rgba.extend_from_slice(&[pixels[o + 2], pixels[o + 1], pixels[o], pixels[o + 3]]);
+            }
+        }
+        let bearing_x = x0 as f32 - origin.X;
+        let bearing_y = (origin.Y + baseline_in_layout) - y0 as f32;
+        Some((rgba, width, height, advance, bearing_x, bearing_y))
     }
 }
 

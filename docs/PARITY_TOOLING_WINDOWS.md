@@ -129,6 +129,12 @@ It is idempotent and fails loudly if upstream moved the code it edits.
 `python scripts/apply_windows_patches.py --check` verifies a tree without
 writing; it is one of the refresh gates.
 
+Two kinds of patch live there. The string edits in the script itself are the
+permanent `cfg(windows)` differences. The `.patch` files under
+`scripts/windows-patches/` are upstream PRs Windows needs before they land
+(each file's header names the PR); when one lands, the script reports its
+marker already present, and the file is deleted in the next refresh.
+
 ## Not synced
 
 These are macOS-only and are not synced:

@@ -5015,9 +5015,9 @@ impl Renderer {
             // the normal path would tint into a flat blob. Falls through to the
             // grayscale path if the char isn't a color glyph or has no color
             // artwork (e.g. non-macOS).
-            #[cfg(target_os = "macos")]
-            let is_color = rustkit_text::macos::is_emoji(ch);
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(any(target_os = "macos", windows))]
+            let is_color = rustkit_text::is_emoji(ch);
+            #[cfg(not(any(target_os = "macos", windows)))]
             let is_color = false;
             if is_color {
                 if let Some(entry) =

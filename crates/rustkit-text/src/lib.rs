@@ -92,6 +92,9 @@ mod win;
 #[cfg(windows)]
 pub use win::{FontCollection, FontFace, FontFamily, Font};
 
+pub mod emoji;
+pub use emoji::is_emoji;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 

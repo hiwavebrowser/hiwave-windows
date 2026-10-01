@@ -2,3 +2,5 @@
 # "bad interpreter" -- and a hook that fails to run protects nothing while
 # still looking installed.
 tools/hooks/* text eol=lf
+# Upstream patches carried until they land; git apply reads them as written.
+scripts/windows-patches/*.patch text eol=lf
