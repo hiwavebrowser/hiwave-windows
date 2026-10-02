@@ -2,21 +2,26 @@
 //!
 //! Minimal HTTP/1.1 client for the RustKit browser engine.
 //!
-//! This crate provides a simple async HTTP client using native-tls for TLS,
-//! eliminating the need for reqwest and its transitive dependencies.
+//! This crate provides a simple async HTTP client, eliminating the need for
+//! reqwest and its transitive dependencies. TLS is rustls with a
+//! browser-typical client profile (ALPN h2+http/1.1 advertised, negotiated
+//! http/1.1 fallback) — the network-lane change measured in exchange #276.
+//! The previous native-tls stack remains available for one release behind
+//! the `native-tls` feature as a rollback path (Atlas #535).
 
 use std::io::{self, Write};
 use std::time::Duration;
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version};
-use native_tls::TlsConnector as NativeTlsConnector;
+use std::sync::Arc;
+use tokio_rustls::rustls::pki_types::ServerName;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio_native_tls::TlsConnector;
-use tracing::{debug, trace};
+use tokio_rustls::TlsConnector;
+use tracing::{debug, trace, warn};
 use url::Url;
 
 /// HTTP client errors.
@@ -89,6 +94,63 @@ impl Response {
     }
 }
 
+/// The honest HiWave user agent: real product, real engine, real platform.
+///
+/// NEVER Chrome's UA — the network lane's constitution. The Mozilla/5.0
+/// prefix is the universal compatibility token every shipping browser keeps;
+/// everything after it says exactly what we are. amazon's WAF measurably
+/// scores UA/TLS coherence (diagnosis, exchange #276), so this string ships
+/// in the same change as the rustls profile, never separately.
+pub fn default_user_agent() -> String {
+    #[cfg(target_os = "macos")]
+    let platform = "Macintosh; Intel Mac OS X 10_15_7";
+    #[cfg(target_os = "windows")]
+    let platform = "Windows NT 10.0; Win64; x64";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let platform = "X11; Linux x86_64";
+    format!("Mozilla/5.0 ({platform}) HiWave/1.0 RustKit/1.0")
+}
+
+
+/// The platform root store, loaded ONCE per process.
+///
+/// `rustls_native_certs::load_native_certs` walks the macOS keychain's trust
+/// settings and costs SECONDS there. Loaded per `Client` (as #346 shipped
+/// it) it added ~5 s to every engine start — measured by the trench as the
+/// real-site board falling 16/30 -> 7/30 when develop picked #346 up, every
+/// lost site a 30 s-budget timeout, not a block. Linux reads a bundle file
+/// in milliseconds, which is why the author's probes never saw it: the
+/// platform-verification gap the network lane declared on day one, now with
+/// its first scar. Approach and measurements from Atlas's
+/// rs-tls-roots-once (307fc8e), rebuilt here against post-#355 develop —
+/// #355 already removed the second (per-connection) load site.
+#[cfg(not(feature = "native-tls"))]
+fn platform_roots() -> Result<Arc<tokio_rustls::rustls::RootCertStore>, HttpError> {
+    static ROOTS: std::sync::OnceLock<Arc<tokio_rustls::rustls::RootCertStore>> =
+        std::sync::OnceLock::new();
+    let roots = ROOTS.get_or_init(|| {
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for cert in rustls_native_certs::load_native_certs().certs {
+            // A single unparseable platform cert must not kill the store.
+            let _ = roots.add(cert);
+        }
+        Arc::new(roots)
+    });
+    if roots.is_empty() {
+        return Err(HttpError::TlsError(
+            "no usable platform root certificates".into(),
+        ));
+    }
+    Ok(roots.clone())
+}
+
+/// ALPN outcome of a TLS handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NegotiatedProtocol {
+    H2,
+    Http1,
+}
+
 /// HTTP client configuration.
 #[derive(Clone)]
 pub struct ClientConfig2 {
@@ -105,7 +167,7 @@ pub struct ClientConfig2 {
 impl Default for ClientConfig2 {
     fn default() -> Self {
         Self {
-            user_agent: "RustKit/1.0".to_string(),
+            user_agent: default_user_agent(),
             timeout: Duration::from_secs(30),
             max_redirects: 10,
             follow_redirects: true,
@@ -116,7 +178,10 @@ impl Default for ClientConfig2 {
 /// HTTP client.
 pub struct Client {
     config: ClientConfig2,
+    #[cfg(not(feature = "native-tls"))]
     tls_connector: TlsConnector,
+    #[cfg(feature = "native-tls")]
+    tls_connector: tokio_native_tls::TlsConnector,
 }
 
 impl Client {
@@ -126,17 +191,103 @@ impl Client {
     }
 
     /// Create a new HTTP client with custom configuration.
+    /// Rollback constructor (Atlas #535): the pre-network-lane native-tls
+    /// handshake, byte-for-byte the old behaviour. One release only.
+    #[cfg(feature = "native-tls")]
     pub fn with_config(config: ClientConfig2) -> Result<Self, HttpError> {
-        // Build native-tls connector
-        let native_connector = NativeTlsConnector::new()
+        let native_connector = native_tls::TlsConnector::new()
             .map_err(|e| HttpError::TlsError(e.to_string()))?;
+        let tls_connector = tokio_native_tls::TlsConnector::from(native_connector);
+        Ok(Self {
+            config,
+            tls_connector,
+        })
+    }
 
-        let tls_connector = TlsConnector::from(native_connector);
+    #[cfg(feature = "native-tls")]
+    async fn connect_tls(
+        &self,
+        host: &str,
+        _addr: &str,
+        stream: tokio::net::TcpStream,
+    ) -> Result<(tokio_native_tls::TlsStream<tokio::net::TcpStream>, NegotiatedProtocol), HttpError>
+    {
+        // Rollback stack: no ALPN configured, identical to pre-lane behavior.
+        let tls = self
+            .tls_connector
+            .connect(host, stream)
+            .await
+            .map_err(|e| HttpError::TlsError(e.to_string()))?;
+        Ok((tls, NegotiatedProtocol::Http1))
+    }
+
+    #[cfg(not(feature = "native-tls"))]
+    pub fn with_config(config: ClientConfig2) -> Result<Self, HttpError> {
+        // rustls with a browser-typical client profile (network lane).
+        //
+        // MEASURED (2026-09-28 diagnosis, exchange #276): Cloudflare, Akamai
+        // and DataDome default-deny known-library TLS ClientHellos at request
+        // one; header shape and even real HTTP/2 do not flip the verdict, and
+        // amazon actively punishes browser-claiming headers that ride a
+        // library fingerprint. So the TLS layer is where coherence starts.
+        // The old native-tls connector was built with `::new()` and sent NO
+        // ALPN extension at all — an immediate tell.
+        //
+        // This is a WELL-FORMED MODERN CLIENT, not a Chrome imitation: rustls
+        // already produces a contemporary extension set (X25519/P-256 key
+        // shares, TLS 1.3 + 1.2, session tickets); we advertise ALPN
+        // h2+http/1.1 like every current browser. If the peer selects h2 we
+        // currently keep speaking HTTP/1.1 only when the peer permits it —
+        // see `connect_tls`, which records the negotiated protocol so the
+        // caller can refuse mismatches loudly instead of desyncing.
+        let roots = platform_roots()?;
+
+        let mut tls_config = tokio_rustls::rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        // Browser-typical ALPN advertisement. http/1.1 first would be a lie
+        // about preference; browsers prefer h2. Until this client SPEAKS h2,
+        // connect_tls() falls back to a second, http/1.1-only handshake when
+        // the peer selects h2 — an honest downgrade the peer agrees to, not
+        // a silent protocol desync.
+        tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+        let tls_connector = TlsConnector::from(Arc::new(tls_config));
 
         Ok(Self {
             config,
             tls_connector,
         })
+    }
+
+    /// Open a TLS connection and report the ALPN-negotiated protocol.
+    ///
+    /// PR 1 of the network lane advertised h2 but re-handshook http/1.1-only
+    /// when the peer selected it — disclosed as an odd, costly pattern.
+    /// PR 2 removes it: the caller now SPEAKS whichever protocol was
+    /// negotiated, h2 included, over this single handshake.
+    #[cfg(not(feature = "native-tls"))]
+    async fn connect_tls(
+        &self,
+        host: &str,
+        _addr: &str,
+        stream: tokio::net::TcpStream,
+    ) -> Result<(tokio_rustls::client::TlsStream<tokio::net::TcpStream>, NegotiatedProtocol), HttpError>
+    {
+        let server_name = ServerName::try_from(host.to_string())
+            .map_err(|e| HttpError::TlsError(format!("invalid server name: {e}")))?;
+
+        let tls_stream = self
+            .tls_connector
+            .connect(server_name, stream)
+            .await
+            .map_err(|e| HttpError::TlsError(e.to_string()))?;
+
+        let negotiated = match tls_stream.get_ref().1.alpn_protocol() {
+            Some(b"h2") => NegotiatedProtocol::H2,
+            _ => NegotiatedProtocol::Http1,
+        };
+        Ok((tls_stream, negotiated))
     }
 
     /// Create a client builder.
@@ -239,14 +390,141 @@ impl Client {
             .await
             .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
 
-        let tls_stream = self
-            .tls_connector
-            .connect(host, stream)
-            .await
-            .map_err(|e| HttpError::TlsError(e.to_string()))?;
+        let (tls_stream, negotiated) = self.connect_tls(host, &addr, stream).await?;
 
-        self.send_request(tls_stream, host, method, url, headers, body)
+        match negotiated {
+            NegotiatedProtocol::H2 => {
+                self.send_request_h2(tls_stream, method, url, headers, body)
+                    .await
+            }
+            NegotiatedProtocol::Http1 => {
+                self.send_request(tls_stream, host, method, url, headers, body)
+                    .await
+            }
+        }
+    }
+
+    /// Send one request over a freshly negotiated HTTP/2 connection.
+    ///
+    /// Real h2 (the `h2` crate over the rustls stream), not a facade: HPACK,
+    /// flow control (capacity released as body chunks arrive), server
+    /// half-close honored. One request per connection for now — matching the
+    /// existing h1 path, which also reconnects per request; connection reuse
+    /// is a lane follow-up for BOTH protocols, not an h2 regression.
+    ///
+    /// Connection-specific headers (Connection family) are h2-ILLEGAL and are
+    /// not sent; the browser-shaped known set from the h1 emission carries
+    /// over minus those, callers' headers after, all lowercase per RFC 9113.
+    async fn send_request_h2<S>(
+        &self,
+        stream: S,
+        method: &Method,
+        url: &Url,
+        headers: &HeaderMap,
+        body: &Option<Bytes>,
+    ) -> Result<RawResponse, HttpError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (mut send_request, connection) = h2::client::handshake(stream)
             .await
+            .map_err(|e| HttpError::ConnectionFailed(format!("h2 handshake: {e}")))?;
+
+        // Drive the connection; ends when the request completes and both
+        // sides close. JoinHandle dropped deliberately: the task owns nothing
+        // beyond the connection it is draining.
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let mut request = http::Request::builder()
+            .method(method.clone())
+            .uri(url.as_str())
+            .version(http::Version::HTTP_2);
+
+        // Browser-shaped known set, minus h2-illegal connection headers.
+        const ORDERED_H2: &[(&str, Option<&str>)] = &[
+            (
+                "accept",
+                Some(
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,\
+image/avif,image/webp,*/*;q=0.8",
+                ),
+            ),
+            ("accept-language", None),
+            ("accept-encoding", Some(ACCEPT_ENCODING)),
+            ("upgrade-insecure-requests", Some("1")),
+            ("sec-fetch-dest", Some("document")),
+            ("sec-fetch-mode", Some("navigate")),
+            ("sec-fetch-site", Some("none")),
+            ("sec-fetch-user", Some("?1")),
+            ("referer", None),
+            ("cookie", None),
+        ];
+        const H2_ILLEGAL: &[&str] =
+            &["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "host"];
+
+        request = request.header("user-agent", &self.config.user_agent);
+        let mut written: Vec<&str> = vec![];
+        for (name, default) in ORDERED_H2 {
+            let value = headers
+                .get(*name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .or_else(|| default.map(str::to_string));
+            if let Some(v) = value {
+                request = request.header(*name, v);
+                written.push(name);
+            }
+        }
+        for (name, value) in headers.iter() {
+            let n = name.as_str();
+            if written.contains(&n) || H2_ILLEGAL.contains(&n) || n == "user-agent" {
+                continue;
+            }
+            request = request.header(name, value);
+        }
+
+        let request = request
+            .body(())
+            .map_err(|e| HttpError::InvalidResponse(format!("h2 request build: {e}")))?;
+
+        let has_body = body.is_some();
+        let (response_fut, mut send_stream) = send_request
+            .send_request(request, !has_body)
+            .map_err(|e| HttpError::ConnectionFailed(format!("h2 send: {e}")))?;
+        if let Some(b) = body {
+            send_stream
+                .send_data(b.clone(), true)
+                .map_err(|e| HttpError::ConnectionFailed(format!("h2 body: {e}")))?;
+        }
+
+        let response = response_fut
+            .await
+            .map_err(|e| HttpError::InvalidResponse(format!("h2 response: {e}")))?;
+        let status = response.status();
+        let mut response_headers = HeaderMap::new();
+        for (name, value) in response.headers() {
+            response_headers.insert(name.clone(), value.clone());
+        }
+
+        let mut recv = response.into_body();
+        let mut collected: Vec<u8> = Vec::new();
+        while let Some(chunk) = recv.data().await {
+            let chunk = chunk.map_err(|e| HttpError::InvalidResponse(format!("h2 body read: {e}")))?;
+            collected.extend_from_slice(&chunk);
+            // Flow control: hand the window back or the peer stalls at 64KB.
+            let _ = recv.flow_control().release_capacity(chunk.len());
+        }
+
+        let body = decode_content_encoding(Bytes::from(collected), &mut response_headers)?;
+
+        Ok(RawResponse {
+            status,
+            version: Version::HTTP_2,
+            headers: response_headers,
+            body,
+        })
     }
 
     /// HTTP request.
@@ -292,17 +570,78 @@ impl Client {
         };
         let path = if path.is_empty() { "/" } else { &path };
 
+        // BROWSER-SHAPED EMISSION (network lane). The old block wrote five
+        // Title-Case headers, `Accept: */*`, `Connection: close`, then every
+        // caller header in lowercase after them — three tells in one block
+        // (mixed casing, close-on-navigate, wildcard Accept). MEASURED
+        // (#276): header shape alone does not unblock any WAF vendor, but
+        // amazon scores header/TLS COHERENCE, so the shape ships together
+        // with the rustls profile as one coherent client identity.
+        //
+        // Order and casing follow shipping browsers' HTTP/1.1 form. Caller
+        // headers override any default; the ordered known set is emitted
+        // first, remaining caller headers after, all in canonical casing.
         let mut request = Vec::new();
         writeln!(request, "{} {} HTTP/1.1\r", method, path)?;
         writeln!(request, "Host: {}\r", host)?;
+        writeln!(request, "Connection: keep-alive\r")?;
         writeln!(request, "User-Agent: {}\r", self.config.user_agent)?;
-        writeln!(request, "Accept: */*\r")?;
-        writeln!(request, "Connection: close\r")?;
 
-        // Add custom headers
+        let canonical = |name: &str| -> String {
+            // HTTP/1.1 browser casing: Title-Case per hyphenated segment,
+            // with the Sec-* and *-CH-* families' internal caps preserved
+            // by the segment rule itself.
+            name.split('-')
+                .map(|seg| {
+                    let mut c = seg.chars();
+                    match c.next() {
+                        Some(f) => f.to_ascii_uppercase().to_string() + c.as_str(),
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("-")
+        };
+
+        // Known headers in browser order, caller value winning over default.
+        const ORDERED: &[(&str, Option<&str>)] = &[
+            (
+                "accept",
+                Some(
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,\
+image/avif,image/webp,*/*;q=0.8",
+                ),
+            ),
+            ("accept-language", None),
+            ("accept-encoding", Some(ACCEPT_ENCODING)),
+            ("upgrade-insecure-requests", Some("1")),
+            ("sec-fetch-dest", Some("document")),
+            ("sec-fetch-mode", Some("navigate")),
+            ("sec-fetch-site", Some("none")),
+            ("sec-fetch-user", Some("?1")),
+            ("referer", None),
+            ("cookie", None),
+        ];
+        let mut written: Vec<&str> = vec![];
+        for (name, default) in ORDERED {
+            let value = headers
+                .get(*name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .or_else(|| default.map(str::to_string));
+            if let Some(v) = value {
+                writeln!(request, "{}: {}\r", canonical(name), v)?;
+                written.push(name);
+            }
+        }
+
+        // Remaining caller headers, canonical casing, after the known set.
         for (name, value) in headers.iter() {
+            if written.contains(&name.as_str()) {
+                continue;
+            }
             if let Ok(v) = value.to_str() {
-                writeln!(request, "{}: {}\r", name, v)?;
+                writeln!(request, "{}: {}\r", canonical(name.as_str()), v)?;
             }
         }
 
@@ -351,6 +690,7 @@ impl Client {
 
         // Read body
         let body = read_body(&mut reader, &response_headers).await?;
+        let body = decode_content_encoding(body, &mut response_headers)?;
 
         trace!(status = %status, body_len = body.len(), "Response received");
 
@@ -458,6 +798,60 @@ fn parse_status_line(line: &str) -> Result<(Version, StatusCode), HttpError> {
     Ok((version, status))
 }
 
+/// The `Accept-Encoding` sent on requests: what `decode_content_encoding`
+/// can undo.
+const ACCEPT_ENCODING: &str = "gzip, deflate";
+
+/// Undo the response's `Content-Encoding`, so callers always see the
+/// resource's bytes. A decoded body drops `Content-Encoding` and
+/// `Content-Length` (which described the encoded bytes).
+///
+/// A body cut off mid-stream keeps what decoded, as a truncated chunked
+/// body does. An encoding we never advertised is passed through untouched.
+fn decode_content_encoding(body: Bytes, headers: &mut HeaderMap) -> Result<Bytes, HttpError> {
+    use std::io::Read;
+
+    let Some(encoding) = headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_ascii_lowercase())
+    else {
+        return Ok(body);
+    };
+    if body.is_empty() || encoding.is_empty() || encoding == "identity" {
+        return Ok(body);
+    }
+
+    let mut out = Vec::new();
+    let result = match encoding.as_str() {
+        "gzip" | "x-gzip" => flate2::read::MultiGzDecoder::new(&body[..]).read_to_end(&mut out),
+        // "deflate" is zlib-wrapped per RFC 9110, but some servers send raw
+        // deflate; browsers accept both.
+        "deflate" => match flate2::read::ZlibDecoder::new(&body[..]).read_to_end(&mut out) {
+            Ok(n) => Ok(n),
+            Err(_) if out.is_empty() => {
+                flate2::read::DeflateDecoder::new(&body[..]).read_to_end(&mut out)
+            }
+            Err(e) => Err(e),
+        },
+        other => {
+            warn!(encoding = other, "Unsupported Content-Encoding; body left encoded");
+            return Ok(body);
+        }
+    };
+    if let Err(e) = result {
+        if out.is_empty() {
+            return Err(HttpError::InvalidResponse(format!(
+                "Content-Encoding {encoding}: {e}"
+            )));
+        }
+        warn!(%encoding, error = %e, decoded = out.len(), "Encoded body cut off; keeping what decoded");
+    }
+    headers.remove("content-encoding");
+    headers.remove("content-length");
+    Ok(Bytes::from(out))
+}
+
 /// Read response body based on headers.
 async fn read_body<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
@@ -495,9 +889,18 @@ async fn read_chunked_body<R: tokio::io::AsyncBufRead + Unpin>(
 
     loop {
         let mut size_line = String::new();
-        reader.read_line(&mut size_line).await?;
+        if reader.read_line(&mut size_line).await? == 0 {
+            // The peer closed before the terminating 0-size chunk. Keep what
+            // arrived, as Chrome does for a document: netflix.com's edge
+            // intermittently closes at exactly 512 KiB of a ~660 KiB page,
+            // and failing the whole navigation left a blank tab.
+            warn!(received = body.len(), "chunked body truncated by EOF; using partial body");
+            break;
+        }
 
-        let size = usize::from_str_radix(size_line.trim(), 16)
+        // RFC 9112 §7.1.1: chunk-size may be followed by chunk extensions.
+        let size_field = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_field, 16)
             .map_err(|_| HttpError::InvalidResponse("Invalid chunk size".to_string()))?;
 
         if size == 0 {
@@ -507,9 +910,14 @@ async fn read_chunked_body<R: tokio::io::AsyncBufRead + Unpin>(
             break;
         }
 
-        let mut chunk = vec![0u8; size];
-        reader.read_exact(&mut chunk).await?;
+        let mut chunk = Vec::with_capacity(size);
+        (&mut *reader).take(size as u64).read_to_end(&mut chunk).await?;
+        let complete = chunk.len() == size;
         body.extend_from_slice(&chunk);
+        if !complete {
+            warn!(received = body.len(), "chunked body truncated by EOF mid-chunk; using partial body");
+            break;
+        }
 
         // Read trailing CRLF after chunk
         let mut _crlf = [0u8; 2];
@@ -574,11 +982,23 @@ impl Client {
             .await
             .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
 
-        let tls_stream = self
-            .tls_connector
-            .connect(host, stream)
-            .await
-            .map_err(|e| HttpError::TlsError(e.to_string()))?;
+        // Streaming stays HTTP/1.1 in this PR: the streaming reader is a
+        // BufRead line/chunk parser. When h2 is negotiated we buffer via the
+        // h2 path and stream from memory — correct, just not incremental;
+        // incremental h2 streaming is the follow-up.
+        let (tls_stream, negotiated) = self.connect_tls(host, &addr, stream).await?;
+        if negotiated == NegotiatedProtocol::H2 {
+            let raw = self
+                .send_request_h2(tls_stream, &Method::GET, url, &HeaderMap::new(), &None)
+                .await?;
+            let len = raw.body.len() as u64;
+            return Ok(StreamingResponse {
+                status: raw.status,
+                headers: raw.headers,
+                content_length: Some(len),
+                reader: Box::new(std::io::Cursor::new(raw.body)),
+            });
+        }
 
         self.send_streaming_request(tls_stream, host, url).await
     }
@@ -766,10 +1186,183 @@ mod tests {
         assert_eq!(response.text().unwrap(), "Hello");
     }
 
+    fn decode_chunked(raw: &[u8]) -> Result<Bytes, HttpError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut reader = BufReader::new(raw);
+        rt.block_on(read_chunked_body(&mut reader))
+    }
+
+    #[test]
+    fn chunked_body_decodes_extensions_and_terminator() {
+        let body = decode_chunked(b"5;name=val\r\nhello\r\n6\r\n world\r\n0\r\n\r\n").unwrap();
+        assert_eq!(&body[..], b"hello world");
+    }
+
+    #[test]
+    fn chunked_body_truncated_by_eof_keeps_what_arrived() {
+        // EOF where the next size line should be (netflix.com's edge closes
+        // at 512 KiB), and EOF inside a chunk: both used to fail the whole
+        // navigation with "Invalid chunk size" / UnexpectedEof.
+        let at_boundary = decode_chunked(b"5\r\nhello\r\n").unwrap();
+        assert_eq!(&at_boundary[..], b"hello");
+        let mid_chunk = decode_chunked(b"5\r\nhello\r\na\r\n wor").unwrap();
+        assert_eq!(&mid_chunk[..], b"hello wor");
+    }
+
+    #[test]
+    fn chunked_body_rejects_a_garbage_size_line() {
+        assert!(matches!(
+            decode_chunked(b"zz\r\nhello\r\n0\r\n\r\n"),
+            Err(HttpError::InvalidResponse(_))
+        ));
+    }
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut enc, data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn requests_gzip_and_decodes_it() {
+        // Serves gzip only to a client that asks for it, as real sites do;
+        // anything else gets the page a bot gets.
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let request = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            if request.contains("\r\naccept-encoding: gzip") {
+                let body = gzip(b"<p>the real page</p>");
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            } else {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nautomated bot")
+                    .unwrap();
+            }
+        });
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = Client::builder().build().unwrap();
+        let response = rt
+            .block_on(client.request(
+                Method::GET,
+                &format!("http://127.0.0.1:{port}/"),
+                HeaderMap::new(),
+                None,
+            ))
+            .unwrap();
+        assert_eq!(response.text().unwrap(), "<p>the real page</p>");
+        assert!(response.headers.get("content-encoding").is_none());
+        assert!(response.headers.get("content-length").is_none());
+    }
+
+    #[test]
+    fn requests_chunked_gzip_and_decodes_after_reassembling_chunks() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+
+            let body = gzip(b"<p>chunked and compressed</p>");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\
+                      Content-Encoding: gzip\r\n\r\n",
+                )
+                .unwrap();
+            for chunk in body.chunks(7) {
+                write!(stream, "{:x};part=test\r\n", chunk.len()).unwrap();
+                stream.write_all(chunk).unwrap();
+                stream.write_all(b"\r\n").unwrap();
+            }
+            stream.write_all(b"0\r\n\r\n").unwrap();
+        });
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = Client::builder().build().unwrap();
+        let response = rt
+            .block_on(client.request(
+                Method::GET,
+                &format!("http://127.0.0.1:{port}/"),
+                HeaderMap::new(),
+                None,
+            ))
+            .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(response.text().unwrap(), "<p>chunked and compressed</p>");
+        assert!(response.headers.get("content-encoding").is_none());
+    }
+
+    #[test]
+    fn content_encoding_decodes_deflate_both_ways_and_keeps_a_truncated_prefix() {
+        let decode = |encoding: &str, body: Vec<u8>| {
+            let mut headers = HeaderMap::new();
+            headers.insert("content-encoding", HeaderValue::from_str(encoding).unwrap());
+            decode_content_encoding(Bytes::from(body), &mut headers)
+        };
+        let text = b"hello hello hello hello world".repeat(50);
+
+        let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut zlib, &text).unwrap();
+        assert_eq!(&decode("deflate", zlib.finish().unwrap()).unwrap()[..], &text[..]);
+
+        let mut raw = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut raw, &text).unwrap();
+        assert_eq!(&decode("deflate", raw.finish().unwrap()).unwrap()[..], &text[..]);
+
+        let big: Vec<u8> = (0..200_000u32).flat_map(|i| i.to_le_bytes()).collect();
+        let mut cut = gzip(&big);
+        cut.truncate(cut.len() / 2);
+        let partial = decode("gzip", cut).unwrap();
+        assert!(!partial.is_empty() && big.starts_with(&partial));
+
+        // Never advertised: left alone.
+        assert_eq!(&decode("br", b"xyz".to_vec()).unwrap()[..], b"xyz");
+        assert!(decode("gzip", b"not gzip".to_vec()).is_err());
+    }
+
     #[test]
     fn test_default_config() {
         let config = ClientConfig2::default();
-        assert_eq!(config.user_agent, "RustKit/1.0");
+        assert!(config.user_agent.starts_with("Mozilla/5.0 ("));
+        assert!(config.user_agent.contains("HiWave/1.0"));
+        assert!(config.user_agent.contains("RustKit/1.0"));
+        assert!(!config.user_agent.contains("Chrome"), "never Chrome\'s UA");
         assert_eq!(config.timeout, Duration::from_secs(30));
         assert_eq!(config.max_redirects, 10);
         assert!(config.follow_redirects);

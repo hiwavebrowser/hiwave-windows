@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# Vendored with a patch, not a workspace member (see third_party/boa_gc/HIWAVE_PATCH.md).
+exclude = ["third_party/boa_gc"]
 members = [
     "crates/hiwave-core",
     "crates/hiwave-shield",
@@ -123,3 +125,8 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# boa_gc 0.20.0 with the weak-phase mark fix backported from 0.22.
+# Drop when Boa is upgraded to >= 0.22. See third_party/boa_gc/HIWAVE_PATCH.md.
+[patch.crates-io]
+boa_gc = { path = "third_party/boa_gc" }

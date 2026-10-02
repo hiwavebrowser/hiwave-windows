@@ -367,7 +367,7 @@ fn test_referrer_policy_origin() {
     let policy = ReferrerPolicy::Origin;
     assert_eq!(
         policy.compute_referrer(&referrer, &target),
-        Some("https://example.com".to_string())
+        Some("https://example.com/".to_string())
     );
 }
 

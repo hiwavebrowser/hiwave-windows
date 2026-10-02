@@ -215,8 +215,9 @@ pub struct MessagePort {
     
     /// Whether closed.
     closed: bool,
-    
+
     /// Entangled port ID.
+    #[allow(dead_code)]
     entangled_port: Option<PortId>,
 }
 

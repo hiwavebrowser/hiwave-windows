@@ -1291,6 +1291,7 @@ pub mod keyboard {
             // Character input
             _ => {
                 if !key.is_empty() && key.chars().count() == 1 {
+                    // SAFETY: Checked above that string is non-empty and has exactly 1 char
                     let ch = key.chars().next().unwrap();
                     // Filter out control characters
                     if ch.is_control() {
@@ -1402,6 +1403,7 @@ pub mod keyboard {
             // Character input
             _ => {
                 if !key.is_empty() && key.chars().count() == 1 {
+                    // SAFETY: Checked above that string is non-empty and has exactly 1 char
                     let ch = key.chars().next().unwrap();
                     if ch.is_control() {
                         KeyHandleResult::Unhandled

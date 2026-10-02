@@ -1,0 +1,42 @@
+{
+  "_README": [
+    "Property names the 26-case gating corpus authors that the engine's",
+    "`apply_style_property` has no match arm for — i.e. declarations that are",
+    "DROPPED, silently, with no parse error and no phantom box.",
+    "",
+    "Enforced by scripts/declaration_census.py as a ratchet: a gap that is not",
+    "in this file FAILS. An entry this tree no longer needs is reported as",
+    "TIGHTEN-ELIGIBLE and does not fail, so the PR that closes a gap is never",
+    "the PR that goes red.",
+    "",
+    "An entry here is a MEASUREMENT, not a permission. Two of them are layout",
+    "defects with a cost this campaign has now measured (column-count, float);",
+    "they are listed because they are known and sized, not because they are",
+    "acceptable.",
+    "",
+    "Seeded 2026-09-23 from the working tree of atlas/trench-parity-finish-line",
+    "(123 arms). origin/master afd73ab and origin/develop 011ffee both carry 129",
+    "arms and the same 16 gaps; the extra `text-overflow` entry exists only",
+    "because this instrument branch's crates/ are behind master, and it will",
+    "read TIGHTEN-ELIGIBLE the moment the branch takes master's engine."
+  ],
+  "known_gaps": {
+    "column-count": "LAYOUT DEFECT, sized 2026-09-23 against the SwiftShader board (the geometry here is font-independent, so the numbers hold on macOS too). article-typography `.columns { column-count: 2; column-gap: 40px }` holds two paragraphs. Chrome flows them side by side: p1 x260 w360 h168.84, p2 x660 w360 h140.70, both at y1454.45, container h174.78. RustKit stacks them full-width: both at x260 w760 h84.48, container h188.96. 9 failing boxes carrying 1462.1px of the case's 2786.2px sum|delta| — 52% of the case, and the largest font-INDEPENDENT geometry root left in the corpus (400px in x and in width). The DOWNSTREAM cost is small and was measured rather than assumed: doubling the column width halves each paragraph's height, so the stack is only 14.18px taller than Chrome's balanced column, and the 22 y-failures below it read 14.18 minus the 2.87 the page already carried in = 11.31px, not the ~165px a single-column reading predicts. Multi-column layout is unimplemented (no fragmentation machinery at all): a feature unit, not a night's fix, and recorded rather than half-landed.",
+    "float": "LAYOUT DEFECT, found 2026-09-23. article-typography `.drop-cap::first-letter { float: left }`. rustkit-layout HAS a float implementation — FloatContext, establishes_bfc, LayoutBox::with_float — and nothing in the engine ever sets LayoutBox.float from CSS, so every call to it comes from a unit test. An implemented subsystem no authored page can reach. Corpus cost is small (one ::first-letter, which is also unimplemented); real-page cost is not, and P5's holdout board is where that lands.",
+    "font-variant": "Text class (P4). article-typography `.small-caps`. Changes advance widths; no box-level geometry of its own.",
+    "list-style": "No-op today, and only because a second feature is missing: sticky-scroll's `list-style: none` removes a marker, and RustKit paints no list markers at all. The absent arm is masked by the absent feature; implementing markers without this arm would turn a no-op into a regression.",
+    "object-fit": "Paint inside an already-correct box. images-intrinsic, 4 declarations. Changes which pixels the image resamples to, never the element's rect.",
+    "outline": "Paint OUTSIDE the border box, 7 declarations over 5 cases. No layout effect by spec (outlines do not affect flow). This is the class Gate B's unbuilt `paint_outside_box` detector would score, so it stays ledgered until that detector exists.",
+    "outline-offset": "As `outline`. rounded-corners, 1 declaration.",
+    "text-shadow": "Paint. card-grid, 1 declaration.",
+    "backdrop-filter": "Paint/compositing. gradient-backgrounds, 1 declaration. Unimplemented effect, not a dropped-declaration surprise.",
+    "accent-color": "Form-control paint. settings, 1 declaration.",
+    "resize": "UA resizer affordance on a textarea. form-elements, 1 declaration. Paint only.",
+    "cursor": "No render effect in a static capture. 24 declarations over 8 cases, and the largest count in this file — which is exactly why a count-ordered reading of this census would point at the least important row.",
+    "pointer-events": "No render effect in a static capture. about, new_tab.",
+    "user-select": "No render effect in a static capture. new_tab, shelf.",
+    "scrollbar-width": "settings. macOS Chrome renders overlay scrollbars, so the baseline carries no scrollbar gutter to match.",
+    "scrollbar-color": "As `scrollbar-width`.",
+    "text-overflow": "CLOSED on origin/master and origin/develop (both carry the arm). Present only on atlas/trench-parity-finish-line, whose crates/ are behind master. Expected to read TIGHTEN-ELIGIBLE, not to be fixed."
+  }
+}

@@ -1,0 +1,58 @@
+{
+ "gate": "B-paint",
+ "aa_tolerance": 5,
+ "pass_fraction": 0.99,
+ "capture_root": "/tmp/claude-501/-Users-petecopeland-Repos/e5f5ca9e-83a3-4570-b688-b19e6a173177/scratchpad/master-receipt/parity-commit",
+ "cases": [
+  {
+   "case_id": "about",
+   "measured": true,
+   "green": false,
+   "total_px": 480000,
+   "outside_tolerance_px": 129078,
+   "within_fraction": 0.7310875,
+   "discrete_examined": 4,
+   "discrete_unattributable": 146,
+   "discrete_failures": 0,
+   "failures": [
+    {
+     "case_id": "about",
+     "selector": null,
+     "kind": "paint_below_bar",
+     "discrete": false,
+     "expected": ">=99%",
+     "actual": "73.1088%",
+     "detail": "129078/480000px outside \u00b15"
+    }
+   ],
+   "receipts": [
+    "about \u00b7 \u2014 \u00b7 paint_below_bar \u00b7 >=99% \u00b7 73.1088% \u00b7 129078/480000px outside \u00b15"
+   ],
+   "scope": "builtins"
+  },
+  {
+   "case_id": "bg-pure",
+   "measured": true,
+   "green": true,
+   "total_px": 480000,
+   "outside_tolerance_px": 0,
+   "within_fraction": 1.0,
+   "discrete_examined": 32,
+   "discrete_unattributable": 0,
+   "discrete_failures": 0,
+   "failures": [],
+   "receipts": [],
+   "scope": "micro"
+  }
+ ],
+ "summary": {
+  "total_cases": 26,
+  "measured": 26,
+  "unmeasured": 0,
+  "green": 1,
+  "red": 25,
+  "discrete_failures": 13,
+  "discrete_examined": 543,
+  "discrete_unattributable": 1050
+ }
+}

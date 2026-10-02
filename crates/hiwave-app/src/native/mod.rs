@@ -9,6 +9,10 @@
 //! - **Linux**: X11/Wayland + RustKit (via `linux.rs`) - STUB
 
 #[cfg(target_os = "windows")]
+mod shortcuts;
+#[cfg(target_os = "windows")]
+mod tabs;
+#[cfg(target_os = "windows")]
 mod win32;
 #[cfg(target_os = "windows")]
 pub mod screenshot_harness;

@@ -282,6 +282,8 @@ mod tests {
             timeout: None,
             credentials: Default::default(),
             referrer: None,
+            referrer_policy: Default::default(),
+            destination: rustkit_net::RequestDestination::Other,
         }
     }
 

@@ -6,5 +6,16 @@
   "glBackend": "angle-swiftshader",
   "cases": 19,
   "failures": [],
-  "sourceMissing": []
+  "sourceMissing": [],
+  "recaptures": [
+    {
+      "case": "builtins/settings",
+      "viewport": "1024x768",
+      "capturedAt": "2026-09-28T03:44:18Z",
+      "browserVersion": "148.0.7778.216",
+      "platform": "win32",
+      "reason": "the 2026-07-12 capture was 800x600, but the case (cases/registry.json) is 1024x768, so it could not be measured (dimension_mismatch)",
+      "approvedBy": "Pete, 2026-09-27 (Windows gets its own CfT-148 baselines captured on Windows)"
+    }
+  ]
 }

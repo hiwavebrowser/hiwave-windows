@@ -28,7 +28,7 @@ def load_baseline(baseline_dir: Path = Path("parity-baseline")) -> Dict[str, Any
         print("Run `python3 scripts/parity_baseline.py` first")
         sys.exit(1)
     
-    with open(report_path) as f:
+    with open(report_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -64,7 +64,7 @@ def run_single_case(case: Dict, output_dir: Path) -> Dict[str, Any]:
             capture_output=True,
             text=True,
             timeout=60,
-            cwd=Path(__file__).parent.parent,
+            cwd=Path(__file__).parent.parent, encoding="utf-8"
         )
         
         success = result.returncode == 0 and frame_path.exists()
@@ -114,16 +114,16 @@ def generate_failure_packet(case: Dict, rerun_result: Dict, output_dir: Path) ->
         "timestamp": datetime.now().isoformat(),
     }
     
-    with open(packet_dir / "info.json", "w") as f:
+    with open(packet_dir / "info.json", "w", encoding="utf-8") as f:
         json.dump(packet_info, f, indent=2)
     
     # Save logs
     if rerun_result.get("stdout"):
-        with open(packet_dir / "stdout.log", "w") as f:
+        with open(packet_dir / "stdout.log", "w", encoding="utf-8") as f:
             f.write(rerun_result["stdout"])
     
     if rerun_result.get("stderr"):
-        with open(packet_dir / "stderr.log", "w") as f:
+        with open(packet_dir / "stderr.log", "w", encoding="utf-8") as f:
             f.write(rerun_result["stderr"])
     
     return packet_dir
@@ -216,7 +216,7 @@ def main():
         "results": results,
     }
     
-    with open(output_dir / "rerun_report.json", "w") as f:
+    with open(output_dir / "rerun_report.json", "w", encoding="utf-8") as f:
         json.dump(rerun_report, f, indent=2, default=str)
     
     print(f"\nRerun report saved to: {output_dir / 'rerun_report.json'}")
@@ -225,4 +225,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 

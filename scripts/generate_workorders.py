@@ -143,7 +143,7 @@ def main():
         print(f"Error: Layout comparison not found: {comparison_file}")
         sys.exit(1)
     
-    with open(comparison_file) as f:
+    with open(comparison_file, encoding="utf-8") as f:
         data = json.load(f)
     
     issue_categories = data.get("issue_categories", {})
@@ -169,7 +169,7 @@ def main():
         
         # Save WorkOrder
         output_file = output_dir / f"{workorder['id']}.json"
-        with open(output_file, "w") as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             json.dump(workorder, f, indent=2)
         
         print(f"  Generated: {output_file}")

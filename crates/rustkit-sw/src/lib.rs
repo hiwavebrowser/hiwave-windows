@@ -60,6 +60,9 @@ pub enum ServiceWorkerError {
 
     #[error("Not found: {0}")]
     NotFound(String),
+
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 }
 
 // ==================== Types ====================
@@ -173,14 +176,17 @@ impl ServiceWorker {
     }
 
     /// Post message to worker.
+    ///
+    /// Status: Not implemented - requires worker context integration and message serialization.
     pub fn post_message(&self, _message: &str) -> Result<(), ServiceWorkerError> {
         if self.is_redundant() {
             return Err(ServiceWorkerError::StateError(
                 "Cannot post message to redundant worker".to_string(),
             ));
         }
-        // TODO: Actually post message to worker context
-        Ok(())
+        Err(ServiceWorkerError::NotImplemented(
+            "Service Worker message passing requires worker context integration".to_string(),
+        ))
     }
 }
 
@@ -496,9 +502,12 @@ pub enum VisibilityState {
 
 impl Client {
     /// Post message to client.
+    ///
+    /// Status: Not implemented - requires message channel between worker and client contexts.
     pub fn post_message(&self, _message: &str) -> Result<(), ServiceWorkerError> {
-        // TODO: Actually post message
-        Ok(())
+        Err(ServiceWorkerError::NotImplemented(
+            "Client message passing requires cross-context communication".to_string(),
+        ))
     }
 
     /// Focus the client.
@@ -513,14 +522,17 @@ impl Client {
     }
 
     /// Navigate client to URL.
+    ///
+    /// Status: Not implemented - requires integration with navigation controller.
     pub fn navigate(&self, _url: &str) -> Result<(), ServiceWorkerError> {
         if self.client_type != ClientType::Window {
             return Err(ServiceWorkerError::StateError(
                 "Can only navigate window clients".to_string(),
             ));
         }
-        // TODO: Actually navigate
-        Ok(())
+        Err(ServiceWorkerError::NotImplemented(
+            "Client navigation requires integration with browser navigation controller".to_string(),
+        ))
     }
 }
 
@@ -544,13 +556,23 @@ impl Clients {
     }
 
     /// Match all clients.
+    ///
+    /// Note: Currently does not filter by controller status. All clients are treated as
+    /// controlled when `include_uncontrolled` is false. Full implementation requires
+    /// tracking which service worker controls each client.
     pub fn match_all(&self, options: ClientMatchOptions) -> Vec<&Client> {
         self.clients
             .values()
             .filter(|c| {
+                // Note: Controller check not implemented - treating all as controlled
+                // Full implementation would check: c.controller_id == Some(self.worker_id)
                 if !options.include_uncontrolled {
-                    // TODO: Check if controlled by this worker
-                }
+                    // For now, assume all clients are controlled
+                    true
+                } else {
+                    true
+                };
+
                 match options.client_type {
                     ClientType::All => true,
                     t => c.client_type == t,

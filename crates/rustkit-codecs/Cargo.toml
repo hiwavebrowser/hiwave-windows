@@ -13,6 +13,7 @@ thiserror = "1.0"
 png = "0.17"
 jpeg-decoder = "0.3"
 gif = "0.13"
+image-webp = "0.2"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

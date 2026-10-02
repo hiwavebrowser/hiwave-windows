@@ -1,0 +1,165 @@
+{
+  "rung": 1,
+  "name": "MDN learning-area, DOM-touching examples",
+  "source": "https://github.com/mdn/learning-area",
+  "license": "CC0-1.0",
+  "order": "MDN's own course order: introduction-to-js-1, then building-blocks, then apis/document-manipulation",
+  "excluded": "canvas, video/audio, fetch/XHR, storage, service workers, third-party APIs, and the playable.js task pages. Those belong to later rungs.",
+  "viewport": [
+    1280,
+    800
+  ],
+  "fixtures": [
+    {
+      "id": "01-apply-javascript",
+      "src": "javascript/introduction-to-js-1/what-is-js/apply-javascript.html"
+    },
+    {
+      "id": "02-apply-javascript-internal",
+      "src": "javascript/introduction-to-js-1/what-is-js/apply-javascript-internal.html"
+    },
+    {
+      "id": "03-apply-javascript-external",
+      "src": "javascript/introduction-to-js-1/what-is-js/apply-javascript-external.html"
+    },
+    {
+      "id": "04-javascript-label",
+      "src": "javascript/introduction-to-js-1/what-is-js/javascript-label.html"
+    },
+    {
+      "id": "05-number-guessing-game",
+      "src": "javascript/introduction-to-js-1/first-splash/number-guessing-game.html"
+    },
+    {
+      "id": "06-number-game-errors",
+      "src": "javascript/introduction-to-js-1/troubleshooting/number-game-errors.html"
+    },
+    {
+      "id": "07-maths-conditional",
+      "src": "javascript/introduction-to-js-1/maths/conditional.html"
+    },
+    {
+      "id": "08-silly-story",
+      "src": "javascript/introduction-to-js-1/assessment-finished/index.html"
+    },
+    {
+      "id": "09-simple-else-if",
+      "src": "javascript/building-blocks/simple-else-if.html"
+    },
+    {
+      "id": "10-simple-switch",
+      "src": "javascript/building-blocks/simple-switch.html"
+    },
+    {
+      "id": "11-simple-ternary",
+      "src": "javascript/building-blocks/simple-ternary.html"
+    },
+    {
+      "id": "12-more-color-choices",
+      "src": "javascript/building-blocks/more-color-choices-finished.html"
+    },
+    {
+      "id": "13-allowance-updater",
+      "src": "javascript/building-blocks/allowance-updater.html"
+    },
+    {
+      "id": "14-calendar",
+      "src": "javascript/building-blocks/calendar-finished.html"
+    },
+    {
+      "id": "15-basic-for",
+      "src": "javascript/building-blocks/loops/basic-for.html"
+    },
+    {
+      "id": "16-basic-for-improved",
+      "src": "javascript/building-blocks/loops/basic-for-improved.html"
+    },
+    {
+      "id": "17-contact-search",
+      "src": "javascript/building-blocks/loops/contact-search.html"
+    },
+    {
+      "id": "18-integer-squares",
+      "src": "javascript/building-blocks/loops/integer-squares.html"
+    },
+    {
+      "id": "19-while",
+      "src": "javascript/building-blocks/loops/while.html"
+    },
+    {
+      "id": "20-do-while",
+      "src": "javascript/building-blocks/loops/do-while.html"
+    },
+    {
+      "id": "21-launch-countdown",
+      "src": "javascript/building-blocks/loops/launch-countdown.html"
+    },
+    {
+      "id": "22-guest-list",
+      "src": "javascript/building-blocks/loops/guest-list.html"
+    },
+    {
+      "id": "23-function-start",
+      "src": "javascript/building-blocks/functions/function-start.html"
+    },
+    {
+      "id": "24-function-stage-4",
+      "src": "javascript/building-blocks/functions/function-stage-4.html"
+    },
+    {
+      "id": "25-function-library",
+      "src": "javascript/building-blocks/functions/function-library-finished.html"
+    },
+    {
+      "id": "26-random-color-addeventlistener",
+      "src": "javascript/building-blocks/events/random-color-addeventlistener.html"
+    },
+    {
+      "id": "27-random-color-eventhandlerproperty",
+      "src": "javascript/building-blocks/events/random-color-eventhandlerproperty.html"
+    },
+    {
+      "id": "28-random-color-eventhandlerattributes",
+      "src": "javascript/building-blocks/events/random-color-eventhandlerattributes.html"
+    },
+    {
+      "id": "29-random-color-eventobject",
+      "src": "javascript/building-blocks/events/random-color-eventobject.html"
+    },
+    {
+      "id": "30-preventdefault-validation",
+      "src": "javascript/building-blocks/events/preventdefault-validation.html"
+    },
+    {
+      "id": "31-useful-eventtarget",
+      "src": "javascript/building-blocks/events/useful-eventtarget.html"
+    },
+    {
+      "id": "32-image-gallery",
+      "src": "javascript/building-blocks/gallery/index.html",
+      "extra": [
+        "images/pic2.jpg",
+        "images/pic3.jpg",
+        "images/pic4.jpg",
+        "images/pic5.jpg"
+      ]
+    },
+    {
+      "id": "33-dom-example",
+      "src": "javascript/apis/document-manipulation/dom-example.html"
+    },
+    {
+      "id": "34-dom-example-manipulated",
+      "src": "javascript/apis/document-manipulation/dom-example-manipulated.html"
+    },
+    {
+      "id": "35-shopping-list",
+      "src": "javascript/apis/document-manipulation/shopping-list.html"
+    },
+    {
+      "id": "36-shopping-list-finished",
+      "src": "javascript/apis/document-manipulation/shopping-list-finished.html"
+    }
+  ],
+  "commit": "dbed6bcb8284634c7549c4da596ec30b0cfc6e7e"
+}

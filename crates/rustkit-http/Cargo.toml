@@ -6,9 +6,22 @@ description = "HTTP client for RustKit browser engine"
 license = "MIT"
 
 [dependencies]
-# TLS (using native-tls for simplicity on Windows)
-native-tls = "0.2"
-tokio-native-tls = "0.3"
+# TLS: rustls with a browser-typical client profile (network lane,
+# 2026-09-28 diagnosis: every known-library ClientHello is default-denied by
+# Cloudflare/Akamai/DataDome at request one; native-tls sent no ALPN at all).
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-native-certs = "0.8"
+
+# Real HTTP/2 over the rustls stream (network lane PR 2, Atlas directive:
+# h2 before any header tuning — advertising h2 then re-handshaking h1 was
+# itself an odd client pattern and a wasted round trip).
+h2 = "0.4"
+
+# Rollback path (Atlas #535: native-tls stays reachable behind a feature
+# flag for one release). Optional deps, activated by `--features native-tls`.
+native-tls = { version = "0.2", optional = true }
+tokio-native-tls = { version = "0.3", optional = true }
 
 # Async runtime
 tokio = { version = "1", features = ["net", "io-util", "time", "sync", "rt"] }
@@ -32,5 +45,15 @@ futures = "0.3"
 # Base64 for auth
 base64 = "0.22"
 
+# Content-Encoding: gzip / deflate
+flate2 = "1"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[features]
+default = []
+# One-release rollback switch (Atlas #535). When enabled, the client
+# handshakes through the platform native-tls stack exactly as before the
+# network-lane change; the rustls browser profile is the default.
+native-tls = ["dep:native-tls", "dep:tokio-native-tls"]

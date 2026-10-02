@@ -137,6 +137,9 @@ fn format_node(node: &Rc<Node>, output: &mut String, indent: usize) {
         NodeType::ProcessingInstruction { .. } => {
             output.push_str(&format!("{}<?...?>\n", prefix));
         }
+        NodeType::DocumentFragment => {
+            output.push_str(&format!("{}#document-fragment\n", prefix));
+        }
     }
 
     for child in node.children() {

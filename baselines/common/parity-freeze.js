@@ -41,18 +41,36 @@
   requestAnimationFrame = frozenRaf;
 
   // Disable transitions/animations at runtime too (in case author CSS re-enables).
-  const style = document.createElement('style');
-  style.setAttribute('data-parity-freeze', '1');
-  style.textContent = `
-    *, *::before, *::after {
-      transition: none !important;
-      animation: none !important;
-      animation-play-state: paused !important;
-      caret-color: transparent !important;
-      scroll-behavior: auto !important;
-    }
-  `;
-  document.documentElement.appendChild(style);
+  // Init scripts run before the document has a root element on file://
+  // navigations (session 7: the old unconditional appendChild threw, which
+  // also killed the matchMedia shim below — dead code in every capture).
+  const injectFreezeStyle = () => {
+    if (!document.documentElement || document.querySelector('style[data-parity-freeze]')) return;
+    const style = document.createElement('style');
+    style.setAttribute('data-parity-freeze', '1');
+    style.textContent = `
+      *, *::before, *::after {
+        transition: none !important;
+        animation: none !important;
+        animation-play-state: paused !important;
+        caret-color: transparent !important;
+        scroll-behavior: auto !important;
+      }
+    `;
+    document.documentElement.appendChild(style);
+  };
+  if (document.documentElement) {
+    injectFreezeStyle();
+  } else {
+    const obs = new MutationObserver(() => {
+      if (document.documentElement) {
+        injectFreezeStyle();
+        obs.disconnect();
+      }
+    });
+    obs.observe(document, { childList: true });
+    document.addEventListener('DOMContentLoaded', injectFreezeStyle);
+  }
 
   // Hint reduced motion.
   try {

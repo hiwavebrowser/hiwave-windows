@@ -14,6 +14,8 @@ rustkit-viewhost = { path = "../rustkit-viewhost" }
 rustkit-layout = { path = "../rustkit-layout" }
 
 clap = { version = "4", features = ["derive"] }
+tokio = { version = "1.42", features = ["rt"] }
+url = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

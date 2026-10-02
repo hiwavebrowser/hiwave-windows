@@ -597,61 +597,62 @@ pub enum ReferrerPolicy {
 }
 
 impl ReferrerPolicy {
-    /// Compute referrer for a request.
+    /// Compute the `Referer` header value for a request (Fetch, "determine
+    /// request's referrer"). `None` means send no `Referer` at all.
+    ///
+    /// The referrer is stripped before any policy applies: no fragment and no
+    /// userinfo, ever, and only http(s) documents have a referrer (a file:,
+    /// data: or about: page must not leak its URL). The origin-only form is
+    /// the origin with an empty path, `https://example.com/`, as Chrome sends.
     pub fn compute_referrer(
         &self,
         referrer_url: &Url,
         target_url: &Url,
     ) -> Option<String> {
+        if !matches!(referrer_url.scheme(), "http" | "https") {
+            return None;
+        }
+        let mut full = referrer_url.clone();
+        full.set_fragment(None);
+        let _ = full.set_username("");
+        let _ = full.set_password(None);
+        let mut origin = full.clone();
+        origin.set_path("/");
+        origin.set_query(None);
+        let full = full.to_string();
+        let origin = origin.to_string();
+
         let same_origin = Origin::from_url(referrer_url).same_origin(&Origin::from_url(target_url));
         let is_downgrade = referrer_url.scheme() == "https" && target_url.scheme() == "http";
 
         match self {
             ReferrerPolicy::NoReferrer => None,
-            ReferrerPolicy::NoReferrerWhenDowngrade => {
-                if is_downgrade {
-                    None
-                } else {
-                    Some(referrer_url.to_string())
-                }
-            }
-            ReferrerPolicy::Origin => {
-                Some(Origin::from_url(referrer_url).serialize())
-            }
-            ReferrerPolicy::OriginWhenCrossOrigin => {
-                if same_origin {
-                    Some(referrer_url.to_string())
-                } else {
-                    Some(Origin::from_url(referrer_url).serialize())
-                }
-            }
-            ReferrerPolicy::SameOrigin => {
-                if same_origin {
-                    Some(referrer_url.to_string())
-                } else {
-                    None
-                }
-            }
-            ReferrerPolicy::StrictOrigin => {
-                if is_downgrade {
-                    None
-                } else {
-                    Some(Origin::from_url(referrer_url).serialize())
-                }
-            }
+            ReferrerPolicy::NoReferrerWhenDowngrade => (!is_downgrade).then_some(full),
+            ReferrerPolicy::Origin => Some(origin),
+            ReferrerPolicy::OriginWhenCrossOrigin => Some(if same_origin { full } else { origin }),
+            ReferrerPolicy::SameOrigin => same_origin.then_some(full),
+            ReferrerPolicy::StrictOrigin => (!is_downgrade).then_some(origin),
             ReferrerPolicy::StrictOriginWhenCrossOrigin => {
                 if is_downgrade {
                     None
                 } else if same_origin {
-                    Some(referrer_url.to_string())
+                    Some(full)
                 } else {
-                    Some(Origin::from_url(referrer_url).serialize())
+                    Some(origin)
                 }
             }
-            ReferrerPolicy::UnsafeUrl => {
-                Some(referrer_url.to_string())
-            }
+            ReferrerPolicy::UnsafeUrl => Some(full),
         }
+    }
+
+    /// Parse a `Referrer-Policy` header value: a comma-separated list where
+    /// the last recognised token wins, so a new policy can be listed after
+    /// a fallback for older browsers. `None` when no token is recognised.
+    pub fn parse_header(value: &str) -> Option<Self> {
+        value
+            .split(',')
+            .filter_map(|token| token.trim().parse().ok())
+            .last()
     }
 }
 
@@ -1098,7 +1099,7 @@ mod tests {
         let policy = ReferrerPolicy::Origin;
         assert_eq!(
             policy.compute_referrer(&referrer, &target),
-            Some("https://example.com".to_string())
+            Some("https://example.com/".to_string())
         );
 
         // No referrer
@@ -1108,6 +1109,58 @@ mod tests {
         // Same origin (cross-origin request)
         let policy = ReferrerPolicy::SameOrigin;
         assert_eq!(policy.compute_referrer(&referrer, &target), None);
+    }
+
+    /// Chrome's default policy, strict-origin-when-cross-origin, case by case.
+    #[test]
+    fn strict_origin_when_cross_origin_sends_no_more_than_the_policy_allows() {
+        let policy = ReferrerPolicy::default();
+        assert_eq!(policy, ReferrerPolicy::StrictOriginWhenCrossOrigin);
+        let doc = Url::parse("https://user:pw@www.apple.com/mac/?q=1#specs").unwrap();
+
+        // Same-origin: the full URL, without fragment or userinfo.
+        let same = Url::parse("https://www.apple.com/wss/fonts?family=SF").unwrap();
+        assert_eq!(
+            policy.compute_referrer(&doc, &same).as_deref(),
+            Some("https://www.apple.com/mac/?q=1")
+        );
+        // Cross-origin: the origin only (a different host, scheme or port).
+        for target in ["https://cdn.apple.com/x.css", "https://www.apple.com:8443/x"] {
+            let target = Url::parse(target).unwrap();
+            assert_eq!(
+                policy.compute_referrer(&doc, &target).as_deref(),
+                Some("https://www.apple.com/")
+            );
+        }
+        // https -> http downgrade: nothing, same host or not.
+        for target in ["http://www.apple.com/x.css", "http://cdn.example/x.js"] {
+            let target = Url::parse(target).unwrap();
+            assert_eq!(policy.compute_referrer(&doc, &target), None);
+        }
+        // A non-http(s) document has no referrer.
+        let file = Url::parse("file:///Users/me/secret.html").unwrap();
+        let target = Url::parse("https://example.com/a.css").unwrap();
+        assert_eq!(policy.compute_referrer(&file, &target), None);
+        // Userinfo and fragment are stripped under every policy.
+        assert_eq!(
+            ReferrerPolicy::UnsafeUrl.compute_referrer(&doc, &target).as_deref(),
+            Some("https://www.apple.com/mac/?q=1")
+        );
+    }
+
+    #[test]
+    fn referrer_policy_header_takes_the_last_recognised_token() {
+        assert_eq!(
+            ReferrerPolicy::parse_header("no-referrer, strict-origin-when-cross-origin"),
+            Some(ReferrerPolicy::StrictOriginWhenCrossOrigin)
+        );
+        assert_eq!(
+            ReferrerPolicy::parse_header("same-origin, made-up-policy"),
+            Some(ReferrerPolicy::SameOrigin)
+        );
+        assert_eq!(ReferrerPolicy::parse_header("  Origin "), Some(ReferrerPolicy::Origin));
+        assert_eq!(ReferrerPolicy::parse_header("bogus"), None);
+        assert_eq!(ReferrerPolicy::parse_header(""), None);
     }
 
     #[test]
