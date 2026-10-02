@@ -19,6 +19,12 @@ pub struct CacheConfig {
     pub default_ttl: Duration,
     /// Whether to respect Cache-Control headers.
     pub respect_cache_control: bool,
+    /// Master switch. False means nothing is stored or served at all.
+    ///
+    /// Private browsing and deterministic tests both need this and neither
+    /// had it: MemoryCache was unconditional, so the only way to not have a
+    /// cache was to not have a ResourceLoader.
+    pub enabled: bool,
 }
 
 impl Default for CacheConfig {
@@ -27,6 +33,7 @@ impl Default for CacheConfig {
             max_size_bytes: 50 * 1024 * 1024, // 50 MB
             default_ttl: Duration::from_secs(300), // 5 minutes
             respect_cache_control: true,
+            enabled: true,
         }
     }
 }
@@ -135,6 +142,30 @@ impl MemoryCache {
         }
     }
     
+    /// The TTL to apply when a response carries no usable `Cache-Control`.
+    ///
+    /// Exposed because the cache owns this policy and the loader has to ask
+    /// for it. Before 2026-07-29 the loader instead reached for
+    /// `LoaderConfig::default_timeout` — a NETWORK REQUEST TIMEOUT — so every
+    /// header-less response was cached for 30s while `CacheConfig::default_ttl`
+    /// (300s) was logged at startup and read by nothing.
+    pub fn default_ttl(&self) -> Duration {
+        self.config.default_ttl
+    }
+
+    /// Whether this cache is switched on at all.
+    pub fn enabled(&self) -> bool {
+        self.config.enabled
+    }
+
+    /// Whether `Cache-Control` should be honoured.
+    ///
+    /// Also previously unread: the flag existed, defaulted to true, and no
+    /// code path consulted it, so setting it false changed nothing.
+    pub fn respects_cache_control(&self) -> bool {
+        self.config.respect_cache_control
+    }
+
     /// Get a cached response.
     pub fn get(&self, key: &CacheKey) -> Option<CachedResponse> {
         let mut entries = self.entries.write().ok()?;
@@ -363,6 +394,52 @@ impl Default for MemoryCache {
     }
 }
 
+/// Why a response may not be cached, or None if it may.
+///
+/// Eligibility is decided BEFORE any TTL question. A response can carry a
+/// perfectly good `max-age` and still be ineligible — that is the distinction
+/// the loader previously did not draw at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ineligible {
+    /// The cache is switched off (private browsing, tests).
+    Disabled,
+    /// The request carried credentials. Caching it risks serving one user's
+    /// authenticated response to another context.
+    Credentialed,
+    /// `Cache-Control: private` — not for a cache shared across contexts.
+    MarkedPrivate,
+    /// The response varies on request headers this cache does not key on.
+    /// Refusing is the conservative choice: honouring `Vary` properly means
+    /// folding the named headers into the key, which is a key-shape change.
+    VariesOnRequestHeaders(String),
+}
+
+/// Decide whether a response may be stored at all.
+pub fn cache_eligibility(
+    enabled: bool,
+    request_headers: &HeaderMap,
+    response_headers: &HeaderMap,
+) -> Option<Ineligible> {
+    if !enabled {
+        return Some(Ineligible::Disabled);
+    }
+    if request_headers.contains_key("authorization") {
+        return Some(Ineligible::Credentialed);
+    }
+    if let Some(cc) = response_headers.get("cache-control").and_then(|v| v.to_str().ok()) {
+        if cc.split(',').any(|d| d.trim().eq_ignore_ascii_case("private")) {
+            return Some(Ineligible::MarkedPrivate);
+        }
+    }
+    if let Some(vary) = response_headers.get("vary").and_then(|v| v.to_str().ok()) {
+        let vary = vary.trim();
+        if !vary.is_empty() {
+            return Some(Ineligible::VariesOnRequestHeaders(vary.to_string()));
+        }
+    }
+    None
+}
+
 /// Parse Cache-Control header to determine TTL.
 pub fn parse_cache_control(headers: &HeaderMap) -> Option<Duration> {
     let cc = headers.get("cache-control")?.to_str().ok()?;
@@ -447,6 +524,115 @@ mod tests {
         assert_eq!(ttl, Some(Duration::ZERO));
     }
     
+    #[test]
+    fn test_vary_makes_most_real_responses_ineligible() {
+        // This is why the early-return bug mattered so much. Almost every real
+        // server sends `Vary: Accept-Encoding`, so the ineligible branch is the
+        // COMMON path, not an edge case. A field mismatch there hits nearly
+        // every page load rather than a rare one.
+        let mut resp = HeaderMap::new();
+        resp.insert("vary", HeaderValue::from_static("Accept-Encoding"));
+        assert!(
+            matches!(
+                cache_eligibility(true, &HeaderMap::new(), &resp),
+                Some(Ineligible::VariesOnRequestHeaders(_))
+            ),
+            "Vary: Accept-Encoding must be ineligible — and it is the common case"
+        );
+    }
+
+    #[test]
+    fn test_credentialed_requests_are_not_cached() {
+        let mut req = HeaderMap::new();
+        req.insert("authorization", HeaderValue::from_static("Bearer secret"));
+        assert_eq!(
+            cache_eligibility(true, &req, &HeaderMap::new()),
+            Some(Ineligible::Credentialed)
+        );
+    }
+
+    #[test]
+    fn test_cache_control_private_is_not_cached() {
+        let mut resp = HeaderMap::new();
+        resp.insert("cache-control", HeaderValue::from_static("private, max-age=600"));
+        assert_eq!(
+            cache_eligibility(true, &HeaderMap::new(), &resp),
+            Some(Ineligible::MarkedPrivate)
+        );
+        // A perfectly good max-age does NOT rescue it — eligibility is decided
+        // before freshness.
+        assert!(parse_cache_control(&resp).is_some());
+    }
+
+    #[test]
+    fn test_vary_is_refused_because_the_key_does_not_record_it() {
+        let mut resp = HeaderMap::new();
+        resp.insert("vary", HeaderValue::from_static("Accept-Language"));
+        assert_eq!(
+            cache_eligibility(true, &HeaderMap::new(), &resp),
+            Some(Ineligible::VariesOnRequestHeaders("Accept-Language".into()))
+        );
+    }
+
+    #[test]
+    fn test_disabled_cache_stores_nothing() {
+        assert_eq!(
+            cache_eligibility(false, &HeaderMap::new(), &HeaderMap::new()),
+            Some(Ineligible::Disabled)
+        );
+        let off = MemoryCache::with_config(CacheConfig { enabled: false, ..CacheConfig::default() });
+        assert!(!off.enabled());
+    }
+
+    #[test]
+    fn test_ordinary_response_is_eligible() {
+        let mut resp = HeaderMap::new();
+        resp.insert("cache-control", HeaderValue::from_static("max-age=600"));
+        assert_eq!(cache_eligibility(true, &HeaderMap::new(), &resp), None);
+    }
+
+    #[test]
+    fn test_default_ttl_is_the_caches_own_policy() {
+        // REGRESSION: default_ttl had three references — declaration, default
+        // value, and a startup log line — and was read by no code path. The
+        // loader fell back to LoaderConfig::default_timeout (30s, a network
+        // timeout) instead. The accessor is what makes the field real.
+        let cache = MemoryCache::new();
+        assert_eq!(cache.default_ttl(), Duration::from_secs(300));
+
+        let custom = MemoryCache::with_config(CacheConfig {
+            default_ttl: Duration::from_secs(42),
+            ..CacheConfig::default()
+        });
+        assert_eq!(custom.default_ttl(), Duration::from_secs(42));
+    }
+
+    #[test]
+    fn test_respect_cache_control_is_readable() {
+        // REGRESSION: this flag had exactly two references, both in its own
+        // declaration. Setting it false changed nothing anywhere.
+        assert!(MemoryCache::new().respects_cache_control());
+
+        let off = MemoryCache::with_config(CacheConfig {
+            respect_cache_control: false,
+            ..CacheConfig::default()
+        });
+        assert!(!off.respects_cache_control());
+    }
+
+    #[test]
+    fn test_no_store_is_not_cacheable() {
+        // Guards the behaviour that IS correct today, so a refactor of the
+        // TTL path cannot quietly lose it: no-store/no-cache map to ZERO,
+        // and the loader stores only when ttl > ZERO.
+        let mut headers = HeaderMap::new();
+        headers.insert("cache-control", HeaderValue::from_static("no-store"));
+        assert_eq!(parse_cache_control(&headers), Some(Duration::ZERO));
+
+        headers.insert("cache-control", HeaderValue::from_static("no-cache"));
+        assert_eq!(parse_cache_control(&headers), Some(Duration::ZERO));
+    }
+
     #[test]
     fn test_cache_stats() {
         let cache = MemoryCache::new();

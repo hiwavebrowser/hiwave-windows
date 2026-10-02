@@ -86,15 +86,16 @@ impl SvgDocument {
         }
 
         // Extract SVG attributes
+        let mut root_style = SvgStyle::default();
         if let Some(svg_start) = xml.find("<svg") {
             if let Some(svg_end) = xml[svg_start..].find('>') {
                 let attrs = &xml[svg_start..svg_start + svg_end + 1];
-                
+
                 // Parse viewBox
                 if let Some(vb) = extract_attr(attrs, "viewBox") {
                     doc.view_box = ViewBox::parse(&vb);
                 }
-                
+
                 // Parse width/height
                 if let Some(w) = extract_attr(attrs, "width") {
                     doc.width = SvgLength::parse(&w);
@@ -102,11 +103,27 @@ impl SvgDocument {
                 if let Some(h) = extract_attr(attrs, "height") {
                     doc.height = SvgLength::parse(&h);
                 }
+
+                // Root presentation attributes seed every shape's style: the
+                // parser is FLAT (no nesting), so this is the only way
+                // `<svg fill="none" stroke="currentColor">` — the standard
+                // icon idiom — reaches its shapes. Without it the circles of
+                // every stroke-only icon painted a default-black disc.
+                let mut root_attrs = HashMap::new();
+                let mut attr_str = attrs
+                    .trim_start_matches("<svg")
+                    .trim_end_matches('>')
+                    .trim_end_matches('/');
+                while let Some((key, value, rest)) = parse_attr(attr_str) {
+                    root_attrs.insert(key.to_lowercase(), value);
+                    attr_str = rest;
+                }
+                root_style.parse_attributes(&root_attrs);
             }
         }
 
         // Parse elements (simplified)
-        doc.root = parse_svg_content(xml)?;
+        doc.root = parse_svg_content(xml, &root_style)?;
 
         Ok(doc)
     }
@@ -128,8 +145,27 @@ impl SvgDocument {
         (width, height)
     }
 
-    /// Render to display commands.
+    /// Render to display commands with `currentColor` resolving to black —
+    /// the initial value of CSS `color`, which is what a standalone SVG
+    /// document (an `<img src=*.svg>`) sees.
     pub fn render(&self, x: f32, y: f32, width: f32, height: f32) -> Vec<DisplayCommand> {
+        self.render_with_color(x, y, width, height, Color::BLACK)
+    }
+
+    /// Render to display commands with `currentColor` resolving to
+    /// `current_color` — an inline `<svg>` inherits the CSS `color` of the
+    /// element it sits in, and every `fill="currentColor"` /
+    /// `stroke="currentColor"` icon on a real page takes its color from
+    /// there. The paint keyword lives on the parsed shapes; only the value
+    /// it resolves to is a render-time input.
+    pub fn render_with_color(
+        &self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        current_color: Color,
+    ) -> Vec<DisplayCommand> {
         let mut commands = Vec::new();
         // Apply viewBox transform if present
         let transform = if let Some(vb) = &self.view_box {
@@ -144,7 +180,11 @@ impl SvgDocument {
             Transform2D::identity().translate(x, y)
         };
 
-        self.root.render(&transform, &SvgStyle::default(), &mut commands);
+        let base = SvgStyle {
+            current_color,
+            ..SvgStyle::default()
+        };
+        self.root.render(&transform, &base, &mut commands);
 
         commands
     }
@@ -453,11 +493,19 @@ impl Paint {
         }
     }
 
-    /// Get color if this is a solid color.
+    /// Get color if this is a solid color, with `currentColor` taken as
+    /// black (the initial CSS `color`). Prefer [`Paint::resolve`] wherever
+    /// the surrounding CSS color is known.
     pub fn as_color(&self) -> Option<Color> {
+        self.resolve(Color::BLACK)
+    }
+
+    /// Get the solid color this paint draws with, resolving `currentColor`
+    /// to `current_color`. `None` for `none` and unresolved `url()` paints.
+    pub fn resolve(&self, current_color: Color) -> Option<Color> {
         match self {
             Paint::Color(c) => Some(*c),
-            Paint::CurrentColor => Some(Color::BLACK), // Would need context
+            Paint::CurrentColor => Some(current_color),
             _ => None,
         }
     }
@@ -518,6 +566,11 @@ pub struct SvgStyle {
     pub opacity: f32,
     /// Visibility.
     pub visibility: bool,
+    /// The CSS `color` in force where this SVG is painted — what
+    /// `currentColor` resolves to. Render context, not an authored SVG
+    /// property: it is seeded by the document's render call and inherited
+    /// unconditionally down the element tree.
+    pub current_color: Color,
 }
 
 impl Default for SvgStyle {
@@ -536,6 +589,7 @@ impl Default for SvgStyle {
             stroke_dashoffset: 0.0,
             opacity: 1.0,
             visibility: true,
+            current_color: Color::BLACK,
         }
     }
 }
@@ -548,10 +602,42 @@ impl SvgStyle {
         if self.opacity == 1.0 {
             self.opacity = parent.opacity;
         }
+        // The CSS color is context, never authored on a shape: always the
+        // parent's, so the render call's value reaches every element.
+        self.current_color = parent.current_color;
+    }
+
+    /// The solid fill color, with `currentColor` resolved.
+    pub fn fill_color(&self) -> Option<Color> {
+        self.fill.resolve(self.current_color)
+    }
+
+    /// The solid stroke color, with `currentColor` resolved.
+    pub fn stroke_color(&self) -> Option<Color> {
+        self.stroke.resolve(self.current_color)
     }
 
     /// Parse style attributes.
     pub fn parse_attributes(&mut self, attrs: &HashMap<String, String>) {
+        // An inline `style="fill: #fbf1e2"` sets the same properties as the
+        // presentation attributes and wins over them (SVG 2 §6.8). linkedin's
+        // hero paints all 148 of its shapes this way; without it every one
+        // fell back to the initial black fill.
+        if let Some(style) = attrs.get("style") {
+            let mut merged = attrs.clone();
+            merged.remove("style");
+            for decl in style.split(';') {
+                if let Some((name, value)) = decl.split_once(':') {
+                    let value = value.trim();
+                    let value = value
+                        .strip_suffix("!important")
+                        .map(str::trim_end)
+                        .unwrap_or(value);
+                    merged.insert(name.trim().to_ascii_lowercase(), value.to_string());
+                }
+            }
+            return self.parse_attributes(&merged);
+        }
         if let Some(fill) = attrs.get("fill") {
             self.fill = Paint::parse(fill);
         }
@@ -572,6 +658,12 @@ impl SvgStyle {
         if let Some(opacity) = attrs.get("opacity") {
             self.opacity = opacity.parse().unwrap_or(1.0);
         }
+        if let Some(rule) = attrs.get("fill-rule") {
+            self.fill_rule = match rule.trim() {
+                "evenodd" => FillRule::EvenOdd,
+                _ => FillRule::NonZero,
+            };
+        }
         if let Some(linecap) = attrs.get("stroke-linecap") {
             self.stroke_linecap = match linecap.as_str() {
                 "round" => LineCap::Round,
@@ -587,6 +679,178 @@ impl SvgStyle {
             };
         }
     }
+}
+
+// ==================== Fill tessellation ====================
+
+/// Pair checks spent looking for edge crossings in one fill. Past it the
+/// fill still paints; a self-crossing edge pair just isn't split exactly.
+const MAX_CROSSING_CHECKS: usize = 2_000_000;
+
+/// Fill closed contours (SVG 2 §13.4.1 `fill-rule`) as convex pieces.
+///
+/// The renderer fills a `FillPolygon` as a triangle fan, which is exact
+/// only for one convex polygon. So a lone convex contour (rects, circles,
+/// most triangles) goes through as-is, and anything else (concave outlines,
+/// holes, self-crossings, several subpaths) is swept into horizontal
+/// trapezoids, each inside under `rule`.
+fn fill_contours(
+    contours: &[Vec<(f32, f32)>],
+    rule: FillRule,
+    color: Color,
+    commands: &mut Vec<DisplayCommand>,
+) {
+    let contours: Vec<Vec<(f32, f32)>> = contours
+        .iter()
+        .map(|c| {
+            let mut pts: Vec<(f32, f32)> = Vec::with_capacity(c.len());
+            for &p in c {
+                if !(p.0.is_finite() && p.1.is_finite()) {
+                    continue;
+                }
+                if pts.last() != Some(&p) {
+                    pts.push(p);
+                }
+            }
+            while pts.len() > 1 && pts.first() == pts.last() {
+                pts.pop();
+            }
+            pts
+        })
+        .filter(|c| c.len() >= 3)
+        .collect();
+
+    match contours.as_slice() {
+        [] => return,
+        [only] if is_convex(only) => {
+            commands.push(DisplayCommand::FillPolygon { points: only.clone(), color });
+            return;
+        }
+        _ => {}
+    }
+
+    // Edges, top to bottom, with the winding each one adds when crossed.
+    struct Edge {
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        dir: i32,
+    }
+    impl Edge {
+        fn x_at(&self, y: f32) -> f32 {
+            self.x0 + (self.x1 - self.x0) * (y - self.y0) / (self.y1 - self.y0)
+        }
+    }
+    let mut edges: Vec<Edge> = Vec::new();
+    for c in &contours {
+        for i in 0..c.len() {
+            let (a, b) = (c[i], c[(i + 1) % c.len()]);
+            if a.1 == b.1 {
+                continue;
+            }
+            edges.push(if a.1 < b.1 {
+                Edge { x0: a.0, y0: a.1, x1: b.0, y1: b.1, dir: 1 }
+            } else {
+                Edge { x0: b.0, y0: b.1, x1: a.0, y1: a.1, dir: -1 }
+            });
+        }
+    }
+    if edges.is_empty() {
+        return;
+    }
+    edges.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+
+    // Band boundaries: every vertex y, plus every y where two edges cross,
+    // so inside one band the edges keep their left-to-right order.
+    let mut ys: Vec<f32> = edges.iter().flat_map(|e| [e.y0, e.y1]).collect();
+    let mut checks = 0usize;
+    'crossings: for i in 0..edges.len() {
+        let a = &edges[i];
+        for b in &edges[i + 1..] {
+            if b.y0 >= a.y1 {
+                break;
+            }
+            checks += 1;
+            if checks > MAX_CROSSING_CHECKS {
+                break 'crossings;
+            }
+            let (lo, hi) = (a.y0.max(b.y0), a.y1.min(b.y1));
+            if hi <= lo {
+                continue;
+            }
+            let (d_lo, d_hi) = (a.x_at(lo) - b.x_at(lo), a.x_at(hi) - b.x_at(hi));
+            if (d_lo < 0.0 && d_hi > 0.0) || (d_lo > 0.0 && d_hi < 0.0) {
+                ys.push(lo + (hi - lo) * d_lo / (d_lo - d_hi));
+            }
+        }
+    }
+    ys.sort_by(f32::total_cmp);
+    ys.dedup();
+
+    let mut next = 0usize;
+    let mut active: Vec<usize> = Vec::new();
+    let mut crossing: Vec<(f32, f32, f32, i32)> = Vec::new();
+    for band in ys.windows(2) {
+        let (top, bottom) = (band[0], band[1]);
+        while next < edges.len() && edges[next].y0 <= top {
+            active.push(next);
+            next += 1;
+        }
+        active.retain(|&i| edges[i].y1 > top);
+        if bottom - top < 1e-4 {
+            continue;
+        }
+        let mid = (top + bottom) * 0.5;
+        crossing.clear();
+        crossing.extend(active.iter().map(|&i| {
+            let e = &edges[i];
+            (e.x_at(mid), e.x_at(top), e.x_at(bottom), e.dir)
+        }));
+        crossing.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        let mut winding = 0;
+        let mut left: Option<(f32, f32)> = None;
+        for &(_, x_top, x_bottom, dir) in &crossing {
+            winding += dir;
+            let inside = match rule {
+                FillRule::NonZero => winding != 0,
+                FillRule::EvenOdd => winding % 2 != 0,
+            };
+            match (left, inside) {
+                (None, true) => left = Some((x_top, x_bottom)),
+                (Some((l_top, l_bottom)), false) => {
+                    commands.push(DisplayCommand::FillPolygon {
+                        points: vec![(l_top, top), (x_top, top), (x_bottom, bottom), (l_bottom, bottom)],
+                        color,
+                    });
+                    left = None;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A simple convex polygon: every turn the same way, and one full turn in
+/// total (a pentagram turns one way too, but twice around).
+fn is_convex(points: &[(f32, f32)]) -> bool {
+    let n = points.len();
+    let mut sign = 0.0f32;
+    let mut turning = 0.0f32;
+    for i in 0..n {
+        let (a, b, c) = (points[i], points[(i + 1) % n], points[(i + 2) % n]);
+        let (u, v) = ((b.0 - a.0, b.1 - a.1), (c.0 - b.0, c.1 - b.1));
+        let cross = u.0 * v.1 - u.1 * v.0;
+        if cross != 0.0 {
+            if sign != 0.0 && cross.signum() != sign {
+                return false;
+            }
+            sign = cross.signum();
+        }
+        turning += cross.atan2(u.0 * v.0 + u.1 * v.1);
+    }
+    turning.abs() < 3.0 * std::f32::consts::PI
 }
 
 // ==================== SVG Elements ====================
@@ -716,14 +980,14 @@ impl SvgRect {
         };
 
         // Fill
-        if let Some(color) = style.fill.as_color() {
+        if let Some(color) = style.fill_color() {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::FillRect { rect: rect.clone(), color: fill_color });
         }
 
         // Stroke
-        if let Some(color) = style.stroke.as_color() {
+        if let Some(color) = style.stroke_color() {
             let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
             let stroke_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::StrokeRect {
@@ -775,7 +1039,7 @@ impl SvgCircle {
         let r = self.r * scale;
 
         // Fill
-        if let Some(color) = style.fill.as_color() {
+        if let Some(color) = style.fill_color() {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::FillCircle {
@@ -787,7 +1051,7 @@ impl SvgCircle {
         }
 
         // Stroke
-        if let Some(color) = style.stroke.as_color() {
+        if let Some(color) = style.stroke_color() {
             let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
             let stroke_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::StrokeCircle {
@@ -846,7 +1110,7 @@ impl SvgEllipse {
             height: self.ry * 2.0,
         };
 
-        if let Some(color) = style.fill.as_color() {
+        if let Some(color) = style.fill_color() {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::FillEllipse {
@@ -895,7 +1159,7 @@ impl SvgLine {
         let (x1, y1) = transform.apply(self.x1, self.y1);
         let (x2, y2) = transform.apply(self.x2, self.y2);
 
-        if let Some(color) = style.stroke.as_color() {
+        if let Some(color) = style.stroke_color() {
             let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
             let stroke_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::Line {
@@ -934,7 +1198,7 @@ impl SvgPolyline {
             .map(|(x, y)| transform.apply(*x, *y))
             .collect();
 
-        if let Some(color) = style.stroke.as_color() {
+        if let Some(color) = style.stroke_color() {
             let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
             let stroke_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::Polyline {
@@ -970,16 +1234,13 @@ impl SvgPolygon {
             .map(|(x, y)| transform.apply(*x, *y))
             .collect();
 
-        if let Some(color) = style.fill.as_color() {
+        if let Some(color) = style.fill_color() {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
-            commands.push(DisplayCommand::FillPolygon {
-                points: points.clone(),
-                color: fill_color,
-            });
+            fill_contours(std::slice::from_ref(&points), style.fill_rule, fill_color, commands);
         }
 
-        if let Some(color) = style.stroke.as_color() {
+        if let Some(color) = style.stroke_color() {
             let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
             let stroke_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::StrokePolygon {
@@ -1230,7 +1491,10 @@ impl SvgPath {
         let mut current_segment = Vec::new();
         let mut current_pos = (0.0_f32, 0.0_f32);
         let mut start_pos = (0.0_f32, 0.0_f32);
-        let mut _last_control = None::<(f32, f32)>;
+        // The previous segment's second control point, for S/s (after C/S)
+        // and T/t (after Q/T) to reflect. Any other command clears both.
+        let mut last_cubic = None::<(f32, f32)>;
+        let mut last_quad = None::<(f32, f32)>;
 
         for cmd in &self.commands {
             match cmd {
@@ -1241,7 +1505,8 @@ impl SvgPath {
                     current_pos = (*x, *y);
                     start_pos = current_pos;
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::MoveToRel(dx, dy) => {
                     if !current_segment.is_empty() {
@@ -1250,43 +1515,51 @@ impl SvgPath {
                     current_pos = (current_pos.0 + dx, current_pos.1 + dy);
                     start_pos = current_pos;
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::LineTo(x, y) => {
                     current_pos = (*x, *y);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::LineToRel(dx, dy) => {
                     current_pos = (current_pos.0 + dx, current_pos.1 + dy);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::HorizontalTo(x) => {
                     current_pos = (*x, current_pos.1);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::HorizontalToRel(dx) => {
                     current_pos = (current_pos.0 + dx, current_pos.1);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::VerticalTo(y) => {
                     current_pos = (current_pos.0, *y);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::VerticalToRel(dy) => {
                     current_pos = (current_pos.0, current_pos.1 + dy);
                     current_segment.push(current_pos);
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
                 PathCommand::CubicTo(x1, y1, x2, y2, x, y) => {
                     let points = cubic_bezier_points(current_pos, (*x1, *y1), (*x2, *y2), (*x, *y), 20);
                     current_segment.extend(points);
                     current_pos = (*x, *y);
-                    _last_control = Some((*x2, *y2));
+                    last_cubic = Some((*x2, *y2));
+                    last_quad = None;
                 }
                 PathCommand::CubicToRel(dx1, dy1, dx2, dy2, dx, dy) => {
                     let (x1, y1) = (current_pos.0 + dx1, current_pos.1 + dy1);
@@ -1295,13 +1568,15 @@ impl SvgPath {
                     let points = cubic_bezier_points(current_pos, (x1, y1), (x2, y2), (x, y), 20);
                     current_segment.extend(points);
                     current_pos = (x, y);
-                    _last_control = Some((x2, y2));
+                    last_cubic = Some((x2, y2));
+                    last_quad = None;
                 }
                 PathCommand::QuadTo(x1, y1, x, y) => {
                     let points = quad_bezier_points(current_pos, (*x1, *y1), (*x, *y), 20);
                     current_segment.extend(points);
                     current_pos = (*x, *y);
-                    _last_control = Some((*x1, *y1));
+                    last_quad = Some((*x1, *y1));
+                    last_cubic = None;
                 }
                 PathCommand::QuadToRel(dx1, dy1, dx, dy) => {
                     let (x1, y1) = (current_pos.0 + dx1, current_pos.1 + dy1);
@@ -1309,7 +1584,8 @@ impl SvgPath {
                     let points = quad_bezier_points(current_pos, (x1, y1), (x, y), 20);
                     current_segment.extend(points);
                     current_pos = (x, y);
-                    _last_control = Some((x1, y1));
+                    last_quad = Some((x1, y1));
+                    last_cubic = None;
                 }
                 PathCommand::Close => {
                     if current_pos != start_pos {
@@ -1319,11 +1595,53 @@ impl SvgPath {
                     if !current_segment.is_empty() {
                         segments.push(std::mem::take(&mut current_segment));
                     }
-                    _last_control = None;
+                    last_cubic = None;
+                    last_quad = None;
                 }
-                // Handle other commands as lines for simplicity
-                _ => {
-                    _last_control = None;
+                // S/s and T/t: the first control point is the reflection of
+                // the previous segment's (SVG 1.1 §8.3.6, §8.3.7), or the
+                // current point when the previous command wasn't the same kind.
+                PathCommand::SmoothCubicTo(..) | PathCommand::SmoothCubicToRel(..) => {
+                    let (x2, y2, x, y) = match cmd {
+                        PathCommand::SmoothCubicTo(x2, y2, x, y) => (*x2, *y2, *x, *y),
+                        PathCommand::SmoothCubicToRel(dx2, dy2, dx, dy) => (
+                            current_pos.0 + dx2,
+                            current_pos.1 + dy2,
+                            current_pos.0 + dx,
+                            current_pos.1 + dy,
+                        ),
+                        _ => unreachable!(),
+                    };
+                    let c1 = reflect(last_cubic, current_pos);
+                    current_segment.extend(cubic_bezier_points(current_pos, c1, (x2, y2), (x, y), 20));
+                    current_pos = (x, y);
+                    last_cubic = Some((x2, y2));
+                    last_quad = None;
+                }
+                PathCommand::SmoothQuadTo(..) | PathCommand::SmoothQuadToRel(..) => {
+                    let (x, y) = match cmd {
+                        PathCommand::SmoothQuadTo(x, y) => (*x, *y),
+                        PathCommand::SmoothQuadToRel(dx, dy) => (current_pos.0 + dx, current_pos.1 + dy),
+                        _ => unreachable!(),
+                    };
+                    let c1 = reflect(last_quad, current_pos);
+                    current_segment.extend(quad_bezier_points(current_pos, c1, (x, y), 20));
+                    current_pos = (x, y);
+                    last_quad = Some(c1);
+                    last_cubic = None;
+                }
+                PathCommand::ArcTo(..) | PathCommand::ArcToRel(..) => {
+                    let (rx, ry, angle, large_arc, sweep, x, y) = match cmd {
+                        PathCommand::ArcTo(rx, ry, a, l, s, x, y) => (*rx, *ry, *a, *l, *s, *x, *y),
+                        PathCommand::ArcToRel(rx, ry, a, l, s, dx, dy) => {
+                            (*rx, *ry, *a, *l, *s, current_pos.0 + dx, current_pos.1 + dy)
+                        }
+                        _ => unreachable!(),
+                    };
+                    current_segment.extend(arc_points(current_pos, rx, ry, angle, large_arc, sweep, (x, y)));
+                    current_pos = (x, y);
+                    last_cubic = None;
+                    last_quad = None;
                 }
             }
         }
@@ -1345,32 +1663,28 @@ impl SvgPath {
             return;
         }
 
-        let segments = self.to_line_segments();
+        let subpaths: Vec<Vec<(f32, f32)>> = self
+            .to_line_segments()
+            .into_iter()
+            .map(|segment| segment.iter().map(|(x, y)| transform.apply(*x, *y)).collect())
+            .collect();
 
-        for segment in segments {
-            let points: Vec<(f32, f32)> = segment
-                .iter()
-                .map(|(x, y)| transform.apply(*x, *y))
-                .collect();
+        // Fill: every subpath is one contour of a single fill, so a hole
+        // (a reversed inner subpath, or any inner one under evenodd) stays
+        // empty and overlapping subpaths don't double their alpha.
+        if let Some(color) = style.fill_color() {
+            let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
+            let fill_color = Color { a: alpha, ..color };
+            fill_contours(&subpaths, style.fill_rule, fill_color, commands);
+        }
 
+        for points in subpaths {
             if points.len() < 2 {
                 continue;
             }
 
-            // Fill (only for closed paths)
-            if let Some(color) = style.fill.as_color() {
-                if points.len() >= 3 {
-                    let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
-                    let fill_color = Color { a: alpha, ..color };
-                    commands.push(DisplayCommand::FillPolygon {
-                        points: points.clone(),
-                        color: fill_color,
-                    });
-                }
-            }
-
             // Stroke
-            if let Some(color) = style.stroke.as_color() {
+            if let Some(color) = style.stroke_color() {
                 let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
                 let stroke_color = Color { a: alpha, ..color };
                 commands.push(DisplayCommand::Polyline {
@@ -1383,6 +1697,15 @@ impl SvgPath {
     }
 }
 
+/// Horizontal anchoring of a text run (`text-anchor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextAnchor {
+    #[default]
+    Start,
+    Middle,
+    End,
+}
+
 /// Text element (<text>).
 #[derive(Debug, Clone, Default)]
 pub struct SvgText {
@@ -1391,6 +1714,7 @@ pub struct SvgText {
     pub content: String,
     pub font_family: String,
     pub font_size: f32,
+    pub anchor: TextAnchor,
     pub transform: Transform2D,
     pub style: SvgStyle,
 }
@@ -1406,22 +1730,61 @@ impl SvgText {
             return;
         }
 
-        let (x, y) = transform.apply(self.x, self.y);
+        let font_size = if self.font_size > 0.0 { self.font_size } else { 16.0 };
+        let font_family = if self.font_family.is_empty() {
+            "sans-serif".to_string()
+        } else {
+            self.font_family.clone()
+        };
 
-        if let Some(color) = style.fill.as_color() {
+        // text-anchor offsets the run in LOCAL units before the transform:
+        // the shaper measures at the local font size, so the offset scales
+        // with the viewBox mapping like every other coordinate.
+        let anchor_dx = match self.anchor {
+            TextAnchor::Start => 0.0,
+            TextAnchor::Middle | TextAnchor::End => {
+                let width = rustkit_layout::measure_text_advanced(
+                    &self.content,
+                    &font_family,
+                    font_size,
+                    rustkit_css::FontWeight(400),
+                    rustkit_css::FontStyle::Normal,
+                )
+                .width;
+                if self.anchor == TextAnchor::Middle {
+                    -width / 2.0
+                } else {
+                    -width
+                }
+            }
+        };
+
+        let (x, y) = transform.apply(self.x + anchor_dx, self.y);
+        // Uniform scale (a == d for the viewBox mapping); fonts don't
+        // anisotropically scale here.
+        let scaled_font_size = font_size * transform.a;
+
+        if let Some(color) = style.fill_color() {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let text_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::Text {
                 x,
                 y,
                 text: self.content.clone(),
-                font_family: if self.font_family.is_empty() { "sans-serif".to_string() } else { self.font_family.clone() },
-                font_size: self.font_size,
+                font_family,
+                font_size: scaled_font_size,
                 color: text_color,
                 font_weight: 400, // Normal
                 font_style: 0, // Normal
-                gradient: None,
-                gradient_rect: Rect::default(),
+                // ADVANCE CONTRACT: svg <text> is a legacy path — it has no
+                // layout shaper of its own, so paint falls back to its own
+                // advances (the None arm the contract documents).
+                advances: None,
+                // SVG y is the BASELINE; the renderer computes
+                // baseline = y + ascent, so a zero ascent hands it the
+                // baseline directly instead of a run-top.
+                ascent: Some(0.0),
+                run: None,
             });
         }
     }
@@ -1514,6 +1877,93 @@ fn cubic_bezier_points(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), p3: (f32,
     points
 }
 
+/// The reflection of `control` about `about`; `about` itself when there is no
+/// control to reflect (S/T after a command of another kind).
+fn reflect(control: Option<(f32, f32)>, about: (f32, f32)) -> (f32, f32) {
+    match control {
+        Some((cx, cy)) => (2.0 * about.0 - cx, 2.0 * about.1 - cy),
+        None => about,
+    }
+}
+
+/// Points along an SVG elliptical arc from `p0` to `p1`, excluding `p0` and
+/// ending exactly on `p1` (SVG 1.1 appendix F.6: endpoint to center
+/// parameterization, with out-of-range radii scaled up and a zero radius
+/// meaning a straight line).
+fn arc_points(
+    p0: (f32, f32),
+    rx: f32,
+    ry: f32,
+    x_axis_rotation_deg: f32,
+    large_arc: bool,
+    sweep: bool,
+    p1: (f32, f32),
+) -> Vec<(f32, f32)> {
+    if p0 == p1 {
+        return Vec::new();
+    }
+    let (mut rx, mut ry) = (f64::from(rx.abs()), f64::from(ry.abs()));
+    if rx == 0.0 || ry == 0.0 {
+        return vec![p1];
+    }
+    let (x0, y0) = (f64::from(p0.0), f64::from(p0.1));
+    let (x1, y1) = (f64::from(p1.0), f64::from(p1.1));
+    let phi = f64::from(x_axis_rotation_deg).to_radians();
+    let (sin_phi, cos_phi) = phi.sin_cos();
+
+    // F.6.5.1: the midpoint in the ellipse's rotated frame.
+    let (hx, hy) = ((x0 - x1) / 2.0, (y0 - y1) / 2.0);
+    let xp = cos_phi * hx + sin_phi * hy;
+    let yp = -sin_phi * hx + cos_phi * hy;
+
+    // F.6.6.2: radii too small to span the endpoints are scaled up.
+    let lambda = (xp * xp) / (rx * rx) + (yp * yp) / (ry * ry);
+    if lambda > 1.0 {
+        let k = lambda.sqrt();
+        rx *= k;
+        ry *= k;
+    }
+
+    // F.6.5.2: the center in the rotated frame.
+    let num = rx * rx * ry * ry - rx * rx * yp * yp - ry * ry * xp * xp;
+    let den = rx * rx * yp * yp + ry * ry * xp * xp;
+    let mut coef = if den == 0.0 { 0.0 } else { (num / den).max(0.0).sqrt() };
+    if large_arc == sweep {
+        coef = -coef;
+    }
+    let cxp = coef * rx * yp / ry;
+    let cyp = -coef * ry * xp / rx;
+
+    // F.6.5.3: back to user space.
+    let cx = cos_phi * cxp - sin_phi * cyp + (x0 + x1) / 2.0;
+    let cy = sin_phi * cxp + cos_phi * cyp + (y0 + y1) / 2.0;
+
+    // F.6.5.5-6: start angle and sweep.
+    let angle = |ux: f64, uy: f64, vx: f64, vy: f64| (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
+    let (ux, uy) = ((xp - cxp) / rx, (yp - cyp) / ry);
+    let (vx, vy) = ((-xp - cxp) / rx, (-yp - cyp) / ry);
+    let theta1 = angle(1.0, 0.0, ux, uy);
+    let mut delta = angle(ux, uy, vx, vy);
+    if !sweep && delta > 0.0 {
+        delta -= std::f64::consts::TAU;
+    } else if sweep && delta < 0.0 {
+        delta += std::f64::consts::TAU;
+    }
+
+    // About one point per 11.25 degrees, as fine as the 20-step beziers.
+    let steps = ((delta.abs() / (std::f64::consts::PI / 16.0)).ceil() as usize).max(2);
+    let mut points = Vec::with_capacity(steps);
+    for i in 1..steps {
+        let (sin_t, cos_t) = (theta1 + delta * i as f64 / steps as f64).sin_cos();
+        points.push((
+            (cx + rx * cos_phi * cos_t - ry * sin_phi * sin_t) as f32,
+            (cy + rx * sin_phi * cos_t + ry * cos_phi * sin_t) as f32,
+        ));
+    }
+    points.push(p1);
+    points
+}
+
 /// Generate points along a quadratic bezier curve.
 fn quad_bezier_points(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), segments: usize) -> Vec<(f32, f32)> {
     let mut points = Vec::with_capacity(segments);
@@ -1533,13 +1983,21 @@ fn quad_bezier_points(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), segments: 
 
 /// Extract attribute value from XML tag.
 fn extract_attr(tag: &str, name: &str) -> Option<String> {
-    let pattern = format!("{}=", name);
-    if let Some(start) = tag.find(&pattern) {
-        let rest = &tag[start + pattern.len()..];
-        let quote = rest.chars().next()?;
-        if quote == '"' || quote == '\'' {
-            let end = rest[1..].find(quote)?;
-            return Some(rest[1..1 + end].to_string());
+    // Both spellings: HTML's tree builder lowercases attribute names, so an
+    // inline <svg viewBox=...> serialized back out of the DOM carries
+    // `viewbox=` — the camelCase spelling only survives in external .svg
+    // files. (The spec-correct place to re-case it is the HTML parser's
+    // "adjust SVG attributes" step, which rustkit-html does not have.)
+    let lower = name.to_lowercase();
+    for candidate in [name, lower.as_str()] {
+        let pattern = format!("{}=", candidate);
+        if let Some(start) = tag.find(&pattern) {
+            let rest = &tag[start + pattern.len()..];
+            let quote = rest.chars().next()?;
+            if quote == '"' || quote == '\'' {
+                let end = rest[1..].find(quote)?;
+                return Some(rest[1..1 + end].to_string());
+            }
         }
     }
     None
@@ -1606,7 +2064,7 @@ fn parse_svg_color(s: &str) -> Option<Color> {
 }
 
 /// Parse SVG content into elements.
-fn parse_svg_content(xml: &str) -> Result<SvgElement, SvgError> {
+fn parse_svg_content(xml: &str, base_style: &SvgStyle) -> Result<SvgElement, SvgError> {
     let mut group = SvgGroup::new();
     
     // Simple element parsing
@@ -1634,13 +2092,38 @@ fn parse_svg_content(xml: &str) -> Result<SvgElement, SvgError> {
             // Find tag end
             if let Some(tag_end) = xml[tag_start..].find('>') {
                 let tag = &xml[tag_start..tag_start + tag_end + 1];
-                
+                let after_tag = tag_start + tag_end + 1;
+
+                // <text> carries its content BETWEEN the tags, which
+                // parse_element (open tag only) can never see. Grab up to
+                // the closing tag and consume the whole element.
+                let tag_name = tag
+                    .trim_start_matches('<')
+                    .split(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+                if tag_name == "text" && !tag.ends_with("/>") {
+                    if let Some(close) = xml[after_tag..].find("</text") {
+                        let content = &xml[after_tag..after_tag + close];
+                        if let Some(element) = parse_text_element(tag, content, base_style) {
+                            group.children.push(element);
+                        }
+                        let rest = after_tag + close;
+                        pos = xml[rest..]
+                            .find('>')
+                            .map(|e| rest + e + 1)
+                            .unwrap_or(xml.len());
+                        continue;
+                    }
+                }
+
                 // Parse element
-                if let Some(element) = parse_element(tag) {
+                if let Some(element) = parse_element(tag, base_style) {
                     group.children.push(element);
                 }
-                
-                pos = tag_start + tag_end + 1;
+
+                pos = after_tag;
             } else {
                 break;
             }
@@ -1653,7 +2136,7 @@ fn parse_svg_content(xml: &str) -> Result<SvgElement, SvgError> {
 }
 
 /// Parse a single SVG element.
-fn parse_element(tag: &str) -> Option<SvgElement> {
+fn parse_element(tag: &str, base_style: &SvgStyle) -> Option<SvgElement> {
     let tag = tag.trim_start_matches('<').trim_end_matches('>').trim_end_matches('/');
     let parts: Vec<&str> = tag.splitn(2, char::is_whitespace).collect();
     let name = parts.first()?.to_lowercase();
@@ -1678,6 +2161,7 @@ fn parse_element(tag: &str) -> Option<SvgElement> {
             if let Some(t) = attrs.get("transform") {
                 rect.transform = Transform2D::parse(t);
             }
+            rect.style = base_style.clone();
             rect.style.parse_attributes(&attrs);
             Some(SvgElement::Rect(rect))
         }
@@ -1689,6 +2173,7 @@ fn parse_element(tag: &str) -> Option<SvgElement> {
             if let Some(t) = attrs.get("transform") {
                 circle.transform = Transform2D::parse(t);
             }
+            circle.style = base_style.clone();
             circle.style.parse_attributes(&attrs);
             Some(SvgElement::Circle(circle))
         }
@@ -1701,6 +2186,7 @@ fn parse_element(tag: &str) -> Option<SvgElement> {
             if let Some(t) = attrs.get("transform") {
                 ellipse.transform = Transform2D::parse(t);
             }
+            ellipse.style = base_style.clone();
             ellipse.style.parse_attributes(&attrs);
             Some(SvgElement::Ellipse(ellipse))
         }
@@ -1713,6 +2199,7 @@ fn parse_element(tag: &str) -> Option<SvgElement> {
             if let Some(t) = attrs.get("transform") {
                 line.transform = Transform2D::parse(t);
             }
+            line.style = base_style.clone();
             line.style.parse_attributes(&attrs);
             Some(SvgElement::Line(line))
         }
@@ -1724,6 +2211,7 @@ fn parse_element(tag: &str) -> Option<SvgElement> {
             if let Some(t) = attrs.get("transform") {
                 path.transform = Transform2D::parse(t);
             }
+            path.style = base_style.clone();
             path.style.parse_attributes(&attrs);
             Some(SvgElement::Path(path))
         }
@@ -1735,6 +2223,7 @@ fn parse_element(tag: &str) -> Option<SvgElement> {
             if let Some(t) = attrs.get("transform") {
                 polyline.transform = Transform2D::parse(t);
             }
+            polyline.style = base_style.clone();
             polyline.style.parse_attributes(&attrs);
             Some(SvgElement::Polyline(polyline))
         }
@@ -1746,11 +2235,76 @@ fn parse_element(tag: &str) -> Option<SvgElement> {
             if let Some(t) = attrs.get("transform") {
                 polygon.transform = Transform2D::parse(t);
             }
+            polygon.style = base_style.clone();
             polygon.style.parse_attributes(&attrs);
             Some(SvgElement::Polygon(polygon))
         }
         _ => None,
     }
+}
+
+/// Parse a `<text>` element from its open tag and the content between the
+/// tags. Nested markup (tspan) is stripped to its text; the three basic
+/// XML entities are decoded because the content is read literally.
+fn parse_text_element(tag: &str, content: &str, base_style: &SvgStyle) -> Option<SvgElement> {
+    let attrs_str = tag
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .splitn(2, char::is_whitespace)
+        .nth(1)
+        .unwrap_or("");
+
+    let mut attrs = HashMap::new();
+    let mut attr_str = attrs_str;
+    while let Some((key, value, rest)) = parse_attr(attr_str) {
+        attrs.insert(key.to_lowercase(), value);
+        attr_str = rest;
+    }
+
+    let mut text = String::new();
+    let mut in_tag = false;
+    for c in content.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    let text = text
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return None;
+    }
+
+    let mut t = SvgText {
+        x: attrs.get("x").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+        y: attrs.get("y").and_then(|s| s.parse().ok()).unwrap_or(0.0),
+        content: text,
+        font_family: attrs.get("font-family").cloned().unwrap_or_default(),
+        font_size: attrs
+            .get("font-size")
+            .and_then(|s| SvgLength::parse(s))
+            .map(|l| l.to_px(16.0))
+            .unwrap_or(16.0),
+        anchor: match attrs.get("text-anchor").map(|s| s.trim()) {
+            Some("middle") => TextAnchor::Middle,
+            Some("end") => TextAnchor::End,
+            _ => TextAnchor::Start,
+        },
+        ..Default::default()
+    };
+    if let Some(tr) = attrs.get("transform") {
+        t.transform = Transform2D::parse(tr);
+    }
+    t.style = base_style.clone();
+    t.style.parse_attributes(&attrs);
+    Some(SvgElement::Text(t))
 }
 
 /// Parse a single attribute.
@@ -1797,7 +2351,303 @@ fn parse_points(s: &str) -> Vec<(f32, f32)> {
 
 #[cfg(test)]
 mod tests {
+    /// Every point `to_line_segments` produces for path data `d`, in order.
+    fn flattened(d: &str) -> Vec<(f32, f32)> {
+        let path = super::SvgPath { commands: super::SvgPath::parse(d), ..Default::default() };
+        path.to_line_segments().into_iter().flatten().collect()
+    }
+
+    fn near(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3
+    }
+
+    #[test]
+    fn smooth_cubic_reflects_the_previous_control_point() {
+        // C's second control (10,10) reflects about (10,0) to (10,-10), so
+        // the S half dips below the axis.
+        let pts = flattened("M0 0 C0 10 10 10 10 0 S20 -10 20 0");
+        assert!(near(*pts.last().unwrap(), (20.0, 0.0)), "{:?}", pts.last());
+        let second_half: Vec<_> = pts.iter().filter(|p| p.0 > 10.0).collect();
+        assert!(second_half.iter().all(|p| p.1 <= 1e-3), "S must bend away from C: {second_half:?}");
+        assert!(second_half.iter().any(|p| p.1 < -5.0));
+    }
+
+    #[test]
+    fn smooth_commands_advance_the_current_point() {
+        // Relative commands after s/t/a start from where they ended.
+        for d in ["M0 0 s10 10 10 0 l5 0", "M0 0 t10 0 l5 0", "M0 0 a5 5 0 0 1 10 0 l5 0"] {
+            assert!(near(*flattened(d).last().unwrap(), (15.0, 0.0)), "{d}: {:?}", flattened(d));
+        }
+    }
+
+    #[test]
+    fn smooth_quad_reflects_only_a_quad_control() {
+        // Q's control (5,10) reflects about (10,0) to (15,-10).
+        let pts = flattened("M0 0 Q5 10 10 0 T20 0");
+        assert!(pts.iter().filter(|p| p.0 > 10.0).any(|p| p.1 < -2.0), "{pts:?}");
+        // After a cubic, T has no quad control to reflect: a straight line.
+        let pts = flattened("M0 0 C0 10 10 10 10 0 T20 0");
+        assert!(pts.iter().filter(|p| p.0 > 10.0).all(|p| p.1.abs() < 1e-3), "{pts:?}");
+    }
+
+    #[test]
+    fn arcs_follow_the_ellipse_and_honour_the_flags() {
+        // A semicircle of radius 10 about (10,0). sweep=1 is the positive
+        // angle direction, which is upward (negative y) here.
+        let up = flattened("M0 0 A10 10 0 0 1 20 0");
+        assert!(near(*up.last().unwrap(), (20.0, 0.0)));
+        for p in &up {
+            let r = ((p.0 - 10.0).powi(2) + p.1.powi(2)).sqrt();
+            assert!((r - 10.0).abs() < 1e-2, "off the circle: {p:?}");
+        }
+        assert!(up.iter().any(|p| p.1 < -9.9));
+        let down = flattened("M0 0 A10 10 0 0 0 20 0");
+        assert!(down.iter().any(|p| p.1 > 9.9));
+
+        // large-arc picks the long way round a circle through both points.
+        let small = flattened("M0 0 A10 10 0 0 1 10 10");
+        let large = flattened("M0 0 A10 10 0 1 1 10 10");
+        assert!(large.len() > small.len() * 2, "{} vs {}", large.len(), small.len());
+
+        // Radii too small are scaled up to just span the endpoints.
+        let scaled = flattened("M0 0 a1 1 0 0 1 20 0");
+        assert!(near(*scaled.last().unwrap(), (20.0, 0.0)));
+        assert!(scaled.iter().any(|p| p.1 < -9.9));
+
+        // A zero radius is a straight line.
+        assert_eq!(flattened("M0 0 A0 5 0 0 1 20 0"), vec![(0.0, 0.0), (20.0, 0.0)]);
+    }
+
+    #[test]
+    fn packed_decimals_split_into_separate_numbers() {
+        // facebook's logo: `1.727.125` is two numbers, 1.727 and .125.
+        let cmds = super::SvgPath::parse("M1.727.125l-.5.25");
+        assert!(matches!(cmds[0], super::PathCommand::MoveTo(x, y) if x == 1.727 && y == 0.125), "{cmds:?}");
+        assert!(matches!(cmds[1], super::PathCommand::LineToRel(x, y) if x == -0.5 && y == 0.25), "{cmds:?}");
+    }
+
     use super::*;
+
+    #[test]
+    fn test_lowercase_viewbox_scales_the_document() {
+        // HTML's tree builder lowercases attribute names, so an inline
+        // <svg viewBox=...> serialized out of the DOM reads `viewbox=`.
+        // The case-sensitive lookup dropped the viewBox entirely and every
+        // path/circle under a viewBox != box-size painted UNSCALED (the
+        // repro triangle: 20px where Chrome draws 40).
+        let doc = SvgDocument::parse(
+            r##"<svg width="48" height="48" viewbox="0 0 24 24">
+                <path d="M12 2L2 22h20z" fill="#d9534f"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        assert!(doc.view_box.is_some(), "lowercased viewbox must still parse");
+
+        let commands = doc.render(0.0, 0.0, 48.0, 48.0);
+        let points = commands
+            .iter()
+            .find_map(|c| match c {
+                DisplayCommand::FillPolygon { points, .. } => Some(points.clone()),
+                _ => None,
+            })
+            .expect("path fill");
+        let max_x = points.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+        let min_x = points.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+        // Path x spans 2..22 in a 24-unit viewBox mapped to 48px: 4..44.
+        assert!((min_x - 4.0).abs() < 0.01 && (max_x - 44.0).abs() < 0.01,
+            "viewBox scale must reach path points: {min_x}..{max_x}");
+    }
+
+    #[test]
+    fn test_text_element_parses_content_between_tags() {
+        let doc = SvgDocument::parse(
+            r##"<svg width="200" height="150" viewBox="0 0 200 150">
+                <rect fill="#4a90d9" width="200" height="150"/>
+                <text x="100" y="75" text-anchor="middle" fill="white" font-size="14">200&#215;150 &amp; more</text>
+            </svg>"##,
+        )
+        .expect("parse");
+
+        let commands = doc.render(0.0, 0.0, 200.0, 150.0);
+        let text = commands
+            .iter()
+            .find_map(|c| match c {
+                DisplayCommand::Text { text, y, font_size, ascent, .. } => {
+                    Some((text.clone(), *y, *font_size, *ascent))
+                }
+                _ => None,
+            })
+            .expect("text command");
+        // Numeric entities are not decoded (only the named basics), so the
+        // raw &#215; stays; the point is the content and the & decode.
+        assert!(text.0.contains("150 & more"), "content must reach the command: {:?}", text.0);
+        // y is the BASELINE and must be handed over as one (zero ascent).
+        assert_eq!(text.1, 75.0);
+        assert_eq!(text.3, Some(0.0));
+        assert_eq!(text.2, 14.0);
+
+        // Anchor=middle shifts the run left of x=100.
+        if let Some(DisplayCommand::Text { x, .. }) = commands.iter().find(|c| matches!(c, DisplayCommand::Text { .. })) {
+            assert!(*x < 100.0, "middle anchor must shift the run left: x={x}");
+        }
+    }
+
+    /// How many times the renderer's triangle fans paint the point `p`.
+    fn fan_coverage(commands: &[DisplayCommand], p: (f32, f32)) -> usize {
+        let in_tri = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
+            let side = |u: (f32, f32), v: (f32, f32)| (v.0 - u.0) * (p.1 - u.1) - (v.1 - u.1) * (p.0 - u.0);
+            let (d1, d2, d3) = (side(a, b), side(b, c), side(c, a));
+            !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+        };
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                DisplayCommand::FillPolygon { points, .. } => Some(points),
+                _ => None,
+            })
+            .map(|pts| (1..pts.len() - 1).filter(|&i| in_tri(pts[0], pts[i], pts[i + 1])).count().min(1))
+            .sum()
+    }
+
+    fn render_path(d: &str, extra: &str) -> Vec<DisplayCommand> {
+        let doc = SvgDocument::parse(&format!(
+            r##"<svg width="10" height="10"><path d="{d}" fill="#000" {extra}/></svg>"##
+        ))
+        .expect("parse");
+        doc.render(0.0, 0.0, 10.0, 10.0)
+    }
+
+    #[test]
+    fn test_evenodd_leaves_an_inner_subpath_empty() {
+        // linkedin's chair outline: an outer and an inner subpath, both the
+        // same direction, under fill-rule="evenodd". Chrome paints a ring.
+        let d = "M0 0H10V10H0Z M3 3H7V7H3Z";
+        let ring = render_path(d, r#"fill-rule="evenodd""#);
+        assert_eq!(fan_coverage(&ring, (5.0, 5.0)), 0, "evenodd hole must stay empty");
+        assert_eq!(fan_coverage(&ring, (1.0, 5.0)), 1, "the ring itself paints once");
+        // The same path under the initial nonzero rule is solid.
+        let solid = render_path(d, "");
+        assert_eq!(fan_coverage(&solid, (5.0, 5.0)), 1, "nonzero, same direction: solid, painted once");
+        // The style property spells it the same way.
+        let styled = render_path(d, r#"style="fill-rule: evenodd""#);
+        assert_eq!(fan_coverage(&styled, (5.0, 5.0)), 0);
+    }
+
+    #[test]
+    fn test_nonzero_reversed_inner_subpath_is_a_hole() {
+        // The icon-font idiom: the counter of an "O" is drawn counter-wise.
+        let commands = render_path("M0 0H10V10H0Z M3 3V7H7V3Z", "");
+        assert_eq!(fan_coverage(&commands, (5.0, 5.0)), 0);
+        assert_eq!(fan_coverage(&commands, (8.5, 5.0)), 1);
+    }
+
+    #[test]
+    fn test_concave_path_does_not_fill_its_notch() {
+        // A dart: a fan from (0,0) would paint the notch at x < 5.
+        let commands = render_path("M0 0L10 5L0 10L5 5Z", "");
+        assert_eq!(fan_coverage(&commands, (2.0, 4.5)), 0, "the notch is outside the dart");
+        assert_eq!(fan_coverage(&commands, (7.0, 4.5)), 1);
+        // A convex shape still goes through as one polygon.
+        let tri = render_path("M0 0L10 0L5 10Z", "");
+        assert_eq!(tri.iter().filter(|c| matches!(c, DisplayCommand::FillPolygon { .. })).count(), 1);
+    }
+
+    #[test]
+    fn test_self_crossing_star_follows_the_fill_rule() {
+        // A pentagram: its centre winds twice, so nonzero fills it and
+        // evenodd leaves it empty.
+        let d = "M5 0L8 10L0 3.5H10L2 10Z";
+        assert_eq!(fan_coverage(&render_path(d, ""), (5.0, 5.5)), 1);
+        assert_eq!(fan_coverage(&render_path(d, r#"fill-rule="evenodd""#), (5.0, 5.5)), 0);
+        assert_eq!(fan_coverage(&render_path(d, r#"fill-rule="evenodd""#), (5.0, 2.0)), 1);
+    }
+
+    #[test]
+    fn test_inline_style_sets_paint_and_beats_presentation_attributes() {
+        // linkedin's hero: `<path d=".." style="fill: #fbf1e2"/>`, 148 times.
+        let doc = SvgDocument::parse(
+            r##"<svg width="10" height="10"><rect width="10" height="10" fill="#0000ff" style="fill: #fbf1e2; stroke:#ff0000 !important;stroke-width: 2"/></svg>"##,
+        )
+        .expect("parse");
+        let SvgElement::Group(root) = &doc.root else { panic!("root is a group") };
+        let SvgElement::Rect(rect) = &root.children[0] else { panic!("rect") };
+        let rgb = |c: Option<Color>| c.map(|c| (c.r, c.g, c.b));
+        assert_eq!(rgb(rect.style.fill_color()), Some((0xfb, 0xf1, 0xe2)));
+        assert_eq!(rgb(rect.style.stroke_color()), Some((0xff, 0, 0)));
+        assert_eq!(rect.style.stroke_width, 2.0);
+    }
+
+    #[test]
+    fn test_root_presentation_attributes_seed_shape_styles() {
+        // The stroke-only icon idiom: fill/stroke live on the <svg> root and
+        // the shapes carry none of their own. The flat parser must seed
+        // every shape from the root or the circle paints a default-black
+        // disc where Chrome draws an outline.
+        let doc = SvgDocument::parse(
+            r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="M21 21l-4.35-4.35"/>
+            </svg>"#,
+        )
+        .expect("parse");
+
+        let commands = doc.render(0.0, 0.0, 14.0, 14.0);
+        assert!(
+            !commands.iter().any(|c| matches!(c, DisplayCommand::FillPolygon { .. })),
+            "fill=none on the root must reach the shapes (no fills)"
+        );
+        assert!(
+            commands.iter().any(|c| matches!(c, DisplayCommand::Polyline { .. })),
+            "stroke=currentColor on the root must reach the shapes (strokes present)"
+        );
+    }
+
+    #[test]
+    fn test_current_color_resolves_to_the_render_calls_css_color() {
+        // The shelf's search icon: `stroke="currentColor"` on the root, the
+        // <svg> sitting in an element whose CSS color is rgb(148,163,184).
+        // Chrome strokes it in that color; we stroked it in black because
+        // the paint keyword resolved with no context. The CSS color is a
+        // render-time input and must reach every shape — including the
+        // path (polyline) and the circle (stroke-circle), and a shape that
+        // names currentColor itself rather than inheriting the root's.
+        let doc = SvgDocument::parse(
+            r#"<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="M21 21l-4.35-4.35"/>
+                <rect x="1" y="1" width="4" height="4" fill="currentColor" stroke="none"/>
+            </svg>"#,
+        )
+        .expect("parse");
+        let css = Color::new(148, 163, 184, 1.0);
+
+        let commands = doc.render_with_color(0.0, 0.0, 14.0, 14.0, css);
+        let mut seen = 0;
+        for c in &commands {
+            let color = match c {
+                DisplayCommand::Polyline { color, .. } => *color,
+                DisplayCommand::StrokeCircle { color, .. } => *color,
+                DisplayCommand::FillRect { color, .. } => *color,
+                other => panic!("unexpected command for the icon: {other:?}"),
+            };
+            assert_eq!(
+                (color.r, color.g, color.b),
+                (css.r, css.g, css.b),
+                "currentColor must resolve to the CSS color, got {color:?} in {c:?}"
+            );
+            seen += 1;
+        }
+        assert_eq!(seen, 3, "circle stroke + path stroke + rect fill: {commands:?}");
+
+        // The context-free render (an <img src=*.svg>, whose own CSS color
+        // is the initial black) keeps black.
+        let plain = doc.render(0.0, 0.0, 14.0, 14.0);
+        let black = plain
+            .iter()
+            .filter(|c| matches!(c, DisplayCommand::Polyline { color, .. } if color.r == 0 && color.g == 0 && color.b == 0))
+            .count();
+        assert_eq!(black, 1, "render() must still resolve currentColor to black: {plain:?}");
+    }
 
     #[test]
     fn test_transform_identity() {

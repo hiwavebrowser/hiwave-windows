@@ -20,6 +20,13 @@ tracing = "0.1"
 
 # Text shaping on Windows via DirectWrite (through rustkit-text)
 
+# Core Text for macOS text shaping
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9"
+core-graphics = "0.23"
+core-text = "20.1"
+foreign-types-shared = "0.3"
+
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

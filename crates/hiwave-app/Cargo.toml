@@ -29,7 +29,7 @@ rustkit = ["rustkit-engine", "rustkit-viewhost", "rustkit-net", "wry", "tao", "m
 webview-fallback = ["wry", "tao", "muda"]
 # Native Win32: EXPERIMENTAL - Full native Windows app without wry/tao (work in progress)
 # This uses RustKit for ALL rendering (Chrome UI, Content, Shelf)
-native-win32 = ["rustkit-engine", "rustkit-viewhost", "rustkit-bindings", "rustkit-net", "windows", "tokio"]
+native-win32 = ["rustkit-engine", "rustkit-viewhost", "rustkit-bindings", "rustkit-core", "rustkit-net", "windows", "tokio"]
 
 [dependencies]
 # WebView (for Chrome UI, Shelf, and secondary windows)
@@ -66,6 +66,7 @@ hiwave-analytics = { workspace = true }
 
 # RustKit engine (optional, Windows only)
 [target.'cfg(target_os = "windows")'.dependencies]
+rustkit-core = { workspace = true, optional = true }
 rustkit-engine = { workspace = true, optional = true }
 rustkit-viewhost = { workspace = true, optional = true }
 rustkit-bindings = { workspace = true, optional = true }

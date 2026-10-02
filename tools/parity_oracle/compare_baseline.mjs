@@ -1,6 +1,6 @@
 /**
  * compare_baseline.mjs - Compare RustKit capture against Chrome baseline
- *
+ * 
  * Triple verification:
  * 1. Pixel diff (primary)
  * 2. Computed-style comparison
@@ -21,7 +21,7 @@ async function loadPng(pngPath) {
   return new Promise((resolve, reject) => {
     const buffer = readFileSync(pngPath);
     const png = new PNG();
-
+    
     png.parse(buffer, (err, data) => {
       if (err) reject(err);
       else resolve({ width: data.width, height: data.height, data: data.data });
@@ -35,17 +35,17 @@ async function loadPng(pngPath) {
 function ppmToRgba(ppmPath) {
   const buffer = readFileSync(ppmPath);
   let idx = 0;
-
+  
   // Skip magic number "P6"
   while (buffer[idx] !== 0x0A) idx++;
   idx++;
-
+  
   // Skip comments
   while (buffer[idx] === 0x23) {
     while (buffer[idx] !== 0x0A) idx++;
     idx++;
   }
-
+  
   // Read width
   let widthStr = '';
   while (buffer[idx] !== 0x20 && buffer[idx] !== 0x0A) {
@@ -53,7 +53,7 @@ function ppmToRgba(ppmPath) {
     idx++;
   }
   idx++;
-
+  
   // Read height
   let heightStr = '';
   while (buffer[idx] !== 0x20 && buffer[idx] !== 0x0A) {
@@ -61,18 +61,18 @@ function ppmToRgba(ppmPath) {
     idx++;
   }
   idx++;
-
+  
   // Read max value
   while (buffer[idx] !== 0x0A) idx++;
   idx++;
-
+  
   const width = parseInt(widthStr, 10);
   const height = parseInt(heightStr, 10);
-
+  
   // Convert RGB to RGBA
   const rgbaData = Buffer.alloc(width * height * 4);
   const pixelCount = width * height;
-
+  
   for (let i = 0; i < pixelCount; i++) {
     const srcIdx = idx + i * 3;
     const dstIdx = i * 4;
@@ -81,7 +81,7 @@ function ppmToRgba(ppmPath) {
     rgbaData[dstIdx + 2] = buffer[srcIdx + 2];
     rgbaData[dstIdx + 3] = 255;
   }
-
+  
   return { width, height, data: rgbaData };
 }
 
@@ -127,7 +127,7 @@ function drawRectOutline(rgba, width, height, rect, color) {
  */
 export async function comparePixels(chromePath, rustkitPath, outputDir, options = {}) {
   mkdirSync(outputDir, { recursive: true });
-
+  
   // Load images
   const chrome = await loadPng(chromePath);
   let rustkit;
@@ -136,46 +136,36 @@ export async function comparePixels(chromePath, rustkitPath, outputDir, options 
   } else {
     rustkit = await loadPng(rustkitPath);
   }
-
-  // Dimension mismatch is a hard failure, not a silent crop (lie #8). Comparing
-  // a rustkit capture against a wrong-sized baseline cropped to the overlap
-  // produces a meaningless diff number that reads as partial success. Return the
-  // worst score with a dimension_mismatch taxonomy so it can never masquerade as
-  // parity. RK_ALLOW_CROP=1 restores the old crop path for local debugging only.
-  if (
-    (chrome.width !== rustkit.width || chrome.height !== rustkit.height) &&
-    process.env.RK_ALLOW_CROP !== '1'
-  ) {
-    const totalPixels = chrome.width * chrome.height;
-    return {
-      diffPixels: totalPixels,
-      totalPixels,
-      diffPercent: 100,
-      width: chrome.width,
-      height: chrome.height,
-      diffPath: null,
-      heatmapPath: null,
-      overlayPath: null,
-      attribution: null,
-      taxonomy: { instrument: 'dimension_mismatch' },
-      dimensionMismatch: {
-        chrome: [chrome.width, chrome.height],
-        rustkit: [rustkit.width, rustkit.height],
-      },
-      error:
-        `dimension_mismatch: chrome ${chrome.width}x${chrome.height} vs ` +
-        `rustkit ${rustkit.width}x${rustkit.height} ` +
-        `(regenerate the baseline; RK_ALLOW_CROP=1 to force-crop for debugging)`,
-    };
+  
+  // Dimension mismatch is an INSTRUMENT FAILURE, never a soft crop
+  // (measurement lie #8: cropped scores read as "render diffs" and hid
+  // wrong-viewport baselines). Score 100, taxonomy instrument/
+  // dimension_mismatch. RK_ALLOW_CROP=1 opts back in for debugging only.
+  if (chrome.width !== rustkit.width || chrome.height !== rustkit.height) {
+    const msg = `Chrome ${chrome.width}x${chrome.height} vs RustKit ${rustkit.width}x${rustkit.height}`;
+    if (process.env.RK_ALLOW_CROP !== '1') {
+      console.error(
+        `  INSTRUMENT FAILURE — dimension mismatch: ${msg} (score 100, not cropped; RK_ALLOW_CROP=1 to debug)`
+      );
+      return {
+        diffPixels: chrome.width * chrome.height,
+        totalPixels: chrome.width * chrome.height,
+        diffPercent: 100,
+        width: chrome.width,
+        height: chrome.height,
+        diffPath: null,
+        heatmapPath: null,
+        overlayPath: null,
+        attribution: null,
+        taxonomy: { 'instrument/dimension_mismatch': 100 },
+        instrumentFailure: `dimension_mismatch: ${msg}`,
+      };
+    }
+    console.warn(`  Dimension mismatch (RK_ALLOW_CROP=1): ${msg}`);
   }
 
-  // Same size (or RK_ALLOW_CROP debug path): crop to the overlap.
   const width = Math.min(chrome.width, rustkit.width);
   const height = Math.min(chrome.height, rustkit.height);
-
-  if (chrome.width !== rustkit.width || chrome.height !== rustkit.height) {
-    console.warn(`  RK_ALLOW_CROP: cropping Chrome ${chrome.width}x${chrome.height} / RustKit ${rustkit.width}x${rustkit.height}`);
-  }
 
   // Crop to same size
   const cropImage = (data, srcWidth, srcHeight, dstWidth, dstHeight) => {
@@ -192,13 +182,13 @@ export async function comparePixels(chromePath, rustkitPath, outputDir, options 
     }
     return cropped;
   };
-
+  
   const chromeData = cropImage(chrome.data, chrome.width, chrome.height, width, height);
   const rustkitData = cropImage(rustkit.data, rustkit.width, rustkit.height, width, height);
-
+  
   const totalPixels = width * height;
   const diffData = Buffer.alloc(width * height * 4);
-
+  
   // Run pixelmatch
   const diffPixels = pixelmatch(
     chromeData,
@@ -212,13 +202,13 @@ export async function comparePixels(chromePath, rustkitPath, outputDir, options 
       alpha: 0.1,
     }
   );
-
+  
   const diffPercent = (diffPixels / totalPixels) * 100;
-
+  
   // Save diff image
   const diffPath = join(outputDir, 'diff.png');
   savePng(diffData, width, height, diffPath);
-
+  
   // Generate heatmap
   const heatmapData = Buffer.alloc(width * height * 4);
   for (let i = 0; i < width * height; i++) {
@@ -227,7 +217,7 @@ export async function comparePixels(chromePath, rustkitPath, outputDir, options 
     const g = diffData[srcIdx + 1];
     const b = diffData[srcIdx + 2];
     const intensity = Math.max(r, g, b);
-
+    
     // Map to heatmap colors
     let hr, hg, hb;
     if (intensity < 64) {
@@ -239,16 +229,16 @@ export async function comparePixels(chromePath, rustkitPath, outputDir, options 
     } else {
       hr = 255; hg = 0; hb = (intensity - 192) * 4;
     }
-
+    
     heatmapData[srcIdx] = hr;
     heatmapData[srcIdx + 1] = hg;
     heatmapData[srcIdx + 2] = hb;
     heatmapData[srcIdx + 3] = intensity > 0 ? 255 : 0;
   }
-
+  
   const heatmapPath = join(outputDir, 'heatmap.png');
   savePng(heatmapData, width, height, heatmapPath);
-
+  
   // Optional: element attribution (Chrome rects + styles)
   let attribution = null;
   let overlayPath = null;
@@ -340,13 +330,13 @@ export function compareStyles(chromeStylesPath, rustkitStylesPath) {
   if (!existsSync(rustkitStylesPath)) {
     return { error: 'RustKit styles not found' };
   }
-
+  
   const chromeStyles = JSON.parse(readFileSync(chromeStylesPath, 'utf-8'));
   const rustkitStyles = JSON.parse(readFileSync(rustkitStylesPath, 'utf-8'));
-
+  
   const chromeMap = new Map(chromeStyles.elements.map(e => [e.selector, e]));
   const rustkitMap = new Map(rustkitStyles.elements?.map(e => [e.selector, e]) || []);
-
+  
   const results = {
     matched: 0,
     mismatched: 0,
@@ -354,31 +344,31 @@ export function compareStyles(chromeStylesPath, rustkitStylesPath) {
     rustkitOnly: 0,
     differences: [],
   };
-
+  
   // Key properties to compare
   const keyProps = [
     'display', 'width', 'height', 'margin-top', 'margin-left',
     'padding-top', 'padding-left', 'position', 'color', 'background-color',
   ];
-
+  
   for (const [selector, chrome] of chromeMap) {
     const rustkit = rustkitMap.get(selector);
-
+    
     if (!rustkit) {
       results.chromeOnly++;
       continue;
     }
-
+    
     const diffs = [];
     for (const prop of keyProps) {
       const chromeVal = chrome.styles?.[prop];
       const rustkitVal = rustkit.styles?.[prop];
-
+      
       if (chromeVal !== rustkitVal) {
         diffs.push({ property: prop, chrome: chromeVal, rustkit: rustkitVal });
       }
     }
-
+    
     if (diffs.length > 0) {
       results.mismatched++;
       results.differences.push({ selector, diffs });
@@ -386,13 +376,13 @@ export function compareStyles(chromeStylesPath, rustkitStylesPath) {
       results.matched++;
     }
   }
-
+  
   for (const selector of rustkitMap.keys()) {
     if (!chromeMap.has(selector)) {
       results.rustkitOnly++;
     }
   }
-
+  
   return results;
 }
 
@@ -406,13 +396,13 @@ export function compareRects(chromeRectsPath, rustkitRectsPath, tolerance = 5) {
   if (!existsSync(rustkitRectsPath)) {
     return { error: 'RustKit rects not found' };
   }
-
+  
   const chromeRects = JSON.parse(readFileSync(chromeRectsPath, 'utf-8'));
   const rustkitRects = JSON.parse(readFileSync(rustkitRectsPath, 'utf-8'));
-
+  
   const chromeMap = new Map(chromeRects.elements.map(e => [e.selector, e]));
   const rustkitMap = new Map(rustkitRects.elements?.map(e => [e.selector, e]) || []);
-
+  
   const results = {
     matched: 0,
     mismatched: 0,
@@ -420,18 +410,18 @@ export function compareRects(chromeRectsPath, rustkitRectsPath, tolerance = 5) {
     rustkitOnly: 0,
     differences: [],
   };
-
+  
   for (const [selector, chrome] of chromeMap) {
     const rustkit = rustkitMap.get(selector);
-
+    
     if (!rustkit) {
       results.chromeOnly++;
       continue;
     }
-
+    
     const cr = chrome.rect;
     const rr = rustkit.rect || rustkit.content_rect || {};
-
+    
     const diffs = [];
     if (Math.abs((cr.width || 0) - (rr.width || 0)) > tolerance) {
       diffs.push({ prop: 'width', chrome: cr.width, rustkit: rr.width });
@@ -445,7 +435,7 @@ export function compareRects(chromeRectsPath, rustkitRectsPath, tolerance = 5) {
     if (Math.abs((cr.y || 0) - (rr.y || 0)) > tolerance) {
       diffs.push({ prop: 'y', chrome: cr.y, rustkit: rr.y });
     }
-
+    
     if (diffs.length > 0) {
       results.mismatched++;
       results.differences.push({ selector, diffs });
@@ -453,13 +443,13 @@ export function compareRects(chromeRectsPath, rustkitRectsPath, tolerance = 5) {
       results.matched++;
     }
   }
-
+  
   for (const selector of rustkitMap.keys()) {
     if (!chromeMap.has(selector)) {
       results.rustkitOnly++;
     }
   }
-
+  
   return results;
 }
 
@@ -468,21 +458,21 @@ export function compareRects(chromeRectsPath, rustkitRectsPath, tolerance = 5) {
  */
 export async function tripleCompare(baselineDir, rustkitCaptureDir, outputDir) {
   mkdirSync(outputDir, { recursive: true });
-
+  
   const results = {
     pixel: null,
     styles: null,
     rects: null,
     summary: {},
   };
-
+  
   // 1. Pixel diff
   const chromePng = join(baselineDir, 'baseline.png');
   const rustkitPpm = join(rustkitCaptureDir, 'frame.ppm');
   const rustkitPng = join(rustkitCaptureDir, 'frame.png');
-
+  
   const rustkitImage = existsSync(rustkitPpm) ? rustkitPpm : rustkitPng;
-
+  
   if (existsSync(chromePng) && existsSync(rustkitImage)) {
     results.pixel = await comparePixels(chromePng, rustkitImage, outputDir);
     results.summary.pixelDiff = results.pixel.diffPercent;
@@ -490,30 +480,33 @@ export async function tripleCompare(baselineDir, rustkitCaptureDir, outputDir) {
     results.summary.pixelDiff = null;
     results.summary.pixelError = 'Missing images';
   }
-
+  
   // 2. Computed styles
   const chromeStyles = join(baselineDir, 'computed-styles.json');
   const rustkitStyles = join(rustkitCaptureDir, 'computed-styles.json');
-
+  
   if (existsSync(chromeStyles)) {
     results.styles = compareStyles(chromeStyles, rustkitStyles);
     results.summary.styleMatched = results.styles.matched;
     results.summary.styleMismatched = results.styles.mismatched;
   }
-
+  
   // 3. Layout rects
   const chromeRects = join(baselineDir, 'layout-rects.json');
   const rustkitRects = join(rustkitCaptureDir, 'layout.json');
-
+  
   if (existsSync(chromeRects)) {
     results.rects = compareRects(chromeRects, rustkitRects);
     results.summary.rectMatched = results.rects.matched;
     results.summary.rectMismatched = results.rects.mismatched;
   }
-
+  
   // Save full results
   const resultsPath = join(outputDir, 'comparison.json');
   writeFileSync(resultsPath, JSON.stringify(results, null, 2));
-
+  
   return results;
 }
+
+
+

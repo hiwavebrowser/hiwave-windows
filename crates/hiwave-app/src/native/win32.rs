@@ -25,11 +25,14 @@
 //! cargo build --features native-win32
 //! ```
 
+use rustkit_core::input::{InputEvent, KeyCode, KeyEventType, Modifiers};
+use super::shortcuts::{self, Shortcut};
+use super::tabs::{TabModel, TabSwitch};
 use rustkit_engine::{Engine, EngineBuilder, EngineViewId, IpcMessage};
 use rustkit_viewhost::{Bounds, MainWindowConfig, ViewEvent, ViewHost};
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 use windows::Win32::Foundation::HWND;
 
@@ -65,6 +68,17 @@ pub struct NativeBrowser {
     views: HashMap<ViewType, EngineViewId>,
     /// Reverse map: engine view ID to view type (for IPC routing)
     engine_view_types: HashMap<EngineViewId, ViewType>,
+    /// Key presses captured by the viewhost callback, drained each frame.
+    ///
+    /// A queue rather than direct dispatch because the callback is
+    /// `Fn + Send + Sync` and the browser is not: it owns `RefCell<Engine>`
+    /// and must only be touched from the loop thread. Same shape as the
+    /// existing IPC drain.
+    event_queue: Arc<Mutex<VecDeque<ViewEvent>>>,
+    /// Tab strip. `None` until the first content view exists — the model
+    /// cannot represent a zero-tab window, so it is not constructed until
+    /// there is a real view to put in it (see `native/tabs.rs`).
+    tabs: Option<TabModel<EngineViewId>>,
     /// Application state
     #[allow(dead_code)]
     app_state: Arc<AppState>,
@@ -110,6 +124,8 @@ impl NativeBrowser {
             engine: RefCell::new(engine),
             views: HashMap::new(),
             engine_view_types: HashMap::new(),
+            event_queue: Arc::new(Mutex::new(VecDeque::new())),
+            tabs: None,
             app_state,
             window_width: 1280,
             window_height: 800,
@@ -137,6 +153,18 @@ impl NativeBrowser {
 
         // Create the three views
         self.create_views(hwnd)?;
+        self.subscribe_to_events();
+        // Focus the content view. WITHOUT THIS, KEYBOARD SHORTCUTS DO NOT
+        // WORK AT ALL: Win32 delivers WM_KEYDOWN to the FOCUSED window, the
+        // main window proc handles no keys, and only the child-view proc
+        // emits them. At startup nothing held focus, so every keypress went
+        // to a window that dropped it. Found by pressing Ctrl+T at a running
+        // browser and reading the log — the unit tests were all green.
+        if let Some(&content) = self.views.get(&ViewType::Content) {
+            if let Err(e) = self.engine.borrow().focus_view(content) {
+                warn!(error = %e, "Failed to focus the content view");
+            }
+        }
 
         // Load initial content
         self.load_initial_content()?;
@@ -170,6 +198,7 @@ impl NativeBrowser {
             .map_err(|e| format!("Failed to create Content view: {}", e))?;
         self.views.insert(ViewType::Content, content_id);
         self.engine_view_types.insert(content_id, ViewType::Content);
+        self.tabs = Some(TabModel::new(content_id));
         debug!(?content_id, "Content view created");
 
         // Create Shelf view (command palette, hidden by default)
@@ -354,6 +383,179 @@ impl NativeBrowser {
     /// Same block_on shape as `navigate` — one current-thread runtime per
     /// call. That is the known engine-thread soft spot (Atlas's follow-up
     /// unit, inherited by this tree), not a new decision made here.
+    /// Apply a tab switch to the Win32 side.
+    ///
+    /// THE INVARIANT THIS MAINTAINS: `views[ViewType::Content]` always names
+    /// the active tab's view. Every existing code path — navigate, traverse,
+    /// resize, render, IPC routing — reads Content and keeps working without
+    /// knowing tabs exist. Tabs became a list of content views plus this one
+    /// rule, rather than a rewrite of the shell.
+    fn apply_switch(&mut self, switch: TabSwitch<EngineViewId>) {
+        {
+            let engine = self.engine.borrow();
+            if let Err(e) = engine.set_view_visible(switch.previous, false) {
+                warn!(error = %e, "Failed to hide the outgoing tab");
+            }
+            if let Err(e) = engine.set_view_visible(switch.current, true) {
+                warn!(error = %e, "Failed to show the incoming tab");
+            }
+        }
+        self.views.insert(ViewType::Content, switch.current);
+        self.engine_view_types
+            .insert(switch.current, ViewType::Content);
+        // Focus follows the active tab, or the next shortcut goes to a window
+        // that is no longer showing.
+        if let Err(e) = self.engine.borrow().focus_view(switch.current) {
+            warn!(error = %e, "Failed to focus the incoming tab");
+        }
+    }
+
+    /// Open a new tab and select it.
+    fn new_tab(&mut self) {
+        let Some(parent) = self.viewhost.get_main_hwnd() else {
+            warn!("No main window — cannot open a tab");
+            return;
+        };
+        let bounds = self.calculate_content_bounds();
+        let created = self.engine.borrow_mut().create_view(parent, bounds);
+        let view = match created {
+            Ok(v) => v,
+            Err(e) => {
+                error!(error = %e, "Failed to create a view for the new tab");
+                return;
+            }
+        };
+        let Some(tabs) = self.tabs.as_mut() else {
+            warn!("Tab model not initialised — cannot open a tab");
+            return;
+        };
+        let switch = tabs.push(view);
+        let count = tabs.count();
+        self.apply_switch(switch);
+        info!(?view, count, "New tab");
+    }
+
+    /// Close the active tab.
+    ///
+    /// Closing the LAST tab is deliberately a no-op here rather than a window
+    /// close: quitting on Ctrl+W is a product decision, and the tab strip
+    /// refusing to empty itself (`close_active` -> None) is what keeps
+    /// `active_view()` total. Wire the quit at the window layer when the
+    /// product calls for it.
+    fn close_active_tab(&mut self) {
+        let Some(tabs) = self.tabs.as_mut() else {
+            return;
+        };
+        let Some((closed, switch)) = tabs.close_active() else {
+            debug!("Refusing to close the last tab");
+            return;
+        };
+        let count = tabs.count();
+        self.apply_switch(switch);
+        // Destroy AFTER the switch: the replacement is already visible, so
+        // there is no frame where the window has nothing to show.
+        if let Err(e) = self.engine.borrow_mut().destroy_view(closed) {
+            warn!(error = %e, ?closed, "Failed to destroy the closed tab's view");
+        }
+        self.engine_view_types.remove(&closed);
+        info!(?closed, count, "Tab closed");
+    }
+
+    /// Select a tab by index (Ctrl+1..9).
+    fn activate_tab_by_index(&mut self, index: usize) {
+        let Some(tabs) = self.tabs.as_mut() else {
+            return;
+        };
+        match tabs.activate(index) {
+            Some(switch) => {
+                self.apply_switch(switch);
+                debug!(index, "Tab activated");
+            }
+            // Out of range or already active: nothing to show or hide.
+            None => debug!(index, "Tab activation: nothing to do"),
+        }
+    }
+
+    /// Subscribe to viewhost events.
+    ///
+    /// ORPHAN #9, WIRED. `Engine::handle_view_event` is the engine's COMPLETE
+    /// input dispatcher -- it maps viewhost_id -> EngineViewId and fans out to
+    /// mouse, key and focus handlers that all already existed -- and it had
+    /// ZERO production callers. That is why this shell had no input at all:
+    /// no clicks, no keys, no scroll. The capability was never missing; the
+    /// wire was never run.
+    ///
+    /// The callback queues WHOLE ViewEvents rather than extracting keys: the
+    /// shortcut layer needs first refusal on keys, while everything else --
+    /// mouse, scroll, focus -- belongs to the engine untouched.
+    ///
+    /// A queue rather than direct dispatch because the callback is
+    /// `Fn + Send + Sync` and the browser is not: it owns `RefCell<Engine>`
+    /// and must only be touched from the loop thread.
+    fn subscribe_to_events(&self) {
+        let queue = Arc::clone(&self.event_queue);
+        self.viewhost.set_event_callback(Arc::new(move |event| {
+            if let Ok(mut q) = queue.lock() {
+                q.push_back(event);
+            }
+        }));
+    }
+
+    /// Drain queued input: shell shortcuts first, then the engine.
+    ///
+    /// ORDER IS THE DESIGN. A shell shortcut must beat the page: Ctrl+T has to
+    /// open a tab even on a page that binds Ctrl+T itself, or a page can hold
+    /// the browser hostage. Everything the shell does NOT claim is handed to
+    /// the engine untouched -- swallowing unrecognised input would break every
+    /// text field on the web.
+    fn process_input_events(&mut self) {
+        let pending: Vec<ViewEvent> = match self.event_queue.lock() {
+            Ok(mut q) => q.drain(..).collect(),
+            Err(e) => {
+                warn!(error = %e, "Event queue poisoned");
+                return;
+            }
+        };
+
+        for event in pending {
+            // KeyDown only: acting on both edges fires every shortcut twice.
+            // Repeats are kept -- held Alt+Left walking back through history
+            // is what people expect.
+            if let ViewEvent::Input {
+                event: InputEvent::Key(key),
+                ..
+            } = &event
+            {
+                if key.event_type == KeyEventType::KeyDown {
+                    if let Some(shortcut) = shortcuts::resolve(key.key_code, key.modifiers) {
+                        debug!(?shortcut, "Shortcut");
+                        self.run_shortcut(shortcut);
+                        // Claimed by the shell; the page never sees it.
+                        continue;
+                    }
+                }
+            }
+            self.engine.borrow_mut().handle_view_event(event);
+        }
+    }
+
+    fn run_shortcut(&mut self, shortcut: Shortcut) {
+        match shortcut {
+            Shortcut::NewTab => self.new_tab(),
+            Shortcut::CloseTab => self.close_active_tab(),
+            Shortcut::ActivateTab(i) => self.activate_tab_by_index(i),
+            Shortcut::ActivateLastTab => {
+                if let Some(last) = self.tabs.as_ref().map(|t| t.count() - 1) {
+                    self.activate_tab_by_index(last);
+                }
+            }
+            Shortcut::Back => self.traverse("back"),
+            Shortcut::Forward => self.traverse("forward"),
+            Shortcut::Reload => self.traverse("reload"),
+            Shortcut::Stop => self.stop_loading(),
+        }
+    }
+
     fn traverse(&self, direction: &str) {
         let Some(&content_id) = self.views.get(&ViewType::Content) else {
             return;
@@ -438,6 +640,9 @@ impl NativeBrowser {
             // Process any IPC messages from views
             self.process_ipc_messages();
 
+            // Run any keyboard shortcuts pressed since the last frame
+            self.process_input_events();
+
             // Small sleep to prevent busy-waiting (target ~60fps)
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
@@ -501,6 +706,14 @@ impl NativeBrowser {
             }
             "go_forward" => {
                 self.traverse("forward");
+            }
+            "new_tab" => self.new_tab(),
+            "close_active_tab" => self.close_active_tab(),
+            "activate_tab_by_index" => {
+                match json.get("index").and_then(|v| v.as_u64()) {
+                    Some(i) => self.activate_tab_by_index(i as usize),
+                    None => warn!("activate_tab_by_index without an index"),
+                }
             }
             "reload" => {
                 self.traverse("reload");
@@ -826,21 +1039,10 @@ fn run_screenshot_mode(config: super::screenshot_harness::ScreenshotConfig) -> R
 /// Simple timestamp without chrono dependency.
 fn chrono_lite_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now()
+    let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    let days = secs / 86400;
-    let years = 1970 + days / 365;
-    let remaining = (days % 365) as u32;
-    let month = remaining / 30 + 1;
-    let day = remaining % 30 + 1;
-    let hours = (secs % 86400) / 3600;
-    let minutes = (secs % 3600) / 60;
-    let seconds = secs % 60;
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        years, month, day, hours, minutes, seconds
-    )
+        .unwrap_or_default()
+        .as_secs();
+    super::screenshot_harness::utc_timestamp_from_secs(secs)
 }
 

@@ -174,3 +174,5 @@ export function attributeDiff(diffRgba, width, height, chromeRectsJson, options 
     all_elements: contributors,
   };
 }
+
+

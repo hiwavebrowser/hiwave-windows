@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Parity Oracle - Chromium baseline capture and pixel diff tool
- *
+ * 
  * Usage:
  *   node run_oracle.mjs capture --case css-selectors --output parity-baseline/oracle
  *   node run_oracle.mjs compare --case css-selectors --rustkit parity-baseline/captures/css-selectors.ppm
@@ -27,7 +27,7 @@ const CASES = {
   'settings': { path: 'crates/hiwave-app/src/ui/settings.html', width: 1024, height: 768, type: 'builtin' },
   'chrome_rustkit': { path: 'crates/hiwave-app/src/ui/chrome_rustkit.html', width: 1280, height: 100, type: 'builtin' },
   'shelf': { path: 'crates/hiwave-app/src/ui/shelf.html', width: 1280, height: 120, type: 'builtin' },
-
+  
   // Websuite (40% weight)
   'article-typography': { path: 'websuite/cases/article-typography/index.html', width: 1280, height: 800, type: 'websuite' },
   'card-grid': { path: 'websuite/cases/card-grid/index.html', width: 1280, height: 800, type: 'websuite' },
@@ -56,7 +56,7 @@ function parseArgs() {
     threshold: 25,
     verbose: false,
   };
-
+  
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--case' && args[i + 1]) {
@@ -75,7 +75,7 @@ function parseArgs() {
       opts.verbose = true;
     }
   }
-
+  
   return opts;
 }
 
@@ -99,25 +99,25 @@ async function runCapture(opts) {
   const cases = getCasesToRun(opts);
   const outputDir = join(opts.output, 'oracle', 'chromium');
   mkdirSync(outputDir, { recursive: true });
-
+  
   console.log(`\n=== Chromium Oracle: Capture ===`);
   console.log(`Cases: ${cases.join(', ')}`);
   console.log(`Output: ${outputDir}\n`);
-
+  
   const results = {};
-
+  
   for (const caseId of cases) {
     const caseInfo = CASES[caseId];
     if (!caseInfo) {
       console.error(`Unknown case: ${caseId}`);
       continue;
     }
-
+    
     const htmlPath = join(REPO_ROOT, caseInfo.path);
     const outputPath = join(outputDir, `${caseId}.png`);
-
+    
     console.log(`  Capturing ${caseId}...`, '');
-
+    
     try {
       await captureChrome(htmlPath, outputPath, caseInfo.width, caseInfo.height);
       results[caseId] = { success: true, path: outputPath };
@@ -127,7 +127,7 @@ async function runCapture(opts) {
       console.log(`FAIL: ${err.message}`);
     }
   }
-
+  
   // Save capture manifest
   const manifestPath = join(outputDir, 'manifest.json');
   writeFileSync(manifestPath, JSON.stringify({
@@ -135,7 +135,7 @@ async function runCapture(opts) {
     browser: 'chromium',
     cases: results,
   }, null, 2));
-
+  
   console.log(`\nManifest saved to: ${manifestPath}`);
   return results;
 }
@@ -146,34 +146,34 @@ async function runCompare(opts) {
   const capturesDir = join(opts.output, 'captures');
   const diffsDir = join(opts.output, 'diffs');
   mkdirSync(diffsDir, { recursive: true });
-
+  
   console.log(`\n=== Chromium Oracle: Compare ===`);
   console.log(`Cases: ${cases.join(', ')}`);
   console.log(`Oracle: ${oracleDir}`);
   console.log(`RustKit: ${capturesDir}`);
   console.log(`Diffs: ${diffsDir}\n`);
-
+  
   const results = {};
-
+  
   for (const caseId of cases) {
     const chromePath = join(oracleDir, `${caseId}.png`);
     const rustkitPath = opts.rustkit || join(capturesDir, `${caseId}.ppm`);
     const diffPath = join(diffsDir, `${caseId}.diff.png`);
-
+    
     console.log(`  Comparing ${caseId}...`, '');
-
+    
     if (!existsSync(chromePath)) {
       results[caseId] = { success: false, error: 'No Chrome baseline' };
       console.log('SKIP (no Chrome baseline)');
       continue;
     }
-
+    
     if (!existsSync(rustkitPath)) {
       results[caseId] = { success: false, error: 'No RustKit capture' };
       console.log('SKIP (no RustKit capture)');
       continue;
     }
-
+    
     try {
       const result = await comparePixels(chromePath, rustkitPath, diffPath);
       results[caseId] = {
@@ -184,15 +184,15 @@ async function runCompare(opts) {
         diff_path: diffPath,
         passed: result.diffPercent <= opts.threshold,
       };
-
-      const status = result.diffPercent <= opts.threshold ? '+' : 'x';
+      
+      const status = result.diffPercent <= opts.threshold ? '✓' : '✗';
       console.log(`${status} ${result.diffPercent.toFixed(2)}% diff`);
     } catch (err) {
       results[caseId] = { success: false, error: err.message };
       console.log(`FAIL: ${err.message}`);
     }
   }
-
+  
   // Save comparison results
   const resultsPath = join(opts.output, 'oracle_results.json');
   writeFileSync(resultsPath, JSON.stringify({
@@ -200,31 +200,31 @@ async function runCompare(opts) {
     threshold: opts.threshold,
     cases: results,
   }, null, 2));
-
+  
   // Print summary
   const successful = Object.values(results).filter(r => r.success);
   const passed = successful.filter(r => r.passed);
-  const avgDiff = successful.length > 0
-    ? successful.reduce((sum, r) => sum + r.diff_pct, 0) / successful.length
+  const avgDiff = successful.length > 0 
+    ? successful.reduce((sum, r) => sum + r.diff_pct, 0) / successful.length 
     : 100;
-
+  
   console.log(`\n--- Summary ---`);
   console.log(`Passed: ${passed.length}/${successful.length} (threshold: ${opts.threshold}%)`);
   console.log(`Average Diff: ${avgDiff.toFixed(2)}%`);
   console.log(`Results saved to: ${resultsPath}`);
-
+  
   return results;
 }
 
 async function runFull(opts) {
   console.log(`\n=== Chromium Oracle: Full Pipeline ===\n`);
-
+  
   // Step 1: Capture Chrome baselines
   const captureResults = await runCapture(opts);
-
+  
   // Step 2: Compare with RustKit
   const compareResults = await runCompare(opts);
-
+  
   return { capture: captureResults, compare: compareResults };
 }
 
@@ -232,25 +232,25 @@ async function runStyles(opts) {
   const cases = getCasesToRun(opts);
   const outputDir = join(opts.output, 'computed-styles');
   mkdirSync(outputDir, { recursive: true });
-
+  
   console.log(`\n=== Chromium Oracle: Export Computed Styles ===`);
   console.log(`Cases: ${cases.join(', ')}`);
   console.log(`Output: ${outputDir}\n`);
-
+  
   const results = {};
-
+  
   for (const caseId of cases) {
     const caseInfo = CASES[caseId];
     if (!caseInfo) {
       console.error(`Unknown case: ${caseId}`);
       continue;
     }
-
+    
     const htmlPath = join(REPO_ROOT, caseInfo.path);
     const outputPath = join(outputDir, `${caseId}.styles.json`);
-
+    
     console.log(`  Exporting ${caseId}...`, '');
-
+    
     try {
       const styles = await exportStyles(htmlPath, caseInfo.width, caseInfo.height);
       writeFileSync(outputPath, JSON.stringify(styles, null, 2));
@@ -261,7 +261,7 @@ async function runStyles(opts) {
       console.log(`FAIL: ${err.message}`);
     }
   }
-
+  
   console.log(`\nStyles exported to: ${outputDir}`);
   return results;
 }
@@ -300,7 +300,7 @@ Examples:
 // Main
 async function main() {
   const opts = parseArgs();
-
+  
   switch (opts.command) {
     case 'capture':
       await runCapture(opts);
@@ -325,3 +325,6 @@ main().catch(err => {
   console.error('Error:', err.message);
   process.exit(1);
 });
+
+
+

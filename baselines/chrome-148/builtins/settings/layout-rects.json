@@ -1,8 +1,8 @@
 {
-  "timestamp": "2026-07-07T23:57:29.630Z",
+  "timestamp": "2026-09-30T19:02:40.487Z",
   "viewport": {
-    "width": 800,
-    "height": 600
+    "width": 1024,
+    "height": 768
   },
   "elementCount": 189,
   "elements": [
@@ -12,19 +12,19 @@
       "rect": {
         "x": 0,
         "y": 0,
-        "width": 800,
+        "width": 1024,
         "height": 3253.578125,
         "top": 0,
-        "right": 800,
+        "right": 1024,
         "bottom": 3253.578125,
         "left": 0
       },
       "client": {
-        "width": 800,
+        "width": 1024,
         "height": 3254
       },
       "scroll": {
-        "width": 800,
+        "width": 1024,
         "height": 3254,
         "top": 0,
         "left": 0
@@ -34,14 +34,14 @@
       "selector": "body > div.container",
       "tag": "div",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 32,
         "width": 700,
         "height": 3189.578125,
         "top": 32,
-        "right": 750,
+        "right": 862,
         "bottom": 3221.578125,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -58,14 +58,14 @@
       "selector": "body > div.container > h1",
       "tag": "h1",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 32,
         "width": 700,
         "height": 37,
         "top": 32,
-        "right": 750,
+        "right": 862,
         "bottom": 69,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -82,14 +82,14 @@
       "selector": "body > div.container > p.subtitle",
       "tag": "p",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 83.390625,
         "width": 700,
         "height": 20,
         "top": 83.390625,
-        "right": 750,
+        "right": 862,
         "bottom": 103.390625,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -106,14 +106,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 50,
-        "y": 127.40612030029297,
+        "x": 162,
+        "y": 127.390625,
         "width": 700,
         "height": 279.5625,
-        "top": 127.40612030029297,
-        "right": 750,
-        "bottom": 406.96862030029297,
-        "left": 50
+        "top": 127.390625,
+        "right": 862,
+        "bottom": 406.953125,
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -130,14 +130,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 147.4061279296875,
+        "x": 182,
+        "y": 147.390625,
         "width": 660,
         "height": 17,
-        "top": 147.4061279296875,
-        "right": 730,
-        "bottom": 164.4061279296875,
-        "left": 70
+        "top": 147.390625,
+        "right": 842,
+        "bottom": 164.390625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -154,14 +154,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 180.4061279296875,
+        "x": 182,
+        "y": 180.390625,
         "width": 660,
         "height": 69.1875,
-        "top": 180.4061279296875,
-        "right": 730,
-        "bottom": 249.5936279296875,
-        "left": 70
+        "top": 180.390625,
+        "right": 842,
+        "bottom": 249.578125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -178,14 +178,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 192.4061279296875,
+        "x": 182,
+        "y": 192.390625,
         "width": 520,
         "height": 44.1875,
-        "top": 192.4061279296875,
-        "right": 590,
-        "bottom": 236.5936279296875,
-        "left": 70
+        "top": 192.390625,
+        "right": 702,
+        "bottom": 236.578125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -202,14 +202,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 192.4061279296875,
+        "x": 182,
+        "y": 192.390625,
         "width": 520,
         "height": 20,
-        "top": 192.4061279296875,
-        "right": 590,
-        "bottom": 212.4061279296875,
-        "left": 70
+        "top": 192.390625,
+        "right": 702,
+        "bottom": 212.390625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -226,14 +226,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 218.5936279296875,
+        "x": 182,
+        "y": 218.578125,
         "width": 196.28125,
         "height": 17,
-        "top": 218.5936279296875,
-        "right": 266.28125,
-        "bottom": 235.5936279296875,
-        "left": 70
+        "top": 218.578125,
+        "right": 378.28125,
+        "bottom": 235.578125,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -250,14 +250,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(2) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 196.9998779296875,
+        "x": 702,
+        "y": 196.984375,
         "width": 140,
         "height": 35,
-        "top": 196.9998779296875,
-        "right": 730,
-        "bottom": 231.9998779296875,
-        "left": 590
+        "top": 196.984375,
+        "right": 842,
+        "bottom": 231.984375,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -274,14 +274,14 @@
       "selector": "#theme",
       "tag": "select",
       "rect": {
-        "x": 638,
-        "y": 196.9998779296875,
+        "x": 750,
+        "y": 196.984375,
         "width": 92,
         "height": 35,
-        "top": 196.9998779296875,
-        "right": 730,
-        "bottom": 231.9998779296875,
-        "left": 638
+        "top": 196.984375,
+        "right": 842,
+        "bottom": 231.984375,
+        "left": 750
       },
       "client": {
         "width": 90,
@@ -298,14 +298,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(3)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 249.5936279296875,
+        "x": 182,
+        "y": 249.578125,
         "width": 660,
         "height": 69.1875,
-        "top": 249.5936279296875,
-        "right": 730,
-        "bottom": 318.7811279296875,
-        "left": 70
+        "top": 249.578125,
+        "right": 842,
+        "bottom": 318.765625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -322,14 +322,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 261.5936279296875,
+        "x": 182,
+        "y": 261.578125,
         "width": 520,
         "height": 44.1875,
-        "top": 261.5936279296875,
-        "right": 590,
-        "bottom": 305.7811279296875,
-        "left": 70
+        "top": 261.578125,
+        "right": 702,
+        "bottom": 305.765625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -346,14 +346,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 261.5936279296875,
+        "x": 182,
+        "y": 261.578125,
         "width": 520,
         "height": 20,
-        "top": 261.5936279296875,
-        "right": 590,
-        "bottom": 281.5936279296875,
-        "left": 70
+        "top": 261.578125,
+        "right": 702,
+        "bottom": 281.578125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -370,14 +370,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 287.7811279296875,
+        "x": 182,
+        "y": 287.765625,
         "width": 157.875,
         "height": 17,
-        "top": 287.7811279296875,
-        "right": 227.875,
-        "bottom": 304.7811279296875,
-        "left": 70
+        "top": 287.765625,
+        "right": 339.875,
+        "bottom": 304.765625,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -394,14 +394,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(3) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 266.1873779296875,
+        "x": 702,
+        "y": 266.171875,
         "width": 140,
         "height": 35,
-        "top": 266.1873779296875,
-        "right": 730,
-        "bottom": 301.1873779296875,
-        "left": 590
+        "top": 266.171875,
+        "right": 842,
+        "bottom": 301.171875,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -418,14 +418,14 @@
       "selector": "#defaultMode",
       "tag": "select",
       "rect": {
-        "x": 622,
-        "y": 266.1873779296875,
+        "x": 734,
+        "y": 266.171875,
         "width": 108,
         "height": 35,
-        "top": 266.1873779296875,
-        "right": 730,
-        "bottom": 301.1873779296875,
-        "left": 622
+        "top": 266.171875,
+        "right": 842,
+        "bottom": 301.171875,
+        "left": 734
       },
       "client": {
         "width": 106,
@@ -442,14 +442,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(4)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 318.7811279296875,
+        "x": 182,
+        "y": 318.765625,
         "width": 660,
         "height": 68.1875,
-        "top": 318.7811279296875,
-        "right": 730,
-        "bottom": 386.9686279296875,
-        "left": 70
+        "top": 318.765625,
+        "right": 842,
+        "bottom": 386.953125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -466,14 +466,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(4) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 330.7811279296875,
+        "x": 182,
+        "y": 330.765625,
         "width": 520,
         "height": 44.1875,
-        "top": 330.7811279296875,
-        "right": 590,
-        "bottom": 374.9686279296875,
-        "left": 70
+        "top": 330.765625,
+        "right": 702,
+        "bottom": 374.953125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -490,14 +490,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(4) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 330.7811279296875,
+        "x": 182,
+        "y": 330.765625,
         "width": 520,
         "height": 20,
-        "top": 330.7811279296875,
-        "right": 590,
-        "bottom": 350.7811279296875,
-        "left": 70
+        "top": 330.765625,
+        "right": 702,
+        "bottom": 350.765625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -514,14 +514,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(4) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 356.9686279296875,
+        "x": 182,
+        "y": 356.953125,
         "width": 189.984375,
         "height": 17,
-        "top": 356.9686279296875,
-        "right": 259.984375,
-        "bottom": 373.9686279296875,
-        "left": 70
+        "top": 356.953125,
+        "right": 371.984375,
+        "bottom": 373.953125,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -538,14 +538,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(4) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 339.8748779296875,
+        "x": 702,
+        "y": 339.859375,
         "width": 140,
         "height": 26,
-        "top": 339.8748779296875,
-        "right": 730,
-        "bottom": 365.8748779296875,
-        "left": 590
+        "top": 339.859375,
+        "right": 842,
+        "bottom": 365.859375,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -562,14 +562,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(4) > div.setting-control:nth-of-type(2) > label.toggle",
       "tag": "label",
       "rect": {
-        "x": 682,
-        "y": 339.8748779296875,
+        "x": 794,
+        "y": 339.859375,
         "width": 48,
         "height": 26,
-        "top": 339.8748779296875,
-        "right": 730,
-        "bottom": 365.8748779296875,
-        "left": 682
+        "top": 339.859375,
+        "right": 842,
+        "bottom": 365.859375,
+        "left": 794
       },
       "client": {
         "width": 48,
@@ -586,14 +586,14 @@
       "selector": "body > div.container > div.section:nth-of-type(1) > div.setting-row:nth-of-type(4) > div.setting-control:nth-of-type(2) > label.toggle > span.toggle-slider",
       "tag": "span",
       "rect": {
-        "x": 682,
-        "y": 339.8748779296875,
+        "x": 794,
+        "y": 339.859375,
         "width": 48,
         "height": 26,
-        "top": 339.8748779296875,
-        "right": 730,
-        "bottom": 365.8748779296875,
-        "left": 682
+        "top": 339.859375,
+        "right": 842,
+        "bottom": 365.859375,
+        "left": 794
       },
       "client": {
         "width": 46,
@@ -610,14 +610,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 50,
-        "y": 423.5519714355469,
+        "x": 162,
+        "y": 422.953125,
         "width": 700,
-        "height": 279.5625305175781,
-        "top": 423.5519714355469,
-        "right": 750,
-        "bottom": 703.114501953125,
-        "left": 50
+        "height": 279.5625,
+        "top": 422.953125,
+        "right": 862,
+        "bottom": 702.515625,
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -634,14 +634,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 443.5519714355469,
+        "x": 182,
+        "y": 442.953125,
         "width": 660,
         "height": 17,
-        "top": 443.5519714355469,
-        "right": 730,
-        "bottom": 460.5519714355469,
-        "left": 70
+        "top": 442.953125,
+        "right": 842,
+        "bottom": 459.953125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -658,14 +658,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 476.5519714355469,
+        "x": 182,
+        "y": 475.953125,
         "width": 660,
-        "height": 69.18753051757812,
-        "top": 476.5519714355469,
-        "right": 730,
-        "bottom": 545.739501953125,
-        "left": 70
+        "height": 69.1875,
+        "top": 475.953125,
+        "right": 842,
+        "bottom": 545.140625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -682,14 +682,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 488.5519714355469,
+        "x": 182,
+        "y": 487.953125,
         "width": 513,
-        "height": 44.187530517578125,
-        "top": 488.5519714355469,
-        "right": 583,
-        "bottom": 532.739501953125,
-        "left": 70
+        "height": 44.1875,
+        "top": 487.953125,
+        "right": 695,
+        "bottom": 532.140625,
+        "left": 182
       },
       "client": {
         "width": 513,
@@ -706,14 +706,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 488.5519714355469,
+        "x": 182,
+        "y": 487.953125,
         "width": 513,
         "height": 20,
-        "top": 488.5519714355469,
-        "right": 583,
-        "bottom": 508.5519714355469,
-        "left": 70
+        "top": 487.953125,
+        "right": 695,
+        "bottom": 507.953125,
+        "left": 182
       },
       "client": {
         "width": 513,
@@ -730,14 +730,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 514.739501953125,
+        "x": 182,
+        "y": 514.140625,
         "width": 163.234375,
         "height": 17,
-        "top": 514.739501953125,
-        "right": 233.234375,
-        "bottom": 531.739501953125,
-        "left": 70
+        "top": 514.140625,
+        "right": 345.234375,
+        "bottom": 531.140625,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -754,14 +754,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(2) > div.setting-control decay-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 583,
-        "y": 493.1457214355469,
+        "x": 695,
+        "y": 492.546875,
         "width": 147,
-        "height": 35.000030517578125,
-        "top": 493.1457214355469,
-        "right": 730,
-        "bottom": 528.145751953125,
-        "left": 583
+        "height": 35,
+        "top": 492.546875,
+        "right": 842,
+        "bottom": 527.546875,
+        "left": 695
       },
       "client": {
         "width": 147,
@@ -778,14 +778,14 @@
       "selector": "#tabDecayValue",
       "tag": "input",
       "rect": {
-        "x": 583,
-        "y": 494.1457214355469,
+        "x": 695,
+        "y": 493.546875,
         "width": 60,
-        "height": 33.000030517578125,
-        "top": 494.1457214355469,
-        "right": 643,
-        "bottom": 527.145751953125,
-        "left": 583
+        "height": 33,
+        "top": 493.546875,
+        "right": 755,
+        "bottom": 526.546875,
+        "left": 695
       },
       "client": {
         "width": 58,
@@ -802,14 +802,14 @@
       "selector": "#tabDecayUnit",
       "tag": "select",
       "rect": {
-        "x": 649,
-        "y": 493.1457214355469,
+        "x": 761,
+        "y": 492.546875,
         "width": 81,
-        "height": 35.000030517578125,
-        "top": 493.1457214355469,
-        "right": 730,
-        "bottom": 528.145751953125,
-        "left": 649
+        "height": 35,
+        "top": 492.546875,
+        "right": 842,
+        "bottom": 527.546875,
+        "left": 761
       },
       "client": {
         "width": 79,
@@ -826,14 +826,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(3)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 545.739501953125,
+        "x": 182,
+        "y": 545.140625,
         "width": 660,
         "height": 69.1875,
-        "top": 545.739501953125,
-        "right": 730,
-        "bottom": 614.927001953125,
-        "left": 70
+        "top": 545.140625,
+        "right": 842,
+        "bottom": 614.328125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -850,14 +850,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 557.739501953125,
+        "x": 182,
+        "y": 557.140625,
         "width": 520,
         "height": 44.1875,
-        "top": 557.739501953125,
-        "right": 590,
-        "bottom": 601.927001953125,
-        "left": 70
+        "top": 557.140625,
+        "right": 702,
+        "bottom": 601.328125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -874,14 +874,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 557.739501953125,
+        "x": 182,
+        "y": 557.140625,
         "width": 520,
         "height": 20,
-        "top": 557.739501953125,
-        "right": 590,
-        "bottom": 577.739501953125,
-        "left": 70
+        "top": 557.140625,
+        "right": 702,
+        "bottom": 577.140625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -898,14 +898,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 583.927001953125,
+        "x": 182,
+        "y": 583.328125,
         "width": 287.03125,
         "height": 17,
-        "top": 583.927001953125,
-        "right": 357.03125,
-        "bottom": 600.927001953125,
-        "left": 70
+        "top": 583.328125,
+        "right": 469.03125,
+        "bottom": 600.328125,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -922,14 +922,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(3) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 563.333251953125,
+        "x": 702,
+        "y": 562.734375,
         "width": 140,
         "height": 33,
-        "top": 563.333251953125,
-        "right": 730,
-        "bottom": 596.333251953125,
-        "left": 590
+        "top": 562.734375,
+        "right": 842,
+        "bottom": 595.734375,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -946,14 +946,14 @@
       "selector": "#autoShelfDays",
       "tag": "input",
       "rect": {
-        "x": 650,
-        "y": 563.333251953125,
+        "x": 762,
+        "y": 562.734375,
         "width": 80,
         "height": 33,
-        "top": 563.333251953125,
-        "right": 730,
-        "bottom": 596.333251953125,
-        "left": 650
+        "top": 562.734375,
+        "right": 842,
+        "bottom": 595.734375,
+        "left": 762
       },
       "client": {
         "width": 78,
@@ -970,14 +970,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(4)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 614.927001953125,
+        "x": 182,
+        "y": 614.328125,
         "width": 660,
         "height": 68.1875,
-        "top": 614.927001953125,
-        "right": 730,
-        "bottom": 683.114501953125,
-        "left": 70
+        "top": 614.328125,
+        "right": 842,
+        "bottom": 682.515625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -994,14 +994,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(4) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 626.927001953125,
+        "x": 182,
+        "y": 626.328125,
         "width": 460,
         "height": 44.1875,
-        "top": 626.927001953125,
-        "right": 530,
-        "bottom": 671.114501953125,
-        "left": 70
+        "top": 626.328125,
+        "right": 642,
+        "bottom": 670.515625,
+        "left": 182
       },
       "client": {
         "width": 460,
@@ -1018,14 +1018,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(4) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 626.927001953125,
+        "x": 182,
+        "y": 626.328125,
         "width": 460,
         "height": 20,
-        "top": 626.927001953125,
-        "right": 530,
-        "bottom": 646.927001953125,
-        "left": 70
+        "top": 626.328125,
+        "right": 642,
+        "bottom": 646.328125,
+        "left": 182
       },
       "client": {
         "width": 460,
@@ -1042,14 +1042,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(4) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 653.114501953125,
+        "x": 182,
+        "y": 652.515625,
         "width": 214.09375,
         "height": 17,
-        "top": 653.114501953125,
-        "right": 284.09375,
-        "bottom": 670.114501953125,
-        "left": 70
+        "top": 652.515625,
+        "right": 396.09375,
+        "bottom": 669.515625,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -1066,14 +1066,14 @@
       "selector": "body > div.container > div.section:nth-of-type(2) > div.setting-row:nth-of-type(4) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 530,
-        "y": 632.520751953125,
+        "x": 642,
+        "y": 631.921875,
         "width": 200,
         "height": 33,
-        "top": 632.520751953125,
-        "right": 730,
-        "bottom": 665.520751953125,
-        "left": 530
+        "top": 631.921875,
+        "right": 842,
+        "bottom": 664.921875,
+        "left": 642
       },
       "client": {
         "width": 200,
@@ -1090,14 +1090,14 @@
       "selector": "#newTabUrl",
       "tag": "input",
       "rect": {
-        "x": 530,
-        "y": 632.520751953125,
+        "x": 642,
+        "y": 631.921875,
         "width": 200,
         "height": 33,
-        "top": 632.520751953125,
-        "right": 730,
-        "bottom": 665.520751953125,
-        "left": 530
+        "top": 631.921875,
+        "right": 842,
+        "bottom": 664.921875,
+        "left": 642
       },
       "client": {
         "width": 198,
@@ -1114,14 +1114,14 @@
       "selector": "body > div.container > div.section:nth-of-type(3)",
       "tag": "div",
       "rect": {
-        "x": 50,
-        "y": 720.32470703125,
+        "x": 162,
+        "y": 718.515625,
         "width": 700,
         "height": 141.1875,
-        "top": 720.32470703125,
-        "right": 750,
-        "bottom": 861.51220703125,
-        "left": 50
+        "top": 718.515625,
+        "right": 862,
+        "bottom": 859.703125,
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -1138,14 +1138,14 @@
       "selector": "body > div.container > div.section:nth-of-type(3) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 740.32470703125,
+        "x": 182,
+        "y": 738.515625,
         "width": 660,
         "height": 17,
-        "top": 740.32470703125,
-        "right": 730,
-        "bottom": 757.32470703125,
-        "left": 70
+        "top": 738.515625,
+        "right": 842,
+        "bottom": 755.515625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -1162,14 +1162,14 @@
       "selector": "body > div.container > div.section:nth-of-type(3) > div.setting-row:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 773.32470703125,
+        "x": 182,
+        "y": 771.515625,
         "width": 660,
         "height": 68.1875,
-        "top": 773.32470703125,
-        "right": 730,
-        "bottom": 841.51220703125,
-        "left": 70
+        "top": 771.515625,
+        "right": 842,
+        "bottom": 839.703125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -1186,14 +1186,14 @@
       "selector": "body > div.container > div.section:nth-of-type(3) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 785.32470703125,
+        "x": 182,
+        "y": 783.515625,
         "width": 520,
         "height": 44.1875,
-        "top": 785.32470703125,
-        "right": 590,
-        "bottom": 829.51220703125,
-        "left": 70
+        "top": 783.515625,
+        "right": 702,
+        "bottom": 827.703125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1210,14 +1210,14 @@
       "selector": "body > div.container > div.section:nth-of-type(3) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 785.32470703125,
+        "x": 182,
+        "y": 783.515625,
         "width": 520,
         "height": 20,
-        "top": 785.32470703125,
-        "right": 590,
-        "bottom": 805.32470703125,
-        "left": 70
+        "top": 783.515625,
+        "right": 702,
+        "bottom": 803.515625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1234,14 +1234,14 @@
       "selector": "body > div.container > div.section:nth-of-type(3) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 811.51220703125,
+        "x": 182,
+        "y": 809.703125,
         "width": 204.5625,
         "height": 17,
-        "top": 811.51220703125,
-        "right": 274.5625,
-        "bottom": 828.51220703125,
-        "left": 70
+        "top": 809.703125,
+        "right": 386.5625,
+        "bottom": 826.703125,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -1258,14 +1258,14 @@
       "selector": "body > div.container > div.section:nth-of-type(3) > div.setting-row:nth-of-type(2) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 794.41845703125,
+        "x": 702,
+        "y": 792.609375,
         "width": 140,
         "height": 26,
-        "top": 794.41845703125,
-        "right": 730,
-        "bottom": 820.41845703125,
-        "left": 590
+        "top": 792.609375,
+        "right": 842,
+        "bottom": 818.609375,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -1282,14 +1282,14 @@
       "selector": "body > div.container > div.section:nth-of-type(3) > div.setting-row:nth-of-type(2) > div.setting-control:nth-of-type(2) > label.toggle",
       "tag": "label",
       "rect": {
-        "x": 682,
-        "y": 794.41845703125,
+        "x": 794,
+        "y": 792.609375,
         "width": 48,
         "height": 26,
-        "top": 794.41845703125,
-        "right": 730,
-        "bottom": 820.41845703125,
-        "left": 682
+        "top": 792.609375,
+        "right": 842,
+        "bottom": 818.609375,
+        "left": 794
       },
       "client": {
         "width": 48,
@@ -1306,14 +1306,14 @@
       "selector": "body > div.container > div.section:nth-of-type(3) > div.setting-row:nth-of-type(2) > div.setting-control:nth-of-type(2) > label.toggle > span.toggle-slider",
       "tag": "span",
       "rect": {
-        "x": 682,
-        "y": 794.41845703125,
+        "x": 794,
+        "y": 792.609375,
         "width": 48,
         "height": 26,
-        "top": 794.41845703125,
-        "right": 730,
-        "bottom": 820.41845703125,
-        "left": 682
+        "top": 792.609375,
+        "right": 842,
+        "bottom": 818.609375,
+        "left": 794
       },
       "client": {
         "width": 46,
@@ -1330,14 +1330,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4)",
       "tag": "div",
       "rect": {
-        "x": 50,
-        "y": 879.1747436523438,
+        "x": 162,
+        "y": 875.703125,
         "width": 700,
-        "height": 579.3125610351562,
-        "top": 879.1747436523438,
-        "right": 750,
-        "bottom": 1458.4873046875,
-        "left": 50
+        "height": 579.3125,
+        "top": 875.703125,
+        "right": 862,
+        "bottom": 1455.015625,
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -1354,14 +1354,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 899.1747436523438,
+        "x": 182,
+        "y": 895.703125,
         "width": 660,
         "height": 17,
-        "top": 899.1747436523438,
-        "right": 730,
-        "bottom": 916.1747436523438,
-        "left": 70
+        "top": 895.703125,
+        "right": 842,
+        "bottom": 912.703125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -1378,14 +1378,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 932.1747436523438,
+        "x": 182,
+        "y": 928.703125,
         "width": 660,
         "height": 69.1875,
-        "top": 932.1747436523438,
-        "right": 730,
-        "bottom": 1001.3622436523438,
-        "left": 70
+        "top": 928.703125,
+        "right": 842,
+        "bottom": 997.890625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -1402,14 +1402,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 944.1747436523438,
+        "x": 182,
+        "y": 940.703125,
         "width": 520,
         "height": 44.1875,
-        "top": 944.1747436523438,
-        "right": 590,
-        "bottom": 988.3622436523438,
-        "left": 70
+        "top": 940.703125,
+        "right": 702,
+        "bottom": 984.890625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1426,14 +1426,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 944.1747436523438,
+        "x": 182,
+        "y": 940.703125,
         "width": 520,
         "height": 20,
-        "top": 944.1747436523438,
-        "right": 590,
-        "bottom": 964.1747436523438,
-        "left": 70
+        "top": 940.703125,
+        "right": 702,
+        "bottom": 960.703125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1450,14 +1450,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 970.3622436523438,
+        "x": 182,
+        "y": 966.890625,
         "width": 288.125,
         "height": 17,
-        "top": 970.3622436523438,
-        "right": 358.125,
-        "bottom": 987.3622436523438,
-        "left": 70
+        "top": 966.890625,
+        "right": 470.125,
+        "bottom": 983.890625,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -1474,14 +1474,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(2) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 953.2684936523438,
+        "x": 702,
+        "y": 949.796875,
         "width": 140,
         "height": 26,
-        "top": 953.2684936523438,
-        "right": 730,
-        "bottom": 979.2684936523438,
-        "left": 590
+        "top": 949.796875,
+        "right": 842,
+        "bottom": 975.796875,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -1498,14 +1498,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(2) > div.setting-control:nth-of-type(2) > label.toggle",
       "tag": "label",
       "rect": {
-        "x": 682,
-        "y": 953.2684936523438,
+        "x": 794,
+        "y": 949.796875,
         "width": 48,
         "height": 26,
-        "top": 953.2684936523438,
-        "right": 730,
-        "bottom": 979.2684936523438,
-        "left": 682
+        "top": 949.796875,
+        "right": 842,
+        "bottom": 975.796875,
+        "left": 794
       },
       "client": {
         "width": 48,
@@ -1522,14 +1522,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(2) > div.setting-control:nth-of-type(2) > label.toggle > span.toggle-slider",
       "tag": "span",
       "rect": {
-        "x": 682,
-        "y": 953.2684936523438,
+        "x": 794,
+        "y": 949.796875,
         "width": 48,
         "height": 26,
-        "top": 953.2684936523438,
-        "right": 730,
-        "bottom": 979.2684936523438,
-        "left": 682
+        "top": 949.796875,
+        "right": 842,
+        "bottom": 975.796875,
+        "left": 794
       },
       "client": {
         "width": 46,
@@ -1546,14 +1546,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(3)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1001.3622436523438,
+        "x": 182,
+        "y": 997.890625,
         "width": 660,
-        "height": 69.18756103515625,
-        "top": 1001.3622436523438,
-        "right": 730,
-        "bottom": 1070.5498046875,
-        "left": 70
+        "height": 69.1875,
+        "top": 997.890625,
+        "right": 842,
+        "bottom": 1067.078125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -1570,14 +1570,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1013.3622436523438,
+        "x": 182,
+        "y": 1009.890625,
         "width": 520,
-        "height": 44.18756103515625,
-        "top": 1013.3622436523438,
-        "right": 590,
-        "bottom": 1057.5498046875,
-        "left": 70
+        "height": 44.1875,
+        "top": 1009.890625,
+        "right": 702,
+        "bottom": 1054.078125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1594,14 +1594,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 1013.3622436523438,
+        "x": 182,
+        "y": 1009.890625,
         "width": 520,
-        "height": 20.00006103515625,
-        "top": 1013.3622436523438,
-        "right": 590,
-        "bottom": 1033.3623046875,
-        "left": 70
+        "height": 20,
+        "top": 1009.890625,
+        "right": 702,
+        "bottom": 1029.890625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1618,14 +1618,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 1039.5498046875,
+        "x": 182,
+        "y": 1036.078125,
         "width": 288.90625,
         "height": 17,
-        "top": 1039.5498046875,
-        "right": 358.90625,
-        "bottom": 1056.5498046875,
-        "left": 70
+        "top": 1036.078125,
+        "right": 470.90625,
+        "bottom": 1053.078125,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -1642,14 +1642,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(3) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 1018.9559936523438,
+        "x": 702,
+        "y": 1015.484375,
         "width": 140,
-        "height": 33.00006103515625,
-        "top": 1018.9559936523438,
-        "right": 730,
-        "bottom": 1051.9560546875,
-        "left": 590
+        "height": 33,
+        "top": 1015.484375,
+        "right": 842,
+        "bottom": 1048.484375,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -1666,14 +1666,14 @@
       "selector": "#focusActivationDelay",
       "tag": "input",
       "rect": {
-        "x": 621.453125,
-        "y": 1018.9559936523438,
+        "x": 733.453125,
+        "y": 1015.484375,
         "width": 80,
-        "height": 33.00006103515625,
-        "top": 1018.9559936523438,
-        "right": 701.453125,
-        "bottom": 1051.9560546875,
-        "left": 621.453125
+        "height": 33,
+        "top": 1015.484375,
+        "right": 813.453125,
+        "bottom": 1048.484375,
+        "left": 733.453125
       },
       "client": {
         "width": 78,
@@ -1690,14 +1690,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(3) > div.setting-control:nth-of-type(2) > span",
       "tag": "span",
       "rect": {
-        "x": 707.453125,
-        "y": 1024.9560546875,
+        "x": 819.453125,
+        "y": 1021.484375,
         "width": 22.546875,
         "height": 21,
-        "top": 1024.9560546875,
-        "right": 730,
-        "bottom": 1045.9560546875,
-        "left": 707.453125
+        "top": 1021.484375,
+        "right": 842,
+        "bottom": 1042.484375,
+        "left": 819.453125
       },
       "client": {
         "width": 23,
@@ -1714,14 +1714,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(4)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1070.5498046875,
+        "x": 182,
+        "y": 1067.078125,
         "width": 660,
         "height": 69.1875,
-        "top": 1070.5498046875,
-        "right": 730,
-        "bottom": 1139.7373046875,
-        "left": 70
+        "top": 1067.078125,
+        "right": 842,
+        "bottom": 1136.265625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -1738,14 +1738,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(4) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1082.5498046875,
+        "x": 182,
+        "y": 1079.078125,
         "width": 520,
         "height": 44.1875,
-        "top": 1082.5498046875,
-        "right": 590,
-        "bottom": 1126.7373046875,
-        "left": 70
+        "top": 1079.078125,
+        "right": 702,
+        "bottom": 1123.265625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1762,14 +1762,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(4) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 1082.5498046875,
+        "x": 182,
+        "y": 1079.078125,
         "width": 520,
         "height": 20,
-        "top": 1082.5498046875,
-        "right": 590,
-        "bottom": 1102.5498046875,
-        "left": 70
+        "top": 1079.078125,
+        "right": 702,
+        "bottom": 1099.078125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1786,14 +1786,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(4) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 1108.7373046875,
+        "x": 182,
+        "y": 1105.265625,
         "width": 297.21875,
         "height": 17,
-        "top": 1108.7373046875,
-        "right": 367.21875,
-        "bottom": 1125.7373046875,
-        "left": 70
+        "top": 1105.265625,
+        "right": 479.21875,
+        "bottom": 1122.265625,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -1810,14 +1810,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(4) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 1091.6435546875,
+        "x": 702,
+        "y": 1088.171875,
         "width": 140,
         "height": 26,
-        "top": 1091.6435546875,
-        "right": 730,
-        "bottom": 1117.6435546875,
-        "left": 590
+        "top": 1088.171875,
+        "right": 842,
+        "bottom": 1114.171875,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -1834,14 +1834,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(4) > div.setting-control:nth-of-type(2) > label.toggle",
       "tag": "label",
       "rect": {
-        "x": 682,
-        "y": 1091.6435546875,
+        "x": 794,
+        "y": 1088.171875,
         "width": 48,
         "height": 26,
-        "top": 1091.6435546875,
-        "right": 730,
-        "bottom": 1117.6435546875,
-        "left": 682
+        "top": 1088.171875,
+        "right": 842,
+        "bottom": 1114.171875,
+        "left": 794
       },
       "client": {
         "width": 48,
@@ -1858,14 +1858,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(4) > div.setting-control:nth-of-type(2) > label.toggle > span.toggle-slider",
       "tag": "span",
       "rect": {
-        "x": 682,
-        "y": 1091.6435546875,
+        "x": 794,
+        "y": 1088.171875,
         "width": 48,
         "height": 26,
-        "top": 1091.6435546875,
-        "right": 730,
-        "bottom": 1117.6435546875,
-        "left": 682
+        "top": 1088.171875,
+        "right": 842,
+        "bottom": 1114.171875,
+        "left": 794
       },
       "client": {
         "width": 46,
@@ -1882,14 +1882,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(5)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1139.7373046875,
+        "x": 182,
+        "y": 1136.265625,
         "width": 660,
         "height": 69.1875,
-        "top": 1139.7373046875,
-        "right": 730,
-        "bottom": 1208.9248046875,
-        "left": 70
+        "top": 1136.265625,
+        "right": 842,
+        "bottom": 1205.453125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -1906,14 +1906,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(5) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1151.7373046875,
+        "x": 182,
+        "y": 1148.265625,
         "width": 520,
         "height": 44.1875,
-        "top": 1151.7373046875,
-        "right": 590,
-        "bottom": 1195.9248046875,
-        "left": 70
+        "top": 1148.265625,
+        "right": 702,
+        "bottom": 1192.453125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1930,14 +1930,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(5) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 1151.7373046875,
+        "x": 182,
+        "y": 1148.265625,
         "width": 520,
         "height": 20,
-        "top": 1151.7373046875,
-        "right": 590,
-        "bottom": 1171.7373046875,
-        "left": 70
+        "top": 1148.265625,
+        "right": 702,
+        "bottom": 1168.265625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -1954,14 +1954,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(5) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 1177.9248046875,
+        "x": 182,
+        "y": 1174.453125,
         "width": 310.40625,
         "height": 17,
-        "top": 1177.9248046875,
-        "right": 380.40625,
-        "bottom": 1194.9248046875,
-        "left": 70
+        "top": 1174.453125,
+        "right": 492.40625,
+        "bottom": 1191.453125,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -1978,14 +1978,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(5) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 1160.8310546875,
+        "x": 702,
+        "y": 1157.359375,
         "width": 140,
         "height": 26,
-        "top": 1160.8310546875,
-        "right": 730,
-        "bottom": 1186.8310546875,
-        "left": 590
+        "top": 1157.359375,
+        "right": 842,
+        "bottom": 1183.359375,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -2002,14 +2002,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(5) > div.setting-control:nth-of-type(2) > label.toggle",
       "tag": "label",
       "rect": {
-        "x": 682,
-        "y": 1160.8310546875,
+        "x": 794,
+        "y": 1157.359375,
         "width": 48,
         "height": 26,
-        "top": 1160.8310546875,
-        "right": 730,
-        "bottom": 1186.8310546875,
-        "left": 682
+        "top": 1157.359375,
+        "right": 842,
+        "bottom": 1183.359375,
+        "left": 794
       },
       "client": {
         "width": 48,
@@ -2026,14 +2026,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(5) > div.setting-control:nth-of-type(2) > label.toggle > span.toggle-slider",
       "tag": "span",
       "rect": {
-        "x": 682,
-        "y": 1160.8310546875,
+        "x": 794,
+        "y": 1157.359375,
         "width": 48,
         "height": 26,
-        "top": 1160.8310546875,
-        "right": 730,
-        "bottom": 1186.8310546875,
-        "left": 682
+        "top": 1157.359375,
+        "right": 842,
+        "bottom": 1183.359375,
+        "left": 794
       },
       "client": {
         "width": 46,
@@ -2050,14 +2050,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(6)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1208.9248046875,
+        "x": 182,
+        "y": 1205.453125,
         "width": 660,
         "height": 69.1875,
-        "top": 1208.9248046875,
-        "right": 730,
-        "bottom": 1278.1123046875,
-        "left": 70
+        "top": 1205.453125,
+        "right": 842,
+        "bottom": 1274.640625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2074,14 +2074,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(6) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1220.9248046875,
+        "x": 182,
+        "y": 1217.453125,
         "width": 520,
         "height": 44.1875,
-        "top": 1220.9248046875,
-        "right": 590,
-        "bottom": 1265.1123046875,
-        "left": 70
+        "top": 1217.453125,
+        "right": 702,
+        "bottom": 1261.640625,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -2098,14 +2098,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(6) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 1220.9248046875,
+        "x": 182,
+        "y": 1217.453125,
         "width": 520,
         "height": 20,
-        "top": 1220.9248046875,
-        "right": 590,
-        "bottom": 1240.9248046875,
-        "left": 70
+        "top": 1217.453125,
+        "right": 702,
+        "bottom": 1237.453125,
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -2122,14 +2122,14 @@
       "selector": "#focusShortcutDesc",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 1247.1123046875,
+        "x": 182,
+        "y": 1243.640625,
         "width": 246.0625,
         "height": 17,
-        "top": 1247.1123046875,
-        "right": 316.0625,
-        "bottom": 1264.1123046875,
-        "left": 70
+        "top": 1243.640625,
+        "right": 428.0625,
+        "bottom": 1260.640625,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -2146,14 +2146,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(6) > div.setting-control:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 590,
-        "y": 1235.5185546875,
+        "x": 702,
+        "y": 1232.046875,
         "width": 140,
         "height": 15,
-        "top": 1235.5185546875,
-        "right": 730,
-        "bottom": 1250.5185546875,
-        "left": 590
+        "top": 1232.046875,
+        "right": 842,
+        "bottom": 1247.046875,
+        "left": 702
       },
       "client": {
         "width": 140,
@@ -2170,14 +2170,14 @@
       "selector": "#focusShortcutKey",
       "tag": "span",
       "rect": {
-        "x": 708.546875,
-        "y": 1235.5185546875,
+        "x": 820.546875,
+        "y": 1232.046875,
         "width": 21.453125,
         "height": 15,
-        "top": 1235.5185546875,
-        "right": 730,
-        "bottom": 1250.5185546875,
-        "left": 708.546875
+        "top": 1232.046875,
+        "right": 842,
+        "bottom": 1247.046875,
+        "left": 820.546875
       },
       "client": {
         "width": 21,
@@ -2194,14 +2194,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(7)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1278.1123046875,
+        "x": 182,
+        "y": 1274.640625,
         "width": 660,
         "height": 160.375,
-        "top": 1278.1123046875,
-        "right": 730,
-        "bottom": 1438.4873046875,
-        "left": 70
+        "top": 1274.640625,
+        "right": 842,
+        "bottom": 1435.015625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2218,14 +2218,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(7) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1290.1123046875,
+        "x": 182,
+        "y": 1286.640625,
         "width": 251.265625,
         "height": 44.1875,
-        "top": 1290.1123046875,
-        "right": 321.265625,
-        "bottom": 1334.2998046875,
-        "left": 70
+        "top": 1286.640625,
+        "right": 433.265625,
+        "bottom": 1330.828125,
+        "left": 182
       },
       "client": {
         "width": 251,
@@ -2242,14 +2242,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(7) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
-        "y": 1290.1123046875,
+        "x": 182,
+        "y": 1286.640625,
         "width": 251.265625,
         "height": 20,
-        "top": 1290.1123046875,
-        "right": 321.265625,
-        "bottom": 1310.1123046875,
-        "left": 70
+        "top": 1286.640625,
+        "right": 433.265625,
+        "bottom": 1306.640625,
+        "left": 182
       },
       "client": {
         "width": 251,
@@ -2266,14 +2266,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(7) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
-        "y": 1316.2998046875,
+        "x": 182,
+        "y": 1312.828125,
         "width": 251.265625,
         "height": 17,
-        "top": 1316.2998046875,
-        "right": 321.265625,
-        "bottom": 1333.2998046875,
-        "left": 70
+        "top": 1312.828125,
+        "right": 433.265625,
+        "bottom": 1329.828125,
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -2290,14 +2290,14 @@
       "selector": "#focusBlocklist",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1346.2998046875,
+        "x": 182,
+        "y": 1342.828125,
         "width": 660,
         "height": 36,
-        "top": 1346.2998046875,
-        "right": 730,
-        "bottom": 1382.2998046875,
-        "left": 70
+        "top": 1342.828125,
+        "right": 842,
+        "bottom": 1378.828125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2314,14 +2314,14 @@
       "selector": "body > div.container > div.section:nth-of-type(4) > div.setting-row:nth-of-type(7) > div.blocklist-add:nth-of-type(3)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1390.2998046875,
+        "x": 182,
+        "y": 1386.828125,
         "width": 660,
         "height": 36.1875,
-        "top": 1390.2998046875,
-        "right": 730,
-        "bottom": 1426.4873046875,
-        "left": 70
+        "top": 1386.828125,
+        "right": 842,
+        "bottom": 1423.015625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2338,14 +2338,14 @@
       "selector": "#focusBlocklistInput",
       "tag": "input",
       "rect": {
-        "x": 70,
-        "y": 1390.2998046875,
+        "x": 182,
+        "y": 1386.828125,
         "width": 593.796875,
         "height": 36.1875,
-        "top": 1390.2998046875,
-        "right": 663.796875,
-        "bottom": 1426.4873046875,
-        "left": 70
+        "top": 1386.828125,
+        "right": 775.796875,
+        "bottom": 1423.015625,
+        "left": 182
       },
       "client": {
         "width": 592,
@@ -2362,14 +2362,14 @@
       "selector": "#focusBlocklistAddBtn",
       "tag": "button",
       "rect": {
-        "x": 671.796875,
-        "y": 1390.2998046875,
+        "x": 783.796875,
+        "y": 1386.828125,
         "width": 58.203125,
         "height": 36.1875,
-        "top": 1390.2998046875,
-        "right": 730,
-        "bottom": 1426.4873046875,
-        "left": 671.796875
+        "top": 1386.828125,
+        "right": 842,
+        "bottom": 1423.015625,
+        "left": 783.796875
       },
       "client": {
         "width": 56,
@@ -2386,14 +2386,14 @@
       "selector": "body > div.container > div.section:nth-of-type(5)",
       "tag": "div",
       "rect": {
-        "x": 50,
-        "y": 1476.50830078125,
+        "x": 162,
+        "y": 1471.015625,
         "width": 700,
         "height": 138.1875,
-        "top": 1476.50830078125,
-        "right": 750,
-        "bottom": 1614.69580078125,
-        "left": 50
+        "top": 1471.015625,
+        "right": 862,
+        "bottom": 1609.203125,
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -2410,14 +2410,14 @@
       "selector": "body > div.container > div.section:nth-of-type(5) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1496.50830078125,
+        "x": 182,
+        "y": 1491.015625,
         "width": 660,
         "height": 17,
-        "top": 1496.50830078125,
-        "right": 730,
-        "bottom": 1513.50830078125,
-        "left": 70
+        "top": 1491.015625,
+        "right": 842,
+        "bottom": 1508.015625,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2434,14 +2434,14 @@
       "selector": "body > div.container > div.section:nth-of-type(5) > div.import-row:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1529.50830078125,
+        "x": 182,
+        "y": 1524.015625,
         "width": 660,
         "height": 36.1875,
-        "top": 1529.50830078125,
-        "right": 730,
-        "bottom": 1565.69580078125,
-        "left": 70
+        "top": 1524.015625,
+        "right": 842,
+        "bottom": 1560.203125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2458,14 +2458,14 @@
       "selector": "#browserSelect",
       "tag": "select",
       "rect": {
-        "x": 70,
-        "y": 1529.50830078125,
+        "x": 182,
+        "y": 1524.015625,
         "width": 281.71875,
         "height": 36.1875,
-        "top": 1529.50830078125,
-        "right": 351.71875,
-        "bottom": 1565.69580078125,
-        "left": 70
+        "top": 1524.015625,
+        "right": 463.71875,
+        "bottom": 1560.203125,
+        "left": 182
       },
       "client": {
         "width": 280,
@@ -2482,14 +2482,14 @@
       "selector": "#profileSelect",
       "tag": "select",
       "rect": {
-        "x": 363.71875,
-        "y": 1529.50830078125,
+        "x": 475.71875,
+        "y": 1524.015625,
         "width": 281.734375,
         "height": 36.1875,
-        "top": 1529.50830078125,
-        "right": 645.453125,
-        "bottom": 1565.69580078125,
-        "left": 363.71875
+        "top": 1524.015625,
+        "right": 757.453125,
+        "bottom": 1560.203125,
+        "left": 475.71875
       },
       "client": {
         "width": 280,
@@ -2506,14 +2506,14 @@
       "selector": "#importBtn",
       "tag": "button",
       "rect": {
-        "x": 657.453125,
-        "y": 1529.50830078125,
+        "x": 769.453125,
+        "y": 1524.015625,
         "width": 72.546875,
         "height": 36.1875,
-        "top": 1529.50830078125,
-        "right": 730,
-        "bottom": 1565.69580078125,
-        "left": 657.453125
+        "top": 1524.015625,
+        "right": 842,
+        "bottom": 1560.203125,
+        "left": 769.453125
       },
       "client": {
         "width": 71,
@@ -2530,14 +2530,14 @@
       "selector": "body > div.container > div.section:nth-of-type(5) > div.import-info:nth-of-type(4)",
       "tag": "div",
       "rect": {
-        "x": 70,
-        "y": 1577.69580078125,
+        "x": 182,
+        "y": 1572.203125,
         "width": 660,
         "height": 17,
-        "top": 1577.69580078125,
-        "right": 730,
-        "bottom": 1594.69580078125,
-        "left": 70
+        "top": 1572.203125,
+        "right": 842,
+        "bottom": 1589.203125,
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2554,14 +2554,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6)",
       "tag": "div",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 1625.203125,
         "width": 700,
         "height": 375.75,
         "top": 1625.203125,
-        "right": 750,
+        "right": 862,
         "bottom": 2000.953125,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -2578,14 +2578,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1645.203125,
         "width": 660,
         "height": 17,
         "top": 1645.203125,
-        "right": 730,
+        "right": 842,
         "bottom": 1662.203125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2602,14 +2602,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1678.203125,
         "width": 660,
         "height": 151.375,
         "top": 1678.203125,
-        "right": 730,
+        "right": 842,
         "bottom": 1829.578125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2626,14 +2626,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1690.203125,
         "width": 297.125,
         "height": 44.1875,
         "top": 1690.203125,
-        "right": 367.125,
+        "right": 479.125,
         "bottom": 1734.390625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 297,
@@ -2650,14 +2650,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1690.203125,
         "width": 297.125,
         "height": 20,
         "top": 1690.203125,
-        "right": 367.125,
+        "right": 479.125,
         "bottom": 1710.203125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 297,
@@ -2674,14 +2674,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(2) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1716.390625,
         "width": 297.125,
         "height": 17,
         "top": 1716.390625,
-        "right": 367.125,
+        "right": 479.125,
         "bottom": 1733.390625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -2698,14 +2698,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(2) > div.checkbox-group:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1746.390625,
         "width": 305.3125,
         "height": 22,
         "top": 1746.390625,
-        "right": 375.3125,
+        "right": 487.3125,
         "bottom": 1768.390625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 305,
@@ -2722,14 +2722,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(2) > div.checkbox-group:nth-of-type(2) > label.checkbox-label:nth-of-type(1)",
       "tag": "label",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1746.390625,
         "width": 132.390625,
         "height": 22,
         "top": 1746.390625,
-        "right": 202.390625,
+        "right": 314.390625,
         "bottom": 1768.390625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 132,
@@ -2746,14 +2746,14 @@
       "selector": "#exportSettings",
       "tag": "input",
       "rect": {
-        "x": 74,
+        "x": 186,
         "y": 1749.390625,
         "width": 16,
         "height": 16,
         "top": 1749.390625,
-        "right": 90,
+        "right": 202,
         "bottom": 1765.390625,
-        "left": 74
+        "left": 186
       },
       "client": {
         "width": 16,
@@ -2770,14 +2770,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(2) > div.checkbox-group:nth-of-type(2) > label.checkbox-label:nth-of-type(2)",
       "tag": "label",
       "rect": {
-        "x": 218.390625,
+        "x": 330.390625,
         "y": 1746.390625,
         "width": 156.921875,
         "height": 22,
         "top": 1746.390625,
-        "right": 375.3125,
+        "right": 487.3125,
         "bottom": 1768.390625,
-        "left": 218.390625
+        "left": 330.390625
       },
       "client": {
         "width": 157,
@@ -2794,14 +2794,14 @@
       "selector": "#exportWorkspaces",
       "tag": "input",
       "rect": {
-        "x": 222.390625,
+        "x": 334.390625,
         "y": 1749.390625,
         "width": 16,
         "height": 16,
         "top": 1749.390625,
-        "right": 238.390625,
+        "right": 350.390625,
         "bottom": 1765.390625,
-        "left": 222.390625
+        "left": 334.390625
       },
       "client": {
         "width": 16,
@@ -2818,14 +2818,14 @@
       "selector": "#exportBtn",
       "tag": "button",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1780.390625,
         "width": 114.125,
         "height": 36.1875,
         "top": 1780.390625,
-        "right": 184.125,
+        "right": 296.125,
         "bottom": 1816.578125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 112,
@@ -2842,14 +2842,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(3)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1829.578125,
         "width": 660,
         "height": 151.375,
         "top": 1829.578125,
-        "right": 730,
+        "right": 842,
         "bottom": 1980.953125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -2866,14 +2866,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1841.578125,
         "width": 194.375,
         "height": 44.1875,
         "top": 1841.578125,
-        "right": 264.375,
+        "right": 376.375,
         "bottom": 1885.765625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 194,
@@ -2890,14 +2890,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1841.578125,
         "width": 194.375,
         "height": 20,
         "top": 1841.578125,
-        "right": 264.375,
+        "right": 376.375,
         "bottom": 1861.578125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 194,
@@ -2914,14 +2914,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(3) > div.setting-label:nth-of-type(1) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1867.765625,
         "width": 194.375,
         "height": 17,
         "top": 1867.765625,
-        "right": 264.375,
+        "right": 376.375,
         "bottom": 1884.765625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -2938,14 +2938,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(3) > div.checkbox-group:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1897.765625,
         "width": 210.015625,
         "height": 22,
         "top": 1897.765625,
-        "right": 280.015625,
+        "right": 392.015625,
         "bottom": 1919.765625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 210,
@@ -2962,14 +2962,14 @@
       "selector": "body > div.container > div.section:nth-of-type(6) > div.setting-row:nth-of-type(3) > div.checkbox-group:nth-of-type(2) > label.checkbox-label",
       "tag": "label",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1897.765625,
         "width": 210.015625,
         "height": 22,
         "top": 1897.765625,
-        "right": 280.015625,
+        "right": 392.015625,
         "bottom": 1919.765625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 210,
@@ -2986,14 +2986,14 @@
       "selector": "#importReplace",
       "tag": "input",
       "rect": {
-        "x": 74,
+        "x": 186,
         "y": 1900.765625,
         "width": 16,
         "height": 16,
         "top": 1900.765625,
-        "right": 90,
+        "right": 202,
         "bottom": 1916.765625,
-        "left": 74
+        "left": 186
       },
       "client": {
         "width": 16,
@@ -3010,14 +3010,14 @@
       "selector": "#importDataBtn",
       "tag": "button",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 1931.765625,
         "width": 129.21875,
         "height": 36.1875,
         "top": 1931.765625,
-        "right": 199.21875,
+        "right": 311.21875,
         "bottom": 1967.953125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 127,
@@ -3034,14 +3034,14 @@
       "selector": "body > div.container > div.section:nth-of-type(7)",
       "tag": "div",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 2016.953125,
         "width": 700,
         "height": 147.1875,
         "top": 2016.953125,
-        "right": 750,
+        "right": 862,
         "bottom": 2164.140625,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -3058,14 +3058,14 @@
       "selector": "body > div.container > div.section:nth-of-type(7) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2036.953125,
         "width": 660,
         "height": 17,
         "top": 2036.953125,
-        "right": 730,
+        "right": 842,
         "bottom": 2053.953125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3082,14 +3082,14 @@
       "selector": "body > div.container > div.section:nth-of-type(7) > div.clear-options:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2069.953125,
         "width": 660,
         "height": 22,
         "top": 2069.953125,
-        "right": 730,
+        "right": 842,
         "bottom": 2091.953125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3106,14 +3106,14 @@
       "selector": "body > div.container > div.section:nth-of-type(7) > div.clear-options:nth-of-type(2) > label.checkbox-label:nth-of-type(1)",
       "tag": "label",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2069.953125,
         "width": 106.96875,
         "height": 22,
         "top": 2069.953125,
-        "right": 176.96875,
+        "right": 288.96875,
         "bottom": 2091.953125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 107,
@@ -3130,14 +3130,14 @@
       "selector": "#clearHistory",
       "tag": "input",
       "rect": {
-        "x": 74,
+        "x": 186,
         "y": 2072.953125,
         "width": 16,
         "height": 16,
         "top": 2072.953125,
-        "right": 90,
+        "right": 202,
         "bottom": 2088.953125,
-        "left": 74
+        "left": 186
       },
       "client": {
         "width": 16,
@@ -3154,14 +3154,14 @@
       "selector": "body > div.container > div.section:nth-of-type(7) > div.clear-options:nth-of-type(2) > label.checkbox-label:nth-of-type(2)",
       "tag": "label",
       "rect": {
-        "x": 188.96875,
+        "x": 300.96875,
         "y": 2069.953125,
         "width": 144.890625,
         "height": 22,
         "top": 2069.953125,
-        "right": 333.859375,
+        "right": 445.859375,
         "bottom": 2091.953125,
-        "left": 188.96875
+        "left": 300.96875
       },
       "client": {
         "width": 145,
@@ -3178,14 +3178,14 @@
       "selector": "#clearDownloads",
       "tag": "input",
       "rect": {
-        "x": 192.96875,
+        "x": 304.96875,
         "y": 2072.953125,
         "width": 16,
         "height": 16,
         "top": 2072.953125,
-        "right": 208.96875,
+        "right": 320.96875,
         "bottom": 2088.953125,
-        "left": 192.96875
+        "left": 304.96875
       },
       "client": {
         "width": 16,
@@ -3202,14 +3202,14 @@
       "selector": "body > div.container > div.section:nth-of-type(7) > div.clear-options:nth-of-type(2) > label.checkbox-label:nth-of-type(3)",
       "tag": "label",
       "rect": {
-        "x": 345.859375,
+        "x": 457.859375,
         "y": 2069.953125,
         "width": 101.03125,
         "height": 22,
         "top": 2069.953125,
-        "right": 446.890625,
+        "right": 558.890625,
         "bottom": 2091.953125,
-        "left": 345.859375
+        "left": 457.859375
       },
       "client": {
         "width": 101,
@@ -3226,14 +3226,14 @@
       "selector": "#clearShelf",
       "tag": "input",
       "rect": {
-        "x": 349.859375,
+        "x": 461.859375,
         "y": 2072.953125,
         "width": 16,
         "height": 16,
         "top": 2072.953125,
-        "right": 365.859375,
+        "right": 477.859375,
         "bottom": 2088.953125,
-        "left": 349.859375
+        "left": 461.859375
       },
       "client": {
         "width": 16,
@@ -3250,14 +3250,14 @@
       "selector": "#clearDataBtn",
       "tag": "button",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2107.953125,
         "width": 155.71875,
         "height": 36.1875,
         "top": 2107.953125,
-        "right": 225.71875,
+        "right": 337.71875,
         "bottom": 2144.140625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 154,
@@ -3274,14 +3274,14 @@
       "selector": "body > div.container > div.section:nth-of-type(8)",
       "tag": "div",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 2180.140625,
         "width": 700,
         "height": 191.1875,
         "top": 2180.140625,
-        "right": 750,
+        "right": 862,
         "bottom": 2371.328125,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -3298,14 +3298,14 @@
       "selector": "body > div.container > div.section:nth-of-type(8) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2200.140625,
         "width": 660,
         "height": 17,
         "top": 2200.140625,
-        "right": 730,
+        "right": 842,
         "bottom": 2217.140625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3322,14 +3322,14 @@
       "selector": "body > div.container > div.section:nth-of-type(8) > div.setting-label:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2233.140625,
         "width": 660,
         "height": 44.1875,
         "top": 2233.140625,
-        "right": 730,
+        "right": 842,
         "bottom": 2277.328125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3346,14 +3346,14 @@
       "selector": "body > div.container > div.section:nth-of-type(8) > div.setting-label:nth-of-type(2) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2233.140625,
         "width": 660,
         "height": 20,
         "top": 2233.140625,
-        "right": 730,
+        "right": 842,
         "bottom": 2253.140625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3370,14 +3370,14 @@
       "selector": "body > div.container > div.section:nth-of-type(8) > div.setting-label:nth-of-type(2) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2259.328125,
         "width": 271.203125,
         "height": 17,
         "top": 2259.328125,
-        "right": 341.203125,
+        "right": 453.203125,
         "bottom": 2276.328125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -3394,14 +3394,14 @@
       "selector": "#vaultStatus",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2289.328125,
         "width": 660,
         "height": 46,
         "top": 2289.328125,
-        "right": 730,
+        "right": 842,
         "bottom": 2335.328125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3418,14 +3418,14 @@
       "selector": "#vaultStatusText",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2301.328125,
         "width": 159.96875,
         "height": 21,
         "top": 2301.328125,
-        "right": 229.96875,
+        "right": 341.96875,
         "bottom": 2322.328125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 160,
@@ -3442,14 +3442,14 @@
       "selector": "body > div.container > div.section:nth-of-type(9)",
       "tag": "div",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 2387.328125,
         "width": 700,
         "height": 245.375,
         "top": 2387.328125,
-        "right": 750,
+        "right": 862,
         "bottom": 2632.703125,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -3466,14 +3466,14 @@
       "selector": "body > div.container > div.section:nth-of-type(9) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2407.328125,
         "width": 660,
         "height": 17,
         "top": 2407.328125,
-        "right": 730,
+        "right": 842,
         "bottom": 2424.328125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3490,14 +3490,14 @@
       "selector": "body > div.container > div.section:nth-of-type(9) > div.setting-label:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2440.328125,
         "width": 660,
         "height": 44.1875,
         "top": 2440.328125,
-        "right": 730,
+        "right": 842,
         "bottom": 2484.515625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3514,14 +3514,14 @@
       "selector": "body > div.container > div.section:nth-of-type(9) > div.setting-label:nth-of-type(2) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2440.328125,
         "width": 660,
         "height": 20,
         "top": 2440.328125,
-        "right": 730,
+        "right": 842,
         "bottom": 2460.328125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3538,14 +3538,14 @@
       "selector": "body > div.container > div.section:nth-of-type(9) > div.setting-label:nth-of-type(2) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2466.515625,
         "width": 302.453125,
         "height": 17,
         "top": 2466.515625,
-        "right": 372.453125,
+        "right": 484.453125,
         "bottom": 2483.515625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -3562,14 +3562,14 @@
       "selector": "#cellarList",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2496.515625,
         "width": 660,
         "height": 68,
         "top": 2496.515625,
-        "right": 730,
+        "right": 842,
         "bottom": 2564.515625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 658,
@@ -3586,14 +3586,14 @@
       "selector": "body > div.container > div.section:nth-of-type(9) > div.cellar-list:nth-of-type(3) > div.cellar-empty",
       "tag": "div",
       "rect": {
-        "x": 71,
+        "x": 183,
         "y": 2497.515625,
         "width": 658,
         "height": 66,
         "top": 2497.515625,
-        "right": 729,
+        "right": 841,
         "bottom": 2563.515625,
-        "left": 71
+        "left": 183
       },
       "client": {
         "width": 658,
@@ -3610,14 +3610,14 @@
       "selector": "body > div.container > div.section:nth-of-type(9) > div.btn-group:nth-of-type(4)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2576.515625,
         "width": 660,
         "height": 36.1875,
         "top": 2576.515625,
-        "right": 730,
+        "right": 842,
         "bottom": 2612.703125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3634,14 +3634,14 @@
       "selector": "#refreshCellarBtn",
       "tag": "button",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2576.515625,
         "width": 81.625,
         "height": 36.1875,
         "top": 2576.515625,
-        "right": 151.625,
+        "right": 263.625,
         "bottom": 2612.703125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 80,
@@ -3658,14 +3658,14 @@
       "selector": "#clearCellarBtn",
       "tag": "button",
       "rect": {
-        "x": 159.625,
+        "x": 271.625,
         "y": 2576.515625,
         "width": 105.8125,
         "height": 36.1875,
         "top": 2576.515625,
-        "right": 265.4375,
+        "right": 377.4375,
         "bottom": 2612.703125,
-        "left": 159.625
+        "left": 271.625
       },
       "client": {
         "width": 104,
@@ -3682,14 +3682,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10)",
       "tag": "div",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 2648.703125,
         "width": 700,
         "height": 504.6875,
         "top": 2648.703125,
-        "right": 750,
+        "right": 862,
         "bottom": 3153.390625,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -3706,14 +3706,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.section-title:nth-of-type(1)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2668.703125,
         "width": 660,
         "height": 17,
         "top": 2668.703125,
-        "right": 730,
+        "right": 842,
         "bottom": 2685.703125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3730,14 +3730,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(2)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2701.703125,
         "width": 660,
         "height": 69.1875,
         "top": 2701.703125,
-        "right": 730,
+        "right": 842,
         "bottom": 2770.890625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3754,14 +3754,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(2) > div.setting-label",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2713.703125,
         "width": 612,
         "height": 44.1875,
         "top": 2713.703125,
-        "right": 682,
+        "right": 794,
         "bottom": 2757.890625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 612,
@@ -3778,14 +3778,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(2) > div.setting-label > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2713.703125,
         "width": 612,
         "height": 20,
         "top": 2713.703125,
-        "right": 682,
+        "right": 794,
         "bottom": 2733.703125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 612,
@@ -3802,14 +3802,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(2) > div.setting-label > span",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2739.890625,
         "width": 496.46875,
         "height": 17,
         "top": 2739.890625,
-        "right": 566.46875,
+        "right": 678.46875,
         "bottom": 2756.890625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -3826,14 +3826,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(2) > label.toggle",
       "tag": "label",
       "rect": {
-        "x": 682,
+        "x": 794,
         "y": 2722.796875,
         "width": 48,
         "height": 26,
         "top": 2722.796875,
-        "right": 730,
+        "right": 842,
         "bottom": 2748.796875,
-        "left": 682
+        "left": 794
       },
       "client": {
         "width": 48,
@@ -3850,14 +3850,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(2) > label.toggle > span.toggle-slider",
       "tag": "span",
       "rect": {
-        "x": 682,
+        "x": 794,
         "y": 2722.796875,
         "width": 48,
         "height": 26,
         "top": 2722.796875,
-        "right": 730,
+        "right": 842,
         "bottom": 2748.796875,
-        "left": 682
+        "left": 794
       },
       "client": {
         "width": 46,
@@ -3874,14 +3874,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(3)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2770.890625,
         "width": 660,
         "height": 69.1875,
         "top": 2770.890625,
-        "right": 730,
+        "right": 842,
         "bottom": 2840.078125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -3898,14 +3898,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(3) > div.setting-label",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2782.890625,
         "width": 520,
         "height": 44.1875,
         "top": 2782.890625,
-        "right": 590,
+        "right": 702,
         "bottom": 2827.078125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -3922,14 +3922,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(3) > div.setting-label > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2782.890625,
         "width": 520,
         "height": 20,
         "top": 2782.890625,
-        "right": 590,
+        "right": 702,
         "bottom": 2802.890625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -3946,14 +3946,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(3) > div.setting-label > span",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2809.078125,
         "width": 329.21875,
         "height": 17,
         "top": 2809.078125,
-        "right": 399.21875,
+        "right": 511.21875,
         "bottom": 2826.078125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -3970,14 +3970,14 @@
       "selector": "#analyticsRetention",
       "tag": "select",
       "rect": {
-        "x": 590,
+        "x": 702,
         "y": 2787.484375,
         "width": 140,
         "height": 35,
         "top": 2787.484375,
-        "right": 730,
+        "right": 842,
         "bottom": 2822.484375,
-        "left": 590
+        "left": 702
       },
       "client": {
         "width": 138,
@@ -3994,14 +3994,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(4)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2840.078125,
         "width": 660,
         "height": 69.1875,
         "top": 2840.078125,
-        "right": 730,
+        "right": 842,
         "bottom": 2909.265625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -4018,14 +4018,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(4) > div.setting-label",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2852.078125,
         "width": 612,
         "height": 44.1875,
         "top": 2852.078125,
-        "right": 682,
+        "right": 794,
         "bottom": 2896.265625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 612,
@@ -4042,14 +4042,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(4) > div.setting-label > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2852.078125,
         "width": 612,
         "height": 20,
         "top": 2852.078125,
-        "right": 682,
+        "right": 794,
         "bottom": 2872.078125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 612,
@@ -4066,14 +4066,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(4) > div.setting-label > span",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2878.265625,
         "width": 264.78125,
         "height": 17,
         "top": 2878.265625,
-        "right": 334.78125,
+        "right": 446.78125,
         "bottom": 2895.265625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -4090,14 +4090,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(4) > label.toggle",
       "tag": "label",
       "rect": {
-        "x": 682,
+        "x": 794,
         "y": 2861.171875,
         "width": 48,
         "height": 26,
         "top": 2861.171875,
-        "right": 730,
+        "right": 842,
         "bottom": 2887.171875,
-        "left": 682
+        "left": 794
       },
       "client": {
         "width": 48,
@@ -4114,14 +4114,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(4) > label.toggle > span.toggle-slider",
       "tag": "span",
       "rect": {
-        "x": 682,
+        "x": 794,
         "y": 2861.171875,
         "width": 48,
         "height": 26,
         "top": 2861.171875,
-        "right": 730,
+        "right": 842,
         "bottom": 2887.171875,
-        "left": 682
+        "left": 794
       },
       "client": {
         "width": 46,
@@ -4138,14 +4138,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(5)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2909.265625,
         "width": 660,
         "height": 69.1875,
         "top": 2909.265625,
-        "right": 730,
+        "right": 842,
         "bottom": 2978.453125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -4162,14 +4162,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(5) > div.setting-label",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2921.265625,
         "width": 520,
         "height": 44.1875,
         "top": 2921.265625,
-        "right": 590,
+        "right": 702,
         "bottom": 2965.453125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -4186,14 +4186,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(5) > div.setting-label > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2921.265625,
         "width": 520,
         "height": 20,
         "top": 2921.265625,
-        "right": 590,
+        "right": 702,
         "bottom": 2941.265625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 520,
@@ -4210,14 +4210,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(5) > div.setting-label > span",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2947.453125,
         "width": 245.6875,
         "height": 17,
         "top": 2947.453125,
-        "right": 315.6875,
+        "right": 427.6875,
         "bottom": 2964.453125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -4234,14 +4234,14 @@
       "selector": "#analyticsReportDay",
       "tag": "select",
       "rect": {
-        "x": 590,
+        "x": 702,
         "y": 2925.859375,
         "width": 140,
         "height": 35,
         "top": 2925.859375,
-        "right": 730,
+        "right": 842,
         "bottom": 2960.859375,
-        "left": 590
+        "left": 702
       },
       "client": {
         "width": 138,
@@ -4258,14 +4258,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-label:nth-of-type(6)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2994.453125,
         "width": 660,
         "height": 86.75,
         "top": 2994.453125,
-        "right": 730,
+        "right": 842,
         "bottom": 3081.203125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -4282,14 +4282,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-label:nth-of-type(6) > strong",
       "tag": "strong",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 2994.453125,
         "width": 660,
         "height": 20,
         "top": 2994.453125,
-        "right": 730,
+        "right": 842,
         "bottom": 3014.453125,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -4306,14 +4306,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-label:nth-of-type(6) > span",
       "tag": "span",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 3020.640625,
         "width": 653.203125,
         "height": 59.375,
         "top": 3020.640625,
-        "right": 723.203125,
+        "right": 835.203125,
         "bottom": 3080.015625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 0,
@@ -4330,14 +4330,14 @@
       "selector": "body > div.container > div.section:nth-of-type(10) > div.btn-group:nth-of-type(7)",
       "tag": "div",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 3097.203125,
         "width": 660,
         "height": 36.1875,
         "top": 3097.203125,
-        "right": 730,
+        "right": 842,
         "bottom": 3133.390625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 660,
@@ -4354,14 +4354,14 @@
       "selector": "#viewReportBtn",
       "tag": "button",
       "rect": {
-        "x": 70,
+        "x": 182,
         "y": 3097.203125,
         "width": 107.84375,
         "height": 36.1875,
         "top": 3097.203125,
-        "right": 177.84375,
+        "right": 289.84375,
         "bottom": 3133.390625,
-        "left": 70
+        "left": 182
       },
       "client": {
         "width": 106,
@@ -4378,14 +4378,14 @@
       "selector": "#exportAnalyticsBtn",
       "tag": "button",
       "rect": {
-        "x": 185.84375,
+        "x": 297.84375,
         "y": 3097.203125,
         "width": 105.8125,
         "height": 36.1875,
         "top": 3097.203125,
-        "right": 291.65625,
+        "right": 403.65625,
         "bottom": 3133.390625,
-        "left": 185.84375
+        "left": 297.84375
       },
       "client": {
         "width": 104,
@@ -4402,14 +4402,14 @@
       "selector": "#clearAnalyticsBtn",
       "tag": "button",
       "rect": {
-        "x": 299.65625,
+        "x": 411.65625,
         "y": 3097.203125,
         "width": 117.15625,
         "height": 36.1875,
         "top": 3097.203125,
-        "right": 416.8125,
+        "right": 528.8125,
         "bottom": 3133.390625,
-        "left": 299.65625
+        "left": 411.65625
       },
       "client": {
         "width": 115,
@@ -4426,14 +4426,14 @@
       "selector": "body > div.container > div.footer:nth-of-type(11)",
       "tag": "div",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 3177.390625,
         "width": 700,
         "height": 44.1875,
         "top": 3177.390625,
-        "right": 750,
+        "right": 862,
         "bottom": 3221.578125,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 700,
@@ -4450,14 +4450,14 @@
       "selector": "body > div.container > div.footer:nth-of-type(11) > span.version",
       "tag": "span",
       "rect": {
-        "x": 50,
+        "x": 162,
         "y": 3191.484375,
         "width": 73.953125,
         "height": 16,
         "top": 3191.484375,
-        "right": 123.953125,
+        "right": 235.953125,
         "bottom": 3207.484375,
-        "left": 50
+        "left": 162
       },
       "client": {
         "width": 74,
@@ -4474,14 +4474,14 @@
       "selector": "body > div.container > div.footer:nth-of-type(11) > div.btn-group",
       "tag": "div",
       "rect": {
-        "x": 555.296875,
+        "x": 667.296875,
         "y": 3185.390625,
         "width": 194.703125,
         "height": 36.1875,
         "top": 3185.390625,
-        "right": 750,
+        "right": 862,
         "bottom": 3221.578125,
-        "left": 555.296875
+        "left": 667.296875
       },
       "client": {
         "width": 195,
@@ -4498,14 +4498,14 @@
       "selector": "#saveBtn",
       "tag": "button",
       "rect": {
-        "x": 555.296875,
+        "x": 667.296875,
         "y": 3185.390625,
         "width": 117.921875,
         "height": 36.1875,
         "top": 3185.390625,
-        "right": 673.21875,
+        "right": 785.21875,
         "bottom": 3221.578125,
-        "left": 555.296875
+        "left": 667.296875
       },
       "client": {
         "width": 116,
@@ -4522,14 +4522,14 @@
       "selector": "#closeBtn",
       "tag": "button",
       "rect": {
-        "x": 681.21875,
+        "x": 793.21875,
         "y": 3185.390625,
         "width": 68.78125,
         "height": 36.1875,
         "top": 3185.390625,
-        "right": 750,
+        "right": 862,
         "bottom": 3221.578125,
-        "left": 681.21875
+        "left": 793.21875
       },
       "client": {
         "width": 67,

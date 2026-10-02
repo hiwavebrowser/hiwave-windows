@@ -21,7 +21,7 @@ use mime::Mime;
 use rustkit_http::Client as HttpClient;
 use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 use url::Url;
 
 pub mod cache;
@@ -29,9 +29,7 @@ pub mod download;
 pub mod intercept;
 pub mod security;
 
-pub use cache::{
-    parse_cache_control, CacheConfig, CacheKey, CacheStats, CachedResponse, MemoryCache,
-};
+pub use cache::{cache_eligibility, CacheConfig, CacheKey, CacheStats, CachedResponse, Ineligible, MemoryCache, parse_cache_control};
 pub use download::{Download, DownloadEvent, DownloadId, DownloadManager, DownloadState};
 pub use intercept::{InterceptAction, InterceptHandler, RequestInterceptor};
 pub use security::{
@@ -87,6 +85,27 @@ impl Default for RequestId {
 }
 
 /// HTTP request.
+/// What the fetched bytes are FOR — the fetch-spec "destination", carried on
+/// the request so the shield can classify it (adblock filter lists key rules
+/// on resource type: a script blocked on example.com may be fine as a
+/// document). Privacy pin 2026-09-29: interception happens BEFORE bytes and
+/// the census reports per destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RequestDestination {
+    /// Top-level navigation HTML.
+    Document,
+    /// External stylesheet.
+    Style,
+    /// External script.
+    Script,
+    /// Raster or SVG image.
+    Image,
+    /// Web font.
+    Font,
+    /// Anything else (API fetches, unknown).
+    Other,
+}
+
 #[derive(Debug, Clone)]
 pub struct Request {
     pub id: RequestId,
@@ -96,7 +115,15 @@ pub struct Request {
     pub body: Option<Bytes>,
     pub timeout: Option<Duration>,
     pub credentials: CredentialsMode,
+    /// Fetch destination for shield classification; `Other` when the caller
+    /// has not said. Conservative default: unknown types still hit the
+    /// shield, just without type-specific rules.
+    pub destination: RequestDestination,
+    /// The URL of the document that made the request. The `Referer` header
+    /// is derived from it through `referrer_policy`; this URL itself is
+    /// never sent as-is.
     pub referrer: Option<Url>,
+    pub referrer_policy: ReferrerPolicy,
 }
 
 impl Request {
@@ -111,6 +138,8 @@ impl Request {
             timeout: Some(Duration::from_secs(30)),
             credentials: CredentialsMode::SameOrigin,
             referrer: None,
+            referrer_policy: ReferrerPolicy::default(),
+            destination: RequestDestination::Other,
         }
     }
 
@@ -125,6 +154,8 @@ impl Request {
             timeout: Some(Duration::from_secs(30)),
             credentials: CredentialsMode::SameOrigin,
             referrer: None,
+            referrer_policy: ReferrerPolicy::default(),
+            destination: RequestDestination::Other,
         }
     }
 
@@ -143,6 +174,18 @@ impl Request {
     /// Set referrer.
     pub fn referrer(mut self, referrer: Url) -> Self {
         self.referrer = Some(referrer);
+        self
+    }
+
+    /// Set the referrer policy (default strict-origin-when-cross-origin).
+    /// Tag what the fetched bytes are for (shield classification).
+    pub fn destination(mut self, destination: RequestDestination) -> Self {
+        self.destination = destination;
+        self
+    }
+
+    pub fn referrer_policy(mut self, policy: ReferrerPolicy) -> Self {
+        self.referrer_policy = policy;
         self
     }
 }
@@ -406,7 +449,7 @@ pub struct LoaderConfig {
 impl Default for LoaderConfig {
     fn default() -> Self {
         Self {
-            user_agent: "RustKit/1.0".to_string(),
+            user_agent: rustkit_http::default_user_agent(),
             accept_language: "en-US,en;q=0.9".to_string(),
             default_timeout: Duration::from_secs(30),
             max_redirects: 10,
@@ -421,11 +464,20 @@ pub struct ResourceLoader {
     config: LoaderConfig,
     interceptor: Option<Arc<RwLock<RequestInterceptor>>>,
     download_manager: Arc<DownloadManager>,
+    cache: Arc<MemoryCache>,
 }
 
 impl ResourceLoader {
     /// Create a new resource loader.
     pub fn new(config: LoaderConfig) -> Result<Self, NetError> {
+        Self::with_interceptor(config, None)
+    }
+
+    /// Create a new resource loader with an optional request interceptor.
+    pub fn with_interceptor(
+        config: LoaderConfig,
+        interceptor: Option<RequestInterceptor>,
+    ) -> Result<Self, NetError> {
         let client = HttpClient::builder()
             .user_agent(&config.user_agent)
             .timeout(config.default_timeout)
@@ -434,26 +486,34 @@ impl ResourceLoader {
             .build()
             .map_err(|e| NetError::RequestFailed(e.to_string()))?;
 
-        info!("ResourceLoader initialized");
+        if interceptor.is_some() {
+            info!("ResourceLoader initialized with request interceptor and cache");
+        } else {
+            info!("ResourceLoader initialized with cache");
+        }
 
         Ok(Self {
             client,
             config,
-            interceptor: None,
+            interceptor: interceptor.map(|i| Arc::new(RwLock::new(i))),
             download_manager: Arc::new(DownloadManager::new()),
+            cache: Arc::new(MemoryCache::new()),
         })
+    }
+    
+    /// Get a reference to the memory cache.
+    pub fn cache(&self) -> &Arc<MemoryCache> {
+        &self.cache
+    }
+    
+    /// Get cache statistics.
+    pub fn cache_stats(&self) -> CacheStats {
+        self.cache.stats()
     }
 
     /// Set the request interceptor.
     pub fn set_interceptor(&mut self, interceptor: RequestInterceptor) {
         self.interceptor = Some(Arc::new(RwLock::new(interceptor)));
-    }
-
-    /// Create a new resource loader with an interceptor.
-    pub fn with_interceptor(config: LoaderConfig, interceptor: RequestInterceptor) -> Result<Self, NetError> {
-        let mut loader = Self::new(config)?;
-        loader.set_interceptor(interceptor);
-        Ok(loader)
     }
 
     /// Get the download manager.
@@ -490,6 +550,54 @@ impl ResourceLoader {
                 }
             }
         }
+        
+        // data: URLs (RFC 2397) carry their own body — answer them here instead
+        // of sending them to the HTTP client, which rejects them for having no
+        // host. Sites inline small stylesheets, fonts, images and scripts this
+        // way (facebook ships a base64 `data:text/css` sheet).
+        if request.url.scheme() == "data" {
+            let (content_type, body) = decode_data_url(request.url.as_str())?;
+            let mut headers = HeaderMap::new();
+            if let Ok(v) = HeaderValue::try_from(content_type.as_str()) {
+                headers.insert(HeaderName::from_static("content-type"), v);
+            }
+            return Ok(Response {
+                request_id: request.id,
+                url: request.url.clone(),
+                status: StatusCode::OK,
+                headers,
+                content_type: content_type.parse::<Mime>().ok(),
+                content_length: Some(body.len() as u64),
+                body: ResponseBody::Full(Bytes::from(body)),
+            });
+        }
+
+        // Check cache for GET requests
+        let cache_key = if request.method == Method::GET && self.cache.enabled() {
+            let key = CacheKey::new(&request.url);
+            if let Some(cached) = self.cache.get(&key) {
+                debug!(url = %request.url, "Serving from cache");
+                
+                // Parse content type
+                let content_type = cached.headers
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<Mime>().ok());
+                
+                return Ok(Response {
+                    request_id: request.id,
+                    url: request.url.clone(),
+                    status: cached.status,
+                    headers: cached.headers,
+                    content_type,
+                    content_length: Some(cached.body.len() as u64),
+                    body: ResponseBody::Full(cached.body),
+                });
+            }
+            Some(key)
+        } else {
+            None
+        };
 
         // Build headers for rustkit-http request
         let mut headers = request.headers.clone();
@@ -499,9 +607,17 @@ impl ResourceLoader {
             headers.insert(HeaderName::from_static("accept-language"), val);
         }
 
-        // Add referrer
-        if let Some(ref referrer) = request.referrer {
-            if let Ok(val) = HeaderValue::try_from(referrer.as_str()) {
+        // Referer, as the request's policy allows (never the raw referrer
+        // URL, and never a caller-set header that could say more). Redirects
+        // are safe: rustkit-http follows them with fresh headers, so this
+        // value never reaches a redirect target.
+        headers.remove(HeaderName::from_static("referer"));
+        if let Some(value) = request
+            .referrer
+            .as_ref()
+            .and_then(|referrer| request.referrer_policy.compute_referrer(referrer, &request.url))
+        {
+            if let Ok(val) = HeaderValue::try_from(value) {
                 headers.insert(HeaderName::from_static("referer"), val);
             }
         }
@@ -535,6 +651,71 @@ impl ResourceLoader {
             body_len = http_response.body.len(),
             "Response received"
         );
+        
+        // Cache successful GET responses
+        if let Some(key) = cache_key {
+            if http_response.status.is_success() {
+                use std::time::Instant;
+                
+                // Determine TTL from Cache-Control, falling back to the
+                // CACHE's default TTL.
+                //
+                // This used to fall back to `self.config.default_timeout` —
+                // the loader's NETWORK REQUEST TIMEOUT (30s). Two separate
+                // bugs in one expression: header-less responses were cached
+                // for the wrong duration, and `CacheConfig::default_ttl`
+                // (300s) became dead config that the cache still announces in
+                // its startup log. A number printed at boot and applied
+                // nowhere is worse than no number.
+                // Eligibility BEFORE freshness. A response can carry a
+                // perfectly good max-age and still be ineligible — credentialed
+                // requests, Cache-Control: private, and anything carrying Vary
+                // (which this cache does not key on, so serving it would return
+                // the wrong body for a differing request).
+                // Eligibility BEFORE freshness: a response can carry a
+                // perfectly good max-age and still be ineligible.
+                //
+                // Deliberately NOT an early return. The first version of this
+                // returned a second Response here, which duplicated the exit at
+                // the bottom of the function and got one field wrong: it sent
+                // `request.url` (pre-redirect) where the real exit sends `url`
+                // (post-redirect, from http_response). Every relative CSS,
+                // image and script path then resolved against the wrong base on
+                // any site that redirects — which is nearly all of them — and
+                // because Vary makes most real responses ineligible, that rare
+                // path became the common one. One exit means the mismatch cannot
+                // recur.
+                match cache_eligibility(
+                    self.cache.enabled(),
+                    &request.headers,
+                    &http_response.headers,
+                ) {
+                    Some(reason) => {
+                        debug!(url = %url, ?reason, "Response not cacheable");
+                    }
+                    None => {
+                        let ttl = if self.cache.respects_cache_control() {
+                            parse_cache_control(&http_response.headers)
+                                .unwrap_or_else(|| self.cache.default_ttl())
+                        } else {
+                            self.cache.default_ttl()
+                        };
+
+                        if ttl > Duration::ZERO {
+                            let cached = CachedResponse {
+                                status: http_response.status,
+                                headers: http_response.headers.clone(),
+                                body: http_response.body.clone(),
+                                cached_at: Instant::now(),
+                                expires_at: Instant::now() + ttl,
+                                size: http_response.body.len(),
+                            };
+                            self.cache.put(key, cached);
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(Response {
             request_id: request.id,
@@ -659,7 +840,121 @@ mod tests {
     #[test]
     fn test_loader_config_default() {
         let config = LoaderConfig::default();
-        assert_eq!(config.user_agent, "RustKit/1.0");
+        // The default is the honest per-platform HiWave UA (network lane);
+        // pin its invariants rather than one platform's exact string.
+        assert!(config.user_agent.starts_with("Mozilla/5.0 ("));
+        assert!(config.user_agent.contains("HiWave/1.0"));
+        assert!(config.user_agent.contains("RustKit/1.0"));
+        assert!(!config.user_agent.contains("Chrome"), "never Chrome's UA");
         assert!(config.cookies_enabled);
+    }
+}
+
+/// Largest `data:` payload the loader will decode (bytes, after decoding).
+pub const MAX_DATA_URL_BYTES: usize = 32 * 1024 * 1024;
+
+/// Decode an RFC 2397 `data:[<mediatype>][;base64],<data>` URL into its media
+/// type (default `text/plain;charset=US-ASCII`) and body bytes.
+pub fn decode_data_url(url: &str) -> Result<(String, Vec<u8>), NetError> {
+    let rest = url
+        .get(..5)
+        .filter(|s| s.eq_ignore_ascii_case("data:"))
+        .map(|_| &url[5..])
+        .ok_or_else(|| NetError::InvalidUrl("not a data: URL".into()))?;
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| NetError::InvalidUrl("data: URL has no ','".into()))?;
+    // Base64 encodes 3 bytes in 4 chars, and percent-encoding never grows the
+    // payload, so bounding the input bounds the output.
+    if payload.len() / 4 * 3 > MAX_DATA_URL_BYTES && payload.len() > MAX_DATA_URL_BYTES {
+        return Err(NetError::RequestFailed("data: URL payload too large".into()));
+    }
+    let mut params: Vec<&str> = meta.split(';').map(str::trim).collect();
+    let is_base64 = params.last().is_some_and(|p| p.eq_ignore_ascii_case("base64"));
+    if is_base64 {
+        params.pop();
+    }
+    let media = if params.first().is_none_or(|m| m.is_empty()) {
+        let mut p = vec!["text/plain"];
+        p.extend(params.iter().skip(1).copied());
+        if p.len() == 1 {
+            p.push("charset=US-ASCII");
+        }
+        p.join(";")
+    } else {
+        params.join(";")
+    };
+    let raw = percent_decode_bytes(payload);
+    let body = if is_base64 {
+        use base64::Engine as _;
+        let compact: Vec<u8> = raw.into_iter().filter(|b| !b.is_ascii_whitespace()).collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(&compact)
+            .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(&compact))
+            .map_err(|e| NetError::RequestFailed(format!("bad base64 in data: URL: {e}")))?
+    } else {
+        raw
+    };
+    if body.len() > MAX_DATA_URL_BYTES {
+        return Err(NetError::RequestFailed("data: URL payload too large".into()));
+    }
+    Ok((media, body))
+}
+
+fn percent_decode_bytes(s: &str) -> Vec<u8> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    out
+}
+
+#[cfg(test)]
+mod data_url_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_base64_and_percent_encoded_payloads_with_their_media_type() {
+        let (ct, body) = decode_data_url("data:text/css; charset=utf-8;base64,Lm93N1g1NzQub3c3WDU3NHtkaXNwbGF5Om5vbmV9Cg==").unwrap();
+        assert_eq!(ct, "text/css;charset=utf-8");
+        assert_eq!(body, b".ow7X574.ow7X574{display:none}\n");
+        let (ct, body) = decode_data_url("data:,a%20b%2Cc").unwrap();
+        assert_eq!(ct, "text/plain;charset=US-ASCII");
+        assert_eq!(body, b"a b,c");
+        let (ct, body) = decode_data_url("data:image/svg+xml,%3Csvg%3E%3C/svg%3E").unwrap();
+        assert_eq!(ct, "image/svg+xml");
+        assert_eq!(body, b"<svg></svg>");
+        // Unpadded base64 and whitespace inside the payload are accepted.
+        assert_eq!(decode_data_url("data:;base64,aGk").unwrap().1, b"hi");
+        assert_eq!(decode_data_url("data:;base64,aG k=").unwrap().1, b"hi");
+    }
+
+    #[test]
+    fn rejects_malformed_and_oversized_data_urls() {
+        assert!(decode_data_url("data:text/plain").is_err(), "no comma");
+        assert!(decode_data_url("data:;base64,@@@@").is_err(), "bad base64");
+        let huge = format!("data:,{}", "a".repeat(MAX_DATA_URL_BYTES + 1));
+        assert!(decode_data_url(&huge).is_err(), "over the cap");
+    }
+
+    #[test]
+    fn the_loader_answers_a_data_url_without_the_network() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let loader = ResourceLoader::new(LoaderConfig::default()).unwrap();
+        let url = Url::parse("data:text/css;base64,Ym9keXtjb2xvcjpyZWR9").unwrap();
+        let resp = rt.block_on(loader.fetch(Request::get(url))).expect("data: fetch");
+        assert!(resp.ok());
+        assert_eq!(resp.content_type.as_ref().map(|m| m.essence_str().to_string()), Some("text/css".into()));
+        assert_eq!(rt.block_on(resp.text()).unwrap(), "body{color:red}");
     }
 }

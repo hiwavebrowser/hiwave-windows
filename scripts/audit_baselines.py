@@ -1,79 +1,94 @@
 #!/usr/bin/env python3
-"""Baseline dimension audit — the lie #8 guard.
-
-Reads cases/registry.json (the single source of truth) and checks every
-baseline PNG's dimensions against the case's declared width x height. Comparing
-a rustkit capture against a wrong-sized baseline silently crops or scales and
-produces a meaningless parity number; this catches it with no Chrome needed.
-
-Ratcheting: cases whose registry `baseline_status` is already `dim_mismatch` or
-`missing` are grandfathered (known-broken, awaiting baseline regen) and only
-warned. A case declared `ok` that does NOT match — or a grandfathered case that
-is now fixed and should be promoted — is a hard failure, so the ledger can only
-improve.
-
-Exit 0 if the audit holds, 1 otherwise.
 """
+audit_baselines.py - Instrument-integrity audit (R0, VIEWPORT_RESOLUTION_PLAN P0.3)
+
+Asserts, for every case in cases/registry.json:
+  1. The fixture HTML exists.
+  2. The baseline PNG exists under the active baseline set.
+  3. The baseline PNG dimensions equal registry (width, height) * dpr exactly.
+And for the baseline set itself:
+  4. Its metadata.json browserVersion matches the registry pin.
+
+A size mismatch here is the disease behind measurement lie #8: comparePixels
+used to soft-crop mismatched frames and emit a plausible-looking diff%. The
+compare now hard-fails at runtime; this audit catches drift at PR time,
+before a wrong-dimension baseline ever meets a capture.
+
+Exit 0 = clean, exit 1 = drift (CI fails the PR).
+"""
+
 import json
 import os
+import struct
 import sys
+from pathlib import Path
 
-from PIL import Image
-
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REGISTRY = os.path.join(REPO, "cases", "registry.json")
-
-
-def baseline_path(scope, case_id, baseline_set):
-    return os.path.join(REPO, "baselines", baseline_set, scope, case_id, "baseline.png")
+REPO_ROOT = Path(__file__).parent.parent
+REGISTRY_PATH = REPO_ROOT / "cases" / "registry.json"
 
 
-def main():
-    with open(REGISTRY, encoding="utf-8") as f:
-        reg = json.load(f)
-    baseline_set = reg["pin"]["baseline_set"]
+def png_size(path: Path):
+    with open(path, "rb") as f:
+        header = f.read(24)
+    if header[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return struct.unpack(">II", header[16:24])
 
-    hard_fail = 0
-    grandfathered = 0
-    ok = 0
-    for cid, c in reg["cases"].items():
-        want = (c["width"], c["height"])
-        declared = c.get("baseline_status", "ok")
-        path = baseline_path(c["scope"], cid, baseline_set)
 
-        if not os.path.exists(path):
-            if declared == "missing":
-                print(f"  warn  {cid:22s} baseline MISSING (grandfathered)")
-                grandfathered += 1
-            else:
-                print(f"  FAIL  {cid:22s} baseline MISSING but registry says '{declared}'")
-                hard_fail += 1
+def main() -> int:
+    registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    pin = registry["pin"]
+    baseline_set = os.environ.get("PARITY_BASELINE_SET", pin["baseline_set"])
+    baselines_dir = REPO_ROOT / "baselines" / baseline_set
+    dpr = pin.get("dpr", 1)
+
+    problems = []
+
+    set_meta_path = baselines_dir / "metadata.json"
+    if not set_meta_path.exists():
+        problems.append(f"missing {set_meta_path.relative_to(REPO_ROOT)}")
+    else:
+        set_meta = json.loads(set_meta_path.read_text(encoding="utf-8"))
+        got = set_meta.get("browserVersion") or set_meta.get("chrome_version")
+        want = pin["chrome_version"]
+        if got != want:
+            problems.append(
+                f"baseline set pin drift: {baseline_set}/metadata.json says {got}, registry pins {want}"
+            )
+
+    for case_id, case in registry["cases"].items():
+        html = REPO_ROOT / case["html"]
+        if not html.exists():
+            problems.append(f"{case_id}: fixture missing: {case['html']}")
+
+        baseline = baselines_dir / case["scope"] / case_id / "baseline.png"
+        if not baseline.exists():
+            problems.append(f"{case_id}: baseline missing: {baseline.relative_to(REPO_ROOT)}")
             continue
 
-        with Image.open(path) as im:
-            got = im.size
+        size = png_size(baseline)
+        if size is None:
+            problems.append(f"{case_id}: baseline is not a PNG")
+            continue
 
-        if got == want:
-            if declared != "ok":
-                # It's been regenerated correctly — must be promoted in the registry.
-                print(f"  FAIL  {cid:22s} baseline now matches {want} — promote "
-                      f"baseline_status to 'ok' in registry (ratchet)")
-                hard_fail += 1
-            else:
-                ok += 1
-        else:
-            if declared == "dim_mismatch":
-                print(f"  warn  {cid:22s} baseline {got} != declared {want} (grandfathered)")
-                grandfathered += 1
-            else:
-                print(f"  FAIL  {cid:22s} baseline {got} != declared {want} "
-                      f"(registry says '{declared}')")
-                hard_fail += 1
+        expected = (case["width"] * dpr, case["height"] * dpr)
+        if size != expected:
+            problems.append(
+                f"{case_id}: baseline {size[0]}x{size[1]} != registry {expected[0]}x{expected[1]}"
+                f" (w{case['width']} h{case['height']} dpr{dpr})"
+            )
 
-    print()
-    print(f"baseline audit: {ok} ok, {grandfathered} grandfathered (need regen), "
-          f"{hard_fail} hard-fail")
-    return 1 if hard_fail else 0
+    if problems:
+        print(f"BASELINE AUDIT: {len(problems)} problem(s) [{baseline_set}]")
+        for p in problems:
+            print(f"  ✗ {p}")
+        return 1
+
+    print(
+        f"BASELINE AUDIT: clean — {len(registry['cases'])} cases @ {baseline_set} "
+        f"(pin {pin['chrome_version']}, dpr {dpr})"
+    )
+    return 0
 
 
 if __name__ == "__main__":
