@@ -11,6 +11,13 @@
 
 mod dom;
 mod inner_text;
+#[cfg(test)]
+mod web_streams_tests;
+#[cfg(test)]
+mod web_interfaces_tests;
+#[cfg(test)]
+mod web_blob_tests;
+mod web_url;
 
 pub use dom::SelectorMatchFn;
 pub mod events;
@@ -469,6 +476,9 @@ impl DomBindings {
         let dom_host = dom::SharedDomHost::default();
         let dirty = Rc::new(Cell::new(DomDirty::Clean));
         dom::install(&mut runtime, &dom_host, &dirty)?;
+        // Event subclasses, geometry types and interface objects pages test with
+        // instanceof/typeof; needs the wrappers dom::install just made (web_interfaces.js).
+        runtime.evaluate_script(include_str!("web_interfaces.js"))?;
 
         Ok(Self {
             runtime: RefCell::new(runtime),
@@ -585,6 +595,25 @@ impl DomBindings {
         "#;
 
         runtime.evaluate_script(window_js)?;
+
+        // The screen, performance and navigator facts, and the window
+        // geometry, that pages read without feature-testing (web_platform.js).
+        runtime.evaluate_script(include_str!("web_platform.js"))?;
+
+        // Blob, File, FormData, AbortController/AbortSignal, structuredClone (web_blob.js).
+        runtime.evaluate_script(include_str!("web_blob.js"))?;
+
+        // The observer interfaces and requestIdleCallback (web_observers.js).
+        runtime.evaluate_script(include_str!("web_observers.js"))?;
+
+        // `URL` and `URLSearchParams` (parsing is the `url` crate's).
+        web_url::install(runtime)?;
+
+        // btoa/atob, escape/unescape, TextEncoder/TextDecoder (web_encoding.js).
+        runtime.evaluate_script(include_str!("web_encoding.js"))?;
+
+        // ReadableStream, WritableStream, TransformStream and strategies (web_streams.js).
+        runtime.evaluate_script(include_str!("web_streams.js"))?;
 
         // IPC bridge for communication with Rust
         let ipc_js = r#"
@@ -1044,6 +1073,17 @@ impl DomBindings {
         self.runtime
             .borrow_mut()
             .set_loop_iteration_limit(max_iterations);
+    }
+
+    /// Name the `<script>` element being run, as `document.currentScript`
+    /// sees it; `None` between scripts. `node` is the element's raw NodeId.
+    pub fn set_current_script(&self, node: Option<usize>) -> Result<(), BindingError> {
+        let script = match node {
+            Some(id) => format!("document.__rkSetCurrentScript({id});"),
+            None => "document.__rkSetCurrentScript(null);".to_string(),
+        };
+        self.runtime.borrow_mut().evaluate_script(&script)?;
+        Ok(())
     }
 
     /// Set `document.readyState` (`loading` / `interactive` / `complete`).
@@ -1525,11 +1565,263 @@ mod tests {
         assert!(matches!(method, JsValue::String(s) if s == "post"));
     }
 
+    /// Like `eval_string`, but renders a boolean or number result too, so
+    /// a test can compare `a === b` directly.
+    fn eval_any(bindings: &DomBindings, script: &str) -> String {
+        match bindings.evaluate(script).unwrap() {
+            JsValue::String(s) => s,
+            JsValue::Boolean(b) => b.to_string(),
+            JsValue::Number(n) => if n.fract() == 0.0 { format!("{}", n as i64) } else { n.to_string() },
+            other => panic!("{script} evaluated to {other:?}"),
+        }
+    }
+
     fn eval_string(bindings: &DomBindings, script: &str) -> String {
         match bindings.evaluate(script).unwrap() {
             JsValue::String(s) => s,
             other => panic!("{script} evaluated to {other:?}"),
         }
+    }
+
+    /// Pages read these without feature-testing; each used to throw a
+    /// ReferenceError or TypeError and end the rest of the script.
+    #[test]
+    fn the_screen_performance_window_and_navigator_baseline_exists() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let probe = |script: &str| eval_string(&bindings, script);
+        // screen is the viewport.
+        assert_eq!(probe("String(screen.width + 'x' + screen.height)"), "800x600");
+        assert_eq!(probe("String(screen.colorDepth)"), "24");
+        // performance: a monotonic clock and the Performance Timeline.
+        assert_eq!(
+            probe("var a = performance.now(); var b = performance.now(); String(typeof a + (b >= a))"),
+            "numbertrue"
+        );
+        assert_eq!(
+            probe("performance.mark('s'); performance.mark('e'); var m = performance.measure('m', 's', 'e');                    String(m.entryType + performance.getEntriesByType('mark').length + performance.getEntriesByName('m').length)"),
+            "measure21"
+        );
+        assert_eq!(probe("String(typeof performance.timing.navigationStart)"), "number");
+        // window geometry and frame tree.
+        assert_eq!(probe("String([scrollX, scrollY, pageXOffset, pageYOffset, screenX].join())"), "0,0,0,0,0");
+        assert_eq!(probe("String(window.top === window && window.parent === window && window.opener === null)"), "true");
+        assert_eq!(probe("String(typeof scrollTo + typeof focus + typeof getSelection().toString())"), "functionfunctionstring");
+        // navigator facts.
+        assert_eq!(probe("String(navigator.hardwareConcurrency > 0)"), "true");
+        assert_eq!(probe("String([navigator.maxTouchPoints, navigator.cookieEnabled, navigator.webdriver].join())"), "0,true,false");
+        // Something defined first wins: the shim never overwrites.
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        assert_eq!(eval_string(&bindings, "String(navigator.userAgent)"), "RustKit/1.0");
+    }
+
+    /// `URL` / `URLSearchParams` (lyft, weather and others died on
+    /// `ReferenceError: URL is not defined`). Parsing and setters are the
+    /// `url` crate's; these pin the object layer and the cases pages hit.
+    #[test]
+    fn url_parses_resolves_and_exposes_its_components() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let ev = |s: &str| eval_string(&bindings, s);
+        assert_eq!(
+            ev("var u = new URL('https://user:pw@Example.COM:8080/a/b/../c?x=1&y=2#frag'); \
+                [u.href, u.origin, u.protocol, u.username, u.password, u.host, u.hostname, u.port, u.pathname, u.search, u.hash].join('|')"),
+            "https://user:pw@example.com:8080/a/c?x=1&y=2#frag|https://example.com:8080|https:|user|pw|example.com:8080|example.com|8080|/a/c|?x=1&y=2|#frag"
+        );
+        // Default port is empty; empty query and fragment read as ''.
+        assert_eq!(ev("var d = new URL('https://example.com:443/?#'); [d.port, d.search, d.hash, d.pathname].join('|')"), "|||/");
+        // Relative resolution against a base, including a base with a path.
+        assert_eq!(ev("String(new URL('../x?q', 'https://a.test/dir/sub/page.html'))"), "https://a.test/dir/x?q");
+        assert_eq!(ev("String(new URL('//cdn.test/lib.js', 'https://a.test/'))"), "https://cdn.test/lib.js");
+        assert_eq!(ev("String(new URL('/abs', new URL('https://a.test/dir/')))"), "https://a.test/abs");
+        // Non-special schemes and an opaque origin.
+        assert_eq!(ev("var m = new URL('mailto:a@b.test'); [m.protocol, m.pathname, m.origin].join('|')"), "mailto:|a@b.test|null");
+        // toString / toJSON / JSON.stringify.
+        assert_eq!(ev("JSON.stringify({ u: new URL('https://a.test/p') })"), r#"{"u":"https://a.test/p"}"#);
+        // Invalid input throws TypeError, and canParse says so without throwing.
+        assert_eq!(ev("var r; try { new URL('not a url'); r = 'no throw'; } catch (e) { r = e.name; } r"), "TypeError");
+        assert_eq!(ev("var r2; try { new URL('/rel'); r2 = 'no throw'; } catch (e) { r2 = e.name; } r2"), "TypeError");
+        assert_eq!(ev("[URL.canParse('https://a.test'), URL.canParse('nope'), URL.canParse('/x', 'https://a.test')].join()"), "true,false,true");
+        assert_eq!(ev("String(URL.parse('nope'))"), "null");
+    }
+
+    #[test]
+    fn url_setters_rewrite_the_url() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let ev = |s: &str| eval_string(&bindings, s);
+        assert_eq!(
+            ev("var u = new URL('https://a.test/p?x=1#h'); \
+                u.pathname = '/new path'; u.hash = 'top'; u.port = '9000'; u.username = 'bob'; \
+                u.href"),
+            "https://bob@a.test:9000/new%20path?x=1#top"
+        );
+        assert_eq!(ev("var v = new URL('http://a.test:81/'); v.protocol = 'https'; v.port = ''; v.hostname = 'b.test'; v.search = '?k=v'; v.href"), "https://b.test/?k=v");
+        // host takes host:port together.
+        assert_eq!(ev("var w = new URL('https://a.test/'); w.host = 'c.test:444'; [w.hostname, w.port].join('|')"), "c.test|444");
+        // A value that does not parse is ignored, as the standard says.
+        assert_eq!(ev("var x = new URL('https://a.test:5/'); x.port = 'abc'; x.port"), "5");
+    }
+
+    #[test]
+    fn url_search_params_encode_decode_and_stay_in_step_with_the_url() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let ev = |s: &str| eval_string(&bindings, s);
+        // Parsing: '+' is space, percent-escapes decode, a lone key has ''.
+        assert_eq!(
+            ev("var p = new URLSearchParams('?a=1&b=x+y&c=%C3%A9&flag&a=2'); \
+                [p.get('a'), p.getAll('a').join('/'), p.get('b'), p.get('c'), String(p.get('flag') === ''), String(p.get('none') === null), p.has('flag'), p.size].join('|')"),
+            "1|1/2|x y|é|true|true|true|5"
+        );
+        // Serialising: application/x-www-form-urlencoded.
+        assert_eq!(
+            ev("var q = new URLSearchParams(); q.append('k', 'a b&c=d'); q.append('é', \"it's (ok)!~\"); q.toString()"),
+            "k=a+b%26c%3Dd&%C3%A9=it%27s+%28ok%29%21%7E"
+        );
+        // Every constructor form.
+        assert_eq!(ev("new URLSearchParams({ a: 1, b: 'two' }).toString()"), "a=1&b=two");
+        assert_eq!(ev("new URLSearchParams([['a', '1'], ['b', '2']]).toString()"), "a=1&b=2");
+        assert_eq!(ev("new URLSearchParams(new URLSearchParams('z=9')).toString()"), "z=9");
+        // set replaces the first and drops the rest; delete; sort is stable.
+        assert_eq!(ev("var s = new URLSearchParams('b=2&a=1&b=3&a=0'); s.set('b', 'X'); s.sort(); s.toString()"), "a=1&a=0&b=X");
+        assert_eq!(ev("var t = new URLSearchParams('a=1&b=2&a=3'); t.delete('a'); t.toString()"), "b=2");
+        // Iteration protocols.
+        assert_eq!(ev("var out = []; for (var kv of new URLSearchParams('a=1&b=2')) out.push(kv.join(':')); out.join()"), "a:1,b:2");
+        assert_eq!(ev("var o = []; new URLSearchParams('a=1&b=2').forEach(function (v, k) { o.push(k + v); }); o.join()"), "a1,b2");
+        assert_eq!(ev("Array.from(new URLSearchParams('a=1&b=2').keys()).join()"), "a,b");
+        // URL.searchParams is live in both directions.
+        assert_eq!(
+            ev("var u = new URL('https://a.test/p?x=1'); u.searchParams.append('y', 'a b'); u.searchParams.set('x', '9'); u.href"),
+            "https://a.test/p?x=9&y=a+b"
+        );
+        assert_eq!(ev("var v = new URL('https://a.test/'); v.search = '?k=1&k=2'; v.searchParams.getAll('k').join()"), "1,2");
+        assert_eq!(ev("var w = new URL('https://a.test/?only=1'); w.searchParams.delete('only'); w.href"), "https://a.test/");
+    }
+
+    /// The observer interfaces and requestIdleCallback: pages construct them
+    /// during start-up (walmart died on MutationObserver and
+    /// IntersectionObserver, microsoft on MutationObserver). They exist and
+    /// validate like the real ones, and report no records.
+    #[test]
+    fn observers_exist_validate_their_arguments_and_report_nothing() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let ev = |s: &str| eval_string(&bindings, s);
+        assert_eq!(
+            ev("String([typeof MutationObserver, typeof IntersectionObserver, typeof ResizeObserver, typeof PerformanceObserver].join())"),
+            "function,function,function,function"
+        );
+        // A callback is required, and `new` is.
+        assert_eq!(ev("var a; try { new MutationObserver(); a = 'no throw'; } catch (e) { a = e.name; } a"), "TypeError");
+        assert_eq!(ev("var b; try { new IntersectionObserver(1); b = 'no throw'; } catch (e) { b = e.name; } b"), "TypeError");
+        assert_eq!(ev("var c; try { ResizeObserver(function () {}); c = 'no throw'; } catch (e) { c = e.name; } c"), "TypeError");
+        // MutationObserver.observe needs a target and at least one record type.
+        assert_eq!(ev("var el = {}; var m = new MutationObserver(function () {}); var d; try { m.observe(el, {}); d = 'no throw'; } catch (e) { d = e.name; } d"), "TypeError");
+        assert_eq!(ev("var e2; try { m.observe(null, { childList: true }); e2 = 'no throw'; } catch (e) { e2 = e.name; } e2"), "TypeError");
+        assert_eq!(ev("m.observe(el, { childList: true, subtree: true }); String(m.takeRecords().length)"), "0");
+        assert_eq!(ev("m.disconnect(); String(typeof WebKitMutationObserver)"), "function");
+        // IntersectionObserver reports its configuration.
+        assert_eq!(
+            ev("var io = new IntersectionObserver(function () {}); String([io.root, io.rootMargin, io.thresholds.join()].join('|'))"),
+            "|0px 0px 0px 0px|0"
+        );
+        assert_eq!(
+            ev("var io2 = new IntersectionObserver(function () {}, { rootMargin: '10px', threshold: [1, 0.5] }); String([io2.rootMargin, io2.thresholds.join()].join('|'))"),
+            "10px|0.5,1"
+        );
+        assert_eq!(ev("io.observe(el); io.unobserve(el); io.disconnect(); String(io.takeRecords().length)"), "0");
+        assert_eq!(ev("var ro = new ResizeObserver(function () {}); ro.observe(el); ro.unobserve(el); ro.disconnect(); 'ok'"), "ok");
+        assert_eq!(ev("var po = new PerformanceObserver(function () {}); po.observe({ entryTypes: ['mark'] }); po.disconnect(); String(PerformanceObserver.supportedEntryTypes.length)"), "0");
+    }
+
+    #[test]
+    fn request_idle_callback_runs_once_on_the_timer_clock_and_can_be_cancelled() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        bindings
+            .evaluate(
+                r#"
+                var log = [];
+                var id1 = requestIdleCallback(function (d) { log.push('ran:' + d.didTimeout + ':' + (d.timeRemaining() >= 0)); });
+                var id2 = requestIdleCallback(function () { log.push('cancelled-ran'); });
+                cancelIdleCallback(id2);
+                var thrown = 'none';
+                try { requestIdleCallback('nope'); } catch (e) { thrown = e.name; }
+                "#,
+            )
+            .unwrap();
+        assert_eq!(eval_string(&bindings, "String(typeof id1 + ':' + (id1 !== id2) + ':' + thrown)"), "number:true:TypeError");
+        assert_eq!(eval_string(&bindings, "log.join()"), "", "not run before the timers advance");
+        bindings.run_timers(1_000, 100).unwrap();
+        assert_eq!(eval_string(&bindings, "log.join()"), "ran:false:true");
+    }
+
+    /// btoa/atob, escape/unescape, TextEncoder/TextDecoder: netflix died on
+    /// `TextEncoder is not defined`, squarespace on `escape`, and base64 and
+    /// UTF-8 conversion sit in most bundles' first lines.
+    #[test]
+    fn btoa_and_atob_round_trip_latin1_and_reject_bad_input() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let ev = |s: &str| eval_any(&bindings, s);
+        assert_eq!(ev("[btoa(''), btoa('a'), btoa('ab'), btoa('abc'), btoa('hello')].join()"), ",YQ==,YWI=,YWJj,aGVsbG8=");
+        assert_eq!(ev("btoa(String.fromCharCode(0, 255, 128))"), "AP+A");
+        // atob: padding optional, ASCII whitespace ignored.
+        assert_eq!(ev("[atob(''), atob('YQ=='), atob('YQ'), atob('YW Jj\\n'), atob('aGVsbG8=')].join()"), ",a,a,abc,hello");
+        assert_eq!(ev("atob('AP+A').split('').map(function (c) { return c.charCodeAt(0); }).join()"), "0,255,128");
+        // Errors are InvalidCharacterError (DOMException) for both directions.
+        assert_eq!(ev("var n1; try { btoa('\\u20ac'); n1 = 'no throw'; } catch (e) { n1 = e.name; } n1"), "InvalidCharacterError");
+        assert_eq!(ev("var n2; try { atob('!!!!'); n2 = 'no throw'; } catch (e) { n2 = e.name; } n2"), "InvalidCharacterError");
+        assert_eq!(ev("var n3; try { atob('a'); n3 = 'no throw'; } catch (e) { n3 = e.name; } n3"), "InvalidCharacterError");
+    }
+
+    #[test]
+    fn escape_and_unescape_follow_annex_b() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let ev = |s: &str| eval_any(&bindings, s);
+        assert_eq!(ev("escape('\\u00e4 b+c\\u20ac@*_-./')"), "%E4%20b+c%u20AC@*_-./");
+        assert_eq!(ev("unescape('%E4%20b+c%u20AC')"), "\u{e4} b+c\u{20ac}");
+        // A malformed escape passes through.
+        assert_eq!(ev("unescape('%u0041%41%zz%u12')"), "AA%zz%u12");
+    }
+
+    #[test]
+    fn text_encoder_produces_utf8_and_encode_into_respects_the_buffer() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let ev = |s: &str| eval_any(&bindings, s);
+        assert_eq!(ev("String(new TextEncoder().encoding)"), "utf-8");
+        // h é l l o space € 😀 = 1+2+1+1+1+1+3+4 bytes.
+        assert_eq!(ev("var b = new TextEncoder().encode('h\\u00e9llo \\u20ac\\ud83d\\ude00'); b.length + ':' + Array.from(b).slice(0, 4).join()"), "14:104,195,169,108");
+        assert_eq!(ev("Array.from(new TextEncoder().encode('\\ud83d\\ude00')).join()"), "240,159,152,128");
+        // A lone surrogate is U+FFFD (EF BF BD), not an exception.
+        assert_eq!(ev("Array.from(new TextEncoder().encode('a\\ud800b')).join()"), "97,239,191,189,98");
+        assert_eq!(ev("String(new TextEncoder().encode().length) + ',' + new TextEncoder().encode('').length"), "0,0");
+        // encodeInto stops before a character that does not fit.
+        assert_eq!(ev("var d = new Uint8Array(4); var r = new TextEncoder().encodeInto('a\\u20acb', d); r.read + ',' + r.written + ',' + Array.from(d).join()"), "2,4,97,226,130,172");
+        assert_eq!(ev("var d2 = new Uint8Array(3); var r2 = new TextEncoder().encodeInto('a\\u20ac', d2); r2.read + ',' + r2.written"), "1,1");
+    }
+
+    #[test]
+    fn text_decoder_decodes_utf8_with_replacement_bom_fatal_and_streaming() {
+        let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        let ev = |s: &str| eval_any(&bindings, s);
+        // Round trip, from a Uint8Array, an ArrayBuffer and a sub-view.
+        assert_eq!(ev("var s = 'h\\u00e9llo \\u20ac\\ud83d\\ude00'; String(new TextDecoder().decode(new TextEncoder().encode(s)) === s)"), "true");
+        assert_eq!(ev("new TextDecoder().decode(new Uint8Array([104, 105]).buffer)"), "hi");
+        assert_eq!(ev("var big = new Uint8Array([0, 104, 105, 0]); new TextDecoder().decode(big.subarray(1, 3))"), "hi");
+        // Invalid bytes become U+FFFD; a truncated sequence at the end is one.
+        assert_eq!(ev("new TextDecoder().decode(new Uint8Array([0x61, 0xFF, 0x62])) === 'a\\ufffdb'"), "true");
+        assert_eq!(ev("new TextDecoder().decode(new Uint8Array([0x61, 0xE2, 0x82])) === 'a\\ufffd'"), "true");
+        // fatal throws TypeError.
+        assert_eq!(ev("var f; try { new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array([0xFF])); f = 'no throw'; } catch (e) { f = e.name; } f"), "TypeError");
+        // A leading BOM is dropped unless ignoreBOM.
+        assert_eq!(ev("String(new TextDecoder().decode(new Uint8Array([0xEF, 0xBB, 0xBF, 0x61])).length)"), "1");
+        assert_eq!(ev("String(new TextDecoder('utf-8', { ignoreBOM: true }).decode(new Uint8Array([0xEF, 0xBB, 0xBF, 0x61])).length)"), "2");
+        // stream: a character split across chunks decodes once whole.
+        assert_eq!(
+            ev("var sd = new TextDecoder(); var p1 = sd.decode(new Uint8Array([0xE2, 0x82]), { stream: true }); \
+                var p2 = sd.decode(new Uint8Array([0xAC, 0x21])); (p1 + '|' + p2) === '|\\u20ac!'"),
+            "true"
+        );
+        // Labels and the other supported encodings.
+        assert_eq!(ev("[new TextDecoder().encoding, new TextDecoder('UTF8').encoding, new TextDecoder('latin1').encoding, new TextDecoder('utf-16le').encoding].join()"), "utf-8,utf-8,windows-1252,utf-16le");
+        assert_eq!(ev("new TextDecoder('latin1').decode(new Uint8Array([0xE9]))"), "\u{e9}");
+        assert_eq!(ev("new TextDecoder('utf-16le').decode(new Uint8Array([0x61, 0x00, 0xAC, 0x20]))"), "a\u{20ac}");
+        assert_eq!(ev("var l; try { new TextDecoder('no-such-label'); l = 'no throw'; } catch (e) { l = e.name; } l"), "RangeError");
     }
 
     #[test]

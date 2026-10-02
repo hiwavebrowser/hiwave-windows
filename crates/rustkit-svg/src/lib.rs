@@ -1784,6 +1784,7 @@ impl SvgText {
                 // baseline = y + ascent, so a zero ascent hands it the
                 // baseline directly instead of a run-top.
                 ascent: Some(0.0),
+                run: None,
             });
         }
     }

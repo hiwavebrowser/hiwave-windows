@@ -29,15 +29,8 @@ The patches (all cfg(windows), so macOS and Linux behaviour is unchanged):
 2. rustkit-layout/src/lib.rs: two strut-descent tests compared a raw fractional
    descent with a line box that rounds to whole pixels, within 0.5. Both now
    allow one pixel. Arial's 3.453 descent rounds up to 4.
-3. rustkit-engine/src/lib.rs (TEMPORARY, cross-platform, reported upstream):
-   four test modules wrap Engine::new in a module mutex, ENGINE_INIT. Engine::new
-   itself takes the GPU test guard, which a thread then holds until it exits.
-   A test that builds a second engine (the_layer_pins_selectors_match_the_box
-   builds four) holds the guard and waits for the mutex, while the mutex
-   holder waits 120 s for the guard and panics: 16 of 220 engine tests fail in
-   a parallel run, none in a serial one. The mutex is redundant (the guard
-   already serialises creation), so it is removed. Drop this patch when
-   upstream removes the mutex; the script then reports it MISSING.
+(A third patch, removing the ENGINE_INIT test mutex from rustkit-engine, was
+dropped in refresh #10: hiwave-macos #415 fixed the lock inversion upstream.)
 
 Then the patch FILES in scripts/windows-patches/*.patch, in name order. Each
 is a `git format-patch` of an upstream PR that Windows needs before it lands
@@ -54,7 +47,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 TEXT = REPO / "crates" / "rustkit-layout" / "src" / "text.rs"
 LIB = REPO / "crates" / "rustkit-layout" / "src" / "lib.rs"
-ENGINE = REPO / "crates" / "rustkit-engine" / "src" / "lib.rs"
 BS = chr(92)  # a backslash, built here so no literal backslash sits in this source
 
 
@@ -143,12 +135,12 @@ def patch_text(text: str, state: list) -> str:
         text, "text.rs sans-serif test expectation",
         '#[cfg(windows)]\n        assert_eq!(sans.primary, "Arial");',
         '''        #[cfg(target_os = "macos")]
-        assert_eq!(sans.primary, "SF Pro");
+        assert_eq!(sans.primary, "Helvetica");
         #[cfg(not(target_os = "macos"))]
         assert_eq!(sans.primary, "Segoe UI");
 ''',
         '''        #[cfg(target_os = "macos")]
-        assert_eq!(sans.primary, "SF Pro");
+        assert_eq!(sans.primary, "Helvetica");
         #[cfg(windows)]
         assert_eq!(sans.primary, "Arial");
         #[cfg(all(not(target_os = "macos"), not(windows)))]
@@ -225,28 +217,6 @@ def patch_lib(text: str, state: list) -> str:
     return text
 
 
-def patch_engine(text: str, state: list) -> str:
-    text = edit(
-        text, "engine lib.rs test engine() helpers drop the ENGINE_INIT mutex (temporary)",
-        "No module mutex here: `Engine::new` takes the GPU test guard",
-        '''    fn engine() -> Engine {
-        static ENGINE_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _init_guard = ENGINE_INIT.lock().unwrap_or_else(|e| e.into_inner());
-        Engine::new(EngineConfig::default()).expect("engine")
-    }
-''',
-        '''    fn engine() -> Engine {
-        // No module mutex here: `Engine::new` takes the GPU test guard, which
-        // this thread then holds until it exits. A mutex taken before it
-        // inverts the order for a test that builds a second engine: this
-        // thread holds the guard and waits for the mutex, the mutex holder
-        // waits 120 s for the guard, then panics.
-        Engine::new(EngineConfig::default()).expect("engine")
-    }
-''', state, count=4)
-    return text
-
-
 PATCH_DIR = REPO / "scripts" / "windows-patches"
 
 
@@ -296,7 +266,7 @@ def main() -> int:
     check = "--check" in sys.argv[1:]
     state: list = []
     changed = False
-    for path, fn in ((TEXT, patch_text), (LIB, patch_lib), (ENGINE, patch_engine)):
+    for path, fn in ((TEXT, patch_text), (LIB, patch_lib)):
         text, nl = read(path)
         new = fn(text, state)
         if new != text:

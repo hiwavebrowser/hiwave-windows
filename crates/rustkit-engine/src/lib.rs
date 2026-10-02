@@ -442,7 +442,7 @@ const MAX_PAGE_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
 
 /// One `<script>` after fetching: its log label, then its source text or
 /// the reason it will not run.
-type FetchedScript = (String, Result<(ScriptTiming, String), ScriptOutcome>);
+type FetchedScript = (String, usize, Result<(ScriptTiming, String), ScriptOutcome>);
 
 /// What happened to one piece of page script on the load path.
 #[derive(Debug, Clone, PartialEq)]
@@ -1832,7 +1832,7 @@ impl Engine {
             Inline(String),
             External(Url),
         }
-        let mut entries: Vec<(String, Result<(ScriptTiming, Body), &'static str>)> = Vec::new();
+        let mut entries: Vec<(String, usize, Result<(ScriptTiming, Body), &'static str>)> = Vec::new();
         let mut index = 0usize;
         document.traverse(|node| {
             if node.tag_name().map(|t| t.eq_ignore_ascii_case("script")) != Some(true) {
@@ -1852,7 +1852,7 @@ impl Engine {
                     .map_err(|_| "unparseable src"),
                 None => Ok((timing, Body::Inline(node.text_content()))),
             });
-            entries.push((label, entry));
+            entries.push((label, node.id.raw(), entry));
         });
         if entries.is_empty() {
             return None;
@@ -1867,7 +1867,7 @@ impl Engine {
         let loader = self.loader.clone();
         let referrer = self.subresource_referrer(id);
         Some(
-            futures::stream::iter(entries.into_iter().map(move |(label, entry)| {
+            futures::stream::iter(entries.into_iter().map(move |(label, node_id, entry)| {
                 let loader = loader.clone();
                 let referrer = referrer.clone();
                 async move {
@@ -1895,7 +1895,7 @@ impl Engine {
                                 .unwrap_or(Err(ScriptOutcome::OverBudget))
                         }
                     };
-                    (label, result)
+                    (label, node_id, result)
                 }
             }))
             .buffered(MAX_CONCURRENT_SCRIPT_LOADS)
@@ -1927,10 +1927,10 @@ impl Engine {
         bindings.set_loop_iteration_limit(loop_limit);
 
         // Execution order: classic, defer, async (stable within each).
-        let mut runnable: Vec<(String, ScriptTiming, String)> = Vec::new();
-        for (label, result) in fetched {
+        let mut runnable: Vec<(String, ScriptTiming, String, usize)> = Vec::new();
+        for (label, node_id, result) in fetched {
             match result {
-                Ok((timing, text)) => runnable.push((label, timing, text)),
+                Ok((timing, text)) => runnable.push((label, timing, text, node_id)),
                 Err(outcome) => log.push(ScriptRecord {
                     source: label,
                     bytes: 0,
@@ -1939,7 +1939,7 @@ impl Engine {
                 }),
             }
         }
-        runnable.sort_by_key(|(_, timing, _)| match timing {
+        runnable.sort_by_key(|(_, timing, _, _)| match timing {
             ScriptTiming::Classic => 0,
             ScriptTiming::Defer => 1,
             ScriptTiming::Async => 2,
@@ -1974,7 +1974,7 @@ impl Engine {
         };
 
         let _ = bindings.set_ready_state("loading");
-        for (label, _, text) in runnable {
+        for (label, _, text, node_id) in runnable {
             if poisoned.get() || started.elapsed() >= budget {
                 log.push(ScriptRecord {
                     source: label,
@@ -2003,7 +2003,11 @@ impl Engine {
             }
             info!(source = %label, bytes = text.len(), "Running page script");
             let record = run(label, text.len(), &|| {
-                bindings.evaluate(&text).map(|_| ()).map_err(strip)
+                // `document.currentScript` is this element while it runs.
+                let _ = bindings.set_current_script(Some(node_id));
+                let result = bindings.evaluate(&text).map(|_| ()).map_err(strip);
+                let _ = bindings.set_current_script(None);
+                result
             });
             log.push(record);
         }
@@ -2331,7 +2335,7 @@ impl Engine {
         if let Some((fetched, fetch_done)) = scripts {
             let timed_out = fetched
                 .iter()
-                .any(|(_, r)| matches!(r, Err(ScriptOutcome::OverBudget)));
+                .any(|(_, _, r)| matches!(r, Err(ScriptOutcome::OverBudget)));
             let budget = if timed_out {
                 std::time::Duration::ZERO
             } else {
@@ -7182,7 +7186,7 @@ impl Engine {
             "font-size" => style.font_size = rustkit_css::Length::Px(16.0),
             "font-weight" => style.font_weight = rustkit_css::FontWeight::NORMAL,
             "font-style" => style.font_style = rustkit_css::FontStyle::Normal,
-            "font-family" => style.font_family = String::new(),
+            "font-family" => style.font_family = rustkit_css::INITIAL_FONT_FAMILY.to_string(),
             "line-height" => style.line_height = rustkit_css::LineHeight::Normal,
             "margin" | "margin-top" => style.margin_top = rustkit_css::Length::Zero,
             "margin-right" => style.margin_right = rustkit_css::Length::Zero,
@@ -10097,8 +10101,18 @@ impl Engine {
                     font_style,
                     advances,
                     ascent,
+                    run,
                 } => serde_json::json!({
                     "op": "text",
+                    // The SHAPED-RUN CONTRACT, made visible: the face paint
+                    // draws this command with and how many glyphs and
+                    // clusters it places. `null` means the command is
+                    // painted by walking `text` in `font_family`.
+                    "run": run.as_ref().map(|run| serde_json::json!({
+                        "face": run.face.postscript_name,
+                        "glyphs": run.glyphs.len(),
+                        "clusters": run.cluster_advances().len(),
+                    })),
                     "text": text,
                     "x": x,
                     "y": y,
@@ -10168,6 +10182,7 @@ impl Engine {
                     spread_radius,
                     color: c,
                     rect: r,
+                    border_radius,
                     inset,
                 } => serde_json::json!({
                     "op": "box_shadow",
@@ -10177,6 +10192,7 @@ impl Engine {
                     "spread_radius": spread_radius,
                     "color": color(c),
                     "rect": rect(r),
+                    "border_radius": radius(border_radius),
                     "inset": inset
                 }),
                 Cmd::LinearGradient {
@@ -17099,6 +17115,12 @@ mod web_font_tests {
     static WEB_FONT_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn test_engine() -> Option<LockedEngine> {
+        // GPU guard first, then the web-font lock, always in that order. The
+        // guard stays with this thread after the engine is dropped, so a test
+        // that asks for a second engine would otherwise hold the guard and
+        // wait for the lock while a neighbour holds the lock and waits for
+        // the guard.
+        crate::test_gpu::hold_for_this_test();
         let guard = WEB_FONT_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let compositor = match crate::test_compositor() {
             Ok(c) => c,
@@ -19632,18 +19654,17 @@ mod rule_prefilter_tests {
 //
 // The Windows tree called a receiver-less `Engine::apply_declaration`; here
 // the production path is `Engine::apply_style_property(&self, ..)`, so each
-// test builds one Engine behind the init mutex (Compositor::new performs
-// wgpu adapter init, which must not run concurrently — hiwave-windows #51).
+// test builds its own Engine. `Engine::new` takes the GPU test guard
+// (`test_gpu`), which already keeps wgpu adapter init from running
+// concurrently (hiwave-windows #51). A module mutex around it is a second
+// lock taken in the other order: a test that builds two engines holds the
+// guard and waits for the mutex, while its neighbour holds the mutex and
+// waits for the guard.
 #[cfg(test)]
 mod cascade_wire_tests {
     use super::*;
 
     fn engine() -> Engine {
-        // No module mutex here: `Engine::new` takes the GPU test guard, which
-        // this thread then holds until it exits. A mutex taken before it
-        // inverts the order for a test that builds a second engine: this
-        // thread holds the guard and waits for the mutex, the mutex holder
-        // waits 120 s for the guard, then panics.
         Engine::new(EngineConfig::default()).expect("engine")
     }
 
@@ -20447,6 +20468,54 @@ window.addEventListener('load', function () {
         // not started either.
         assert_eq!(log[1].outcome, ScriptOutcome::OverBudget, "{log:#?}");
         assert_eq!(engine.execute_script(view, "typeof slow").unwrap(), r#"String("undefined")"#);
+    }
+
+    /// `document.currentScript` is the classic <script> element while it
+    /// runs and null otherwise. x.com ends inline scripts with
+    /// `document.currentScript.remove()`; before this, that threw
+    /// "cannot convert 'null' or 'undefined' to object" on 5 of its 7
+    /// scripts, and webpack's `publicPath` detection (cnn) failed the same
+    /// way.
+    #[test]
+    fn document_current_script_names_the_running_script_element() {
+        let page = r#"<html><head>
+<script id="first">
+var seen = [];
+seen.push('first:' + document.currentScript.id);
+document.currentScript.remove();
+</script>
+<script id="ext" src="/ext.js"></script>
+<script id="third">seen.push('third:' + document.currentScript.tagName);</script>
+</head><body><div id="after">x</div></body></html>"#;
+        let port = serve(vec![
+            ("/", "text/html", page.to_string()),
+            (
+                "/ext.js",
+                "text/javascript",
+                "seen.push('ext:' + document.currentScript.id + ':' + /ext[.]js$/.test(document.currentScript.src));".into(),
+            ),
+        ]);
+        let (mut engine, view) = load(EngineConfig::default(), port);
+
+        assert_eq!(
+            engine.execute_script(view, "seen.join(',')").unwrap(),
+            r#"String("first:first,ext:ext:true,third:SCRIPT")"#
+        );
+        // Between scripts it is null again.
+        assert_eq!(
+            engine.execute_script(view, "String(document.currentScript)").unwrap(),
+            r#"String("null")"#
+        );
+        // `remove()` really removed the element, and no script failed.
+        assert_eq!(
+            engine.execute_script(view, "String(document.getElementById('first'))").unwrap(),
+            r#"String("null")"#
+        );
+        let log = engine.script_log(view).unwrap();
+        assert!(
+            log.iter().all(|r| r.outcome == ScriptOutcome::Ran),
+            "{log:#?}"
+        );
     }
 
     #[test]
@@ -21803,11 +21872,6 @@ mod incremental_restyle_tests {
     use rustkit_layout::{Dimensions, DisplayList, Rect};
 
     fn engine() -> Engine {
-        // No module mutex here: `Engine::new` takes the GPU test guard, which
-        // this thread then holds until it exits. A mutex taken before it
-        // inverts the order for a test that builds a second engine: this
-        // thread holds the guard and waits for the mutex, the mutex holder
-        // waits 120 s for the guard, then panics.
         Engine::new(EngineConfig::default()).expect("engine")
     }
 
@@ -22278,18 +22342,14 @@ mod incremental_restyle_tests {
 //
 // Each test drives the real engine paths (build_layout_from_document +
 // DisplayList::build, selector_matches, compute_style_for_element,
-// load_html) on one Engine built behind the init mutex (hiwave-windows #51).
+// load_html) on one Engine; `Engine::new` takes the GPU test guard
+// (hiwave-windows #51).
 #[cfg(test)]
 mod windows_engine_pins {
     use super::*;
     use rustkit_layout::{Dimensions, DisplayList, Rect};
 
     fn engine() -> Engine {
-        // No module mutex here: `Engine::new` takes the GPU test guard, which
-        // this thread then holds until it exits. A mutex taken before it
-        // inverts the order for a test that builds a second engine: this
-        // thread holds the guard and waits for the mutex, the mutex holder
-        // waits 120 s for the guard, then panics.
         Engine::new(EngineConfig::default()).expect("engine")
     }
 
@@ -22488,6 +22548,87 @@ mod windows_engine_pins {
         );
     }
 
+    /// `border-radius` on the `<img>` itself rounds the image: replaced
+    /// content is trimmed to the content edge curve (CSS Backgrounds 3
+    /// §5.3). Only the image's (empty) background was rounded before.
+    #[test]
+    fn a_rounded_img_clips_its_image_to_the_content_edge_curve() {
+        const GIF: &str = "data:image/gif;base64,R0lGODlhAQABAAAAACw=";
+        let e = engine();
+        let commands_for = |style: &str| {
+            dl(&e, &format!(
+                r#"<!DOCTYPE html><html><body><img src="{GIF}" style="display:block;width:100px;height:60px;{style}"></body></html>"#
+            ))
+        };
+
+        // The clip opens just before the image and closes just after it.
+        let list = commands_for("border-radius:50%");
+        let lines: Vec<&str> = list.lines().collect();
+        let image_at = lines
+            .iter()
+            .position(|c| c.starts_with("Image"))
+            .unwrap_or_else(|| panic!("no Image command:\n{list}"));
+        let clip = lines[image_at - 1];
+        assert!(clip.starts_with("PushClipRounded"), "before the image: {clip}");
+        assert!(clip.contains("width: 100.0, height: 60.0"), "{clip}");
+        assert_eq!(
+            clip.matches("CornerRadius { h: 50.0, v: 30.0 }").count(),
+            4,
+            "{clip}"
+        );
+        assert!(lines[image_at + 1].starts_with("PopClip"), "after the image: {}", lines[image_at + 1]);
+
+        // Border and padding move the curve in: 30px less 5px + 5px.
+        let list = commands_for("border-radius:30px;border:5px solid #000;padding:5px");
+        let clip = list
+            .lines()
+            .find(|c| c.starts_with("PushClipRounded"))
+            .unwrap_or_else(|| panic!("no rounded clip:\n{list}"));
+        assert_eq!(
+            clip.matches("CornerRadius { h: 20.0, v: 20.0 }").count(),
+            4,
+            "{clip}"
+        );
+
+        // A radius the border and padding swallow, or none at all: no clip.
+        for style in ["border-radius:8px;border:5px solid #000;padding:5px", ""] {
+            let list = commands_for(style);
+            assert!(list.lines().any(|c| c.starts_with("Image")), "{list}");
+            assert!(!list.contains("PushClipRounded"), "`{style}`:\n{list}");
+        }
+    }
+
+    /// The shadow of a rounded box is rounded, and its hole is the box's own
+    /// curve, so the command has to carry the box's corner radii. It carried
+    /// none: every shadow was painted as a rectangle with a rectangular hole.
+    #[test]
+    fn a_shadow_carries_the_corner_radii_of_its_box() {
+        let e = engine();
+        let s = dl(&e, "<html><body><div style=\"width:100px;height:50px;background-color:#fff;\
+                    border-radius: 20px / 10px; box-shadow: 0 0 0 4px #000\"></div></body></html>");
+        let shadow = s
+            .lines()
+            .find(|c| c.starts_with("BoxShadow"))
+            .expect("no BoxShadow command");
+        assert_eq!(
+            shadow.matches("CornerRadius { h: 20.0, v: 10.0 }").count(),
+            4,
+            "{shadow}"
+        );
+
+        let square = dl(&e, "<html><body><div style=\"width:100px;height:50px;background-color:#fff;\
+                    box-shadow: 0 0 0 4px #000\"></div></body></html>");
+        let shadow = square
+            .lines()
+            .find(|c| c.starts_with("BoxShadow"))
+            .expect("no BoxShadow command");
+        assert_eq!(
+            shadow.matches("CornerRadius { h: 0.0, v: 0.0 }").count(),
+            4,
+            "{shadow}"
+        );
+    }
+
     #[test]
     fn the_shadow_is_emitted_before_the_background() {
         let e = engine();
@@ -22645,11 +22786,6 @@ mod windows_a_leg_pins {
     use rustkit_layout::{Dimensions, Rect};
 
     fn engine() -> Engine {
-        // No module mutex here: `Engine::new` takes the GPU test guard, which
-        // this thread then holds until it exits. A mutex taken before it
-        // inverts the order for a test that builds a second engine: this
-        // thread holds the guard and waits for the mutex, the mutex holder
-        // waits 120 s for the guard, then panics.
         Engine::new(EngineConfig::default()).expect("engine")
     }
 
@@ -23850,6 +23986,142 @@ p { margin: 0 0 10px 0; line-height: 20px; }
             "the Helvetica control line is {:.0}% ink; the probe is not reading glyph cells",
             control * 100.0
         );
+    }
+}
+
+// Needs a headless view: `cargo test -p rustkit-engine --features headless`.
+#[cfg(all(test, target_os = "macos", feature = "headless"))]
+mod rounded_paint_frame_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    // 4x4 RGBA, every texel (0, 0, 0, 0).
+    const CLEAR_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0xa9, 0xf1, 0x9e, 0x7e, 0x00, 0x00, 0x00,
+        0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x60, 0xa0, 0x1c, 0x00,
+        0x00, 0x00, 0x44, 0x00, 0x01, 0xe9, 0x1e, 0x9b, 0x51, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    // 4x4 RGBA, every texel opaque red.
+    const RED_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0xa9, 0xf1, 0x9e, 0x7e, 0x00, 0x00, 0x00,
+        0x15, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xfc, 0xcf, 0xc0, 0xf0,
+        0x9f, 0x01, 0x09, 0x30, 0x31, 0xa0, 0x01, 0xc2, 0x02, 0x00, 0x83, 0xd1,
+        0x02, 0x06, 0xb3, 0x4b, 0xd2, 0x9b, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    // Three 60x60 boxes down the left edge, 40px apart from y=20:
+    // a transparent image over blue, a red image in a circular clip, and a
+    // circular box with a 10px green spread shadow.
+    const PAGE: &str = r#"<!DOCTYPE html><html><head><style>
+body { margin: 20px; background: white; }
+div { width: 60px; height: 60px; margin: 0 0 40px 20px; }
+img { display: block; width: 60px; height: 60px; }
+#over { background: #0000ff; }
+#clip { border-radius: 50%; overflow: hidden; }
+#shadow { border-radius: 50%; background: white; box-shadow: 0 0 0 10px #00ff00; }
+</style></head><body>
+<div id="over"><img src="/clear.png"></div>
+<div id="clip"><img src="/red.png"></div>
+<div id="shadow"></div>
+</body></html>"#;
+
+    fn serve() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let (ctype, body): (&str, &[u8]) =
+                    match head.split_whitespace().nth(1).unwrap_or("") {
+                        "/" => ("text/html", PAGE.as_bytes()),
+                        "/clear.png" => ("image/png", CLEAR_PNG),
+                        "/red.png" => ("image/png", RED_PNG),
+                        _ => ("text/plain", b""),
+                    };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(body);
+            }
+        });
+        port
+    }
+
+    /// The pixel at `(x, y)` of a binary PPM.
+    fn pixel(ppm: &[u8], x: usize, y: usize) -> [u8; 3] {
+        let mut fields = Vec::new();
+        let mut pos = 0;
+        while fields.len() < 4 {
+            let start = pos;
+            while !ppm[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
+            fields.push(std::str::from_utf8(&ppm[start..pos]).unwrap());
+            pos += 1;
+        }
+        assert_eq!(fields[0], "P6");
+        let width: usize = fields[1].parse().unwrap();
+        let p = &ppm[pos + (y * width + x) * 3..][..3];
+        [p[0], p[1], p[2]]
+    }
+
+    #[test]
+    fn image_alpha_rounded_image_clips_and_rounded_shadows_reach_the_frame() {
+        let port = serve();
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 340,
+            })
+            .expect("view");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(engine.load_url(
+            view,
+            Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+        ))
+        .expect("load_url");
+        engine.render_view(view).expect("render");
+        let path = std::env::temp_dir().join(format!("rustkit-rounded-paint-{port}.ppm"));
+        engine
+            .capture_frame(view, path.to_str().unwrap())
+            .expect("capture");
+        let ppm = std::fs::read(&path).expect("frame");
+        let _ = std::fs::remove_file(&path);
+
+        const WHITE: [u8; 3] = [255, 255, 255];
+        const RED: [u8; 3] = [255, 0, 0];
+        const GREEN: [u8; 3] = [0, 255, 0];
+
+        // A fully transparent image shows the blue behind it. Drawn without
+        // blending it painted its own texels: black.
+        assert_eq!(pixel(&ppm, 70, 50), [0, 0, 255], "transparent image over blue");
+
+        // The red image fills the circle and is cut at its corners.
+        assert_eq!(pixel(&ppm, 70, 150), RED, "centre of the clipped image");
+        assert_eq!(pixel(&ppm, 42, 122), WHITE, "top-left corner of the clipped image");
+        assert_eq!(pixel(&ppm, 97, 177), WHITE, "bottom-right corner of the clipped image");
+
+        // The ring is green on its axis and round at the corner of its
+        // bounding square; the box inside it stays white.
+        assert_eq!(pixel(&ppm, 70, 215), GREEN, "top of the ring");
+        assert_eq!(pixel(&ppm, 32, 212), WHITE, "corner of the ring's bounding square");
+        assert_eq!(pixel(&ppm, 70, 250), WHITE, "inside the shadowed box");
     }
 }
 

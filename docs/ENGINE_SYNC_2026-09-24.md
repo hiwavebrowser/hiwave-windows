@@ -117,6 +117,52 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-10-02 (refresh #10, after #108):** crates now verbatim from
+hiwave-macos develop `46f6d5f` (Merge #425), 19 upstream PRs past refresh #9.
+Highlights: nine of this seat's JS PRs (#413 `document.currentScript`, #414
+screen/performance/window/navigator baseline, #416 `URL`, #418
+btoa/atob/escape/TextEncoder/TextDecoder, #419 the observer interfaces and
+`requestIdleCallback`, #420 Blob/File/FormData/AbortController/structuredClone,
+#423 the standard interface objects, #424 streams), the shaped-run contract and
+its first slice (S0, #411: `DisplayCommand::Text` carries the shaped run, with a
+`FaceIdentity` on the run), generic font families and the default face (#412,
+#417), glyph fallback cascade (#421), intrinsic text widths with letter and word
+spacing (#425), rounded-corner shadow clipping and image border-radius (#407,
+#409), and the engine-init lock fix (#415).
+
+Outside `crates/rustkit-*`:
+
+- **Windows patches.** The `ENGINE_INIT` test-mutex removal is dropped:
+  hiwave-macos #415 fixed that lock inversion upstream (found on this seat in
+  refresh #8). `apply_windows_patches.py` now has five string edits. One had to
+  follow upstream: #417 changed the macOS `sans-serif` test expectation from
+  "SF Pro" to "Helvetica", so the Windows arm is added to the new text. The
+  Windows `sans-serif` chain itself (Arial first) was not touched by #417, which
+  only changed the macOS arms.
+- **Parity tooling.** The sync found no changes.
+- **Cargo.lock.** Resolved by cargo.
+
+Gates:
+
+| Gate | Result |
+|---|---|
+| workspace minus `rustkit-engine` | **1520 / 0 / 5** |
+| `rustkit-engine`, `--features headless`, `--test-threads=1` | **302 / 0** |
+| `rustkit-engine`, `--features headless`, parallel | **302 / 0** (the pre-#415 lock inversion is gone without our patch) |
+| total | **1822 / 0 / 5** (refresh #9: 1731) |
+| both shells, release `parity-capture` | build |
+| parity board (`parity_swarm --scope all`, 3 iterations) | **26 / 26, mean 1.24%** (Mac 1.18%), unchanged, worst `css-selectors` +0.87 |
+| live-site board (`realsite_board.py`, Mac's list) | **27 / 60** (loads 16, readable 7, looks-right 4); refresh #9 was 29 / 60, Mac 28 / 60 |
+| `apply_windows_patches.py --check` | clean |
+
+The live board is noisy: walmart's READABLE alone has measured 62% to 88% on
+runs of an unchanged binary. The one deterministic change is instagram, whose
+frame is now a correctly drawn logo and "from Meta" splash (scripts now run to
+completion, so the SVG is sized properly) instead of a blurred blob; the board
+scores it a "blank frame" because the correct logo covers 0.60% of the viewport
+and the loads check needs 2%. That is an artifact of the instrument, not a
+regression in the render.
+
 **2026-10-01 (refresh #9, after #107 merged):** crates now verbatim from
 hiwave-macos develop `44c61ff` (Merge #406), 25 upstream PRs past refresh #8.
 Highlights: CSS nesting (#389), `@layer` revert (#392), flex item intrinsic

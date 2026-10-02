@@ -242,6 +242,7 @@ pub fn render_broken_image(
                 font_style: 0,
                 advances: None,
                 ascent: None,
+                run: None,
             });
         }
     }
