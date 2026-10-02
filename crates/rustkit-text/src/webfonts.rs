@@ -243,7 +243,7 @@ pub fn generation() -> u64 {
     GENERATION.load(Ordering::Acquire)
 }
 
-fn bump_generation() {
+pub(crate) fn bump_generation() {
     GENERATION.fetch_add(1, Ordering::AcqRel);
 }
 

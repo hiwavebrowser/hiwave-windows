@@ -30,6 +30,9 @@ mod flex_item_relayout_tests;
 #[cfg(test)]
 mod flex_resolve_tests;
 
+#[cfg(test)]
+mod shaped_run_tests;
+
 pub use flex::{layout_flex_container, Axis, FlexItem, FlexLine};
 pub use forms::{
     calculate_caret_position, calculate_selection_rects, render_button, render_checkbox,
@@ -59,6 +62,7 @@ pub use text::{
     FontFamilyChain, FontLoader, LineHeight, PositionedGlyph, ShapedRun, TextDecoration, TextError,
     TextMetrics, TextShaper, TopLevelSite, TEXT_METRICS_ARE_FONT_DERIVED, TEXT_SHAPER_BACKEND,
 };
+pub use text::{FaceIdentity, FaceSynthesis, GlyphRun, RunGlyph};
 
 use rustkit_css::{BoxSizing, Color, ComputedStyle, Length, TextAlign};
 use std::cmp::Ordering;
@@ -5982,6 +5986,34 @@ impl CornerRadius {
             inner
         }
     }
+
+    /// The radii of a shadow's corner when the box's shape is grown by
+    /// `spread` px, or shrunk by a negative one (CSS Backgrounds 3 §6.1.1).
+    ///
+    /// A radius grows by the spread. One smaller than the spread grows by
+    /// less, `spread * (1 + (r / spread - 1)^3)`, so a nearly square corner
+    /// stays nearly square and a square one stays square.
+    pub fn spread(&self, spread: f32) -> Self {
+        if self.is_zero() || spread == 0.0 {
+            return *self;
+        }
+        let grow = |r: f32| {
+            if spread > 0.0 && r < spread {
+                r + spread * (1.0 + (r / spread - 1.0).powi(3))
+            } else {
+                (r + spread).max(0.0)
+            }
+        };
+        let out = Self {
+            h: grow(self.h),
+            v: grow(self.v),
+        };
+        if out.is_zero() {
+            Self::default()
+        } else {
+            out
+        }
+    }
 }
 
 /// Border radius values for each corner.
@@ -6092,6 +6124,17 @@ impl BorderRadius {
             bottom_left: scale(self.bottom_left),
         }
     }
+
+    /// The radii of this shape grown by `spread` px on every side: the
+    /// corners of a box shadow (see `CornerRadius::spread`).
+    pub fn spread(&self, spread: f32) -> Self {
+        Self {
+            top_left: self.top_left.spread(spread),
+            top_right: self.top_right.spread(spread),
+            bottom_right: self.bottom_right.spread(spread),
+            bottom_left: self.bottom_left.spread(spread),
+        }
+    }
 }
 
 /// A paint command for rendering.
@@ -6135,6 +6178,16 @@ pub enum DisplayCommand {
         /// positions the baseline at y + ascent instead of consulting a
         /// third per-glyph shaper.
         ascent: Option<f32>,
+        /// SHAPED-RUN CONTRACT, slice S0
+        /// (docs/SHAPED_RUN_CONTRACT_2026-09-30.md): the frozen run layout
+        /// shaped for this line. When present, paint places ITS glyph ids
+        /// from ITS face and resolves no family list; `advances` is then
+        /// this run's per-character projection and `font_family` is kept
+        /// for the old path only. `None` where the run is outside the slice
+        /// (a fallback character, an emoji, a platform whose shaper does
+        /// not name its face) and on the legacy callers; paint then walks
+        /// `text` as before. A lane that edits the emitter keeps this field.
+        run: Option<std::sync::Arc<GlyphRun>>,
     },
     /// Draw text decoration line (underline, strikethrough, overline).
     TextDecoration {
@@ -6189,6 +6242,10 @@ pub enum DisplayCommand {
         color: Color,
         /// Box rectangle (shadow is drawn outside this box, or inside if inset)
         rect: Rect,
+        /// The box's used border-box corner radii. The shadow's shape is
+        /// this shape moved and spread, and an outer shadow is clipped to
+        /// outside this shape (CSS Backgrounds 3 §6.1).
+        border_radius: BorderRadius,
         /// Whether this is an inset shadow
         inset: bool,
     },
@@ -7120,7 +7177,11 @@ impl DisplayList {
 
     /// Render box shadows (must be called before background).
     fn render_box_shadows(&mut self, layout_box: &LayoutBox) {
+        if layout_box.style.box_shadows.is_empty() {
+            return;
+        }
         let box_rect = layout_box.dimensions.border_box();
+        let border_radius = self.border_radius_px(layout_box);
 
         // Render outer shadows first (in order, first shadow is top-most)
         for shadow in &layout_box.style.box_shadows {
@@ -7132,6 +7193,7 @@ impl DisplayList {
                     spread_radius: shadow.spread_radius,
                     color: shadow.color,
                     rect: box_rect,
+                    border_radius,
                     inset: false,
                 });
             }
@@ -7140,7 +7202,11 @@ impl DisplayList {
 
     /// Render inset box shadows (called after background).
     fn render_inset_shadows(&mut self, layout_box: &LayoutBox) {
+        if layout_box.style.box_shadows.is_empty() {
+            return;
+        }
         let box_rect = layout_box.dimensions.border_box();
+        let border_radius = self.border_radius_px(layout_box);
 
         for shadow in &layout_box.style.box_shadows {
             if shadow.is_visible() && shadow.inset {
@@ -7151,6 +7217,7 @@ impl DisplayList {
                     spread_radius: shadow.spread_radius,
                     color: shadow.color,
                     rect: box_rect,
+                    border_radius,
                     inset: true,
                 });
             }
@@ -7892,7 +7959,14 @@ impl DisplayList {
                 // (GradientText was skipped by the old continue-before-shape
                 // and re-owned pitch + baseline in paint — the last dual
                 // text path.)
-                let mut advances = shape_line_advances(&text, style, font_size);
+                let shaped = shape_line(&text, style, font_size);
+                let mut advances = shaped.as_ref().and_then(char_advances_of);
+                // SHAPED-RUN CONTRACT (S0): the same shape call, frozen with
+                // the justification slack in it. `advances` above is its
+                // projection onto characters and stays for the old path.
+                let line_run = shaped
+                    .as_ref()
+                    .and_then(|shaped| GlyphRun::freeze(shaped, justify_space));
                 // A justified line widens each word separator by the slack
                 // layout distributed (TextLine::justify_space). Only the
                 // per-char advance path can carry it: when shaping fell back
@@ -7912,7 +7986,7 @@ impl DisplayList {
                 // edge and paint `…` in the run's own font. Without per-char
                 // advances there is nothing to cut against — the run paints
                 // as laid out and the clip alone applies.
-                let (text, advances, text_width) = match (self.ellipsis.as_mut(), &advances) {
+                let (text, advances, text_width, line_run) = match (self.ellipsis.as_mut(), &advances) {
                     (Some(scope), Some(adv)) => {
                         let ellipsis_advance = shape_line_advances("\u{2026}", style, font_size)
                             .and_then(|a| a.first().copied())
@@ -7929,16 +8003,27 @@ impl DisplayList {
                                 .width
                             });
                         match scope.cut(&text, x, line_top, adv, ellipsis_advance) {
-                            TextOverflowCut::Keep => (text, advances, text_width),
+                            TextOverflowCut::Keep => (text, advances, text_width, line_run),
                             TextOverflowCut::Hide => continue,
                             TextOverflowCut::Cut {
                                 text,
                                 advances,
                                 width,
-                            } => (text, Some(advances), width),
+                            } => {
+                                // The run is cut where the characters were:
+                                // the kept glyphs, then the ellipsis shaped
+                                // alone in the same face (as its advance was).
+                                let kept = advances.len().saturating_sub(1);
+                                let line_run = line_run.and_then(|run| {
+                                    shape_line("\u{2026}", style, font_size)
+                                        .and_then(|tail| GlyphRun::freeze(&tail, 0.0))
+                                        .and_then(|tail| run.cut_with_tail(kept, &tail))
+                                });
+                                (text, Some(advances), width, line_run)
+                            }
                         }
                     }
-                    _ => (text, advances, text_width),
+                    _ => (text, advances, text_width, line_run),
                 };
 
                 // Check if this is gradient text (background-clip: text with gradient and transparent fill)
@@ -7985,6 +8070,7 @@ impl DisplayList {
                     },
                     advances,
                     ascent: Some(seat_ascent),
+                    run: line_run.map(std::sync::Arc::new),
                 });
 
                 // Draw text decorations
@@ -8143,7 +8229,31 @@ impl DisplayList {
                     layout_box.style.color,
                 );
 
-                self.commands.push(cmd);
+                // Replaced content is trimmed to the content edge curve
+                // (CSS Backgrounds 3 §5.3): the border radius inset by the
+                // border and padding beside each corner. `img { border-radius:
+                // 50% }` is how most avatars are written, with no
+                // `overflow: hidden` box around them.
+                let radius = self.border_radius_px(layout_box);
+                let (b, p) = (&dims.border, &dims.padding);
+                let content_radius = BorderRadius {
+                    top_left: radius.top_left.inset(b.left + p.left, b.top + p.top),
+                    top_right: radius.top_right.inset(b.right + p.right, b.top + p.top),
+                    bottom_right: radius
+                        .bottom_right
+                        .inset(b.right + p.right, b.bottom + p.bottom),
+                    bottom_left: radius.bottom_left.inset(b.left + p.left, b.bottom + p.bottom),
+                };
+                if content_radius.is_zero() {
+                    self.commands.push(cmd);
+                } else {
+                    self.commands.push(DisplayCommand::PushClipRounded {
+                        rect: container,
+                        radius: content_radius,
+                    });
+                    self.commands.push(cmd);
+                    self.commands.push(DisplayCommand::PopClip);
+                }
             }
             BoxType::FormControl(control) => {
                 self.render_form_control(layout_box, control);
@@ -8583,15 +8693,13 @@ fn shape_text_metrics(
     }
 }
 
-/// Per-CHAR advances from the layout shaper, letter/word-spacing applied
-/// (ADVANCE CONTRACT, text-stack unification 2026-07-11). Returns None when
-/// shaping fails or when glyph count != char count (ligature clusters) — the
-/// renderer then falls back to its own advances instead of misaligning.
-pub fn shape_line_advances(
+/// One line of `text` shaped in `style`, letter/word-spacing applied: the
+/// single shape call behind `shape_line_advances` and `shape_line_run`.
+fn shape_line(
     text: &str,
     style: &rustkit_css::ComputedStyle,
     font_size: f32,
-) -> Option<Vec<f32>> {
+) -> Option<ShapedRun> {
     let letter_spacing = match style.letter_spacing {
         Length::Px(px) => px,
         Length::Em(em) => em * font_size,
@@ -8617,10 +8725,46 @@ pub fn shape_line_advances(
         )
         .ok()?;
     run.apply_spacing(letter_spacing, word_spacing);
-    if run.glyphs.len() != text.chars().count() {
+    Some(run)
+}
+
+/// The per-character projection of a shaped line: `None` when a glyph is
+/// not one character (the vector cannot describe it).
+fn char_advances_of(run: &ShapedRun) -> Option<Vec<f32>> {
+    if run.glyphs.len() != run.text.chars().count() {
         return None;
     }
     Some(run.glyphs.iter().map(|g| g.advance).collect())
+}
+
+/// Per-CHAR advances from the layout shaper, letter/word-spacing applied
+/// (ADVANCE CONTRACT, text-stack unification 2026-07-11). Returns None when
+/// shaping fails or when glyph count != char count (ligature clusters) — the
+/// renderer then falls back to its own advances instead of misaligning.
+pub fn shape_line_advances(
+    text: &str,
+    style: &rustkit_css::ComputedStyle,
+    font_size: f32,
+) -> Option<Vec<f32>> {
+    shape_line(text, style, font_size)
+        .as_ref()
+        .and_then(char_advances_of)
+}
+
+/// The frozen run for one line of `text` in `style` (SHAPED-RUN CONTRACT,
+/// slice S0): the shape `shape_line_advances` projects, kept whole.
+/// `justify_space` is added to each word separator before the freeze.
+/// `None` when shaping fails or the run is outside the slice
+/// (`GlyphRun::freeze`).
+pub fn shape_line_run(
+    text: &str,
+    style: &rustkit_css::ComputedStyle,
+    font_size: f32,
+    justify_space: f32,
+) -> Option<GlyphRun> {
+    shape_line(text, style, font_size)
+        .as_ref()
+        .and_then(|run| GlyphRun::freeze(run, justify_space))
 }
 
 /// Simple text measurement (fallback when shaping is unavailable).
@@ -9916,6 +10060,28 @@ mod tests {
             "a 14px border swallows the 12px vertical radius: that corner is square"
         );
         assert_eq!(radius.bottom_left, CornerRadius::default());
+    }
+
+    /// CSS Backgrounds 3 §6.1.1: a shadow's corner radius is the box's plus
+    /// the spread, less for a radius smaller than the spread, and a square
+    /// corner stays square.
+    #[test]
+    fn a_shadows_corner_radius_grows_with_the_spread() {
+        let corner = CornerRadius { h: 20.0, v: 10.0 };
+        assert_eq!(corner.spread(6.0), CornerRadius { h: 26.0, v: 16.0 });
+        assert_eq!(corner.spread(0.0), corner);
+        assert_eq!(CornerRadius::default().spread(6.0), CornerRadius::default());
+
+        // r = 2 under a 10px spread: 2 + 10 * (1 + (0.2 - 1)^3) = 6.88.
+        let small = CornerRadius::circular(2.0).spread(10.0);
+        assert!((small.h - 6.88).abs() < 1e-4 && (small.v - 6.88).abs() < 1e-4, "{small:?}");
+
+        // A negative spread shrinks the curve, and squares it at zero.
+        assert_eq!(corner.spread(-4.0), CornerRadius { h: 16.0, v: 6.0 });
+        assert_eq!(corner.spread(-10.0), CornerRadius::default());
+
+        let all = BorderRadius::uniform(8.0).spread(4.0);
+        assert_eq!(all, BorderRadius::uniform(12.0));
     }
 
     #[test]
@@ -11923,6 +12089,76 @@ mod tests {
             (short - 60.0).abs() <= 3.0,
             "dropdown 'Select': Chrome 60, got {short}"
         );
+    }
+
+    #[test]
+    fn a_shrink_to_fit_box_is_as_wide_as_its_spaced_text() {
+        // new_tab's logo: "HIWAVE" at 48px with `letter-spacing: 0.5rem`
+        // inside an inline-block. The intrinsic width left the spacing out,
+        // so the box was 48px narrower than the line laid out in it
+        // (165.66 against Chrome's 214.80).
+        let mut cb = Dimensions::default();
+        cb.content = Rect::new(0.0, 0.0, 1280.0, 0.0);
+
+        // The box is an inline-block in a block, or an item of a flex row,
+        // through `layout()` or the collapse path the engine's page layout
+        // runs.
+        for flex_item in [false, true] {
+            for collapse_path in [false, true] {
+                let width_with = |letter_spacing: Length, word_spacing: Length, text: &str| {
+                    let mut text_style = ComputedStyle::new();
+                    text_style.font_family = "Helvetica".to_string();
+                    text_style.font_size = Length::Px(48.0);
+                    text_style.letter_spacing = letter_spacing;
+                    text_style.word_spacing = word_spacing;
+
+                    let mut wrapper_style = text_style.clone();
+                    let mut parent_style = ComputedStyle::new();
+                    if flex_item {
+                        parent_style.display = rustkit_css::Display::Flex;
+                    } else {
+                        wrapper_style.display = rustkit_css::Display::InlineBlock;
+                    }
+                    let mut wrapper = LayoutBox::new(BoxType::Block, wrapper_style);
+                    wrapper
+                        .children
+                        .push(LayoutBox::new(BoxType::Text(text.to_string()), text_style));
+
+                    let mut parent = LayoutBox::new(BoxType::Block, parent_style);
+                    parent.children.push(wrapper);
+                    if collapse_path {
+                        let mut mc = MarginCollapseContext::new();
+                        let mut fc = FloatContext::new();
+                        parent.layout_with_collapse(&cb, &mut mc, &mut fc);
+                    } else {
+                        parent.layout(&cb);
+                    }
+                    parent.children[0].dimensions.content.width
+                };
+                let case = format!("flex_item={flex_item} collapse_path={collapse_path}");
+
+                let plain = width_with(Length::Zero, Length::Zero, "HIWAVE");
+                assert!(plain > 100.0, "{case}: sanity: {plain}");
+                // Six letters, 8px after each.
+                let px = width_with(Length::Px(8.0), Length::Zero, "HIWAVE");
+                assert!(
+                    (px - (plain + 48.0)).abs() < 0.01,
+                    "{case}: px: {px} vs {plain} + 48"
+                );
+                let rem = width_with(Length::Rem(0.5), Length::Zero, "HIWAVE");
+                assert!(
+                    (rem - (plain + 48.0)).abs() < 0.01,
+                    "{case}: rem: {rem} vs {plain} + 48"
+                );
+                // `word-spacing` widens each space.
+                let words = width_with(Length::Zero, Length::Zero, "HI WAVE");
+                let spaced = width_with(Length::Zero, Length::Px(10.0), "HI WAVE");
+                assert!(
+                    (spaced - (words + 10.0)).abs() < 0.01,
+                    "{case}: word: {spaced} vs {words} + 10"
+                );
+            }
+        }
     }
 
     #[test]

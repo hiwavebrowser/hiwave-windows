@@ -613,6 +613,23 @@ pub(crate) fn install(
     host: &SharedDomHost,
     dirty: &Rc<Cell<DomDirty>>,
 ) -> Result<(), JsError> {
+    // `__rustkit_dom_resolve(base, relative)`: the absolute URL `relative`
+    // names against `base`, or null when either does not parse. Backs the
+    // URL-reflecting attributes (`script.src`).
+    runtime.register_host_function(
+        "__rustkit_dom_resolve",
+        2,
+        Box::new(|args| {
+            let (Some(base), Some(relative)) = (string_arg(args, 0), string_arg(args, 1)) else {
+                return JsValue::Null;
+            };
+            match url::Url::parse(base).and_then(|b| b.join(relative)) {
+                Ok(u) => JsValue::String(u.to_string()),
+                Err(_) => JsValue::Null,
+            }
+        }),
+    )?;
+
     let h = host.clone();
     runtime.register_host_function(
         "__rustkit_dom_root",
@@ -826,9 +843,9 @@ const WRAPPERS_JS: &str = r#"
         collect: __rustkit_dom_collect, info: __rustkit_dom_info,
         attr: __rustkit_dom_attr, mutate: __rustkit_dom_mutate,
         write: __rustkit_dom_write, matches: __rustkit_dom_matches,
-        value: __rustkit_dom_value
+        value: __rustkit_dom_value, resolve: __rustkit_dom_resolve
     };
-    ['root', 'by_id', 'collect', 'info', 'attr', 'mutate', 'write', 'matches', 'value'].forEach(function (n) {
+    ['root', 'by_id', 'collect', 'info', 'attr', 'mutate', 'write', 'matches', 'value', 'resolve'].forEach(function (n) {
         delete g['__rustkit_dom_' + n];
     });
 
@@ -868,8 +885,49 @@ const WRAPPERS_JS: &str = r#"
     var HTMLInputElement = iface('HTMLInputElement', HTMLElement);
     var HTMLTextAreaElement = iface('HTMLTextAreaElement', HTMLElement);
     var HTMLFormElement = iface('HTMLFormElement', HTMLElement);
+    var HTMLScriptElement = iface('HTMLScriptElement', HTMLElement);
     var elementProtos = { input: HTMLInputElement.prototype,
-                          textarea: HTMLTextAreaElement.prototype, form: HTMLFormElement.prototype };
+                          textarea: HTMLTextAreaElement.prototype, form: HTMLFormElement.prototype,
+                          script: HTMLScriptElement.prototype };
+    // The rest of the HTML element interfaces (HTML §4), so `el instanceof
+    // HTMLAnchorElement` and `typeof HTMLImageElement` work on real nodes.
+    // Tags without an interface of their own stay plain HTMLElement.
+    (function () {
+        var HTMLMediaElement = iface('HTMLMediaElement', HTMLElement);
+        var byTag = {
+            a: 'HTMLAnchorElement', area: 'HTMLAreaElement', audio: 'HTMLAudioElement', base: 'HTMLBaseElement',
+            body: 'HTMLBodyElement', br: 'HTMLBRElement', button: 'HTMLButtonElement', canvas: 'HTMLCanvasElement',
+            data: 'HTMLDataElement', details: 'HTMLDetailsElement', dialog: 'HTMLDialogElement', div: 'HTMLDivElement',
+            dl: 'HTMLDListElement', embed: 'HTMLEmbedElement', fieldset: 'HTMLFieldSetElement', head: 'HTMLHeadElement',
+            h1: 'HTMLHeadingElement', h2: 'HTMLHeadingElement', h3: 'HTMLHeadingElement', h4: 'HTMLHeadingElement',
+            h5: 'HTMLHeadingElement', h6: 'HTMLHeadingElement', hr: 'HTMLHRElement', html: 'HTMLHtmlElement',
+            iframe: 'HTMLIFrameElement', img: 'HTMLImageElement', label: 'HTMLLabelElement', legend: 'HTMLLegendElement',
+            li: 'HTMLLIElement', link: 'HTMLLinkElement', map: 'HTMLMapElement', meta: 'HTMLMetaElement',
+            meter: 'HTMLMeterElement', object: 'HTMLObjectElement', ol: 'HTMLOListElement', optgroup: 'HTMLOptGroupElement',
+            option: 'HTMLOptionElement', output: 'HTMLOutputElement', p: 'HTMLParagraphElement', picture: 'HTMLPictureElement',
+            pre: 'HTMLPreElement', progress: 'HTMLProgressElement', blockquote: 'HTMLQuoteElement', q: 'HTMLQuoteElement',
+            select: 'HTMLSelectElement', slot: 'HTMLSlotElement', source: 'HTMLSourceElement', span: 'HTMLSpanElement',
+            style: 'HTMLStyleElement', table: 'HTMLTableElement', td: 'HTMLTableCellElement', th: 'HTMLTableCellElement',
+            tr: 'HTMLTableRowElement', thead: 'HTMLTableSectionElement', tbody: 'HTMLTableSectionElement',
+            tfoot: 'HTMLTableSectionElement', template: 'HTMLTemplateElement', time: 'HTMLTimeElement',
+            title: 'HTMLTitleElement', track: 'HTMLTrackElement', ul: 'HTMLUListElement', video: 'HTMLVideoElement'
+        };
+        var made = {};
+        Object.keys(byTag).forEach(function (tag) {
+            var name = byTag[tag];
+            if (!made[name]) {
+                var parent = (name === 'HTMLAudioElement' || name === 'HTMLVideoElement') ? HTMLMediaElement : HTMLElement;
+                made[name] = iface(name, parent);
+            }
+            elementProtos[tag] = made[name].prototype;
+        });
+        // Interface objects with no element of their own here: the checks
+        // `x instanceof HTMLUnknownElement` / `SVGElement` still need a RHS.
+        iface('HTMLUnknownElement', HTMLElement);
+        var SVGElement = iface('SVGElement', Element);
+        var SVGGraphicsElement = iface('SVGGraphicsElement', SVGElement);
+        elementProtos.svg = iface('SVGSVGElement', SVGGraphicsElement).prototype;
+    })();
     var DocumentFragment = iface('DocumentFragment', Node);
     var NodeList = iface('NodeList');
     var HTMLCollection = iface('HTMLCollection');
@@ -1272,6 +1330,16 @@ const WRAPPERS_JS: &str = r#"
         datasets.set(el, d);
         return d;
     });
+
+    // HTMLScriptElement.src (HTML §4.12.1): the `src` attribute resolved
+    // against the document's URL, '' when absent. webpack's `publicPath`
+    // reads `document.currentScript.src`.
+    accessor(HTMLScriptElement.prototype, 'src', function () {
+        var v = this.getAttribute('src');
+        if (v === null) return '';
+        var r = N.resolve(g.location && g.location.href, v);
+        return r === null ? v : r;
+    }, function (v) { this.setAttribute('src', v); });
 
     // Form controls (HTML §4.10). A text control's value lives host-side
     // (its dirty value, which the engine's edit state mirrors for paint);
@@ -1742,6 +1810,23 @@ const WRAPPERS_JS: &str = r#"
         getter(Document.prototype, k, function () {
             var s = slotOf(this); return s.gen === gen ? wrap(N.root(s.gen, k)) : null;
         });
+    });
+
+    // `document.currentScript` (HTML §3.1.1): the classic <script> element
+    // being run, else null. Pages lean on it constantly: inline scripts
+    // that end in `document.currentScript.remove()`, and webpack's
+    // `publicPath` detection (`document.currentScript.src`). With it
+    // missing, both threw "cannot convert null or undefined to object" and
+    // the rest of the script never ran. The engine names the element
+    // through `__rkSetCurrentScript(id)` before each script and clears it
+    // after; the hook is not enumerable.
+    var currentScript = null;
+    getter(Document.prototype, 'currentScript', function () {
+        var s = slotOf(this); return s.gen === gen ? currentScript : null;
+    });
+    Object.defineProperty(Document.prototype, '__rkSetCurrentScript', {
+        value: function (id) { currentScript = typeof id === 'number' ? wrap(id) : null; },
+        configurable: true, enumerable: false, writable: true
     });
 
     // EventTarget (DOM §2.7) for node wrappers, document and window: a

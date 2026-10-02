@@ -2904,16 +2904,35 @@ fn is_collapsible_whitespace_only(child: &LayoutBox) -> bool {
 /// measured with the shaper line layout uses so the intrinsic size and the
 /// laid-out line agree about the same character.
 fn collapsed_space_width(style: &ComputedStyle) -> f32 {
+    spaced_text_width(" ", style)
+}
+
+/// Width of `text` on one line in `style`, `letter-spacing` and
+/// `word-spacing` included, as line layout measures it (`shape_line`).
+///
+/// The intrinsic widths left the spacing out, so a shrink-to-fit box around
+/// spaced text was narrower than its text: new_tab's "HIWAVE" logo (48px,
+/// `letter-spacing: 0.5rem`, in an inline-block) was 165.66px wide where
+/// Chrome's is 214.80, and sat 24.6px right of centre.
+fn spaced_text_width(text: &str, style: &ComputedStyle) -> f32 {
     let font_size = match style.font_size {
         Length::Px(px) => px,
         _ => 16.0,
     };
-    crate::measure_text_advanced(
-        " ",
+    let spacing = |length: &Length| match *length {
+        Length::Px(px) => px,
+        Length::Em(em) => em * font_size,
+        Length::Rem(rem) => rem * 16.0,
+        _ => 0.0,
+    };
+    crate::measure_text_with_spacing(
+        text,
         &style.font_family,
         font_size,
         style.font_weight,
         style.font_style,
+        spacing(&style.letter_spacing),
+        spacing(&style.word_spacing),
     )
     .width
 }
@@ -2924,13 +2943,7 @@ fn text_min_content_width(text: &str, style: &ComputedStyle) -> f32 {
     if text.trim().is_empty() {
         return 0.0;
     }
-    let font_size = match style.font_size {
-        Length::Px(px) => px,
-        _ => 16.0,
-    };
-    let measure = |s: &str| {
-        crate::measure_text_advanced(s, &style.font_family, font_size, style.font_weight, style.font_style).width
-    };
+    let measure = |s: &str| spaced_text_width(s, style);
     if matches!(style.white_space, WhiteSpace::Nowrap | WhiteSpace::Pre) {
         return measure(text);
     }
@@ -2942,11 +2955,7 @@ fn text_max_content_width(text: &str, style: &ComputedStyle) -> f32 {
     if text.trim().is_empty() {
         return 0.0;
     }
-    let font_size = match style.font_size {
-        Length::Px(px) => px,
-        _ => 16.0,
-    };
-    crate::measure_text_advanced(text, &style.font_family, font_size, style.font_weight, style.font_style).width
+    spaced_text_width(text, style)
 }
 
 /// Estimate of a box's max-content (border-box) width: the width the box

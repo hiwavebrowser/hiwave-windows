@@ -2652,6 +2652,17 @@ pub struct ComputedStyle {
     pub custom_properties: std::sync::Arc<CustomProperties>,
 }
 
+/// The initial value of `font-family`, which CSS leaves to the UA. Chrome's
+/// default font on macOS is Times (`getComputedStyle` of an unstyled element
+/// reports it). `sans-serif` stood here, so every page that sets no font was
+/// laid out in a sans face: a 28-character line at 16px was 220.78px wide
+/// where Chrome 148 has 199.52.
+#[cfg(target_os = "macos")]
+pub const INITIAL_FONT_FAMILY: &str = "Times";
+/// The initial value of `font-family`, which CSS leaves to the UA.
+#[cfg(not(target_os = "macos"))]
+pub const INITIAL_FONT_FAMILY: &str = "sans-serif";
+
 impl ComputedStyle {
     /// The transform actually applied: `translate`, then `rotate`, then
     /// `scale`, then `transform` (css-transforms-2 §6, "the transformation
@@ -2677,7 +2688,7 @@ impl ComputedStyle {
             opacity: 1.0,
             color: Color::BLACK,
             background_color: Color::TRANSPARENT,
-            font_family: "sans-serif".to_string(),
+            font_family: INITIAL_FONT_FAMILY.to_string(),
             text_decoration_line: TextDecorationLine::NONE,
             text_decoration_color: None,
             text_decoration_thickness: Length::Auto,
