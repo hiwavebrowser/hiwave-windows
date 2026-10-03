@@ -56,6 +56,9 @@ impl DomBindings {
         self.runtime
             .borrow_mut()
             .evaluate_script(include_str!("web_xhr.js"))?;
+        self.runtime
+            .borrow_mut()
+            .evaluate_script(include_str!("web_fetch.js"))?;
         Ok(())
     }
 

@@ -174,6 +174,33 @@ impl Default for FetchLimits {
     }
 }
 
+/// Cancels one request: XHR `abort()`, a fetch `AbortSignal`. Clones share
+/// the signal; cancelling is idempotent and works from any thread.
+#[derive(Clone)]
+pub struct CancelToken {
+    tx: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+impl Default for CancelToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self { tx: Arc::new(tokio::sync::watch::channel(false).0) }
+    }
+
+    pub fn cancel(&self) {
+        self.tx.send_replace(true);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.tx.borrow()
+    }
+}
+
 /// The policy for one page. Share it behind an `Arc`; it holds the page's
 /// request counters and preflight cache.
 pub struct FetchPolicy {
@@ -415,10 +442,38 @@ impl FetchPolicy {
         loader: &ResourceLoader,
         req: ScriptRequest,
     ) -> Result<ScriptResponse, Denial> {
-        let mut cancelled = self.cancel.subscribe();
+        self.execute_raced(loader, req, None).await
+    }
+
+    /// [`execute`](Self::execute) that `token` can also end. An aborted
+    /// request closes only its own connection and frees its queue slots; the
+    /// rest of the page's requests are untouched.
+    pub async fn execute_cancellable(
+        &self,
+        loader: &ResourceLoader,
+        req: ScriptRequest,
+        token: &CancelToken,
+    ) -> Result<ScriptResponse, Denial> {
+        self.execute_raced(loader, req, Some(token)).await
+    }
+
+    async fn execute_raced(
+        &self,
+        loader: &ResourceLoader,
+        req: ScriptRequest,
+        token: Option<&CancelToken>,
+    ) -> Result<ScriptResponse, Denial> {
+        let mut page = self.cancel.subscribe();
+        let mut own = token.map(|t| t.tx.subscribe());
         tokio::select! {
             biased;
-            _ = async { let _ = cancelled.wait_for(|c| *c).await; } => Err(Denial::Cancelled),
+            _ = async { let _ = page.wait_for(|c| *c).await; } => Err(Denial::Cancelled),
+            _ = async {
+                match own.as_mut() {
+                    Some(rx) => { let _ = rx.wait_for(|c| *c).await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => Err(Denial::Cancelled),
             r = self.execute_governed(loader, req) => r,
         }
     }
@@ -562,7 +617,9 @@ impl FetchPolicy {
         let with_credentials = req.credentials == CredentialsMode::Include;
         let mut headers = HeaderMap::new();
         for (n, v) in req.headers.iter() {
-            if !is_forbidden_request_header(n.as_str()) {
+            let no_cors_blocked = req.mode == RequestMode::NoCors
+                && !is_safelisted_request_header(n.as_str(), v.to_str().unwrap_or(""));
+            if !is_forbidden_request_header(n.as_str()) && !no_cors_blocked {
                 headers.append(n.clone(), v.clone());
             }
         }
@@ -1343,6 +1400,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_no_cors_request_never_carries_a_non_safelisted_header() {
+        // The Request guard in script is the first line; this is the boundary
+        // that must hold even if script lets one through (no preflight runs
+        // for no-cors, so nothing else would stop Authorization at the wire).
+        let s = serve(|_| resp(200, &[("Content-Type", "text/plain")], b"ok")).await;
+        let p = allow_ports(page("http://page.test/"), &[s.port]);
+        let l = loader();
+        let mk = |ct: &str| {
+            let mut req = ScriptRequest::get(s.url("/"));
+            req.mode = RequestMode::NoCors;
+            req.method = Method::POST;
+            req.body = Some(Bytes::from_static(b"a=1"));
+            for (k, v) in [
+                ("authorization", "Bearer s3cret"),
+                ("x-custom", "1"),
+                ("range", "bytes=0-9"),
+                ("accept", "text/html"),
+                ("accept-language", "en"),
+                ("content-type", ct),
+            ] {
+                req.headers.insert(k, HeaderValue::from_str(v).unwrap());
+            }
+            req
+        };
+        p.execute(&l, mk("application/json")).await.expect("opaque");
+        p.execute(&l, mk("text/plain;charset=UTF-8")).await.expect("opaque");
+        let seen = s.seen();
+        assert_eq!(seen.len(), 2);
+        for r in &seen {
+            for h in ["authorization", "x-custom", "range"] {
+                assert!(!r.headers.contains_key(h), "{h} reached the wire on a no-cors request");
+            }
+            assert_eq!(r.headers.get("accept").map(String::as_str), Some("text/html"));
+        }
+        assert!(
+            !seen[0].headers.contains_key("content-type"),
+            "a non-safelisted Content-Type reached the wire on a no-cors request"
+        );
+        assert_eq!(
+            seen[1].headers.get("content-type").map(String::as_str),
+            Some("text/plain;charset=UTF-8")
+        );
+    }
+
+    #[tokio::test]
     async fn script_never_sees_set_cookie() {
         let s = serve(|_| resp(200, &[("Set-Cookie", "a=b"), ("Content-Type", "text/plain")], b"hi")).await;
         let p = FetchPolicy::for_page(s.url("/page"), None);
@@ -1496,6 +1598,108 @@ mod tests {
         assert_eq!(task.await.unwrap().unwrap_err(), Denial::Cancelled);
         wait_until(|| s.closed() == 1).await;
         assert_eq!(s.closed(), 1);
+    }
+
+    #[tokio::test]
+    async fn aborting_one_request_closes_only_its_socket_and_frees_its_slot() {
+        // Request 0 is slow and holds the only origin slot; request 1 queues
+        // behind it. Aborting 0 must close 0's socket and let 1 through.
+        let s = serve_with(Duration::from_millis(400), |r| {
+            resp(200, &[("Access-Control-Allow-Origin", "*")], r.path.as_bytes())
+        })
+        .await;
+        let limits = FetchLimits { max_in_flight_per_origin: 1, ..FetchLimits::default() };
+        let p = Arc::new(allow_ports(
+            FetchPolicy::with_limits(Url::parse("http://page.test/").unwrap(), None, limits),
+            &[s.port],
+        ));
+        let l = Arc::new(loader());
+        let (t0, t1) = (CancelToken::new(), CancelToken::new());
+        let first = {
+            let (p, l, t, url) = (p.clone(), l.clone(), t0.clone(), s.url("/0"));
+            tokio::spawn(async move { p.execute_cancellable(&l, ScriptRequest::get(url), &t).await })
+        };
+        wait_until(|| s.seen().len() == 1).await;
+        let second = {
+            let (p, l, t, url) = (p.clone(), l.clone(), t1.clone(), s.url("/1"));
+            tokio::spawn(async move { p.execute_cancellable(&l, ScriptRequest::get(url), &t).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let aborter = t0.clone();
+        std::thread::spawn(move || aborter.cancel()).join().unwrap();
+        assert_eq!(first.await.unwrap().unwrap_err(), Denial::Cancelled);
+        let r = second.await.unwrap().expect("the queued request got the freed slot");
+        assert_eq!(&r.body[..], b"/1");
+        assert_eq!(s.closed(), 1, "the aborted request's socket stayed open");
+        assert!(t0.is_cancelled() && !t1.is_cancelled());
+        assert!(!p.is_cancelled(), "aborting a request must not cancel the page");
+    }
+
+    #[tokio::test]
+    async fn a_queued_request_aborted_before_it_connects_never_connects() {
+        let s = serve_with(Duration::from_secs(30), |_| resp(200, &[("Access-Control-Allow-Origin", "*")], b"late")).await;
+        let limits = FetchLimits { max_in_flight_per_origin: 1, ..FetchLimits::default() };
+        let p = Arc::new(allow_ports(
+            FetchPolicy::with_limits(Url::parse("http://page.test/").unwrap(), None, limits),
+            &[s.port],
+        ));
+        let l = Arc::new(loader());
+        let holder = {
+            let (p, l, url) = (p.clone(), l.clone(), s.url("/hold"));
+            tokio::spawn(async move { p.execute(&l, ScriptRequest::get(url)).await })
+        };
+        wait_until(|| s.seen().len() == 1).await;
+        let token = CancelToken::new();
+        let queued = {
+            let (p, l, t, url) = (p.clone(), l.clone(), token.clone(), s.url("/queued"));
+            tokio::spawn(async move { p.execute_cancellable(&l, ScriptRequest::get(url), &t).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        token.cancel();
+        assert_eq!(queued.await.unwrap().unwrap_err(), Denial::Cancelled);
+        assert_eq!(s.hits(), 1, "the aborted queued request connected");
+        p.cancel();
+        assert_eq!(holder.await.unwrap().unwrap_err(), Denial::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn an_already_aborted_token_is_refused_at_once_without_spending_the_budget() {
+        let s = serve(|_| resp(200, &[("Access-Control-Allow-Origin", "*")], b"ok")).await;
+        let limits = FetchLimits { max_total_requests: 1, ..FetchLimits::default() };
+        let p = allow_ports(
+            FetchPolicy::with_limits(Url::parse("http://page.test/").unwrap(), None, limits),
+            &[s.port],
+        );
+        let l = loader();
+        let token = CancelToken::new();
+        token.cancel();
+        token.cancel();
+        for _ in 0..3 {
+            let r = p.execute_cancellable(&l, ScriptRequest::get(s.url("/x")), &token).await;
+            assert_eq!(r.unwrap_err(), Denial::Cancelled);
+        }
+        assert_eq!(s.hits(), 0);
+        let live = CancelToken::new();
+        let ok = p.execute_cancellable(&l, ScriptRequest::get(s.url("/y")), &live).await;
+        assert!(ok.is_ok(), "an aborted token spent the page's request budget: {ok:?}");
+    }
+
+    #[tokio::test]
+    async fn a_page_cancel_also_ends_requests_that_carry_a_token() {
+        let s = serve_with(Duration::from_secs(30), |_| resp(200, &[("Access-Control-Allow-Origin", "*")], b"late")).await;
+        let p = Arc::new(allow_ports(page("http://page.test/"), &[s.port]));
+        let l = Arc::new(loader());
+        let token = CancelToken::new();
+        let task = {
+            let (p, l, t, url) = (p.clone(), l.clone(), token.clone(), s.url("/"));
+            tokio::spawn(async move { p.execute_cancellable(&l, ScriptRequest::get(url), &t).await })
+        };
+        wait_until(|| s.seen().len() == 1).await;
+        p.cancel();
+        assert_eq!(task.await.unwrap().unwrap_err(), Denial::Cancelled);
+        wait_until(|| s.closed() == 1).await;
+        assert_eq!(s.closed(), 1);
+        assert!(!token.is_cancelled());
     }
 
     // ---- §7.8: the shield ---------------------------------------------------

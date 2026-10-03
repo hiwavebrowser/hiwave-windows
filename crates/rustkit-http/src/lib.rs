@@ -258,6 +258,11 @@ impl Client {
         // caller can refuse mismatches loudly instead of desyncing.
         let roots = platform_roots()?;
 
+        // When multiple crypto providers (e.g. aws-lc-rs from rustkit-http and ring from
+        // reqwest in the workspace) are active, rustls requires an explicit default provider
+        // installed to avoid panicking on ClientConfig::builder().
+        let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let mut tls_config = tokio_rustls::rustls::ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();

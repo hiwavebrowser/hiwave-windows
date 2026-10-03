@@ -276,6 +276,14 @@ pub enum EngineEvent {
     FaviconDetected { view_id: EngineViewId, url: Url },
 }
 
+/// The `Accept` of an image request: Chrome's image header without
+/// `image/avif`, which rustkit-codecs cannot decode. Without a header of
+/// its own an image request carried the transport's navigation default,
+/// which lists AVIF, and the image CDNs answered with it (44 `<img>`s on
+/// microsoft, shopify and walmart failed as "Unknown image format").
+/// Add `image/avif` back when a decoder lands.
+const IMAGE_ACCEPT: &str = "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+
 /// View state.
 #[allow(dead_code)]
 /// The document side of a subresource request (see
@@ -294,9 +302,15 @@ impl SubresourceReferrer {
 
     /// Same, with the fetch destination the shield classifies by.
     fn get_for(&self, url: Url, destination: RequestDestination) -> Request {
-        let request = Request::get(url)
+        let mut request = Request::get(url)
             .referrer_policy(self.policy)
             .destination(destination);
+        if destination == RequestDestination::Image {
+            request = request.header(
+                http::header::ACCEPT,
+                http::HeaderValue::from_static(IMAGE_ACCEPT),
+            );
+        }
         match &self.url {
             Some(referrer) => request.referrer(referrer.clone()),
             None => request,
@@ -349,6 +363,26 @@ fn svg_background_commands(
     }
     commands.push(rustkit_layout::DisplayCommand::PopClip);
     commands
+}
+
+/// `svg` as an image document (`<img>`, CSS background): with no `viewBox`,
+/// one is synthesized from an absolute `width`/`height` with
+/// `preserveAspectRatio="none"`, as Blink does for SVG images, so the
+/// document stretches to the box it is drawn in like a raster. Without
+/// it `render` drew it at its own size: a 100x100 data: square stayed
+/// 100x100 in a 48px `<img>`. An inline `<svg>` gets no such viewBox.
+fn image_svg(mut svg: rustkit_svg::SvgDocument) -> rustkit_svg::SvgDocument {
+    if svg.view_box.is_none() {
+        if let (Some(w), Some(h)) = (&svg.width, &svg.height) {
+            let absolute = |l: &rustkit_svg::SvgLength| !matches!(l, rustkit_svg::SvgLength::Percent(_));
+            let (width, height) = (w.to_px(0.0), h.to_px(0.0));
+            if absolute(w) && absolute(h) && width > 0.0 && height > 0.0 {
+                svg.view_box = Some(rustkit_svg::ViewBox { min_x: 0.0, min_y: 0.0, width, height });
+                svg.stretch = true;
+            }
+        }
+    }
+    svg
 }
 
 /// A raster image for `url`, fetched like every other subresource: through
@@ -458,6 +492,10 @@ struct ViewState {
     script_log: Vec<ScriptRecord>,
     /// The document response's `Referrer-Policy` header, if it had a valid one.
     header_referrer_policy: Option<ReferrerPolicy>,
+    /// Every image URL the last full `load_images` pass and the post-script
+    /// passes after it looked at, loaded or not. The post-script pass
+    /// fetches only what is not in here.
+    images_attempted: std::collections::HashSet<Url>,
 }
 
 /// Engine configuration.
@@ -1247,6 +1285,7 @@ impl Engine {
             headless_bounds: None,
             script_log: Vec::new(),
             header_referrer_policy: None,
+            images_attempted: std::collections::HashSet::new(),
         };
 
         self.views.insert(id, view_state);
@@ -1306,6 +1345,7 @@ impl Engine {
             headless_bounds: None,
             script_log: Vec::new(),
             header_referrer_policy: None,
+            images_attempted: std::collections::HashSet::new(),
         };
 
         let id = view_state.id;
@@ -1374,6 +1414,7 @@ impl Engine {
             headless_bounds: Some(bounds),
             script_log: Vec::new(),
             header_referrer_policy: None,
+            images_attempted: std::collections::HashSet::new(),
         };
 
         self.views.insert(id, view_state);
@@ -2067,6 +2108,7 @@ impl Engine {
         let loader = self.loader.clone();
         let Some(view) = self.views.get_mut(&id) else { return };
         let document_url = view.url.clone();
+        let view_document = view.document.clone();
         let Some(bindings) = view.bindings.as_ref() else { return };
         let log = &mut view.script_log;
         bindings.set_loop_iteration_limit(loop_limit);
@@ -2126,8 +2168,36 @@ impl Engine {
                 .unwrap_or(message)
         };
 
+        // Import maps (inline only, as the spec has it) are read before any
+        // module is resolved. A map that is not usable is reported and
+        // changes nothing.
+        if let Some(document) = view_document {
+            let mut maps: Vec<String> = Vec::new();
+            document.traverse(|node| {
+                if node.tag_name().map(|t| t.eq_ignore_ascii_case("script")) == Some(true)
+                    && node.get_attribute("src").is_none()
+                    && node
+                        .get_attribute("type")
+                        .map(|t| t.trim().eq_ignore_ascii_case("importmap"))
+                        .unwrap_or(false)
+                {
+                    maps.push(node.text_content());
+                }
+            });
+            for text in maps {
+                if let Err(message) = bindings.add_import_map(&text) {
+                    log.push(ScriptRecord {
+                        source: "importmap".into(),
+                        bytes: text.len(),
+                        elapsed_ms: 0,
+                        outcome: ScriptOutcome::Threw(format!("import map: {message}")),
+                    });
+                }
+            }
+        }
         let _ = bindings.set_ready_state("loading");
-        let mut modules_fetched = 0usize;
+        let scripts_started = std::time::Instant::now();
+        let modules_fetched = Cell::new(0usize);
         for (label, _, source, node_id, is_module) in runnable {
             let text = match source {
                 Ok(text) => text,
@@ -2192,15 +2262,17 @@ impl Engine {
                     Ok(Ok(handle)) => {
                         if let (Some(policy), Some(document)) = (&policy, &document_url) {
                             let remaining = budget.saturating_sub(started.elapsed());
+                            let mut count = modules_fetched.get();
                             let found = script_net::pump_modules(
                                 bindings,
                                 policy,
                                 &loader,
                                 tokio::time::Instant::now() + remaining,
                                 document,
-                                &mut modules_fetched,
+                                &mut count,
                             )
                             .await;
+                            modules_fetched.set(count);
                             if found.poisoned {
                                 poisoned.set(true);
                             }
@@ -2260,27 +2332,38 @@ impl Engine {
             return;
         }
 
+        info!(
+            elapsed_ms = scripts_started.elapsed().as_millis() as u64,
+            "Page scripts ran (fetching the module graphs included)"
+        );
         // What the scripts asked of the network, answered before the
         // lifecycle events fire (a handler can start more; see the rounds).
         // Delivery only: the timers run in their own step below.
         let pump = |timers: Option<(u64, u32)>| {
             let policy = policy.clone();
             let loader = loader.clone();
+            let document = document_url.clone();
+            let modules_fetched = &modules_fetched;
             async move {
                 match policy {
                     Some(policy) => {
                         let remaining = budget.saturating_sub(started.elapsed());
-                        Some(
-                            script_net::pump(
-                                bindings,
-                                &policy,
-                                &loader,
-                                tokio::time::Instant::now() + remaining,
-                                net_rounds,
-                                timers,
-                            )
-                            .await,
+                        let mut count = modules_fetched.get();
+                        // Network requests and dynamic imports alternate:
+                        // one can start the other.
+                        let found = script_net::pump_all(
+                            bindings,
+                            &policy,
+                            &loader,
+                            tokio::time::Instant::now() + remaining,
+                            net_rounds,
+                            timers,
+                            document.as_ref(),
+                            &mut count,
                         )
+                        .await;
+                        modules_fetched.set(count);
+                        Some(found)
                     }
                     None => None,
                 }
@@ -2307,6 +2390,7 @@ impl Engine {
             }
         }
 
+        let timers_ran = Cell::new(0u32);
         // Lifecycle events and timers. Listener/callback exceptions are
         // caught in JS and drained after each step.
         let steps: [(&str, &dyn Fn() -> Result<(), String>); 3] = [
@@ -2328,13 +2412,20 @@ impl Engine {
             ("timers", &|| {
                 bindings
                     .run_timers(horizon_ms, MAX_TIMER_CALLBACKS)
-                    .map(|_| ())
+                    .map(|n| timers_ran.set(n))
                     .map_err(strip)
             }),
         ];
         for (source, step) in steps {
             info!(%source, "Running page lifecycle step");
+            let step_started = std::time::Instant::now();
             let record = run(source.to_string(), 0, step);
+            info!(
+                %source,
+                elapsed_ms = step_started.elapsed().as_millis() as u64,
+                callbacks = timers_ran.get(),
+                "Page lifecycle step done"
+            );
             // Only an escaped error (the loop limit, a panic) is worth a
             // record of its own; a clean step is not a script.
             if record.outcome != ScriptOutcome::Ran {
@@ -2677,6 +2768,24 @@ impl Engine {
                 return Ok(());
             }
             self.flush_script_dom_writes(id)?;
+
+            // Images were discovered before the scripts ran. One more pass
+            // fetches what the scripts added, and lays out again only if
+            // one of those arrived.
+            match self.load_images_added_by_scripts(id).await {
+                Ok(0) => {}
+                Ok(count) => {
+                    info!(count, "Loaded images added by page scripts");
+                    if !self.nav_superseded(id, generation) {
+                        self.relayout(id)?;
+                    }
+                }
+                Err(e) => warn!(?e, "Failed to load images added by page scripts"),
+            }
+            if self.nav_superseded(id, generation) {
+                debug!(?id, %url, "Navigation abandoned after script-added images");
+                return Ok(());
+            }
         }
 
         // Finish navigation
@@ -3035,6 +3144,7 @@ impl Engine {
                         if let Some(abs) = self.resolve_resource_url_in(id, url) {
                             *url = abs.to_string();
                         }
+                        self.cache_data_svg(url);
                     }
                     _ => {}
                 }
@@ -3751,8 +3861,10 @@ impl Engine {
         layout_box: &mut LayoutBox,
         images: &HashMap<usize, (Option<f32>, Option<f32>)>,
     ) -> usize {
-        // An inline `<svg>` box has no identity and nothing to refresh: its
-        // size comes from the DOM subtree, which has not changed.
+        // An inline `<svg>` box carries an identity but no recorded size
+        // hints — only `<img>` boxes call `note_snapshot_image` — so the
+        // lookup misses and there is nothing to refresh: an svg's size comes
+        // from the DOM subtree, which has not changed.
         let hints = layout_box
             .identity
             .as_ref()
@@ -4316,10 +4428,24 @@ impl Engine {
                             style.clone(),
                         );
                         Self::transfer_positioning(&mut svg_box, &style);
+                        Self::attach_identity(
+                            &mut svg_box,
+                            selector_path,
+                            attributes,
+                            &tag_lower,
+                            element_ids,
+                        );
                         return svg_box;
                     }
                     let mut svg_box = LayoutBox::new(BoxType::Block, style.clone());
                     Self::transfer_positioning(&mut svg_box, &style);
+                    Self::attach_identity(
+                        &mut svg_box,
+                        selector_path,
+                        attributes,
+                        &tag_lower,
+                        element_ids,
+                    );
                     return svg_box;
                 }
 
@@ -8039,6 +8165,119 @@ impl Engine {
         }
     }
 
+    /// Index every inline `<svg>` subtree's shape geometry by the same
+    /// content-hash key the box build and the paint splice use.
+    ///
+    /// Keyed by content hash, so two identical svgs on one page share an
+    /// entry — which is harmless and not an ambiguity: identical subtrees
+    /// yield identical child segments and identical user-space geometry, and
+    /// each svg box resolves its OWN selector prefix from its own identity.
+    fn inline_svg_shape_index(&self, document: &Document) -> HashMap<String, InlineSvgShapes> {
+        let mut index = HashMap::new();
+        for svg_el in document.get_elements_by_tag_name("svg") {
+            let key = Self::inline_svg_key(&Self::serialize_svg_subtree(&svg_el));
+            if index.contains_key(&key) {
+                continue;
+            }
+            let Some(svg) = self.svg_cache.get(&key) else {
+                // No parsed document means the box build took its cache-MISS
+                // exit and painted nothing, so there is no geometry to report.
+                continue;
+            };
+            let mut shapes = Vec::new();
+            Self::collect_svg_shapes(&svg_el, "", &mut shapes);
+            index.insert(
+                key,
+                InlineSvgShapes {
+                    view_box: svg.view_box,
+                    stretch: svg.stretch,
+                    shapes,
+                },
+            );
+        }
+        index
+    }
+
+    /// Walk an inline `<svg>` subtree, collecting each shape's user-space
+    /// bbox under the selector Chrome reports for it.
+    ///
+    /// `parent_path` is relative to the `<svg>` itself and starts empty; the
+    /// svg's own prefix is joined on at export time from its box identity, so
+    /// one walk serves every box sharing this subtree's content hash.
+    ///
+    /// Selector segments come from `child_selector_segments` with
+    /// `parent_is_foreign = true` — the SAME machinery, and the same
+    /// `:nth-of-type` and foreign-content class rules, that the HTML side is
+    /// pinned to by `tools/parity_oracle/verify_selector_key.mjs`. A parallel
+    /// implementation here is exactly how a confident wrong join gets built.
+    ///
+    /// A `transform` attribute REFUSES that element and its whole subtree:
+    /// this walk composes no transforms, and a shape reported at its
+    /// untransformed position would be a wrong box rather than a missing one.
+    fn collect_svg_shapes(node: &Rc<Node>, parent_path: &str, out: &mut Vec<SvgShapeBox>) {
+        let children = node.children();
+        let segments = Self::child_selector_segments(&children, true);
+        for (child, segment) in children.iter().zip(segments) {
+            let NodeType::Element {
+                tag_name,
+                attributes,
+                ..
+            } = &child.node_type
+            else {
+                continue;
+            };
+            if attributes.contains_key("transform") {
+                continue;
+            }
+            let Some(segment) = segment else { continue };
+            let path = match parent_path.is_empty() {
+                true => segment,
+                false => format!("{parent_path} > {segment}"),
+            };
+            let tag_lower = lower_tag(tag_name);
+            if let Some((x, y, width, height)) = svg_shape_user_bbox(&tag_lower, attributes) {
+                out.push(SvgShapeBox {
+                    tag: tag_lower.to_string(),
+                    selector: path.clone(),
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+            }
+            // `<g>` and friends carry no geometry of their own but hold
+            // shapes that do, so the walk continues through them.
+            Self::collect_svg_shapes(child, &path, out);
+        }
+    }
+
+    /// Parse a `data:image/svg+xml` image into svg_cache under its own url,
+    /// the key the display-list splice looks up, so it paints as vector
+    /// commands like a fetched SVG. Left to the raster lane, ImageManager's
+    /// stand-in rasterizer drew only solid `<rect>`s (bing's gradient logo
+    /// painted nothing). A data: url needs no request, so this runs at the
+    /// splice: the first layout paints it, and so does any later one.
+    fn cache_data_svg(&mut self, url: &str) {
+        if !url.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("data:")) || self.svg_cache.contains_key(url) {
+            return;
+        }
+        let Ok((media_type, body)) = rustkit_net::decode_data_url(url) else {
+            return;
+        };
+        let essence = media_type.split(';').next().unwrap_or_default().trim();
+        if !essence.eq_ignore_ascii_case("image/svg+xml") {
+            return;
+        }
+        match rustkit_svg::SvgDocument::parse(&String::from_utf8_lossy(&body)) {
+            Ok(doc) => {
+                self.svg_cache.insert(url.to_string(), image_svg(doc));
+            }
+            Err(e) => {
+                debug!(?e, "data: SVG image failed to parse; left to the raster lane");
+            }
+        }
+    }
+
     fn discover_images(&self, document: &Document, base_url: Option<&Url>) -> Vec<(String, Url)> {
         let mut images = Vec::new();
 
@@ -8178,6 +8417,20 @@ impl Engine {
 
     /// Load images asynchronously and store in cache.
     pub async fn load_images(&mut self, id: EngineViewId) -> Result<usize, EngineError> {
+        self.load_images_pass(id, false).await
+    }
+
+    /// The image pass after page scripts: fetch what the scripts added (an
+    /// appended `<img>`, a background a class change turned on) and nothing
+    /// else. A full `load_images` here would count every cached image as
+    /// loaded, so every scripted page would lay out once more, and would
+    /// give each image that already failed or timed out a second budget.
+    /// Returns how many new images arrived.
+    async fn load_images_added_by_scripts(&mut self, id: EngineViewId) -> Result<usize, EngineError> {
+        self.load_images_pass(id, true).await
+    }
+
+    async fn load_images_pass(&mut self, id: EngineViewId, only_new: bool) -> Result<usize, EngineError> {
         let view = self.views.get(&id).ok_or(EngineError::ViewNotFound(id))?;
 
         let Some(document) = &view.document else {
@@ -8187,6 +8440,18 @@ impl Engine {
         let base_url = view.url.as_ref();
         let mut images = self.discover_images(document.as_ref(), base_url);
         images.extend(Self::discover_background_images(view.display_list.as_ref()));
+        if only_new {
+            images.retain(|(_, url)| !view.images_attempted.contains(url));
+        }
+        let discovered: Vec<Url> = images.iter().map(|(_, url)| url.clone()).collect();
+        if let Some(view) = self.views.get_mut(&id) {
+            // A full pass starts the record over: it is the first thing a
+            // navigation's subresource load does with the new document.
+            if !only_new {
+                view.images_attempted.clear();
+            }
+            view.images_attempted.extend(discovered);
+        }
 
         let image_manager = self.image_manager.clone();
 
@@ -8205,7 +8470,9 @@ impl Engine {
         for (_src, url) in images {
             if image_manager.is_cached(&url) || self.svg_cache.contains_key(url.as_str()) {
                 debug!(%url, "Image already cached");
-                loaded += 1;
+                // The layout that found a script-added image already drew
+                // it from the cache; it is not a reason to lay out again.
+                loaded += usize::from(!only_new);
                 continue;
             }
             // One request per URL, however many elements show it.
@@ -8246,7 +8513,7 @@ impl Engine {
                         match fetched {
                             Ok(response) if response.ok() => match response.text().await {
                                 Ok(xml) => match rustkit_svg::SvgDocument::parse(&xml) {
-                                    Ok(doc) => Some((url.to_string(), doc)),
+                                    Ok(doc) => Some((url.to_string(), image_svg(doc))),
                                     Err(e) => {
                                         warn!(?e, %url, "Failed to parse SVG image");
                                         None
@@ -8307,7 +8574,7 @@ impl Engine {
                         match rustkit_svg::SvgDocument::parse(&xml) {
                             Ok(doc) => {
                                 info!(%url, "Image served as image/svg+xml; using the SVG lane");
-                                (true, Some((url.to_string(), doc)))
+                                (true, Some((url.to_string(), image_svg(doc))))
                             }
                             Err(e) => {
                                 warn!(?e, %url, "Failed to parse SVG image");
@@ -10492,7 +10759,15 @@ impl Engine {
 
         // Convert layout tree to JSON-serializable structure
 
-        let layout_json = layout_box_to_json(layout);
+        // SVG shape geometry is indexed from the DOM, not the layout tree:
+        // shapes generate no CSS box, so the tree has nothing to walk. Empty
+        // when the view has no document, which keeps the export identical to
+        // what it was rather than failing.
+        let svg_shapes = match view.document.as_ref() {
+            Some(document) => self.inline_svg_shape_index(document),
+            None => HashMap::new(),
+        };
+        let layout_json = layout_box_to_json_under(layout, None, &svg_shapes);
 
         // Get viewport size from compositor
         let (width, height) = self
@@ -14218,8 +14493,284 @@ fn layout_export_wrapper(
 /// tests that go through `build_layout_from_document` need a GPU compositor and
 /// SKIP when none is present, which would make an identity test vacuous on any
 /// machine without a GPU adapter.
+/// One SVG shape element's geometry bbox, in the inline `<svg>` subtree's own
+/// USER units, with the join key Chrome reports for it.
+///
+/// SVG shape elements generate NO CSS box, so they are absent from the layout
+/// tree by design — but Chrome's baseline is `getBoundingClientRect()` over
+/// `querySelectorAll('*')`, which reports a rect for every rendered shape. So
+/// `shelf`'s `svg > circle` and `svg > path` reached Gate A as `missing_box`
+/// join failures and could never be compared, which put a ceiling on the
+/// metric that nobody chose: the case cannot reach geometry-green however
+/// correct the engine is.
+///
+/// These are emitted as children of the svg's box under `"type": "svg_shape"`
+/// — named so no reader mistakes them for CSS boxes — carrying the geometry
+/// RustKit will actually paint, through the same viewBox transform
+/// `SvgDocument::render_with_color` uses.
+///
+/// MEASURED against Chrome (run 37096150470, `macos-14`, and
+/// `baselines/chrome-148/builtins/shelf/layout-rects.json`): the rect is the
+/// FILL geometry bbox with STROKE EXCLUDED. `circle r=8` under
+/// `stroke-width="2"` reports 9.333332px at scale 14/24, which is 16.0 user
+/// units — the fill box (18 would be the stroke box).
+#[derive(Debug, Clone)]
+struct SvgShapeBox {
+    tag: String,
+    selector: String,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+/// The shapes of one inline `<svg>` subtree, keyed by its `inline_svg_key`.
+struct InlineSvgShapes {
+    view_box: Option<rustkit_svg::ViewBox>,
+    stretch: bool,
+    shapes: Vec<SvgShapeBox>,
+}
+
+/// Parse a `points` list (`"1,2 3,4"` / `"1 2 3 4"`) into coordinate pairs.
+fn svg_points(raw: &str) -> Vec<(f32, f32)> {
+    let nums: Vec<f32> = raw
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| t.parse::<f32>().ok())
+        .collect();
+    nums.chunks_exact(2).map(|p| (p[0], p[1])).collect()
+}
+
+fn bounds_of_points(points: &[(f32, f32)]) -> Option<(f32, f32, f32, f32)> {
+    let (first, rest) = points.split_first()?;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (first.0, first.1, first.0, first.1);
+    for &(x, y) in rest {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    Some((min_x, min_y, max_x - min_x, max_y - min_y))
+}
+
+/// The bbox of a path whose every command is a STRAIGHT line, in user units.
+///
+/// `None` for any path carrying a curve or an arc. A Bezier's bbox is NOT the
+/// bbox of its control points — that is a superset, and Chrome reports the
+/// tight bbox — so bounding one from its control points would report a box
+/// larger than the shape and call the difference a geometry defect. Refusing
+/// leaves the element UNMEASURED, which is the honest reading; the tight
+/// extrema of a cubic are a separate unit.
+fn straight_path_bbox(commands: &[rustkit_svg::PathCommand]) -> Option<(f32, f32, f32, f32)> {
+    use rustkit_svg::PathCommand as C;
+    let mut points: Vec<(f32, f32)> = Vec::new();
+    let (mut cx, mut cy) = (0.0f32, 0.0f32);
+    let (mut sx, mut sy) = (0.0f32, 0.0f32);
+    for cmd in commands {
+        match *cmd {
+            C::MoveTo(x, y) => {
+                (cx, cy) = (x, y);
+                (sx, sy) = (x, y);
+                points.push((cx, cy));
+            }
+            C::MoveToRel(dx, dy) => {
+                (cx, cy) = (cx + dx, cy + dy);
+                (sx, sy) = (cx, cy);
+                points.push((cx, cy));
+            }
+            C::LineTo(x, y) => {
+                (cx, cy) = (x, y);
+                points.push((cx, cy));
+            }
+            C::LineToRel(dx, dy) => {
+                (cx, cy) = (cx + dx, cy + dy);
+                points.push((cx, cy));
+            }
+            C::HorizontalTo(x) => {
+                cx = x;
+                points.push((cx, cy));
+            }
+            C::HorizontalToRel(dx) => {
+                cx += dx;
+                points.push((cx, cy));
+            }
+            C::VerticalTo(y) => {
+                cy = y;
+                points.push((cx, cy));
+            }
+            C::VerticalToRel(dy) => {
+                cy += dy;
+                points.push((cx, cy));
+            }
+            C::Close => {
+                (cx, cy) = (sx, sy);
+            }
+            // Any curve or arc: refuse the whole path.
+            _ => return None,
+        }
+    }
+    bounds_of_points(&points)
+}
+
+/// The user-space geometry bbox of one SVG shape element, or `None` where the
+/// shape is one this exporter does not model EXACTLY.
+///
+/// Refusing is the correct failure: the element is then absent from
+/// `layout.json`, Gate A files it as `missing_box` and scores it UNMEASURED,
+/// and "unmeasured is never green". A box emitted from arithmetic that is
+/// merely close would be compared and believed.
+fn svg_shape_user_bbox(
+    tag: &str,
+    attributes: &HashMap<String, String>,
+) -> Option<(f32, f32, f32, f32)> {
+    let num = |name: &str, default: f32| -> f32 {
+        attributes
+            .get(name)
+            .and_then(|v| v.trim().parse::<f32>().ok())
+            .unwrap_or(default)
+    };
+    match tag {
+        "circle" => {
+            let r = num("r", 0.0);
+            // r <= 0 disables rendering (SVG 1.1 §9.3); Chrome's capture
+            // skips the zero-size rect, so emitting one would be a phantom.
+            (r > 0.0).then(|| {
+                let (cx, cy) = (num("cx", 0.0), num("cy", 0.0));
+                (cx - r, cy - r, 2.0 * r, 2.0 * r)
+            })
+        }
+        "ellipse" => {
+            let (rx, ry) = (num("rx", 0.0), num("ry", 0.0));
+            (rx > 0.0 && ry > 0.0).then(|| {
+                let (cx, cy) = (num("cx", 0.0), num("cy", 0.0));
+                (cx - rx, cy - ry, 2.0 * rx, 2.0 * ry)
+            })
+        }
+        "rect" => {
+            let (w, h) = (num("width", 0.0), num("height", 0.0));
+            (w > 0.0 && h > 0.0).then(|| (num("x", 0.0), num("y", 0.0), w, h))
+        }
+        "line" => {
+            let (x1, y1) = (num("x1", 0.0), num("y1", 0.0));
+            let (x2, y2) = (num("x2", 0.0), num("y2", 0.0));
+            bounds_of_points(&[(x1, y1), (x2, y2)])
+        }
+        "polyline" | "polygon" => {
+            let points = svg_points(attributes.get("points")?);
+            bounds_of_points(&points)
+        }
+        "path" => {
+            let commands = rustkit_svg::SvgPath::parse(attributes.get("d")?);
+            straight_path_bbox(&commands)
+        }
+        // Everything else is UNMODELLED and stays unmeasured, deliberately:
+        // `text`/`tspan` need shaped glyph extents, `use` is unresolved in
+        // rustkit-svg's renderer (`SvgElement::Use(_) => {}`), and
+        // `image`/`foreignObject` are their own replaced lanes. Non-rendered
+        // elements (`defs`, `title`, gradients, `clipPath`) never reach the
+        // baseline at all: the capture skips any rect that is 0x0.
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+fn find_svg_border_box(b: &LayoutBox) -> Option<rustkit_layout::Rect> {
+    if b.identity().map(|i| i.tag == "svg").unwrap_or(false) {
+        return Some(b.dimensions.border_box());
+    }
+    b.children.iter().find_map(find_svg_border_box)
+}
+
+/// The no-inline-svg convenience: every production export goes through
+/// `layout_box_to_json_under` with a real shape index.
+#[cfg(test)]
 fn layout_box_to_json(layout_box: &LayoutBox) -> serde_json::Value {
-    layout_box_to_json_under(layout_box, None)
+    layout_box_to_json_under(layout_box, None, &HashMap::new())
+}
+
+/// Map an inline `<svg>`'s shape geometry from user units into page space.
+///
+/// The transform mirrors `SvgDocument::render_with_color` exactly — the same
+/// uniform-`min` scale, the same `stretch` escape, the same `min-x`/`min-y`
+/// origin shift — because the point is to report the geometry the engine will
+/// PAINT, not a second opinion about it. The viewport is the CONTENT box,
+/// which is what `render_image` passes as its container.
+///
+/// `None` wherever the mapping is not the one the painter uses: no viewBox
+/// (an svg sized without one puts its shapes in raw user units, which is a
+/// different lane and unverified here), a degenerate viewBox, or a non-default
+/// `object-fit` (which would make the paint dest differ from the content box). Chrome's
+/// default `preserveAspectRatio="xMidYMid"` also CENTERS letterboxed content
+/// and `render_with_color` does not, so a non-square fit is refused rather
+/// than reported from a transform known to differ.
+fn svg_shape_children_json(
+    layout_box: &LayoutBox,
+    shapes: &HashMap<String, InlineSvgShapes>,
+) -> Option<Vec<serde_json::Value>> {
+    let identity = layout_box.identity()?;
+    if identity.tag != "svg" {
+        return None;
+    }
+    let BoxType::Image { url, .. } = &layout_box.box_type else {
+        return None;
+    };
+    let entry = shapes.get(url)?;
+    let view_box = entry.view_box?;
+    if !(view_box.width > 0.0 && view_box.height > 0.0) {
+        return None;
+    }
+    if !matches!(layout_box.style.object_fit.as_str(), "fill" | "") {
+        return None;
+    }
+
+    let content = &layout_box.dimensions.content;
+    let (scale_x, scale_y) = {
+        let (sx, sy) = (
+            content.width / view_box.width,
+            content.height / view_box.height,
+        );
+        match entry.stretch {
+            true => (sx, sy),
+            false => {
+                let s = sx.min(sy);
+                // A letterboxed fit is where the painter and Chrome's
+                // xMidYMid centering part company; refuse rather than report.
+                if (sx - sy).abs() > 1e-4 {
+                    return None;
+                }
+                (s, s)
+            }
+        }
+    };
+    let origin_x = content.x - view_box.min_x * scale_x;
+    let origin_y = content.y - view_box.min_y * scale_y;
+
+    let prefix = &identity.selector;
+    Some(
+        entry
+            .shapes
+            .iter()
+            .map(|shape| {
+                let rect = serde_json::json!({
+                    "x": origin_x + shape.x * scale_x,
+                    "y": origin_y + shape.y * scale_y,
+                    "width": shape.width * scale_x,
+                    "height": shape.height * scale_y,
+                });
+                serde_json::json!({
+                    // NOT a CSS box, and named so no reader treats it as one.
+                    "type": "svg_shape",
+                    "tag": shape.tag,
+                    "selector": format!("{prefix} > {}", shape.selector),
+                    // An SVG shape has no box model, so there is one rect and
+                    // `border_box` carries it: Gate A reads `border_box` and
+                    // falls back to `rect`, and the two must not disagree.
+                    "rect": rect,
+                    "border_box": rect,
+                })
+            })
+            .collect(),
+    )
 }
 
 /// `ancestor` is the composed transform of everything above this box, in page
@@ -14228,6 +14779,7 @@ fn layout_box_to_json(layout_box: &LayoutBox) -> serde_json::Value {
 fn layout_box_to_json_under(
     layout_box: &LayoutBox,
     ancestor: Option<[f32; 6]>,
+    svg_shapes: &HashMap<String, InlineSvgShapes>,
 ) -> serde_json::Value {
     let effective = match (ancestor, own_transform_affine(layout_box)) {
         (None, None) => None,
@@ -14240,11 +14792,24 @@ fn layout_box_to_json_under(
     // on anonymous and text boxes — the geometry oracle must SKIP
     // those rather than pair them positionally with Chrome elements.
     // Emitting a placeholder here would manufacture geometry failures.
-    let mut value = layout_box_body_to_json(layout_box, effective);
+    let mut value = layout_box_body_to_json(layout_box, effective, svg_shapes);
     if let (Some(identity), Some(object)) = (layout_box.identity(), value.as_object_mut()) {
         object.insert("element_id".into(), identity.element_id.into());
         object.insert("tag".into(), identity.tag.clone().into());
         object.insert("selector".into(), identity.selector.clone().into());
+    }
+
+    // An inline `<svg>`'s shape elements have no CSS box, so they are not in
+    // the layout tree; they are attached here, where identity already is,
+    // because that is what they are — a join key plus the geometry the paint
+    // lane will use. See `SvgShapeBox`.
+    if let (Some(children), Some(object)) = (
+        svg_shape_children_json(layout_box, svg_shapes),
+        value.as_object_mut(),
+    ) {
+        if !children.is_empty() {
+            object.insert("children".into(), children.into());
+        }
     }
     value
 }
@@ -14261,6 +14826,7 @@ fn rect_to_json(rect: &rustkit_layout::Rect) -> serde_json::Value {
 fn layout_box_body_to_json(
     layout_box: &LayoutBox,
     effective_transform: Option<[f32; 6]>,
+    svg_shapes: &HashMap<String, InlineSvgShapes>,
 ) -> serde_json::Value {
     let dims = &layout_box.dimensions;
     let content = &dims.content;
@@ -14324,7 +14890,7 @@ fn layout_box_body_to_json(
     let children: Vec<serde_json::Value> = layout_box
         .children
         .iter()
-        .map(|child| layout_box_to_json_under(child, effective_transform))
+        .map(|child| layout_box_to_json_under(child, effective_transform, svg_shapes))
         .collect();
 
     let mut json = serde_json::json!({
@@ -14693,6 +15259,519 @@ mod tests {
         assert_eq!(
             img.1, "body > div.container > img.test-img",
             "the image's join key must be the selector Chrome's capture reports"
+        );
+    }
+
+    /// An inline `<svg>` is built by its OWN early-return branch, below the
+    /// `<img>` one and above the general element path, and it carried no
+    /// identity on either of its two exits. So the one case in the gating
+    /// corpus with an inline svg — `shelf` — reached the geometry oracle with
+    /// its `<svg>` filed as a `missing_box` join failure and never compared,
+    /// while the box RustKit actually computed for it was
+    /// `{x: 29, y: 67.5, w: 14, h: 14}` — Chrome's rect to the bit
+    /// (`baselines/chrome-148/builtins/shelf/layout-rects.json`). The
+    /// geometry was already right; the instrument could not see it.
+    ///
+    /// The branch has TWO exits and they need separate cover: a cache HIT
+    /// builds `BoxType::Image` (sized from the parsed document), a MISS
+    /// builds `BoxType::Block`. `a_replaced_element_is_built_with_its_element_identity`
+    /// cannot stand in for either — it collects `Image | FormControl` boxes,
+    /// so the miss path's `Block` is invisible to it, and with an empty
+    /// `svg_cache` the miss path is the only one an engine built by
+    /// `layout_only_engine()` ever takes.
+    ///
+    /// The skip is LOUD for the same reason as the guard above: on macOS a
+    /// missing adapter FAILS, because a guard that skips itself prints the
+    /// same word as one that passed.
+    #[test]
+    fn an_inline_svg_is_built_with_its_element_identity() {
+        let mut engine = match layout_only_engine() {
+            Some(engine) => engine,
+            None => {
+                if cfg!(target_os = "macos") {
+                    panic!(
+                        "no GPU adapter on a macOS runner — this guard cannot \
+                         report a pass without building a layout tree"
+                    );
+                }
+                eprintln!(
+                    "SKIPPED an_inline_svg_is_built_with_its_element_identity: \
+                     no GPU adapter, so no layout tree was built and NOTHING was \
+                     asserted. Re-run with VK_ICD_FILENAMES set to a software \
+                     Vulkan ICD to make this guard actually execute."
+                );
+                return;
+            }
+        };
+
+        // `shelf`'s markup, which is what the corpus measures.
+        let html = r#"<!DOCTYPE html><html><body>
+            <div class="command-palette">
+              <div class="command-input-wrapper">
+                <svg class="command-input-icon" width="14" height="14" viewBox="0 0 24 24">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="M21 21l-4.35-4.35"/>
+                </svg>
+              </div>
+            </div>
+        </body></html>"#;
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+
+        const EXPECTED: &str = "body > div.command-palette > div.command-input-wrapper > svg";
+
+        fn svg_identities(b: &LayoutBox, out: &mut Vec<(String, String)>) {
+            if let Some(identity) = b.identity() {
+                if identity.tag == "svg" {
+                    out.push((identity.selector.clone(), format!("{:?}", b.box_type)));
+                }
+            }
+            for c in &b.children {
+                svg_identities(c, out);
+            }
+        }
+
+        // Exit 1: cache MISS — nothing has parsed the subtree, so the branch
+        // builds a plain Block. An empty svg_cache is the default state of
+        // `layout_only_engine()`.
+        assert!(
+            engine.svg_cache.is_empty(),
+            "this half of the guard is only meaningful on a cache miss"
+        );
+        let miss = engine.build_layout_from_document(&document, &[]);
+        let mut found = Vec::new();
+        svg_identities(&miss, &mut found);
+        assert_eq!(
+            found.len(),
+            1,
+            "a cache-miss inline <svg> must still produce exactly one \
+             identified box; the geometry oracle cannot join it otherwise \
+             (found {found:?})"
+        );
+        assert_eq!(
+            found[0].0, EXPECTED,
+            "the svg's join key must be the selector Chrome's capture reports"
+        );
+
+        // Exit 2: cache HIT — the pre-pass has parsed the subtree, so the
+        // branch builds an Image sized from the viewBox. This is the exit the
+        // real engine takes on every relayout, and the one the `shelf`
+        // capture went through.
+        engine.cache_inline_svgs(&document);
+        assert!(
+            !engine.svg_cache.is_empty(),
+            "the pre-pass did not parse the subtree, so the cache-hit exit \
+             was never entered and this half asserted nothing"
+        );
+        let hit = engine.build_layout_from_document(&document, &[]);
+        let mut found = Vec::new();
+        svg_identities(&hit, &mut found);
+        assert_eq!(
+            found.len(),
+            1,
+            "a cached inline <svg> must produce exactly one identified box \
+             (found {found:?})"
+        );
+        assert_eq!(
+            found[0].0, EXPECTED,
+            "the svg's join key must be the selector Chrome's capture reports"
+        );
+        assert!(
+            found[0].1.starts_with("Image"),
+            "the cache-hit exit must be the one under test — a Block here \
+             means the subtree did not parse and the miss path ran twice \
+             (box type {:?})",
+            found[0].1
+        );
+
+        // An identity with an EMPTY selector joins nothing and is reported as
+        // a phantom rather than excluded, so it is worse than none.
+        fn assert_no_empty_key(b: &LayoutBox) {
+            if let Some(identity) = b.identity() {
+                assert!(
+                    !identity.selector.is_empty(),
+                    "a box was stamped with an empty join key (tag {:?})",
+                    identity.tag
+                );
+            }
+            for c in &b.children {
+                assert_no_empty_key(c);
+            }
+        }
+        assert_no_empty_key(&hit);
+    }
+
+    /// An inline `<svg>`'s SHAPE elements reach Chrome's baseline — the
+    /// capture is `getBoundingClientRect()` over `querySelectorAll('*')`, and
+    /// a rendered `<circle>` has a rect — but they generate no CSS box, so
+    /// they are absent from the layout tree by construction. `shelf`'s
+    /// `svg > circle` and `svg > path` were therefore `missing_box` join
+    /// failures that no engine fix could ever clear, which capped the metric:
+    /// the case could not reach geometry-green however correct the engine was.
+    ///
+    /// This asserts the exported shapes against Chrome's COMMITTED numbers
+    /// (`baselines/chrome-148/builtins/shelf/layout-rects.json`, run
+    /// 37096150470 `macos-14`), not against a recomputation of the same
+    /// arithmetic this exporter does — the test would be circular otherwise.
+    /// The svg's content box is pinned to the one RustKit actually computed
+    /// for `shelf` (`{29, 67.5, 14, 14}`, itself bit-identical to Chrome's
+    /// rect), so what is under test is the viewBox mapping and the join key.
+    #[test]
+    fn inline_svg_shapes_are_exported_at_chromes_rects() {
+        let mut engine = match layout_only_engine() {
+            Some(engine) => engine,
+            None => {
+                if cfg!(target_os = "macos") {
+                    panic!(
+                        "no GPU adapter on a macOS runner — this guard cannot \
+                         report a pass without building a layout tree"
+                    );
+                }
+                eprintln!(
+                    "SKIPPED inline_svg_shapes_are_exported_at_chromes_rects: \
+                     no GPU adapter, so no layout tree was built and NOTHING \
+                     was asserted. Re-run with VK_ICD_FILENAMES set to a \
+                     software Vulkan ICD to make this guard actually execute."
+                );
+                return;
+            }
+        };
+
+        let html = r#"<!DOCTYPE html><html><body>
+            <div class="command-palette">
+              <div class="command-input-wrapper">
+                <svg class="command-input-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="M21 21l-4.35-4.35"/>
+                </svg>
+              </div>
+            </div>
+        </body></html>"#;
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        engine.cache_inline_svgs(&document);
+        let index = engine.inline_svg_shape_index(&document);
+        assert_eq!(
+            index.len(),
+            1,
+            "the subtree must be indexed under its content hash"
+        );
+
+        let mut layout = engine.build_layout_from_document(&document, &[]);
+
+        // Pin the svg's content box to the one the macOS capture recorded, so
+        // this guard measures the mapping and not the page's own layout.
+        fn pin_svg_content(b: &mut LayoutBox) -> bool {
+            if b.identity().map(|i| i.tag == "svg").unwrap_or(false) {
+                b.dimensions.content.x = 29.0;
+                b.dimensions.content.y = 67.5;
+                b.dimensions.content.width = 14.0;
+                b.dimensions.content.height = 14.0;
+                return true;
+            }
+            b.children.iter_mut().any(pin_svg_content)
+        }
+        assert!(pin_svg_content(&mut layout), "no identified svg box");
+
+        let json = layout_box_to_json_under(&layout, None, &index);
+
+        // Collect every exported svg_shape, wherever it sits.
+        fn shapes(v: &serde_json::Value, out: &mut Vec<serde_json::Value>) {
+            if v.get("type").and_then(|t| t.as_str()) == Some("svg_shape") {
+                out.push(v.clone());
+            }
+            if let Some(children) = v.get("children").and_then(|c| c.as_array()) {
+                for c in children {
+                    shapes(c, out);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        shapes(&json, &mut found);
+        assert_eq!(
+            found.len(),
+            2,
+            "expected the circle and the path; got {found:#?}"
+        );
+
+        // Chrome's committed rects, verbatim from the baseline.
+        let expected: [(&str, [f64; 4]); 2] = [
+            (
+                "body > div.command-palette > div.command-input-wrapper > svg > circle",
+                [30.75, 69.25, 9.333332061767578, 9.333335876464844],
+            ),
+            (
+                "body > div.command-palette > div.command-input-wrapper > svg > path",
+                [
+                    38.712501525878906,
+                    77.2125015258789,
+                    2.5374984741210938,
+                    2.5374984741210938,
+                ],
+            ),
+        ];
+
+        for (selector, chrome) in expected {
+            let shape = found
+                .iter()
+                .find(|s| s.get("selector").and_then(|v| v.as_str()) == Some(selector))
+                .unwrap_or_else(|| {
+                    panic!("no exported shape joined on {selector}; got {found:#?}")
+                });
+            // Gate A reads `border_box` and falls back to `rect`; a shape has
+            // one geometry and the two must not disagree.
+            assert_eq!(
+                shape["rect"], shape["border_box"],
+                "a shape's two rects must be the same geometry"
+            );
+            for (axis, want) in ["x", "y", "width", "height"].iter().zip(chrome) {
+                let got = shape["rect"][axis].as_f64().expect("numeric axis");
+                assert!(
+                    (got - want).abs() < 0.01,
+                    "{selector} {axis}: exported {got}, Chrome {want} \
+                     (Gate A's tolerance is 0.5px per box per axis)"
+                );
+            }
+        }
+    }
+
+    /// The refusals, which are the load-bearing half: a shape this exporter
+    /// does not model EXACTLY must produce NO box, leaving Gate A to file it
+    /// as `missing_box` and score it UNMEASURED. "Unmeasured is never green"
+    /// is already enforced; a box emitted from arithmetic that is merely
+    /// close would be compared and believed instead.
+    #[test]
+    fn an_unmodelled_svg_shape_is_refused_rather_than_approximated() {
+        let mut engine = match layout_only_engine() {
+            Some(engine) => engine,
+            None => {
+                if cfg!(target_os = "macos") {
+                    panic!("no GPU adapter on a macOS runner");
+                }
+                eprintln!(
+                    "SKIPPED an_unmodelled_svg_shape_is_refused_rather_than_approximated: \
+                     no GPU adapter, NOTHING asserted."
+                );
+                return;
+            }
+        };
+
+        // A cubic Bezier (bbox of control points is a SUPERSET of the tight
+        // bbox Chrome reports), an element carrying a transform this walk does
+        // not compose, a <text> needing shaped glyph extents, and a <use>
+        // rustkit-svg's renderer does not resolve. Plus one straight-line
+        // path and one rect, which MUST still come through — a refusal that
+        // refuses everything would pass this test vacuously.
+        let html = r##"<!DOCTYPE html><html><body>
+            <svg width="100" height="100" viewBox="0 0 100 100">
+              <path class="curve" d="M10 10 C 20 20, 40 20, 50 10"/>
+              <rect class="shifted" x="1" y="1" width="5" height="5" transform="translate(3,3)"/>
+              <text x="5" y="5">hi</text>
+              <use href="#nope" x="1" y="1"/>
+              <path class="straight" d="M10 10 L 30 40 Z"/>
+              <rect class="plain" x="2" y="4" width="6" height="8"/>
+            </svg>
+        </body></html>"##;
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        engine.cache_inline_svgs(&document);
+        let index = engine.inline_svg_shape_index(&document);
+        let entry = index.values().next().expect("one indexed subtree");
+
+        let tags: Vec<&str> = entry.shapes.iter().map(|s| s.tag.as_str()).collect();
+        let selectors: Vec<&str> = entry.shapes.iter().map(|s| s.selector.as_str()).collect();
+
+        assert!(
+            selectors.contains(&"path:nth-of-type(2)"),
+            "the straight-line path must be exported, else this guard is \
+             vacuous; got {selectors:?}"
+        );
+        assert!(
+            selectors.contains(&"rect:nth-of-type(2)"),
+            "the untransformed rect must be exported; got {selectors:?}"
+        );
+        assert!(
+            !selectors.contains(&"path:nth-of-type(1)"),
+            "a path with a cubic Bezier must be REFUSED, not bounded by its \
+             control points; got {selectors:?}"
+        );
+        assert!(
+            !selectors.contains(&"rect:nth-of-type(1)"),
+            "an element with a transform must be refused — this walk \
+             composes none; got {selectors:?}"
+        );
+        assert!(
+            !tags.contains(&"text"),
+            "<text> needs shaped glyph extents and must be refused; got {tags:?}"
+        );
+        assert!(
+            !tags.contains(&"use"),
+            "<use> is unresolved in the renderer and must be refused; got {tags:?}"
+        );
+        assert_eq!(
+            entry.shapes.len(),
+            2,
+            "exactly the two modelled shapes; got {selectors:?}"
+        );
+
+        // The straight path's bbox is the tight one: M10 10 L30 40 spans
+        // 20x30 from (10,10). The curve's control-point bbox would have been
+        // 40x10 from (10,10) — a box the shape never occupies.
+        let straight = entry
+            .shapes
+            .iter()
+            .find(|s| s.selector == "path:nth-of-type(2)")
+            .expect("straight path");
+        assert_eq!(
+            (straight.x, straight.y, straight.width, straight.height),
+            (10.0, 10.0, 20.0, 30.0)
+        );
+    }
+
+    /// The two quantities `shelf` cannot distinguish, pinned on a case that
+    /// can. Both of these survived the first mutation sweep for the same
+    /// reason: `shelf`'s svg has NO padding or border, so its content box and
+    /// its border box are the same rect, and its `viewBox` is `0 0 24 24`, so
+    /// the origin shift is a no-op. A guard that only knows `shelf` cannot
+    /// tell the right implementation from either wrong one.
+    ///
+    /// - M4: mapping from the BORDER box origin instead of the CONTENT box.
+    ///   The SVG viewport is the content box — it is what `render_image`
+    ///   passes to the painter as its container.
+    /// - M5: dropping the `viewBox` `min-x`/`min-y` origin shift, so a
+    ///   viewBox that does not start at `0 0` paints offset by its own origin.
+    ///
+    /// Construction: `viewBox="10 20 24 24"` over a 24x24 content box, so the
+    /// scale is exactly 1 and the arithmetic is readable. The circle's user
+    /// bbox is `(10, 20, 4, 4)` — precisely the viewBox's own origin — so the
+    /// one correct answer is the CONTENT box's origin and nothing else. With
+    /// M4 it lands at the border origin (left and up by padding+border); with
+    /// M5 it lands 10 right and 20 down.
+    #[test]
+    fn a_shape_at_the_viewbox_origin_paints_at_the_content_origin() {
+        let mut engine = match layout_only_engine() {
+            Some(engine) => engine,
+            None => {
+                if cfg!(target_os = "macos") {
+                    panic!("no GPU adapter on a macOS runner");
+                }
+                eprintln!(
+                    "SKIPPED a_shape_at_the_viewbox_origin_paints_at_the_content_origin: \
+                     no GPU adapter, NOTHING asserted."
+                );
+                return;
+            }
+        };
+
+        let html = r#"<!DOCTYPE html><html><body>
+            <svg width="24" height="24" viewBox="10 20 24 24">
+              <circle cx="12" cy="22" r="2"/>
+            </svg>
+        </body></html>"#;
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        engine.cache_inline_svgs(&document);
+        let index = engine.inline_svg_shape_index(&document);
+
+        // The user-space bbox must be the viewBox's own origin, or the test
+        // below is measuring something other than what its comment claims.
+        let entry = index.values().next().expect("one indexed subtree");
+        let circle = entry.shapes.first().expect("the circle");
+        assert_eq!(
+            (circle.x, circle.y, circle.width, circle.height),
+            (10.0, 20.0, 4.0, 4.0),
+            "the circle's user bbox must sit exactly at the viewBox origin"
+        );
+
+        let mut layout = engine.build_layout_from_document(&document, &[]);
+        fn pin(b: &mut LayoutBox) -> bool {
+            if b.identity().map(|i| i.tag == "svg").unwrap_or(false) {
+                b.dimensions.content.x = 100.0;
+                b.dimensions.content.y = 200.0;
+                b.dimensions.content.width = 24.0;
+                b.dimensions.content.height = 24.0;
+                // Make the content box and the border box DIFFERENT rects,
+                // which is the whole point of this guard.
+                b.dimensions.padding.left = 5.0;
+                b.dimensions.padding.top = 7.0;
+                b.dimensions.border.left = 2.0;
+                b.dimensions.border.top = 3.0;
+                return true;
+            }
+            b.children.iter_mut().any(pin)
+        }
+        assert!(pin(&mut layout), "no identified svg box");
+        let border = layout_border_box_of_svg(&layout);
+        assert!(
+            (border.x - 100.0).abs() > 0.5 && (border.y - 200.0).abs() > 0.5,
+            "the border box must differ from the content box by more than \
+             Gate A's tolerance, else M4 is still indistinguishable (border \
+             {border:?})"
+        );
+
+        let json = layout_box_to_json_under(&layout, None, &index);
+        fn first_shape(v: &serde_json::Value) -> Option<serde_json::Value> {
+            if v.get("type").and_then(|t| t.as_str()) == Some("svg_shape") {
+                return Some(v.clone());
+            }
+            v.get("children")
+                .and_then(|c| c.as_array())
+                .and_then(|cs| cs.iter().find_map(first_shape))
+        }
+        let shape = first_shape(&json).expect("an exported shape");
+        for (axis, want) in [("x", 100.0), ("y", 200.0), ("width", 4.0), ("height", 4.0)] {
+            let got = shape["rect"][axis].as_f64().expect("numeric axis");
+            assert!(
+                (got - want).abs() < 0.01,
+                "{axis}: exported {got}, expected {want} — a shape at the \
+                 viewBox origin paints at the CONTENT box origin"
+            );
+        }
+    }
+
+    /// The svg box's border box, for the guard above.
+    fn layout_border_box_of_svg(b: &LayoutBox) -> rustkit_layout::Rect {
+        if b.identity().map(|i| i.tag == "svg").unwrap_or(false) {
+            return b.dimensions.border_box();
+        }
+        b.children
+            .iter()
+            .find_map(find_svg_border_box)
+            .expect("no identified svg box in the tree")
+    }
+
+    /// A transform on a `<g>` must refuse the shapes BENEATH it too, not just
+    /// the `<g>` (which has no geometry of its own and so refuses silently
+    /// either way). Separate from the test above because that one puts the
+    /// transform on the shape itself, where a subtree bug cannot show.
+    #[test]
+    fn a_transformed_group_refuses_the_shapes_beneath_it() {
+        let mut engine = match layout_only_engine() {
+            Some(engine) => engine,
+            None => {
+                if cfg!(target_os = "macos") {
+                    panic!("no GPU adapter on a macOS runner");
+                }
+                eprintln!(
+                    "SKIPPED a_transformed_group_refuses_the_shapes_beneath_it: \
+                     no GPU adapter, NOTHING asserted."
+                );
+                return;
+            }
+        };
+
+        let html = r#"<!DOCTYPE html><html><body>
+            <svg width="100" height="100" viewBox="0 0 100 100">
+              <g transform="translate(10,10)"><circle cx="5" cy="5" r="2"/></g>
+              <g><circle cx="7" cy="7" r="3"/></g>
+            </svg>
+        </body></html>"#;
+        let document = Rc::new(Document::parse_html(html).expect("parse"));
+        engine.cache_inline_svgs(&document);
+        let index = engine.inline_svg_shape_index(&document);
+        let entry = index.values().next().expect("one indexed subtree");
+
+        let selectors: Vec<&str> = entry.shapes.iter().map(|s| s.selector.as_str()).collect();
+        assert_eq!(
+            selectors,
+            vec!["g:nth-of-type(2) > circle"],
+            "only the circle under the UNtransformed group may be exported"
         );
     }
 
@@ -17876,6 +18955,177 @@ div { height: 10px; }
         assert!(!engine.is_image_cached(&at("/tracker.png")));
     }
 
+    /// Navigate to `page` and return the image paths the navigation
+    /// requested, then the paths requested once `load_subresources` has run
+    /// again on the finished document. The second list is the control: what
+    /// is in it and not in the first was there to discover and was missed.
+    fn requested_by_navigation_then_reload(page: &'static str) -> (Vec<String>, Vec<String>) {
+        let (port, seen) = recording_server_for(page);
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/page")).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let paths = |seen: &Seen| -> Vec<String> {
+            let mut paths: Vec<String> = seen.lock().unwrap().iter().map(|(p, _)| p.clone()).collect();
+            paths.sort();
+            paths.dedup();
+            paths
+        };
+        rt.block_on(engine.load_url(view, url)).expect("load_url");
+        let by_navigation = paths(&seen);
+        rt.block_on(engine.load_subresources(view)).expect("subresources");
+        (by_navigation, paths(&seen))
+    }
+
+    /// Images were discovered once, before page scripts ran: `navigate`
+    /// loads subresources, runs the scripts, flushes their DOM writes and
+    /// finishes. An `<img>` a script appended was laid out and never
+    /// fetched.
+    #[test]
+    fn an_img_a_script_adds_is_fetched_by_the_navigation() {
+        const SCRIPTED_IMG_PAGE: &str = r#"<html><body><img src="/parsed.png"><script>
+var img = document.createElement('img');
+img.setAttribute('src', '/added.png');
+document.body.appendChild(img);
+</script></body></html>"#;
+        let (by_navigation, after_reload) = requested_by_navigation_then_reload(SCRIPTED_IMG_PAGE);
+        let has = |paths: &[String], path: &str| paths.iter().any(|p| p == path);
+        assert!(has(&by_navigation, "/parsed.png"), "the parsed <img> is fetched: {by_navigation:?}");
+        assert!(
+            has(&after_reload, "/added.png"),
+            "control: the script appended the <img> and a second discovery finds it: {after_reload:?}"
+        );
+        assert!(
+            has(&by_navigation, "/added.png"),
+            "the navigation itself fetches an <img> a script added: {by_navigation:?}"
+        );
+    }
+
+    /// The same for a CSS background a script switches on by class.
+    #[test]
+    fn a_background_a_script_turns_on_is_fetched_by_the_navigation() {
+        const SCRIPTED_BG_PAGE: &str = r#"<html><head><style>
+div { width: 50px; height: 20px; }
+.late { background: url(/late.png) no-repeat; }
+</style></head><body><div id="box"></div><script>
+document.getElementById('box').setAttribute('class', 'late');
+</script></body></html>"#;
+        let (by_navigation, after_reload) = requested_by_navigation_then_reload(SCRIPTED_BG_PAGE);
+        let has = |paths: &[String], path: &str| paths.iter().any(|p| p == path);
+        assert!(
+            has(&after_reload, "/late.png"),
+            "control: the script set the class and a second discovery finds the background: {after_reload:?}"
+        );
+        assert!(
+            has(&by_navigation, "/late.png"),
+            "the navigation itself fetches a background a script turned on: {by_navigation:?}"
+        );
+    }
+
+    /// Serve `/page` as `page` and every other path as an image negotiated
+    /// the way the image CDNs do it: AVIF to a request whose `Accept` names
+    /// `image/avif`, PNG to any other. Records each request's path and
+    /// `Accept`.
+    fn negotiating_server(page: &'static str) -> (u16, Seen) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        // The start of an AVIF file: an `ftyp` box with the `avif` brand.
+        const AVIF_HEAD: &[u8] = b"\x00\x00\x00\x1cftypavif\x00\x00\x00\x00avifmif1miaf";
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buf = [0u8; 8192];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                let accept = head
+                    .lines()
+                    .filter_map(|l| l.split_once(':'))
+                    .find(|(k, _)| k.eq_ignore_ascii_case("accept"))
+                    .map(|(_, v)| v.trim().to_string());
+                let wants_avif = accept.as_deref().is_some_and(|a| a.contains("image/avif"));
+                let (ctype, body): (&str, &[u8]) = if path.starts_with("/page") {
+                    ("text/html", page.as_bytes())
+                } else if wants_avif {
+                    ("image/avif", AVIF_HEAD)
+                } else {
+                    ("image/png", DOT_PNG)
+                };
+                log.lock().unwrap().push((path, accept));
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(body);
+            }
+        });
+        (port, seen)
+    }
+
+    /// Image requests went out with the navigation's `Accept`, which lists
+    /// `image/avif`. There is no AVIF decoder, and the CDNs answer that
+    /// header with AVIF, so 44 `<img>`s on microsoft, shopify and walmart
+    /// failed as "Unknown image format" (2026-10-03 census). An image
+    /// request now names only what the engine decodes; the navigation's
+    /// header keeps its browser shape.
+    #[test]
+    fn an_image_request_accepts_only_formats_the_engine_decodes() {
+        const NEGOTIATED_PAGE: &str = r#"<html><head><style>
+div { width: 50px; height: 20px; background: url(/bg.jpg) no-repeat; }
+</style></head><body><img src="/hero.jpg"><div></div></body></html>"#;
+        let (port, seen) = negotiating_server(NEGOTIATED_PAGE);
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/page")).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            engine.load_url(view, url).await.expect("load_url");
+            engine.load_subresources(view).await.expect("subresources");
+        });
+
+        let seen = seen.lock().unwrap().clone();
+        let accept_of = |path: &str| -> String {
+            seen.iter()
+                .find(|(p, _)| p == path)
+                .unwrap_or_else(|| panic!("{path} was requested; saw {seen:?}"))
+                .1
+                .clone()
+                .unwrap_or_default()
+        };
+        for path in ["/hero.jpg", "/bg.jpg"] {
+            let accept = accept_of(path);
+            assert!(
+                !accept.contains("avif"),
+                "{path} must not advertise AVIF, which nothing here decodes: {accept:?}"
+            );
+            assert!(
+                accept.contains("image/webp") && accept.contains("image/svg+xml"),
+                "{path} still names the formats that are decoded: {accept:?}"
+            );
+            let at = Url::parse(&format!("http://127.0.0.1:{port}{path}")).unwrap();
+            assert!(
+                engine.image_manager.is_cached(&at),
+                "{path} decodes: the server sent a format the request asked for"
+            );
+        }
+        assert!(
+            accept_of("/page").starts_with("text/html,"),
+            "the navigation keeps its document Accept"
+        );
+    }
+
     /// SVG backgrounds were skipped at discovery: only `<img>` commands
     /// were spliced from the SVG cache, so a fetched one would never paint.
     /// Each is fetched now and painted as vector commands, one copy per
@@ -17926,6 +19176,124 @@ div { height: 10px; }
             vec![(0.0, 10.0, 10.0, 10.0), (10.0, 10.0, 10.0, 10.0), (20.0, 10.0, 10.0, 10.0)],
             "repeat-x paints one tile per 10px across the 30px box"
         );
+    }
+
+    /// A `data:image/svg+xml` image went to the raster decoder, whose
+    /// stand-in rasterizer draws only solid `<rect>`s: bing's logo (radial
+    /// gradients and paths, as a background and as an `<img>`) painted
+    /// nothing. It is decoded into the SVG cache at the splice instead, so
+    /// it paints as vector commands on the first layout, with no fetch.
+    #[test]
+    fn a_data_svg_background_and_img_paint_as_vectors() {
+        let html = r#"<html><head><style>
+body { margin: 0; }
+div { width: 30px; height: 10px; }
+.bg { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10' fill='%2300ff00'/%3E%3C/svg%3E") repeat-x; }
+img { display: block; width: 10px; height: 10px; }
+</style></head><body><div class="bg"></div>
+<img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMCIgaGVpZ2h0PSIxMCI+PHJlY3Qgd2lkdGg9IjEwIiBoZWlnaHQ9IjEwIiBmaWxsPSIjMDAwMGZmIi8+PC9zdmc+">
+</body></html>"#;
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        engine.load_html(view, html).expect("load");
+
+        let dl = engine.views[&view].display_list.as_ref().expect("display list");
+        assert!(
+            !dl.commands.iter().any(|c| matches!(c,
+                rustkit_layout::DisplayCommand::BackgroundImage { url, .. }
+                | rustkit_layout::DisplayCommand::Image { url, .. } if url.starts_with("data:image/svg+xml"))),
+            "a data: SVG is replaced by its vector commands, not left for the raster upload"
+        );
+        let fills = |r: u8, g: u8, b: u8| -> Vec<(f32, f32, f32, f32)> {
+            dl.commands
+                .iter()
+                .filter_map(|c| match c {
+                    rustkit_layout::DisplayCommand::FillRect { rect, color }
+                        if (color.r, color.g, color.b) == (r, g, b) =>
+                    {
+                        Some((rect.x, rect.y, rect.width, rect.height))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            fills(0, 255, 0),
+            vec![(0.0, 0.0, 10.0, 10.0), (10.0, 0.0, 10.0, 10.0), (20.0, 0.0, 10.0, 10.0)],
+            "the url-encoded background tiles across its 30px box"
+        );
+        assert_eq!(fills(0, 0, 255), vec![(0.0, 10.0, 10.0, 10.0)], "the base64 <img> paints in its box");
+    }
+
+    /// An SVG image with `width`/`height` and no `viewBox` scales to its
+    /// box, as Blink synthesizes the viewBox for SVG images; `render` drew
+    /// it at its own size, so moving data: SVGs onto the vector lane left
+    /// every 100x100 square of the images-intrinsic case at 100x100.
+    #[test]
+    fn an_svg_image_without_a_viewbox_scales_to_its_box() {
+        let html = r#"<html><head><style>
+body { margin: 0; }
+img { display: block; }
+</style></head><body>
+<img style="width: 20px; height: 20px" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10' fill='%23ff0000'/%3E%3C/svg%3E">
+<div style="width: 40px; height: 20px; background: url(&quot;data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10' fill='%2300ff00'/%3E%3C/svg%3E&quot;) 0 0 / 20px 20px repeat-x"></div>
+</body></html>"#;
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        engine.load_html(view, html).expect("load");
+
+        let dl = engine.views[&view].display_list.as_ref().expect("display list");
+        let fills = |r: u8, g: u8, b: u8| -> Vec<(f32, f32, f32, f32)> {
+            dl.commands
+                .iter()
+                .filter_map(|c| match c {
+                    rustkit_layout::DisplayCommand::FillRect { rect, color }
+                        if (color.r, color.g, color.b) == (r, g, b) =>
+                    {
+                        Some((rect.x, rect.y, rect.width, rect.height))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(fills(255, 0, 0), vec![(0.0, 0.0, 20.0, 20.0)], "the <img> fills its 20px box");
+        assert_eq!(
+            fills(0, 255, 0),
+            vec![(0.0, 20.0, 20.0, 20.0), (20.0, 20.0, 20.0, 20.0)],
+            "background-size 20px scales each tile"
+        );
+    }
+
+    /// The synthesized viewBox comes with `preserveAspectRatio="none"`: a
+    /// square SVG image in a 40x20 `<img>` stretches to fill it, as a
+    /// raster does (images-intrinsic test 4 in pinned Chrome).
+    #[test]
+    fn an_svg_image_without_a_viewbox_stretches_to_its_box() {
+        let html = r#"<html><head><style>body { margin: 0; } img { display: block; }</style></head><body>
+<img style="width: 40px; height: 20px" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='10' fill='%23ff0000'/%3E%3C/svg%3E">
+</body></html>"#;
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        engine.load_html(view, html).expect("load");
+
+        let dl = engine.views[&view].display_list.as_ref().expect("display list");
+        let red: Vec<_> = dl
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                rustkit_layout::DisplayCommand::FillRect { rect, color } if (color.r, color.g, color.b) == (255, 0, 0) => {
+                    Some((rect.x, rect.y, rect.width, rect.height))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(red, vec![(0.0, 0.0, 40.0, 20.0)], "the square stretches to the 40x20 box");
     }
 }
 

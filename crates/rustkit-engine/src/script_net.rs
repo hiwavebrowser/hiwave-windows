@@ -282,3 +282,40 @@ pub(crate) async fn pump_modules(
     }
     out
 }
+
+/// Take-fetch-deliver for everything a page can have waiting: script network
+/// requests (XHR, fetch) and the modules a dynamic `import()` asked for. One
+/// can start the other (a fetch callback calls `import()`, a module fetches),
+/// so the two alternate until neither found work, at most `ALTERNATIONS`
+/// times. Whatever is still waiting then is left for the next step's pump
+/// (the network side fails its stragglers itself).
+pub(crate) async fn pump_all(
+    bindings: &DomBindings,
+    policy: &FetchPolicy,
+    loader: &ResourceLoader,
+    deadline: tokio::time::Instant,
+    rounds: u32,
+    timers: Option<(u64, u32)>,
+    document: Option<&Url>,
+    modules_fetched: &mut usize,
+) -> Pump {
+    const ALTERNATIONS: u32 = 4;
+    let mut total = Pump::default();
+    for _ in 0..ALTERNATIONS {
+        let net = pump(bindings, policy, loader, deadline, rounds, timers).await;
+        let modules = match document {
+            Some(document) => pump_modules(bindings, policy, loader, deadline, document, modules_fetched).await,
+            None => Pump::default(),
+        };
+        let worked = net.requests + modules.requests;
+        total.poisoned |= net.poisoned || modules.poisoned;
+        total.threw.extend(net.threw);
+        total.threw.extend(modules.threw);
+        total.requests += worked;
+        total.rounds += net.rounds + modules.rounds;
+        if total.poisoned || worked == 0 {
+            break;
+        }
+    }
+    total
+}

@@ -26,6 +26,7 @@ use rustkit_css::Color;
 use rustkit_layout::{DisplayCommand, Rect};
 use std::collections::HashMap;
 use std::f32::consts::PI;
+use std::sync::Arc;
 use thiserror::Error;
 
 // ==================== Errors ====================
@@ -61,6 +62,10 @@ pub struct SvgDocument {
     pub height: Option<SvgLength>,
     /// Defined elements (for use references).
     pub defs: HashMap<String, SvgElement>,
+    /// Scale the viewBox to the render rect on each axis independently
+    /// (`preserveAspectRatio="none"`) instead of uniformly. Set by the
+    /// engine for an SVG image whose viewBox it synthesized, as Blink does.
+    pub stretch: bool,
 }
 
 impl SvgDocument {
@@ -72,6 +77,7 @@ impl SvgDocument {
             width: None,
             height: None,
             defs: HashMap::new(),
+            stretch: false,
         }
     }
 
@@ -123,7 +129,16 @@ impl SvgDocument {
         }
 
         // Parse elements (simplified)
-        doc.root = parse_svg_content(xml, &root_style)?;
+        let mut servers = HashMap::new();
+        doc.root = parse_svg_content(xml, &root_style, &mut servers)?;
+
+        // A paint server may be defined after the shape that names it, and
+        // may take its stops from another one, so `url(#id)` paints are
+        // resolved once the whole document has been read.
+        if !servers.is_empty() {
+            let servers = resolve_gradients(&servers);
+            doc.root.resolve_paint(&servers);
+        }
 
         Ok(doc)
     }
@@ -171,11 +186,16 @@ impl SvgDocument {
         let transform = if let Some(vb) = &self.view_box {
             let scale_x = width / vb.width;
             let scale_y = height / vb.height;
-            let scale = scale_x.min(scale_y);
+            let (scale_x, scale_y) = if self.stretch {
+                (scale_x, scale_y)
+            } else {
+                let scale = scale_x.min(scale_y);
+                (scale, scale)
+            };
 
             Transform2D::identity()
-                .translate(x - vb.min_x * scale, y - vb.min_y * scale)
-                .scale(scale, scale)
+                .translate(x - vb.min_x * scale_x, y - vb.min_y * scale_y)
+                .scale(scale_x, scale_y)
         } else {
             Transform2D::identity().translate(x, y)
         };
@@ -456,8 +476,11 @@ pub enum Paint {
     None,
     /// Solid color.
     Color(Color),
-    /// URL reference (gradients, patterns).
+    /// URL reference (gradients, patterns) the document has not resolved:
+    /// it names nothing this crate paints, and paints nothing.
     Url(String),
+    /// A gradient paint server, resolved from its `url(#id)` reference.
+    Gradient(Arc<Gradient>),
     /// Current color.
     CurrentColor,
 }
@@ -471,15 +494,22 @@ impl Default for Paint {
 impl Paint {
     /// Parse paint attribute.
     pub fn parse(s: &str) -> Self {
-        let s = s.trim().to_lowercase();
+        let raw = s.trim();
+        let s = raw.to_lowercase();
         
         match s.as_str() {
             "none" => Paint::None,
             "currentcolor" => Paint::CurrentColor,
             _ if s.starts_with("url(") => {
-                let url = s.trim_start_matches("url(")
-                    .trim_end_matches(')')
-                    .trim_matches(|c| c == '"' || c == '\'' || c == '#')
+                // The id is case-sensitive, so it is read from the authored
+                // text; a fallback color may follow the closing paren.
+                let url = raw[4..]
+                    .split(')')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .trim_start_matches('#')
                     .to_string();
                 Paint::Url(url)
             }
@@ -508,6 +538,73 @@ impl Paint {
             Paint::CurrentColor => Some(current_color),
             _ => None,
         }
+    }
+}
+
+/// How a gradient paints past the ends of its vector (`spreadMethod`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpreadMethod {
+    #[default]
+    Pad,
+    Reflect,
+    Repeat,
+}
+
+/// The vector or circle a gradient's stops are laid along, in gradient
+/// units (before `gradientTransform`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GradientGeometry {
+    Linear { x1: f32, y1: f32, x2: f32, y2: f32 },
+    /// The focal point is taken to be the centre (`fx`/`fy` are not read).
+    Radial { cx: f32, cy: f32, r: f32 },
+}
+
+/// A gradient paint server (`<linearGradient>` / `<radialGradient>`).
+#[derive(Debug, Clone)]
+pub struct Gradient {
+    pub geometry: GradientGeometry,
+    /// `(offset, color)`, offsets in 0..=1 and never decreasing; the
+    /// color's alpha carries `stop-opacity`.
+    pub stops: Vec<(f32, Color)>,
+    /// `gradientTransform`.
+    pub transform: Transform2D,
+    /// `gradientUnits="userSpaceOnUse"`; otherwise the geometry is in
+    /// fractions of the filled shape's bounding box.
+    pub user_space: bool,
+    pub spread: SpreadMethod,
+}
+
+impl Gradient {
+    /// The color at position `t` along the gradient (0 = the start of the
+    /// vector, 1 = its far end). Stops blend in non-premultiplied sRGB, as
+    /// SVG gradients do.
+    pub fn color_at(&self, t: f32) -> Color {
+        let Some(&(_, last)) = self.stops.last() else {
+            return Color::TRANSPARENT;
+        };
+        let t = match self.spread {
+            SpreadMethod::Pad => t.clamp(0.0, 1.0),
+            SpreadMethod::Repeat => t - t.floor(),
+            SpreadMethod::Reflect => {
+                let u = t.rem_euclid(2.0);
+                if u > 1.0 { 2.0 - u } else { u }
+            }
+        };
+        if t <= self.stops[0].0 {
+            return self.stops[0].1;
+        }
+        for pair in self.stops.windows(2) {
+            let ((o0, c0), (o1, c1)) = (pair[0], pair[1]);
+            if t <= o1 {
+                if o1 <= o0 {
+                    return c1;
+                }
+                let k = (t - o0) / (o1 - o0);
+                let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
+                return Color::new(mix(c0.r, c1.r), mix(c0.g, c1.g), mix(c0.b, c1.b), c0.a + (c1.a - c0.a) * k);
+            }
+        }
+        last
     }
 }
 
@@ -832,6 +929,193 @@ fn fill_contours(
     }
 }
 
+/// The most cells a gradient fill is cut into along one axis.
+const GRADIENT_CELLS: f32 = 64.0;
+
+/// Fill closed device-space contours with a gradient.
+///
+/// The renderer's polygons are one flat color each, so the fill's convex
+/// pieces are cut on a grid and every cell takes the gradient's color at
+/// its centre. Cells are one device pixel where the shape is small (an
+/// icon gets the gradient per pixel) and never more than `GRADIENT_CELLS`
+/// to an axis. The pieces have hard edges, so neighbouring cells meet
+/// without a seam even where the stops are translucent.
+///
+/// `bbox` is the shape's user-space bounding box `(x, y, width, height)`
+/// and `transform` maps user space to device space; `opacity` is the
+/// shape's fill opacity times its opacity.
+fn fill_gradient(
+    contours: &[Vec<(f32, f32)>],
+    rule: FillRule,
+    gradient: &Gradient,
+    bbox: (f32, f32, f32, f32),
+    transform: &Transform2D,
+    opacity: f32,
+    commands: &mut Vec<DisplayCommand>,
+) {
+    if gradient.stops.is_empty() {
+        return;
+    }
+    let mut pieces = Vec::new();
+    fill_contours(contours, rule, Color::BLACK, &mut pieces);
+    let pieces: Vec<Vec<(f32, f32)>> = pieces
+        .into_iter()
+        .filter_map(|c| match c {
+            DisplayCommand::FillPolygon { points, .. } => Some(points),
+            _ => None,
+        })
+        .collect();
+    if pieces.is_empty() {
+        return;
+    }
+
+    // Gradient space -> device space, then its inverse. The bounding-box
+    // units of a shape with no width or no height paint nothing (SVG 2
+    // §14.2.2), as does a transform that cannot be inverted.
+    let mut to_device = *transform;
+    if !gradient.user_space {
+        if !(bbox.2 > 0.0 && bbox.3 > 0.0) {
+            return;
+        }
+        to_device = to_device.translate(bbox.0, bbox.1).scale(bbox.2, bbox.3);
+    }
+    let m = to_device.multiply(&gradient.transform);
+    // f64: real gradientTransforms carry translations in the hundreds of
+    // thousands against a radius under one (bing's logo).
+    let (a, b, c, d, e, f) = (m.a as f64, m.b as f64, m.c as f64, m.d as f64, m.e as f64, m.f as f64);
+    let det = a * d - b * c;
+    if det == 0.0 || !det.is_finite() {
+        return;
+    }
+    let position = |x: f32, y: f32| -> f32 {
+        let (dx, dy) = (x as f64 - e, y as f64 - f);
+        let (gx, gy) = ((d * dx - c * dy) / det, (a * dy - b * dx) / det);
+        match gradient.geometry {
+            GradientGeometry::Linear { x1, y1, x2, y2 } => {
+                let (vx, vy) = ((x2 - x1) as f64, (y2 - y1) as f64);
+                let len = vx * vx + vy * vy;
+                if len == 0.0 {
+                    1.0
+                } else {
+                    (((gx - x1 as f64) * vx + (gy - y1 as f64) * vy) / len) as f32
+                }
+            }
+            GradientGeometry::Radial { cx, cy, r } => {
+                if r <= 0.0 {
+                    1.0
+                } else {
+                    ((gx - cx as f64).hypot(gy - cy as f64) / r as f64) as f32
+                }
+            }
+        }
+    };
+
+    let (min_x, min_y, width, height) = bounds_of(pieces.iter().flatten());
+    let cell = (width.max(height) / GRADIENT_CELLS).max(1.0);
+    let (origin_x, origin_y) = (min_x.floor(), min_y.floor());
+    for piece in &pieces {
+        let (x, y, w, h) = bounds_of(piece.iter());
+        let cols = ((x - origin_x) / cell).floor() as i32..=((x + w - origin_x) / cell).floor() as i32;
+        for col in cols {
+            let left = origin_x + col as f32 * cell;
+            let strip = clip_to_slab(piece, false, left, left + cell);
+            if strip.len() < 3 {
+                continue;
+            }
+            let rows = ((y - origin_y) / cell).floor() as i32..=((y + h - origin_y) / cell).floor() as i32;
+            for row in rows {
+                let top = origin_y + row as f32 * cell;
+                let points = clip_to_slab(&strip, true, top, top + cell);
+                if points.len() < 3 || polygon_area(&points) < 1e-6 {
+                    continue;
+                }
+                let color = gradient.color_at(position(left + cell * 0.5, top + cell * 0.5));
+                let alpha = (color.a * opacity).clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    commands.push(DisplayCommand::FillPolygon { points, color: Color { a: alpha, ..color } });
+                }
+            }
+        }
+    }
+}
+
+/// Fill one user-space outline with the style's fill, if that is a gradient.
+fn fill_outline_with_gradient(
+    outline: &[(f32, f32)],
+    style: &SvgStyle,
+    transform: &Transform2D,
+    commands: &mut Vec<DisplayCommand>,
+) {
+    if let Paint::Gradient(gradient) = &style.fill {
+        let device: Vec<(f32, f32)> = outline.iter().map(|&(x, y)| transform.apply(x, y)).collect();
+        fill_gradient(
+            &[device],
+            style.fill_rule,
+            gradient,
+            bounds_of(outline.iter()),
+            transform,
+            style.fill_opacity * style.opacity,
+            commands,
+        );
+    }
+}
+
+/// A circle or ellipse as a closed outline.
+fn ellipse_outline(cx: f32, cy: f32, rx: f32, ry: f32) -> Vec<(f32, f32)> {
+    const SEGMENTS: usize = 64;
+    (0..SEGMENTS)
+        .map(|i| {
+            let angle = i as f32 / SEGMENTS as f32 * 2.0 * PI;
+            (cx + rx * angle.cos(), cy + ry * angle.sin())
+        })
+        .collect()
+}
+
+/// Bounding box `(x, y, width, height)` of a set of points.
+fn bounds_of<'a>(points: impl Iterator<Item = &'a (f32, f32)>) -> (f32, f32, f32, f32) {
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for &(x, y) in points {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    }
+    (x0, y0, x1 - x0, y1 - y0)
+}
+
+/// The part of a convex polygon between `lo` and `hi` on one axis.
+fn clip_to_slab(polygon: &[(f32, f32)], vertical: bool, lo: f32, hi: f32) -> Vec<(f32, f32)> {
+    let along = |p: (f32, f32)| if vertical { p.1 } else { p.0 };
+    let mut out = polygon.to_vec();
+    for (bound, keep_above) in [(lo, true), (hi, false)] {
+        let input = std::mem::take(&mut out);
+        let inside = |p: (f32, f32)| if keep_above { along(p) >= bound } else { along(p) <= bound };
+        for i in 0..input.len() {
+            let (p, q) = (input[i], input[(i + 1) % input.len()]);
+            if inside(p) {
+                out.push(p);
+            }
+            if inside(p) != inside(q) {
+                let k = (bound - along(p)) / (along(q) - along(p));
+                let (x, y) = (p.0 + (q.0 - p.0) * k, p.1 + (q.1 - p.1) * k);
+                out.push(if vertical { (x, bound) } else { (bound, y) });
+            }
+        }
+    }
+    out
+}
+
+fn polygon_area(points: &[(f32, f32)]) -> f32 {
+    let n = points.len();
+    let twice: f32 = (0..n)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum();
+    twice.abs() * 0.5
+}
+
 /// A simple convex polygon: every turn the same way, and one full turn in
 /// total (a pentagram turns one way too, but twice around).
 fn is_convex(points: &[(f32, f32)]) -> bool {
@@ -894,6 +1178,32 @@ impl SvgElement {
             SvgElement::Path(p) => p.render(transform, parent_style, commands),
             SvgElement::Text(t) => t.render(transform, parent_style, commands),
             SvgElement::Use(_) => {} // TODO: resolve references
+        }
+    }
+
+    /// Swap every fill that names one of `servers` for that gradient.
+    fn resolve_paint(&mut self, servers: &HashMap<String, Arc<Gradient>>) {
+        let style = match self {
+            SvgElement::Group(g) => {
+                for child in &mut g.children {
+                    child.resolve_paint(servers);
+                }
+                &mut g.style
+            }
+            SvgElement::Rect(r) => &mut r.style,
+            SvgElement::Circle(c) => &mut c.style,
+            SvgElement::Ellipse(e) => &mut e.style,
+            SvgElement::Line(l) => &mut l.style,
+            SvgElement::Polyline(p) => &mut p.style,
+            SvgElement::Polygon(p) => &mut p.style,
+            SvgElement::Path(p) => &mut p.style,
+            SvgElement::Text(t) => &mut t.style,
+            SvgElement::Use(_) => return,
+        };
+        if let Paint::Url(id) = &style.fill {
+            if let Some(gradient) = servers.get(id) {
+                style.fill = Paint::Gradient(gradient.clone());
+            }
         }
     }
 }
@@ -985,6 +1295,13 @@ impl SvgRect {
             let fill_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::FillRect { rect: rect.clone(), color: fill_color });
         }
+        let (right, bottom) = (self.x + self.width, self.y + self.height);
+        fill_outline_with_gradient(
+            &[(self.x, self.y), (right, self.y), (right, bottom), (self.x, bottom)],
+            &style,
+            &transform,
+            commands,
+        );
 
         // Stroke
         if let Some(color) = style.stroke_color() {
@@ -1049,6 +1366,7 @@ impl SvgCircle {
                 color: fill_color,
             });
         }
+        fill_outline_with_gradient(&ellipse_outline(self.cx, self.cy, self.r, self.r), &style, &transform, commands);
 
         // Stroke
         if let Some(color) = style.stroke_color() {
@@ -1118,6 +1436,7 @@ impl SvgEllipse {
                 color: fill_color,
             });
         }
+        fill_outline_with_gradient(&ellipse_outline(self.cx, self.cy, self.rx, self.ry), &style, &transform, commands);
     }
 }
 
@@ -1239,6 +1558,7 @@ impl SvgPolygon {
             let fill_color = Color { a: alpha, ..color };
             fill_contours(std::slice::from_ref(&points), style.fill_rule, fill_color, commands);
         }
+        fill_outline_with_gradient(&self.points, &style, &transform, commands);
 
         if let Some(color) = style.stroke_color() {
             let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
@@ -1663,9 +1983,9 @@ impl SvgPath {
             return;
         }
 
-        let subpaths: Vec<Vec<(f32, f32)>> = self
-            .to_line_segments()
-            .into_iter()
+        let outlines = self.to_line_segments();
+        let subpaths: Vec<Vec<(f32, f32)>> = outlines
+            .iter()
             .map(|segment| segment.iter().map(|(x, y)| transform.apply(*x, *y)).collect())
             .collect();
 
@@ -1676,6 +1996,16 @@ impl SvgPath {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
             fill_contours(&subpaths, style.fill_rule, fill_color, commands);
+        } else if let Paint::Gradient(gradient) = &style.fill {
+            fill_gradient(
+                &subpaths,
+                style.fill_rule,
+                gradient,
+                bounds_of(outlines.iter().flatten()),
+                &transform,
+                style.fill_opacity * style.opacity,
+                commands,
+            );
         }
 
         for points in subpaths {
@@ -2064,7 +2394,11 @@ fn parse_svg_color(s: &str) -> Option<Color> {
 }
 
 /// Parse SVG content into elements.
-fn parse_svg_content(xml: &str, base_style: &SvgStyle) -> Result<SvgElement, SvgError> {
+fn parse_svg_content(
+    xml: &str,
+    base_style: &SvgStyle,
+    servers: &mut HashMap<String, GradientDef>,
+) -> Result<SvgElement, SvgError> {
     let mut group = SvgGroup::new();
     
     // Simple element parsing
@@ -2118,6 +2452,23 @@ fn parse_svg_content(xml: &str, base_style: &SvgStyle) -> Result<SvgElement, Svg
                     }
                 }
 
+                // A gradient's stops are its children: read them up to its
+                // closing tag and consume the element.
+                if tag_name == "lineargradient" || tag_name == "radialgradient" {
+                    let mut body = "";
+                    if !tag.ends_with("/>") {
+                        let rest = xml[after_tag..].to_ascii_lowercase();
+                        if let Some(close) = rest.find(&format!("</{tag_name}")) {
+                            body = &xml[after_tag..after_tag + close];
+                        }
+                    }
+                    if let Some((id, def)) = parse_gradient(tag, &tag_name, body) {
+                        servers.insert(id, def);
+                    }
+                    pos = after_tag + body.len();
+                    continue;
+                }
+
                 // Parse element
                 if let Some(element) = parse_element(tag, base_style) {
                     group.children.push(element);
@@ -2133,6 +2484,110 @@ fn parse_svg_content(xml: &str, base_style: &SvgStyle) -> Result<SvgElement, Svg
     }
 
     Ok(SvgElement::Group(group))
+}
+
+/// A gradient as authored: its own attributes, plus the gradient it names
+/// as a template (`href`), which supplies the stops when it has none.
+struct GradientDef {
+    gradient: Gradient,
+    href: Option<String>,
+}
+
+/// The attributes of an open tag, names lowercased, with the declarations
+/// of an inline `style` laid over them.
+fn tag_attributes(tag: &str) -> HashMap<String, String> {
+    let tag = tag.trim_start_matches('<').trim_end_matches('>').trim_end_matches('/');
+    let mut attr_str = tag.splitn(2, char::is_whitespace).nth(1).unwrap_or("");
+    let mut attrs = HashMap::new();
+    while let Some((key, value, rest)) = parse_attr(attr_str) {
+        attrs.insert(key.to_lowercase(), value);
+        attr_str = rest;
+    }
+    if let Some(style) = attrs.remove("style") {
+        for decl in style.split(';') {
+            if let Some((name, value)) = decl.split_once(':') {
+                attrs.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+            }
+        }
+    }
+    attrs
+}
+
+/// A number or a percentage, as a fraction.
+fn parse_fraction(s: &str) -> Option<f32> {
+    let s = s.trim();
+    match s.strip_suffix('%') {
+        Some(percent) => percent.trim().parse::<f32>().ok().map(|p| p / 100.0),
+        None => s.parse().ok(),
+    }
+}
+
+/// Parse a `<linearGradient>` / `<radialGradient>` from its open tag and
+/// the markup between its tags. `None` without an id: nothing can name it.
+fn parse_gradient(tag: &str, name: &str, body: &str) -> Option<(String, GradientDef)> {
+    let attrs = tag_attributes(tag);
+    let id = attrs.get("id")?.clone();
+    let coord = |key: &str, default: f32| attrs.get(key).and_then(|v| parse_fraction(v)).unwrap_or(default);
+    let geometry = if name == "lineargradient" {
+        GradientGeometry::Linear { x1: coord("x1", 0.0), y1: coord("y1", 0.0), x2: coord("x2", 1.0), y2: coord("y2", 0.0) }
+    } else {
+        GradientGeometry::Radial { cx: coord("cx", 0.5), cy: coord("cy", 0.5), r: coord("r", 0.5) }
+    };
+
+    let mut stops: Vec<(f32, Color)> = Vec::new();
+    let lower = body.to_ascii_lowercase();
+    let mut pos = 0;
+    while let Some(start) = lower[pos..].find("<stop").map(|i| pos + i) {
+        let end = body[start..].find('>').map(|i| start + i + 1).unwrap_or(body.len());
+        let stop = tag_attributes(&body[start..end]);
+        let offset = stop.get("offset").and_then(|v| parse_fraction(v)).unwrap_or(0.0).clamp(0.0, 1.0);
+        // Each offset is at least the one before it (SVG 2 §14.2.4).
+        let offset = stops.last().map_or(offset, |&(previous, _)| offset.max(previous));
+        let color = stop.get("stop-color").and_then(|v| parse_svg_color(v)).unwrap_or(Color::BLACK);
+        let opacity = stop.get("stop-opacity").and_then(|v| parse_fraction(v)).unwrap_or(1.0).clamp(0.0, 1.0);
+        stops.push((offset, Color { a: color.a * opacity, ..color }));
+        pos = end;
+    }
+
+    let href = attrs
+        .get("href")
+        .or_else(|| attrs.get("xlink:href"))
+        .map(|h| h.trim().trim_start_matches('#').to_string());
+    let gradient = Gradient {
+        geometry,
+        stops,
+        transform: attrs.get("gradienttransform").map(|t| Transform2D::parse(t)).unwrap_or_default(),
+        user_space: attrs.get("gradientunits").is_some_and(|u| u.trim().eq_ignore_ascii_case("userSpaceOnUse")),
+        spread: match attrs.get("spreadmethod").map(|m| m.trim().to_ascii_lowercase()).as_deref() {
+            Some("reflect") => SpreadMethod::Reflect,
+            Some("repeat") => SpreadMethod::Repeat,
+            _ => SpreadMethod::Pad,
+        },
+    };
+    Some((id, GradientDef { gradient, href }))
+}
+
+/// The paintable gradients of a document: each one with the stops it
+/// inherits through its `href` chain when it has none of its own.
+fn resolve_gradients(defs: &HashMap<String, GradientDef>) -> HashMap<String, Arc<Gradient>> {
+    defs.iter()
+        .map(|(id, def)| {
+            let mut gradient = def.gradient.clone();
+            let mut href = def.href.as_deref();
+            // Bounded, so a reference cycle ends.
+            for _ in 0..8 {
+                if !gradient.stops.is_empty() {
+                    break;
+                }
+                let Some(template) = href.and_then(|h| defs.get(h)) else {
+                    break;
+                };
+                gradient.stops = template.gradient.stops.clone();
+                href = template.href.as_deref();
+            }
+            (id.clone(), Arc::new(gradient))
+        })
+        .collect()
 }
 
 /// Parse a single SVG element.
@@ -2647,6 +3102,95 @@ mod tests {
             .filter(|c| matches!(c, DisplayCommand::Polyline { color, .. } if color.r == 0 && color.g == 0 && color.b == 0))
             .count();
         assert_eq!(black, 1, "render() must still resolve currentColor to black: {plain:?}");
+    }
+
+    /// The colors the renderer's triangle fans paint at `p`, in paint order.
+    fn fan_colors(commands: &[DisplayCommand], p: (f32, f32)) -> Vec<Color> {
+        commands
+            .iter()
+            .filter(|c| fan_coverage(std::slice::from_ref(*c), p) == 1)
+            .filter_map(|c| match c {
+                DisplayCommand::FillPolygon { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_linear_gradient_fill_runs_across_the_bounding_box() {
+        // The default gradient: objectBoundingBox units, left to right. The
+        // id keeps its case — `url(#Grad)` names `id="Grad"`.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="10"><defs><linearGradient id="Grad">
+                <stop offset="0" stop-color="#ff0000"/><stop offset="100%" stop-color="#0000ff"/>
+            </linearGradient></defs><rect width="100" height="10" fill="url(#Grad)"/></svg>"##,
+        )
+        .expect("parse");
+        let commands = doc.render(0.0, 0.0, 100.0, 10.0);
+        let at = |x: f32| {
+            let colors = fan_colors(&commands, (x, 5.3));
+            assert_eq!(colors.len(), 1, "x={x} must be painted exactly once: {colors:?}");
+            colors[0]
+        };
+        let (left, mid, right) = (at(5.3), at(50.3), at(94.7));
+        assert!(left.r > 220 && left.b < 35, "left end is the first stop: {left:?}");
+        assert!(right.b > 220 && right.r < 35, "right end is the last stop: {right:?}");
+        assert!((mid.r as i32 - 127).abs() < 12 && (mid.b as i32 - 127).abs() < 12, "midpoint blends: {mid:?}");
+        assert_eq!(left.a, 1.0);
+    }
+
+    #[test]
+    fn test_user_space_gradient_follows_its_transform_and_stop_opacity() {
+        // bing's logo overlay, reduced: a userSpaceOnUse vector flipped by
+        // gradientTransform, fading to a transparent stop, on a concave path.
+        let doc = SvgDocument::parse(
+            r##"<svg width="10" height="10"><defs>
+            <linearGradient id="b" x1="0" y1="0" x2="0" y2="-10" gradientTransform="scale(1 -1)" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#3dcbff"/><stop offset=".5" stop-color="#0588f7" stop-opacity="0"/>
+            </linearGradient></defs><path fill="url(#b)" d="M0 0H10V10H0V6H4V4H0Z"/></svg>"##,
+        )
+        .expect("parse");
+        let commands = doc.render(0.0, 0.0, 10.0, 10.0);
+        let top = fan_colors(&commands, (7.3, 0.4));
+        assert_eq!(top.len(), 1, "the top row is painted once: {top:?}");
+        assert!(top[0].a > 0.8 && top[0].r < 80 && top[0].b > 240, "near the first stop: {:?}", top[0]);
+        let quarter = fan_colors(&commands, (7.3, 2.4));
+        assert!(quarter.len() == 1 && (quarter[0].a - 0.5).abs() < 0.12, "half faded a quarter down: {quarter:?}");
+        // Past the last stop the gradient pads with it: fully transparent.
+        assert!(fan_colors(&commands, (7.3, 8.3)).iter().all(|c| c.a == 0.0));
+        // The notch stays outside the fill.
+        assert!(fan_colors(&commands, (2.3, 5.1)).is_empty(), "the notch is not filled");
+    }
+
+    #[test]
+    fn test_radial_gradient_takes_stops_from_its_href_and_may_follow_its_use() {
+        let doc = SvgDocument::parse(
+            r##"<svg width="20" height="20" xmlns:xlink="http://www.w3.org/1999/xlink">
+            <circle cx="10" cy="10" r="10" fill="url(#r)"/>
+            <radialGradient id="r" xlink:href="#s"/>
+            <linearGradient id="s"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#000000"/></linearGradient>
+            </svg>"##,
+        )
+        .expect("parse");
+        let commands = doc.render(0.0, 0.0, 20.0, 20.0);
+        let centre = fan_colors(&commands, (10.3, 10.3));
+        assert!(centre.len() == 1 && centre[0].r > 225, "the centre is the first stop: {centre:?}");
+        // 80% of the way out, in two directions: the same ring.
+        for p in [(18.3, 10.3), (10.3, 2.3)] {
+            let ring = fan_colors(&commands, p);
+            assert!(ring.len() == 1 && (ring[0].r as i32 - 51).abs() < 20, "{p:?} is 80% out: {ring:?}");
+        }
+        // Outside the circle nothing paints.
+        assert!(fan_colors(&commands, (0.7, 0.7)).is_empty());
+    }
+
+    #[test]
+    fn test_paint_naming_a_missing_server_paints_nothing() {
+        let doc = SvgDocument::parse(
+            r##"<svg width="10" height="10"><rect width="10" height="10" fill="url(#nope)"/></svg>"##,
+        )
+        .expect("parse");
+        assert!(doc.render(0.0, 0.0, 10.0, 10.0).is_empty());
     }
 
     #[test]

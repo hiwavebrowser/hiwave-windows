@@ -19,6 +19,10 @@ mod net_bridge_tests;
 #[cfg(test)]
 mod web_xhr_tests;
 #[cfg(test)]
+mod web_fetch_tests;
+#[cfg(test)]
+mod web_components_tests;
+#[cfg(test)]
 mod web_streams_tests;
 #[cfg(test)]
 mod web_interfaces_tests;
@@ -486,6 +490,9 @@ impl DomBindings {
         // Event subclasses, geometry types and interface objects pages test with
         // instanceof/typeof; needs the wrappers dom::install just made (web_interfaces.js).
         runtime.evaluate_script(include_str!("web_interfaces.js"))?;
+        // customElements and a constructible HTMLElement (web_components.js); wraps the
+        // tree and attribute mutators the DOM install just defined.
+        runtime.evaluate_script(include_str!("web_components.js"))?;
 
         Ok(Self {
             runtime: RefCell::new(runtime),
@@ -1105,6 +1112,13 @@ impl DomBindings {
     /// The document's URL: the base for a root module's imports.
     pub fn set_module_base(&self, url: &str) {
         self.runtime.borrow_mut().set_module_base(url);
+    }
+
+    /// Register a `<script type=importmap>` document (see
+    /// `JsRuntime::add_import_map`): per-entry warnings, or an error when the
+    /// document is unusable.
+    pub fn add_import_map(&self, text: &str) -> Result<Vec<String>, String> {
+        self.runtime.borrow_mut().add_import_map(text)
     }
 
     /// Parse and start a module (see `JsRuntime::begin_module`).

@@ -283,3 +283,176 @@ fn a_url_is_asked_for_once() {
     assert_eq!(state, ModuleState::Done);
     assert_eq!(site.asked.len(), 2, "{:?}", site.asked);
 }
+
+// ---- import maps and dynamic import()
+
+fn runtime_with_map(map: &str) -> JsRuntime {
+    let mut rt = runtime();
+    let warnings = rt.add_import_map(map).expect("a usable import map");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    rt
+}
+
+/// The github case: a module imports a bare specifier the page's import map
+/// names.
+#[test]
+fn a_bare_specifier_resolves_through_the_import_map() {
+    let mut rt = runtime_with_map(r#"{ "imports": { "react": "https://cdn.test/react.js", "lib": "/vendor/lib.js" } }"#);
+    let mut site = Site::new(&[
+        ("https://site.test/a.js", "import 'react'; import 'lib'; log.push('a');"),
+        ("https://cdn.test/react.js", "log.push('react');"),
+        ("https://site.test/vendor/lib.js", "log.push('lib');"),
+    ]);
+    let (_, state) = run(&mut rt, &mut site, "https://site.test/a.js");
+    assert_eq!(state, ModuleState::Done);
+    assert_eq!(log(&mut rt), "react,lib,a");
+    assert_eq!(site.asked, vec!["https://cdn.test/react.js", "https://site.test/vendor/lib.js"]);
+}
+
+#[test]
+fn the_longest_matching_prefix_wins_and_the_rest_is_appended() {
+    let mut rt = runtime_with_map(
+        r#"{ "imports": { "util/": "/u/", "util/deep/": "https://cdn.test/d/", "exact": "/exact.js", "exact/": "/exact-dir/" } }"#,
+    );
+    let mut site = Site::new(&[
+        ("https://site.test/a.js", "import 'util/x.js'; import 'util/deep/y.js'; import 'exact'; import 'exact/z.js';"),
+        ("https://site.test/u/x.js", ""),
+        ("https://cdn.test/d/y.js", ""),
+        ("https://site.test/exact.js", ""),
+        ("https://site.test/exact-dir/z.js", ""),
+    ]);
+    let (_, state) = run(&mut rt, &mut site, "https://site.test/a.js");
+    assert_eq!(state, ModuleState::Done);
+    let mut asked = site.asked.clone();
+    asked.sort();
+    assert_eq!(
+        asked,
+        vec![
+            "https://cdn.test/d/y.js",
+            "https://site.test/exact-dir/z.js",
+            "https://site.test/exact.js",
+            "https://site.test/u/x.js",
+        ]
+    );
+}
+
+/// A scope applies to the modules under its prefix, before the top-level map.
+#[test]
+fn scopes_apply_to_their_referrers_first() {
+    let mut rt = runtime_with_map(
+        r#"{ "imports": { "dep": "/top/dep.js" }, "scopes": { "/app/": { "dep": "/scoped/dep.js" }, "/app/inner/": { "dep": "/inner/dep.js" } } }"#,
+    );
+    let mut site = Site::new(&[
+        ("https://site.test/root.js", "import 'dep'; import './app/mid.js'; import './app/inner/deep.js';"),
+        ("https://site.test/app/mid.js", "import 'dep';"),
+        ("https://site.test/app/inner/deep.js", "import 'dep';"),
+        ("https://site.test/top/dep.js", ""),
+        ("https://site.test/scoped/dep.js", ""),
+        ("https://site.test/inner/dep.js", ""),
+    ]);
+    let (_, state) = run(&mut rt, &mut site, "https://site.test/root.js");
+    assert_eq!(state, ModuleState::Done);
+    for expected in ["https://site.test/top/dep.js", "https://site.test/scoped/dep.js", "https://site.test/inner/dep.js"] {
+        assert!(site.asked.iter().any(|u| u == expected), "{expected} not asked: {:?}", site.asked);
+    }
+}
+
+#[test]
+fn a_null_address_blocks_the_specifier_and_asks_for_nothing() {
+    let mut rt = runtime_with_map(r#"{ "imports": { "blocked": null, "blocked-dir/": null } }"#);
+    let mut site = Site::new(&[("https://site.test/a.js", "import 'blocked'; log.push('a');")]);
+    let (_, state) = run(&mut rt, &mut site, "https://site.test/a.js");
+    match state {
+        ModuleState::Failed(m) => assert!(m.contains("blocked"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(site.asked.is_empty());
+    let mut site = Site::new(&[("https://site.test/b.js", "import 'blocked-dir/x.js';")]);
+    let (_, state) = run(&mut rt, &mut site, "https://site.test/b.js");
+    assert!(matches!(state, ModuleState::Failed(_)), "{state:?}");
+}
+
+/// A relative or absolute specifier can be remapped too: keys are normalised
+/// to URLs.
+#[test]
+fn a_url_specifier_can_be_remapped() {
+    let mut rt = runtime_with_map(
+        r#"{ "imports": { "./old.js": "./new.js", "https://cdn.test/v1/x.js": "https://cdn.test/v2/x.js" } }"#,
+    );
+    let mut site = Site::new(&[
+        ("https://site.test/page/a.js", "import './old.js'; import 'https://cdn.test/v1/x.js';"),
+        ("https://site.test/page/new.js", ""),
+        ("https://cdn.test/v2/x.js", ""),
+    ]);
+    let (_, state) = run(&mut rt, &mut site, "https://site.test/page/a.js");
+    assert_eq!(state, ModuleState::Done);
+    assert_eq!(site.asked, vec!["https://site.test/page/new.js", "https://cdn.test/v2/x.js"]);
+}
+
+#[test]
+fn bad_entries_are_dropped_with_a_warning_and_a_bad_document_changes_nothing() {
+    let mut rt = runtime();
+    let warnings = rt
+        .add_import_map(r#"{ "imports": { "good": "/g.js", "bare-address": "not-a-url", "dir/": "/no-slash", "num": 5, "": "/x.js" } }"#)
+        .unwrap();
+    assert_eq!(warnings.len(), 4, "{warnings:?}");
+    assert!(rt.add_import_map("{ not json").is_err());
+    assert!(rt.add_import_map("[]").is_err());
+    assert!(rt.add_import_map(r#"{ "imports": [] }"#).is_err());
+    assert!(rt.add_import_map(r#"{ "scopes": { "/a/": 3 } }"#).is_err());
+    let mut site = Site::new(&[
+        ("https://site.test/a.js", "import 'good';"),
+        ("https://site.test/g.js", ""),
+        ("https://site.test/b.js", "import 'bare-address';"),
+        ("https://site.test/c.js", "import 'dir/x';"),
+    ]);
+    assert_eq!(run(&mut rt, &mut site, "https://site.test/a.js").1, ModuleState::Done);
+    for url in ["https://site.test/b.js", "https://site.test/c.js"] {
+        assert!(matches!(run(&mut rt, &mut site, url).1, ModuleState::Failed(_)), "{url}");
+    }
+}
+
+#[test]
+fn a_later_map_adds_keys_and_never_overrides_an_earlier_one() {
+    let mut rt = runtime_with_map(r#"{ "imports": { "a": "/first/a.js" } }"#);
+    rt.add_import_map(r#"{ "imports": { "a": "/second/a.js", "b": "/second/b.js" } }"#).unwrap();
+    let mut site = Site::new(&[
+        ("https://site.test/m.js", "import 'a'; import 'b';"),
+        ("https://site.test/first/a.js", ""),
+        ("https://site.test/second/b.js", ""),
+    ]);
+    assert_eq!(run(&mut rt, &mut site, "https://site.test/m.js").1, ModuleState::Done);
+    assert_eq!(site.asked, vec!["https://site.test/first/a.js", "https://site.test/second/b.js"]);
+}
+
+/// import() from a classic script: the host is asked, then the promise
+/// resolves with the namespace (or rejects when the host has no answer).
+#[test]
+fn dynamic_import_is_recorded_then_resolves_or_rejects() {
+    let mut rt = runtime();
+    rt.evaluate_script(
+        "import('./dyn.js').then(function (m) { log.push('dyn:' + m.value + ':' + m.default); }, function (e) { log.push('rej:' + e.name); }); \
+         import('./gone.js').then(function () { log.push('GONE-RESOLVED'); }, function (e) { log.push('gone:' + e.name); }); \
+         import('bare').then(function () {}, function (e) { log.push('bare:' + e.name); });",
+    )
+    .unwrap();
+    let mut site = Site::new(&[("https://site.test/page/dyn.js", "export const value = 7; export default 'd'; log.push('dyn ran');")]);
+    site.serve(&mut rt);
+    assert_eq!(site.asked, vec!["https://site.test/page/dyn.js", "https://site.test/page/gone.js"], "relative to the document");
+    assert_eq!(log(&mut rt), "bare:TypeError,dyn ran,dyn:7:d,gone:TypeError");
+}
+
+/// A dynamic import from inside a module resolves against that module.
+#[test]
+fn a_dynamic_import_inside_a_module_resolves_against_it() {
+    let mut rt = runtime();
+    let mut site = Site::new(&[
+        ("https://site.test/app/main.js", "import('./lazy.js').then(function (m) { log.push('lazy:' + m.x); });"),
+        ("https://site.test/app/lazy.js", "export const x = 'L';"),
+    ]);
+    let (_, state) = run(&mut rt, &mut site, "https://site.test/app/main.js");
+    assert_eq!(state, ModuleState::Done);
+    site.serve(&mut rt);
+    assert_eq!(site.asked, vec!["https://site.test/app/lazy.js"]);
+    assert_eq!(log(&mut rt), "lazy:L");
+}
