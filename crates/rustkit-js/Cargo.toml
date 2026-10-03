@@ -17,6 +17,9 @@ boa = ["boa_engine"]
 # Pure Rust JS engine (default)
 boa_engine = { version = "0.20", optional = true }
 
+# Module specifier resolution (module.rs)
+url = "2.5"
+
 # Error handling
 thiserror = "1.0"
 

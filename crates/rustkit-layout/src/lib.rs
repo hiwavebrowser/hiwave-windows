@@ -6708,6 +6708,152 @@ impl BackgroundRepeat {
     }
 }
 
+/// Where each copy of a background image goes: the tiles intersecting
+/// `container` for an image of `image_width` x `image_height`, sized by
+/// `size`, placed by `position` (0-1 per axis) and laid out by `repeat`.
+/// Tiles are unclipped; the painter clips them to `container`.
+///
+/// Moved out of the renderer so the raster lane and the engine's SVG
+/// splice (a vector background is painted as commands, not a texture)
+/// place the same tiles.
+pub fn background_tiles(
+    container: Rect,
+    size: &BackgroundSize,
+    position: (f32, f32),
+    repeat: BackgroundRepeat,
+    image_width: f32,
+    image_height: f32,
+) -> Vec<Rect> {
+    let mut tiles = Vec::new();
+    if image_width == 0.0 || image_height == 0.0 {
+        return tiles;
+    }
+
+    let (bg_width, bg_height) = size.compute_size(container, image_width, image_height);
+    if bg_width == 0.0 || bg_height == 0.0 {
+        return tiles;
+    }
+
+    let mut start_x = container.x + (container.width - bg_width) * position.0;
+    let mut start_y = container.y + (container.height - bg_height) * position.1;
+
+    // Adjust size and spacing for space/round modes
+    let mut adjusted_bg_width = bg_width;
+    let mut adjusted_bg_height = bg_height;
+    let mut spacing_x = 0.0_f32;
+    let mut spacing_y = 0.0_f32;
+
+    match repeat {
+        BackgroundRepeat::Space => {
+            // Calculate how many full images fit
+            let fit_count_x = (container.width / bg_width).floor().max(1.0);
+            let fit_count_y = (container.height / bg_height).floor().max(1.0);
+
+            // Calculate spacing to evenly distribute
+            if fit_count_x > 1.0 {
+                let total_image_width = fit_count_x * bg_width;
+                let remaining_space_x = container.width - total_image_width;
+                spacing_x = remaining_space_x / (fit_count_x - 1.0);
+            }
+
+            if fit_count_y > 1.0 {
+                let total_image_height = fit_count_y * bg_height;
+                let remaining_space_y = container.height - total_image_height;
+                spacing_y = remaining_space_y / (fit_count_y - 1.0);
+            }
+
+            // Start at container edge for space mode
+            start_x = container.x;
+            start_y = container.y;
+        }
+        BackgroundRepeat::Round => {
+            // Calculate integer repetitions by rounding
+            let repetitions_x = (container.width / bg_width).round().max(1.0);
+            let repetitions_y = (container.height / bg_height).round().max(1.0);
+
+            // Scale image to fit exactly
+            adjusted_bg_width = container.width / repetitions_x;
+            adjusted_bg_height = container.height / repetitions_y;
+
+            // Start at container edge for round mode
+            start_x = container.x;
+            start_y = container.y;
+        }
+        _ => {}
+    }
+
+    // Determine tiling based on repeat
+    let (tile_x, tile_y) = match repeat {
+        BackgroundRepeat::Repeat => (true, true),
+        BackgroundRepeat::RepeatX => (true, false),
+        BackgroundRepeat::RepeatY => (false, true),
+        BackgroundRepeat::NoRepeat => (false, false),
+        BackgroundRepeat::Space => (true, true),
+        BackgroundRepeat::Round => (true, true),
+    };
+
+    if !tile_x && !tile_y {
+        // Single image - drawn at the calculated position
+        tiles.push(Rect {
+            x: start_x,
+            y: start_y,
+            width: adjusted_bg_width,
+            height: adjusted_bg_height,
+        });
+        return tiles;
+    }
+
+    let x_start = if tile_x && repeat != BackgroundRepeat::Space && repeat != BackgroundRepeat::Round {
+        // Find the leftmost position that's visible (for repeat mode)
+        let tiles_left = ((start_x - container.x) / adjusted_bg_width).ceil() as i32;
+        start_x - (tiles_left as f32 * adjusted_bg_width)
+    } else {
+        start_x
+    };
+
+    let y_start = if tile_y && repeat != BackgroundRepeat::Space && repeat != BackgroundRepeat::Round {
+        let tiles_up = ((start_y - container.y) / adjusted_bg_height).ceil() as i32;
+        start_y - (tiles_up as f32 * adjusted_bg_height)
+    } else {
+        start_y
+    };
+
+    let mut y = y_start;
+    while y < container.y + container.height {
+        let mut x = x_start;
+        while x < container.x + container.width {
+            let tile_rect = Rect {
+                x,
+                y,
+                width: adjusted_bg_width,
+                height: adjusted_bg_height,
+            };
+
+            // Only tiles visible within the container
+            if tile_rect.x + tile_rect.width > container.x
+                && tile_rect.y + tile_rect.height > container.y
+                && tile_rect.x < container.x + container.width
+                && tile_rect.y < container.y + container.height
+            {
+                tiles.push(tile_rect);
+            }
+
+            if tile_x {
+                x += adjusted_bg_width + spacing_x;
+            } else {
+                break;
+            }
+        }
+
+        if tile_y {
+            y += adjusted_bg_height + spacing_y;
+        } else {
+            break;
+        }
+    }
+    tiles
+}
+
 /// Parse a CSS length value to pixels
 fn parse_length(value: &str) -> Option<f32> {
     // Delegates to rustkit-css (duplication audit P0: this was a third,

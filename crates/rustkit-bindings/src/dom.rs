@@ -1828,6 +1828,15 @@ const WRAPPERS_JS: &str = r#"
         value: function (id) { currentScript = typeof id === 'number' ? wrap(id) : null; },
         configurable: true, enumerable: false, writable: true
     });
+    // The engine reports a script's outcome to its element: `load` or
+    // `error`, which do not bubble (HTML "execute the script element").
+    Object.defineProperty(Document.prototype, '__rkFireOn', {
+        value: function (id, type) {
+            var target = typeof id === 'number' ? wrap(id) : null;
+            if (target) target.dispatchEvent(new Event(type));
+        },
+        configurable: true, enumerable: false, writable: true
+    });
 
     // EventTarget (DOM §2.7) for node wrappers, document and window: a
     // JS-side listener registry, and dispatch through capture, target and

@@ -5116,7 +5116,9 @@ name = "rustkit-engine"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "bytes",
  "futures",
+ "http",
  "rustkit-bindings",
  "rustkit-compositor",
  "rustkit-core",
@@ -5191,7 +5193,6 @@ dependencies = [
  "futures",
  "lru",
  "rustkit-codecs",
- "rustkit-http",
  "rustkit-image",
  "serde",
  "serde_json",
@@ -5213,6 +5214,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

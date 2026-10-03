@@ -24,6 +24,9 @@ use tokio_rustls::TlsConnector;
 use tracing::{debug, trace, warn};
 use url::Url;
 
+mod addr;
+pub use addr::{is_local_name, is_public_ip, AddressPolicy, Resolve, ResolveFuture, SystemResolver};
+
 /// HTTP client errors.
 #[derive(Error, Debug)]
 pub enum HttpError {
@@ -50,6 +53,12 @@ pub enum HttpError {
 
     #[error("Unsupported scheme: {0}")]
     UnsupportedScheme(String),
+
+    #[error("Address not permitted: {0}")]
+    AddressDenied(String),
+
+    #[error("Response body exceeds {0} bytes")]
+    BodyTooLarge(usize),
 }
 
 /// HTTP response.
@@ -176,8 +185,12 @@ impl Default for ClientConfig2 {
 }
 
 /// HTTP client.
+#[derive(Clone)]
 pub struct Client {
     config: ClientConfig2,
+    address_policy: AddressPolicy,
+    resolver: Arc<dyn Resolve>,
+    max_body: Option<usize>,
     #[cfg(not(feature = "native-tls"))]
     tls_connector: TlsConnector,
     #[cfg(feature = "native-tls")]
@@ -200,6 +213,9 @@ impl Client {
         let tls_connector = tokio_native_tls::TlsConnector::from(native_connector);
         Ok(Self {
             config,
+            address_policy: AddressPolicy::default(),
+            resolver: Arc::new(SystemResolver),
+            max_body: None,
             tls_connector,
         })
     }
@@ -256,6 +272,9 @@ impl Client {
 
         Ok(Self {
             config,
+            address_policy: AddressPolicy::default(),
+            resolver: Arc::new(SystemResolver),
+            max_body: None,
             tls_connector,
         })
     }
@@ -293,6 +312,38 @@ impl Client {
     /// Create a client builder.
     pub fn builder() -> ClientBuilder {
         ClientBuilder::new()
+    }
+
+    /// The same client restricted to the given resolved-address policy.
+    pub fn with_address_policy(mut self, policy: AddressPolicy) -> Self {
+        self.address_policy = policy;
+        self
+    }
+
+    /// The same client with a different name resolver (tests, DoH later).
+    pub fn with_resolver(mut self, resolver: Arc<dyn Resolve>) -> Self {
+        self.resolver = resolver;
+        self
+    }
+
+    /// The same client, following redirects or not. With `false` a 3xx comes
+    /// back as the response (status, `Location` and all) for the caller to
+    /// vet and follow itself, hop by hop.
+    pub fn with_follow_redirects(mut self, follow: bool) -> Self {
+        self.config.follow_redirects = follow;
+        self
+    }
+
+    /// The same client, refusing any response body (after decoding) larger
+    /// than `max` bytes with [`HttpError::BodyTooLarge`].
+    pub fn with_max_body(mut self, max: usize) -> Self {
+        self.max_body = Some(max);
+        self
+    }
+
+    /// Resolve `host`, vet every address, connect to a vetted one.
+    async fn connect(&self, host: &str, port: u16) -> Result<TcpStream, HttpError> {
+        addr::connect_vetted(&*self.resolver, &self.address_policy, host, port).await
     }
 
     /// Perform a GET request.
@@ -386,9 +437,7 @@ impl Client {
         body: &Option<Bytes>,
     ) -> Result<RawResponse, HttpError> {
         let addr = format!("{}:{}", host, port);
-        let stream = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
+        let stream = self.connect(host, port).await?;
 
         let (tls_stream, negotiated) = self.connect_tls(host, &addr, stream).await?;
 
@@ -513,11 +562,14 @@ image/avif,image/webp,*/*;q=0.8",
         while let Some(chunk) = recv.data().await {
             let chunk = chunk.map_err(|e| HttpError::InvalidResponse(format!("h2 body read: {e}")))?;
             collected.extend_from_slice(&chunk);
+            if self.max_body.is_some_and(|max| collected.len() > max) {
+                return Err(HttpError::BodyTooLarge(self.max_body.unwrap_or(0)));
+            }
             // Flow control: hand the window back or the peer stalls at 64KB.
             let _ = recv.flow_control().release_capacity(chunk.len());
         }
 
-        let body = decode_content_encoding(Bytes::from(collected), &mut response_headers)?;
+        let body = decode_content_encoding_capped(Bytes::from(collected), &mut response_headers, self.max_body)?;
 
         Ok(RawResponse {
             status,
@@ -537,10 +589,7 @@ image/avif,image/webp,*/*;q=0.8",
         headers: &HeaderMap,
         body: &Option<Bytes>,
     ) -> Result<RawResponse, HttpError> {
-        let addr = format!("{}:{}", host, port);
-        let stream = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
+        let stream = self.connect(host, port).await?;
 
         self.send_request(stream, host, method, url, headers, body)
             .await
@@ -689,8 +738,8 @@ image/avif,image/webp,*/*;q=0.8",
         }
 
         // Read body
-        let body = read_body(&mut reader, &response_headers).await?;
-        let body = decode_content_encoding(body, &mut response_headers)?;
+        let body = read_body(&mut reader, &response_headers, self.max_body).await?;
+        let body = decode_content_encoding_capped(body, &mut response_headers, self.max_body)?;
 
         trace!(status = %status, body_len = body.len(), "Response received");
 
@@ -808,8 +857,20 @@ const ACCEPT_ENCODING: &str = "gzip, deflate";
 ///
 /// A body cut off mid-stream keeps what decoded, as a truncated chunked
 /// body does. An encoding we never advertised is passed through untouched.
+#[cfg(test)]
 fn decode_content_encoding(body: Bytes, headers: &mut HeaderMap) -> Result<Bytes, HttpError> {
+    decode_content_encoding_capped(body, headers, None)
+}
+
+/// As [`decode_content_encoding`], refusing to inflate past `max` bytes (a
+/// small compressed body must not become an unbounded allocation).
+fn decode_content_encoding_capped(
+    body: Bytes,
+    headers: &mut HeaderMap,
+    max: Option<usize>,
+) -> Result<Bytes, HttpError> {
     use std::io::Read;
+    let limit = max.map_or(u64::MAX, |m| m as u64 + 1);
 
     let Some(encoding) = headers
         .get("content-encoding")
@@ -824,13 +885,13 @@ fn decode_content_encoding(body: Bytes, headers: &mut HeaderMap) -> Result<Bytes
 
     let mut out = Vec::new();
     let result = match encoding.as_str() {
-        "gzip" | "x-gzip" => flate2::read::MultiGzDecoder::new(&body[..]).read_to_end(&mut out),
+        "gzip" | "x-gzip" => flate2::read::MultiGzDecoder::new(&body[..]).take(limit).read_to_end(&mut out),
         // "deflate" is zlib-wrapped per RFC 9110, but some servers send raw
         // deflate; browsers accept both.
-        "deflate" => match flate2::read::ZlibDecoder::new(&body[..]).read_to_end(&mut out) {
+        "deflate" => match flate2::read::ZlibDecoder::new(&body[..]).take(limit).read_to_end(&mut out) {
             Ok(n) => Ok(n),
             Err(_) if out.is_empty() => {
-                flate2::read::DeflateDecoder::new(&body[..]).read_to_end(&mut out)
+                flate2::read::DeflateDecoder::new(&body[..]).take(limit).read_to_end(&mut out)
             }
             Err(e) => Err(e),
         },
@@ -839,6 +900,11 @@ fn decode_content_encoding(body: Bytes, headers: &mut HeaderMap) -> Result<Bytes
             return Ok(body);
         }
     };
+    if let Some(max) = max {
+        if out.len() > max {
+            return Err(HttpError::BodyTooLarge(max));
+        }
+    }
     if let Err(e) = result {
         if out.is_empty() {
             return Err(HttpError::InvalidResponse(format!(
@@ -856,6 +922,7 @@ fn decode_content_encoding(body: Bytes, headers: &mut HeaderMap) -> Result<Bytes
 async fn read_body<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     headers: &HeaderMap,
+    max: Option<usize>,
 ) -> Result<Bytes, HttpError> {
     // Check for Content-Length
     if let Some(len) = headers
@@ -863,6 +930,11 @@ async fn read_body<R: tokio::io::AsyncBufRead + Unpin>(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok())
     {
+        if let Some(max) = max {
+            if len > max {
+                return Err(HttpError::BodyTooLarge(max));
+            }
+        }
         let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf).await?;
         return Ok(Bytes::from(buf));
@@ -871,19 +943,30 @@ async fn read_body<R: tokio::io::AsyncBufRead + Unpin>(
     // Check for chunked transfer encoding
     if let Some(te) = headers.get("transfer-encoding").and_then(|v| v.to_str().ok()) {
         if te.to_lowercase().contains("chunked") {
-            return read_chunked_body(reader).await;
+            return read_chunked_body(reader, max).await;
         }
     }
 
     // Read until EOF
     let mut buf = Vec::new();
-    reader.read_to_end(&mut buf).await?;
+    match max {
+        Some(max) => {
+            (&mut *reader).take(max as u64 + 1).read_to_end(&mut buf).await?;
+            if buf.len() > max {
+                return Err(HttpError::BodyTooLarge(max));
+            }
+        }
+        None => {
+            reader.read_to_end(&mut buf).await?;
+        }
+    }
     Ok(Bytes::from(buf))
 }
 
 /// Read chunked transfer encoding body.
 async fn read_chunked_body<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
+    max: Option<usize>,
 ) -> Result<Bytes, HttpError> {
     let mut body = Vec::new();
 
@@ -910,6 +993,9 @@ async fn read_chunked_body<R: tokio::io::AsyncBufRead + Unpin>(
             break;
         }
 
+        if max.is_some_and(|max| body.len().saturating_add(size) > max) {
+            return Err(HttpError::BodyTooLarge(max.unwrap_or(0)));
+        }
         let mut chunk = Vec::with_capacity(size);
         (&mut *reader).take(size as u64).read_to_end(&mut chunk).await?;
         let complete = chunk.len() == size;
@@ -978,9 +1064,7 @@ impl Client {
         url: &Url,
     ) -> Result<StreamingResponse, HttpError> {
         let addr = format!("{}:{}", host, port);
-        let stream = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
+        let stream = self.connect(host, port).await?;
 
         // Streaming stays HTTP/1.1 in this PR: the streaming reader is a
         // BufRead line/chunk parser. When h2 is negotiated we buffer via the
@@ -1009,10 +1093,7 @@ impl Client {
         port: u16,
         url: &Url,
     ) -> Result<StreamingResponse, HttpError> {
-        let addr = format!("{}:{}", host, port);
-        let stream = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?;
+        let stream = self.connect(host, port).await?;
 
         self.send_streaming_request(stream, host, url).await
     }
@@ -1191,7 +1272,7 @@ mod tests {
             .build()
             .unwrap();
         let mut reader = BufReader::new(raw);
-        rt.block_on(read_chunked_body(&mut reader))
+        rt.block_on(read_chunked_body(&mut reader, None))
     }
 
     #[test]
@@ -1369,3 +1450,124 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod governed_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Serve `reply` to each connection until the listener is dropped; count accepts.
+    async fn serve(reply: Vec<u8>) -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = hits.clone();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = l.accept().await {
+                h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let reply = reply.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = s.read(&mut buf).await;
+                    let _ = s.write_all(&reply).await;
+                    let _ = s.shutdown().await;
+                });
+            }
+        });
+        (port, hits)
+    }
+
+    fn client() -> Client {
+        Client::new().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_public_only_client_never_connects_to_loopback_on_any_site() {
+        let (port, hits) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec()).await;
+        let c = client().with_address_policy(AddressPolicy::PublicOnly);
+        for url in [
+            format!("http://127.0.0.1:{port}/"),
+            format!("http://localhost:{port}/"),
+            format!("http://[::1]:{port}/"),
+        ] {
+            let r = c.get(&url).await;
+            assert!(matches!(r, Err(HttpError::AddressDenied(_))), "{url}: {r:?}");
+            let r = c.get_streaming(&url).await;
+            assert!(matches!(r, Err(HttpError::AddressDenied(_))), "streaming {url}");
+        }
+        // https goes through the same connect: refused before the handshake.
+        let r = c.get(&format!("https://127.0.0.1:{port}/")).await;
+        assert!(matches!(r, Err(HttpError::AddressDenied(_))), "https: {r:?}");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0, "a socket was opened");
+    }
+
+    #[tokio::test]
+    async fn the_default_client_still_reaches_loopback() {
+        let (port, hits) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec()).await;
+        let r = client().get(&format!("http://127.0.0.1:{port}/")).await.unwrap();
+        assert_eq!(r.text().unwrap(), "hi");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn without_following_a_redirect_comes_back_as_the_response() {
+        let (target_port, target_hits) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi".to_vec()).await;
+        let reply = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/x\r\nContent-Length: 0\r\n\r\n"
+        );
+        let (port, _) = serve(reply.into_bytes()).await;
+        let r = client()
+            .with_follow_redirects(false)
+            .get(&format!("http://127.0.0.1:{port}/"))
+            .await
+            .unwrap();
+        assert_eq!(r.status.as_u16(), 302);
+        assert_eq!(r.header("location"), Some(&format!("http://127.0.0.1:{target_port}/x")[..]));
+        assert_eq!(target_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_body_cap_refuses_content_length_chunked_eof_and_gzip_bombs() {
+        let small = client().with_max_body(10);
+        let cl = format!("HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{}", "x".repeat(20));
+        let (p, _) = serve(cl.into_bytes()).await;
+        let r = small.get(&format!("http://127.0.0.1:{p}/")).await;
+        assert!(matches!(r, Err(HttpError::BodyTooLarge(10))), "content-length: {r:?}");
+
+        let chunked = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            20,
+            "x".repeat(20)
+        );
+        let (p, _) = serve(chunked.into_bytes()).await;
+        let r = small.get(&format!("http://127.0.0.1:{p}/")).await;
+        assert!(matches!(r, Err(HttpError::BodyTooLarge(10))), "chunked: {r:?}");
+
+        let eof = format!("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{}", "x".repeat(20));
+        let (p, _) = serve(eof.into_bytes()).await;
+        let r = small.get(&format!("http://127.0.0.1:{p}/")).await;
+        assert!(matches!(r, Err(HttpError::BodyTooLarge(10))), "eof: {r:?}");
+
+        // 1 MiB of zeros gzips to about a kilobyte: small on the wire, large decoded.
+        use flate2::write::GzEncoder;
+        let mut enc = GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&vec![0u8; 1 << 20]).unwrap();
+        let gz = enc.finish().unwrap();
+        let mut reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+            gz.len()
+        )
+        .into_bytes();
+        reply.extend_from_slice(&gz);
+        let (p, _) = serve(reply).await;
+        let r = small.get(&format!("http://127.0.0.1:{p}/")).await;
+        assert!(matches!(r, Err(HttpError::BodyTooLarge(10))), "gzip bomb: {r:?}");
+
+        // Under the cap is untouched.
+        let ok = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+        let (p, _) = serve(ok.as_bytes().to_vec()).await;
+        let r = small.get(&format!("http://127.0.0.1:{p}/")).await.unwrap();
+        assert_eq!(r.text().unwrap(), "hello");
+    }
+}

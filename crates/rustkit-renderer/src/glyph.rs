@@ -94,7 +94,21 @@ pub fn rasterize_run_glyph(
         rustkit_text::macos::GlyphRasterizer::for_face(font, key.raster_size())
             .rasterize_glyph_id(key.glyph_id, 0.0)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        // DirectWrite faces are size-independent: the face recorded for the
+        // run is drawn at the key's size.
+        let _ = shaped_size;
+        let Some(face) = rustkit_text::face_by_id(key.face) else {
+            // Loud, not silent: layout recorded this id when it shaped the run, so a
+            // miss means the table was bounded out or an id was made up. The caller
+            // still paints the command through the family-list path (no crash).
+            tracing::error!(face = key.face, glyph = key.glyph_id, "shaped run names a face the rasterizer does not hold");
+            return None;
+        };
+        rasterize_face_glyph(face.raw(), key.glyph_id, key.raster_size(), false, true)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (key, shaped_size);
         None
@@ -825,6 +839,58 @@ fn rasterize_glyph_directwrite(
             return None;
         }
 
+        // Whitespace has an advance but no ink.
+        rasterize_face_glyph(&face, glyph_index, font_size, key.codepoint.is_whitespace(), false)
+    }
+}
+
+/// The character path's bitmap for `c`, for tests that compare it with the
+/// run path's.
+#[cfg(all(test, windows))]
+pub(crate) fn rasterize_char_for_test(
+    c: char,
+    family: &str,
+    size: f32,
+    weight: u16,
+) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
+    let key = GlyphKey {
+        codepoint: c,
+        font_family: family.to_string(),
+        font_size: (size * 10.0) as u32,
+        font_weight: weight,
+        font_style: 0,
+        subpixel_phase: 0,
+        web_face: 0,
+    };
+    rasterize_glyph_directwrite(&key, size)
+}
+
+/// Rasterize glyph `glyph_index` of `face` at `font_size`, into the contract
+/// `rasterize_glyph_directwrite` documents.
+///
+/// `blank` says the glyph is known to have no ink (whitespace by character):
+/// it returns a 1x1 empty bitmap with the advance. `blank_if_no_ink` makes a
+/// glyph that turns out to have no ink the same (a shaped run names glyphs,
+/// not characters, so a space reaches here as an id): the character path
+/// leaves that case `None`, so its callers skip the glyph.
+#[cfg(windows)]
+fn rasterize_face_glyph(
+    face: &IDWriteFontFace,
+    glyph_index: u16,
+    font_size: f32,
+    blank: bool,
+    blank_if_no_ink: bool,
+) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
+    unsafe {
+        let factory: IDWriteFactory =
+            match DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!("Failed to create DWrite factory: {:?}", e);
+                    return None;
+                }
+            };
+
         let mut font_metrics = DWRITE_FONT_METRICS::default();
         face.GetMetrics(&mut font_metrics);
         let design_units_per_em = font_metrics.designUnitsPerEm as f32;
@@ -841,9 +907,9 @@ fn rasterize_glyph_directwrite(
         }
         let advance_width = glyph_metrics[0].advanceWidth as f32 * font_size / design_units_per_em;
 
-        // Whitespace has an advance but no ink: a 1x1 empty bitmap keeps the
-        // shared upload path happy and paints nothing.
-        if key.codepoint.is_whitespace() {
+        // A 1x1 empty bitmap keeps the shared upload path happy and paints
+        // nothing.
+        if blank {
             return Some((vec![0u8; 1], 1, 1, advance_width, 0.0, 0.0));
         }
 
@@ -887,7 +953,11 @@ fn rasterize_glyph_directwrite(
                     Ok(b) if non_empty(&b) => (b, true),
                     _ => {
                         release(glyph_run);
-                        return None;
+                        return if blank_if_no_ink {
+                            Some((vec![0u8; 1], 1, 1, advance_width, 0.0, 0.0))
+                        } else {
+                            None
+                        };
                     }
                 },
             };

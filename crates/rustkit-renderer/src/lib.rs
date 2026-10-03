@@ -5554,131 +5554,8 @@ impl Renderer {
             return;
         }
 
-        // Calculate the background image size based on size property
-        let (bg_width, bg_height) = size.compute_size(container, image_width, image_height);
-
-        if bg_width == 0.0 || bg_height == 0.0 {
-            return;
-        }
-
-        // Calculate the starting position based on position property
-        let mut start_x = container.x + (container.width - bg_width) * position.0;
-        let mut start_y = container.y + (container.height - bg_height) * position.1;
-
-        // Adjust size and spacing for space/round modes
-        let mut adjusted_bg_width = bg_width;
-        let mut adjusted_bg_height = bg_height;
-        let mut spacing_x = 0.0_f32;
-        let mut spacing_y = 0.0_f32;
-
-        match repeat {
-            BackgroundRepeat::Space => {
-                // Calculate how many full images fit
-                let fit_count_x = (container.width / bg_width).floor().max(1.0);
-                let fit_count_y = (container.height / bg_height).floor().max(1.0);
-
-                // Calculate spacing to evenly distribute
-                if fit_count_x > 1.0 {
-                    let total_image_width = fit_count_x * bg_width;
-                    let remaining_space_x = container.width - total_image_width;
-                    spacing_x = remaining_space_x / (fit_count_x - 1.0);
-                }
-
-                if fit_count_y > 1.0 {
-                    let total_image_height = fit_count_y * bg_height;
-                    let remaining_space_y = container.height - total_image_height;
-                    spacing_y = remaining_space_y / (fit_count_y - 1.0);
-                }
-
-                // Start at container edge for space mode
-                start_x = container.x;
-                start_y = container.y;
-            }
-            BackgroundRepeat::Round => {
-                // Calculate integer repetitions by rounding
-                let repetitions_x = (container.width / bg_width).round().max(1.0);
-                let repetitions_y = (container.height / bg_height).round().max(1.0);
-
-                // Scale image to fit exactly
-                adjusted_bg_width = container.width / repetitions_x;
-                adjusted_bg_height = container.height / repetitions_y;
-
-                // Start at container edge for round mode
-                start_x = container.x;
-                start_y = container.y;
-            }
-            _ => {}
-        }
-
-        // Determine tiling based on repeat
-        let (tile_x, tile_y) = match repeat {
-            BackgroundRepeat::Repeat => (true, true),
-            BackgroundRepeat::RepeatX => (true, false),
-            BackgroundRepeat::RepeatY => (false, true),
-            BackgroundRepeat::NoRepeat => (false, false),
-            BackgroundRepeat::Space => (true, true),
-            BackgroundRepeat::Round => (true, true),
-        };
-
-        // Generate tile positions
-        if !tile_x && !tile_y {
-            // Single image - draw at the calculated position
-            self.draw_background_image_tile(url, Rect {
-                x: start_x,
-                y: start_y,
-                width: adjusted_bg_width,
-                height: adjusted_bg_height,
-            }, container);
-        } else {
-            // Tiled images
-            let x_start = if tile_x && *repeat != BackgroundRepeat::Space && *repeat != BackgroundRepeat::Round {
-                // Find the leftmost position that's visible (for repeat mode)
-                let tiles_left = ((start_x - container.x) / adjusted_bg_width).ceil() as i32;
-                start_x - (tiles_left as f32 * adjusted_bg_width)
-            } else {
-                start_x
-            };
-
-            let y_start = if tile_y && *repeat != BackgroundRepeat::Space && *repeat != BackgroundRepeat::Round {
-                let tiles_up = ((start_y - container.y) / adjusted_bg_height).ceil() as i32;
-                start_y - (tiles_up as f32 * adjusted_bg_height)
-            } else {
-                start_y
-            };
-
-            let mut y = y_start;
-            while y < container.y + container.height {
-                let mut x = x_start;
-                while x < container.x + container.width {
-                    let tile_rect = Rect {
-                        x,
-                        y,
-                        width: adjusted_bg_width,
-                        height: adjusted_bg_height,
-                    };
-
-                    // Only draw if visible within container
-                    if tile_rect.x + tile_rect.width > container.x
-                        && tile_rect.y + tile_rect.height > container.y
-                        && tile_rect.x < container.x + container.width
-                        && tile_rect.y < container.y + container.height
-                    {
-                        self.draw_background_image_tile(url, tile_rect, container);
-                    }
-
-                    if tile_x {
-                        x += adjusted_bg_width + spacing_x;
-                    } else {
-                        break;
-                    }
-                }
-
-                if tile_y {
-                    y += adjusted_bg_height + spacing_y;
-                } else {
-                    break;
-                }
-            }
+        for tile in rustkit_layout::background_tiles(container, size, position, *repeat, image_width, image_height) {
+            self.draw_background_image_tile(url, tile, container);
         }
     }
 
@@ -9147,5 +9024,86 @@ mod shaped_run_measured_face_tests {
         };
         let (bitmap, ..) = rasterize_run_glyph(&key, 14.0).expect("drawn");
         assert!(bitmap.iter().any(|&v| v > 128), "the glyph has ink");
+    }
+}
+
+/// SHAPED-RUN CONTRACT, slice S0, paint side on Windows. Device-free: these
+/// read the bitmaps the atlas is filled from. The character path is the
+/// oracle.
+#[cfg(all(test, windows))]
+mod shaped_run_windows_paint_tests {
+    use super::*;
+    use rustkit_css::{ComputedStyle, Length};
+
+    const GEORGIA_LIST: &str = "Georgia, 'Times New Roman', serif";
+
+    fn run_in(family: &str, weight: u16, text: &str, size: f32) -> rustkit_layout::GlyphRun {
+        let mut style = ComputedStyle::new();
+        style.font_family = family.to_string();
+        style.font_size = Length::Px(size);
+        style.font_weight = rustkit_css::FontWeight(weight);
+        rustkit_layout::shape_line_run(text, &style, size, 0.0).expect("a Latin line has a run")
+    }
+
+    fn key(run: &rustkit_layout::GlyphRun, glyph_id: u16) -> RunGlyphKey {
+        RunGlyphKey {
+            face: run.face.id,
+            glyph_id,
+            font_size: (run.font_size * 10.0) as u32,
+            subpixel_phase: 0,
+        }
+    }
+
+    /// What the run draws is, byte for byte, what the character path draws
+    /// when it resolves the same list to the same face.
+    #[test]
+    fn run_glyphs_match_the_character_path() {
+        for (weight, text, size) in [(400u16, "Wave", 24.0f32), (700, "Type", 17.6)] {
+            let run = run_in(GEORGIA_LIST, weight, text, size);
+            for (glyph, c) in run.glyphs.iter().zip(text.chars()) {
+                let from_run = rasterize_run_glyph(&key(&run, glyph.glyph_id), run.font_size)
+                    .expect("the run's face is held");
+                let from_char = glyph::rasterize_char_for_test(c, "Georgia", size, weight)
+                    .expect("the character path draws it");
+                assert_eq!(from_run, from_char, "{c:?} at weight {weight}");
+            }
+        }
+    }
+
+    /// A space is a glyph with an advance and no ink: it must not fail the
+    /// run, or every line with a space would fall back to the family path.
+    #[test]
+    fn a_space_in_a_run_is_blank_not_a_failure() {
+        let run = run_in(GEORGIA_LIST, 400, "a b", 24.0);
+        let space = run.glyphs[1].glyph_id;
+        let (bitmap, w, h, advance, _, _) =
+            rasterize_run_glyph(&key(&run, space), 24.0).expect("a space rasterizes");
+        assert_eq!((bitmap.as_slice(), w, h), (&[0u8][..], 1, 1));
+        assert!(advance > 0.0);
+    }
+
+    #[test]
+    fn the_key_is_the_face_and_the_glyph_not_the_family() {
+        let regular = run_in(GEORGIA_LIST, 400, "W", 24.0);
+        let bold = run_in(GEORGIA_LIST, 700, "W", 24.0);
+        let k_regular = key(&regular, regular.glyphs[0].glyph_id);
+        let k_bold = key(&bold, bold.glyphs[0].glyph_id);
+        assert_ne!(k_regular, k_bold);
+        assert_ne!(
+            rasterize_run_glyph(&k_regular, 24.0).expect("regular"),
+            rasterize_run_glyph(&k_bold, 24.0).expect("bold"),
+        );
+        let walked = run_in("No Such Family 9f2c, Georgia", 400, "W", 24.0);
+        assert_eq!(key(&walked, walked.glyphs[0].glyph_id), k_regular);
+    }
+
+    /// A face the rasterizer does not hold draws nothing: the caller paints
+    /// the command through the family-list path instead.
+    #[test]
+    fn a_face_that_is_not_held_is_not_drawn() {
+        let run = run_in(GEORGIA_LIST, 400, "W", 24.0);
+        let mut unknown = key(&run, run.glyphs[0].glyph_id);
+        unknown.face ^= 0x5a5a;
+        assert!(rasterize_run_glyph(&unknown, 24.0).is_none());
     }
 }

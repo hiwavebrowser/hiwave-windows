@@ -3129,12 +3129,26 @@ pub fn parse_color(value: &str) -> Option<Color> {
 
     // Hex colors
     if let Some(hex) = value.strip_prefix('#') {
+        // Only hex digits: `from_str_radix` also takes a sign, and the slices
+        // below are by byte.
+        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         let (r, g, b, a) = match hex.len() {
             3 => {
                 let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
                 let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
                 let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
                 (r, g, b, 1.0)
+            }
+            // #rgba: each digit doubled, like #rgb (minifiers write
+            // `transparent` as `#0000`)
+            4 => {
+                let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
+                let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
+                let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
+                let a = (u8::from_str_radix(&hex[3..4], 16).ok()? * 17) as f32 / 255.0;
+                (r, g, b, a)
             }
             6 => {
                 let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -3690,6 +3704,22 @@ mod tests {
         assert_eq!(parse_color("#fff"), Some(Color::from_rgb(255, 255, 255)));
         assert_eq!(parse_color("#000000"), Some(Color::BLACK));
         assert_eq!(parse_color("#ff0000"), Some(Color::from_rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn a_four_digit_hex_colour_carries_its_alpha() {
+        // What minifiers write for `transparent`.
+        assert_eq!(parse_color("#0000"), Some(Color::new(0, 0, 0, 0.0)));
+        assert_eq!(parse_color("#f00f"), Some(Color::from_rgb(255, 0, 0)));
+        assert_eq!(parse_color("#0f08"), parse_color("#00ff0088"));
+        assert_eq!(parse_color("#FFFA"), parse_color("#ffffffaa"));
+    }
+
+    #[test]
+    fn a_hex_colour_is_hex_digits_only() {
+        for bad in ["#+f+f+f", "#-ff", "#ggg", "#12345", "#", "#\u{e9}1", "#\u{e9}\u{e9}\u{e9}"] {
+            assert_eq!(parse_color(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

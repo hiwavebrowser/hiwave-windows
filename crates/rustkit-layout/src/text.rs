@@ -1331,6 +1331,16 @@ impl TextShaper {
                         overline_offset: -ascent,
                     };
 
+                    // Name the face the glyph ids above belong to, and keep
+                    // it, so paint can draw this run with it instead of
+                    // resolving the family list a second time (see
+                    // `FaceIdentity`).
+                    let face_identity = FaceIdentity {
+                        id: rustkit_text::intern_face(&face),
+                        postscript_name: font.postscript_name(),
+                        face_index: face.index(),
+                    };
+
                     return Ok(ShapedRun {
                         text: text.to_string(),
                         glyphs,
@@ -1341,7 +1351,7 @@ impl TextShaper {
                         font_size: size,
                         metrics,
                         direction: TextDirection::Ltr,
-                        face: None,
+                        face: Some(face_identity),
                     });
                 }
             }

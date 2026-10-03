@@ -1904,6 +1904,7 @@ pub fn layout_grid_container(
     // the track-sizing pass only had estimate_content_height (blind to
     // wrapped text), so auto rows can be far too short.
     let mut real_heights: Vec<Option<f32>> = vec![None; positions.len()];
+    let container_align_items = container.style.align_items;
     let mut phase9_idx: usize = 0;
     for child in container.children.iter_mut() {
         if child.style.display == Display::None {
@@ -1914,11 +1915,24 @@ pub fn layout_grid_container(
 
         if !child.children.is_empty() {
             if child.style.display.is_flex() {
-                // Nested flex container
+                // Nested flex container. Phase 8 handed it its grid area; the
+                // flex pass sizes an auto-height container by its content and
+                // writes that over the area. The content height is what
+                // Phase 9.5 sizes the row from, and a stretched item gets its
+                // area back: it used to keep the content height unless a row
+                // repair happened to fire, so a flex card beside a taller
+                // sibling was 38px in a 100px row.
+                let area_height = child.dimensions.content.height;
                 let child_containing = child.dimensions.clone();
                 crate::flex::layout_flex_container(child, &child_containing);
+                let content_height = child.dimensions.content.height;
                 if let Some(slot) = real_heights.get_mut(item_idx) {
-                    *slot = Some(child.dimensions.content.height);
+                    *slot = Some(content_height);
+                }
+                if area_height > content_height
+                    && stretches_to_its_row(child, &container_align_items)
+                {
+                    child.dimensions.content.height = area_height;
                 }
             } else if child.style.display.is_grid() {
                 // Nested grid container
@@ -2227,6 +2241,22 @@ pub fn layout_grid_container(
                         // Block containers re-flowed above, before the height
                         // resolution that depends on their reflowed extent.
                     }
+
+                    // This grandchild's box is final: anchor its abspos
+                    // children to its padding box, the same statement the
+                    // generic block path makes at the tail of `layout_block`
+                    // and `layout_with_collapse_in` (n46). This loop reaches
+                    // neither, so until now an abspos great-grandchild kept
+                    // the position the re-flow above gave it — resolved
+                    // against the grandchild's height BEFORE the lines just
+                    // above set it. sticky-scroll's `.overflow-content`
+                    // (`top: 50%` in a 150px `.overflow-demo`) read 0 and sat
+                    // at the demo's own top, 75px high.
+                    //
+                    // Width was never affected, which is why the corpus
+                    // failure is a pure `y`: a grid item's width is known
+                    // before its children flow and its height is not.
+                    grandchild.reanchor_absolute_children();
 
                     // Update y for next sibling: advance to the BORDER-BOX
                     // bottom and bank margin_bottom in the collapse context,
@@ -2613,6 +2643,42 @@ pub fn layout_grid_container(
                 }
             }
             idx += 1;
+        }
+    }
+
+    // Phase 9.8: a flex container that is a grid item lays its items out at
+    // the item's USED height.
+    //
+    // Phase 9 ran the item's flex layout to learn its content height, and an
+    // auto-height flex container aligns its items inside that content height.
+    // The passes above then fix the item's height (its row for the default
+    // `stretch`, the ratio in 9.6), and that height is definite when the
+    // item's contents are laid out, as a stretched flex item's is
+    // (css-flexbox-1 §9.4.11). Chrome 148 centres an `align-items: center`
+    // child in the stretched item; here it stayed at the top, where the
+    // content-height pass had put it. new_tab's `.shortcut` rows beside a
+    // taller one had every child 5px above Chrome's.
+    {
+        let mut idx = 0usize;
+        for child in container.children.iter_mut() {
+            if child.style.display == Display::None {
+                continue;
+            }
+            let item_idx = idx;
+            idx += 1;
+            if !child.style.display.is_flex()
+                || child.children.is_empty()
+                || !matches!(child.style.height, Length::Auto)
+            {
+                continue;
+            }
+            let Some(Some(content_height)) = real_heights.get(item_idx).copied() else {
+                continue;
+            };
+            let used = child.dimensions.content.height;
+            if used - content_height > 0.01 {
+                crate::flex::layout_flex_container_at_used_height(child, used);
+            }
         }
     }
 
@@ -3742,6 +3808,16 @@ fn apply_justify_self(
             }
         },
     }
+}
+
+/// Whether a grid item fills its area on the block axis: `align-self`
+/// resolves to `stretch` and its height is `auto` (css-align-3 §4.2).
+fn stretches_to_its_row(child: &LayoutBox, items_align: &AlignItems) -> bool {
+    let stretch = match child.style.align_self {
+        AlignSelf::Auto => *items_align == AlignItems::Stretch,
+        other => other == AlignSelf::Stretch,
+    };
+    stretch && matches!(child.style.height, Length::Auto)
 }
 
 /// Apply align-self alignment.
@@ -7074,13 +7150,151 @@ mod tests {
 
         layout_grid_container(&mut container, 262.0, 600.0);
 
-        // The ROW is the subject: a flex-container item re-derives its own
-        // auto height from its content and is not stretched back to a row
-        // that did not move (pre-existing; the grow path has the same gap).
         let h = container.dimensions.content.height;
         assert!(
             h >= 99.5,
             "a minmax(100px, auto) row must keep its 100px floor, got {h}"
+        );
+    }
+
+    /// A grid of one row: a 100px-tall block beside a flex container holding
+    /// one 30x20 box. `item` styles the flex container.
+    fn flex_item_beside_a_tall_sibling(item: impl FnOnce(&mut ComputedStyle)) -> LayoutBox {
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Px(200.0), TrackSize::Px(200.0)]);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+
+        let mut tall = ComputedStyle::new();
+        tall.height = Length::Px(100.0);
+        container.children.push(LayoutBox::new(BoxType::Block, tall));
+
+        let mut flex_style = ComputedStyle::new();
+        flex_style.display = Display::Flex;
+        item(&mut flex_style);
+        let mut flex = LayoutBox::new(BoxType::Block, flex_style);
+        let mut mark = ComputedStyle::new();
+        mark.width = Length::Px(30.0);
+        mark.height = Length::Px(20.0);
+        flex.children.push(LayoutBox::new(BoxType::Block, mark));
+        container.children.push(flex);
+
+        layout_grid_container(&mut container, 400.0, 0.0);
+        container
+    }
+
+    /// A flex container that is a grid item fills its row (`align-self`'s
+    /// default is `stretch`) and aligns its items in that height. The flex
+    /// pass sizes an auto-height container by its content, and nothing gave
+    /// the row back unless a row repair fired: beside a 100px sibling the
+    /// item was 20px tall, and its `align-items: center` child sat at the top.
+    /// Chrome 148: the item is 100 tall and the child's top is at 40.
+    #[test]
+    fn a_flex_grid_item_fills_its_row_and_aligns_in_it() {
+        let container = flex_item_beside_a_tall_sibling(|s| s.align_items = AlignItems::Center);
+        let item = &container.children[1];
+        let mark = &item.children[0];
+        assert!(
+            (item.dimensions.content.height - 100.0).abs() < 0.01,
+            "the flex item fills the 100px row, got {}",
+            item.dimensions.content.height
+        );
+        assert!(
+            (mark.dimensions.content.y - item.dimensions.content.y - 40.0).abs() < 0.01,
+            "a 20px box centres at 40 in a 100px item, got {}",
+            mark.dimensions.content.y - item.dimensions.content.y
+        );
+        assert!(
+            (mark.dimensions.content.height - 20.0).abs() < 0.01,
+            "the box keeps its own height, got {}",
+            mark.dimensions.content.height
+        );
+    }
+
+    /// The same on a column container's main axis: `justify-content: center`
+    /// distributes the stretched height.
+    #[test]
+    fn a_column_flex_grid_item_justifies_in_its_row() {
+        let container = flex_item_beside_a_tall_sibling(|s| {
+            s.flex_direction = rustkit_css::FlexDirection::Column;
+            s.justify_content = rustkit_css::JustifyContent::Center;
+            s.align_items = AlignItems::FlexStart;
+        });
+        let item = &container.children[1];
+        let mark = &item.children[0];
+        assert!(
+            (item.dimensions.content.height - 100.0).abs() < 0.01,
+            "the flex item fills the 100px row, got {}",
+            item.dimensions.content.height
+        );
+        assert!(
+            (mark.dimensions.content.y - item.dimensions.content.y - 40.0).abs() < 0.01,
+            "a 20px box centres at 40 in a 100px column, got {}",
+            mark.dimensions.content.y - item.dimensions.content.y
+        );
+    }
+
+    /// `align-self: start` opts the item out: it keeps its content height at
+    /// the top of the row.
+    #[test]
+    fn a_start_aligned_flex_grid_item_keeps_its_content_height() {
+        let container = flex_item_beside_a_tall_sibling(|s| {
+            s.align_self = AlignSelf::FlexStart;
+            s.align_items = AlignItems::Center;
+        });
+        let item = &container.children[1];
+        assert!(
+            (item.dimensions.content.height - 20.0).abs() < 0.01,
+            "an `align-self: start` item is as tall as its content, got {}",
+            item.dimensions.content.height
+        );
+        assert!(
+            (item.children[0].dimensions.content.y - item.dimensions.content.y).abs() < 0.01,
+            "its child sits at its top"
+        );
+    }
+
+    /// The row a repair pass grew: two flex items share an auto row, one
+    /// holds a 60px box and the other a 20px box. The estimate sees neither
+    /// (no text), Phase 9.5 grows the row to 60, and the short item's child
+    /// centres in the grown row.
+    #[test]
+    fn a_flex_grid_item_realigns_after_its_row_grows() {
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Px(200.0), TrackSize::Px(200.0)]);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+        for h in [60.0, 20.0] {
+            let mut flex_style = ComputedStyle::new();
+            flex_style.display = Display::Flex;
+            flex_style.align_items = AlignItems::Center;
+            let mut flex = LayoutBox::new(BoxType::Block, flex_style);
+            // The mark is wrapped so the estimate (which reads a child's own
+            // `height`) does not see it.
+            let mut wrap = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+            let mut mark = ComputedStyle::new();
+            mark.width = Length::Px(30.0);
+            mark.height = Length::Px(h);
+            wrap.children.push(LayoutBox::new(BoxType::Block, mark));
+            flex.children.push(wrap);
+            container.children.push(flex);
+        }
+
+        layout_grid_container(&mut container, 400.0, 0.0);
+
+        let short = &container.children[1];
+        assert!(
+            (short.dimensions.content.height - 60.0).abs() < 0.01,
+            "the short item fills the 60px row, got {}",
+            short.dimensions.content.height
+        );
+        let wrap = &short.children[0];
+        assert!(
+            (wrap.dimensions.content.y - short.dimensions.content.y - 20.0).abs() < 0.01,
+            "its 20px child centres at 20 in the 60px row, got {}",
+            wrap.dimensions.content.y - short.dimensions.content.y
         );
     }
 
@@ -7708,6 +7922,243 @@ mod tests {
             (item.width - 100.0).abs() < 0.01 && (offset - 250.0).abs() < 0.01,
             "expected a 100px item centred at +250, got {}px at +{offset}",
             item.width
+        );
+    }
+
+    /// sticky-scroll `.overflow-content`, the one font-independent root on the
+    /// 2026-10-02 macOS board (`y` 1051.25 expected, 976.30 measured, −74.95).
+    ///
+    /// Phase 9 re-lays out a grid item's children itself: it sets the
+    /// grandchild's width, its final position, re-flows its subtree, and only
+    /// THEN resolves its height. A `position: absolute` great-grandchild was
+    /// positioned inside that re-flow, while the grandchild's height was still
+    /// the stale pre-pass figure — so `top: 50%` resolved against it and came
+    /// out 0. The generic block path has anchored abspos children to the
+    /// parent's FINAL padding box since n46 (`reanchor_absolute_children` at
+    /// the tail of `layout_block` / `layout_with_collapse_in`); this loop
+    /// bypasses both, so nothing re-asked the question.
+    ///
+    /// `left: 50%` was unaffected throughout, which is why the corpus failure
+    /// is a pure `y` delta: a grid item's WIDTH is known before its children
+    /// are flowed and its HEIGHT is not.
+    ///
+    /// T-RED without the re-anchor: the circle sits at the demo's own top
+    /// (`top: 50%` → 0) instead of 75px down.
+    #[test]
+    fn an_abspos_child_of_a_grid_items_child_anchors_to_its_final_height() {
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_columns = GridTemplate::from_sizes(vec![
+            TrackSize::Px(250.0),
+            TrackSize::Fr(1.0),
+            TrackSize::Px(250.0),
+        ]);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+
+        // `main`, the middle grid item.
+        let mut main_style = ComputedStyle::new();
+        main_style.grid_column_start = GridLine::Number(2);
+        main_style.grid_column_end = GridLine::Number(3);
+        let mut main_box = LayoutBox::new(BoxType::Block, main_style);
+
+        // `.overflow-demo { position: relative; height: 150px; overflow: hidden }`
+        let mut demo_style = ComputedStyle::new();
+        demo_style.height = Length::Px(150.0);
+        demo_style.position = rustkit_css::Position::Relative;
+        demo_style.overflow_x = rustkit_css::Overflow::Hidden;
+        demo_style.overflow_y = rustkit_css::Overflow::Hidden;
+        let mut demo = LayoutBox::new(BoxType::Block, demo_style);
+
+        // `.overflow-content { position: absolute; width/height: 300px;
+        //  top: 50%; left: 50% }`
+        let mut circle_style = ComputedStyle::new();
+        circle_style.width = Length::Px(300.0);
+        circle_style.height = Length::Px(300.0);
+        circle_style.top = Some(Length::Percent(50.0));
+        circle_style.left = Some(Length::Percent(50.0));
+        let circle = LayoutBox::with_position(
+            BoxType::Block,
+            circle_style,
+            crate::Position::Absolute,
+        );
+        demo.children.push(circle);
+        main_box.children.push(demo);
+        container.children.push(main_box);
+
+        layout_grid_container(&mut container, 1160.0, 800.0);
+
+        let demo = &container.children[0].children[0];
+        assert_eq!(
+            demo.dimensions.content.height, 150.0,
+            "the precondition: the demo keeps its own definite height"
+        );
+        let circle = &demo.children[0];
+        let lead = circle.dimensions.content.y - demo.dimensions.content.y;
+        assert!(
+            (lead - 75.0).abs() < 0.01,
+            "`top: 50%` of a 150px containing block is 75px, not {lead} — \
+             the abspos child was anchored to the grandchild's stale height"
+        );
+        let inset = circle.dimensions.content.x - demo.dimensions.content.x;
+        assert!(
+            (inset - demo.dimensions.content.width / 2.0).abs() < 0.01,
+            "`left: 50%` must stay correct: expected {}, got {inset}",
+            demo.dimensions.content.width / 2.0
+        );
+    }
+
+    /// The same bypass, stated as the rule rather than as the one corpus
+    /// example: it is the grandchild's FINAL box the abspos children anchor
+    /// to, for every inset and for a percentage size — not just for `top`.
+    ///
+    /// T-RED without the re-anchor on both assertions: an `inset: 0` overlay
+    /// stretches to the stale height (0) and a `bottom`-anchored box lands at
+    /// the stale bottom edge.
+    #[test]
+    fn an_inset_stretched_abspos_in_a_grid_items_child_uses_the_final_height() {
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Fr(1.0)]);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+
+        let mut item_style = ComputedStyle::new();
+        item_style.grid_column_start = GridLine::Number(1);
+        item_style.grid_column_end = GridLine::Number(2);
+        let mut item = LayoutBox::new(BoxType::Block, item_style);
+
+        // Padded, because CSS 2.1 §10.1 makes the abspos containing block the
+        // positioned ancestor's PADDING box: a re-anchor written against the
+        // content box lands 10px in on every edge, and a card with no padding
+        // cannot tell the two apart.
+        let mut card_style = ComputedStyle::new();
+        card_style.height = Length::Px(120.0);
+        card_style.padding_top = Length::Px(10.0);
+        card_style.padding_bottom = Length::Px(10.0);
+        card_style.padding_left = Length::Px(10.0);
+        card_style.padding_right = Length::Px(10.0);
+        card_style.position = rustkit_css::Position::Relative;
+        let mut card = LayoutBox::new(BoxType::Block, card_style);
+        // Phase 9 recomputes a grandchild's INLINE padding from its style and
+        // inherits the block-direction edges from the block pre-pass the
+        // engine runs before grid layout. `layout_grid_container` alone has no
+        // pre-pass, so seed them the way that pass would.
+        card.dimensions.padding.top = 10.0;
+        card.dimensions.padding.bottom = 10.0;
+
+        // Absolute lengths arrive pre-resolved in `offsets` (the engine's
+        // `positioning_of` does that and leaves percentages to the layout
+        // pass, which is why the `top: 50%` case above sets the style).
+        let mut cover = LayoutBox::with_position(
+            BoxType::Block,
+            ComputedStyle::new(),
+            crate::Position::Absolute,
+        );
+        cover.set_offsets(Some(0.0), Some(0.0), Some(0.0), Some(0.0));
+        card.children.push(cover);
+
+        let mut caption_style = ComputedStyle::new();
+        caption_style.height = Length::Px(20.0);
+        let mut caption =
+            LayoutBox::with_position(BoxType::Block, caption_style, crate::Position::Absolute);
+        caption.set_offsets(None, None, Some(0.0), Some(0.0));
+        card.children.push(caption);
+
+        item.children.push(card);
+        container.children.push(item);
+
+        layout_grid_container(&mut container, 600.0, 400.0);
+
+        let card = &container.children[0].children[0];
+        assert_eq!(
+            card.dimensions.content.height, 120.0,
+            "the precondition: the card keeps its own definite height"
+        );
+        let padding_box = card.dimensions.padding_box();
+        assert!(
+            (padding_box.height - 140.0).abs() < 0.01,
+            "the precondition: 120px of content plus 10px of padding each side"
+        );
+        let cover = &card.children[0];
+        assert!(
+            (cover.dimensions.content.height - padding_box.height).abs() < 0.01,
+            "an `inset: 0` overlay fills the card's {}px padding box, not {}",
+            padding_box.height,
+            cover.dimensions.content.height
+        );
+        assert!(
+            (cover.dimensions.content.y - padding_box.y).abs() < 0.01,
+            "…and starts at its padding edge {}, not {}",
+            padding_box.y,
+            cover.dimensions.content.y
+        );
+        let caption = &card.children[1];
+        let from_bottom = (padding_box.y + padding_box.height)
+            - (caption.dimensions.content.y + caption.dimensions.content.height);
+        assert!(
+            from_bottom.abs() < 0.01,
+            "a `bottom: 0` caption sits on the card's padding edge, {from_bottom}px off"
+        );
+    }
+
+    /// The re-anchor is UNCONDITIONAL, and this guard exists because a
+    /// mutation that made it conditional on `width_changed` survived the first
+    /// sweep. Both guards above build the grandchild from nothing, so its
+    /// stale width is 0 and the width always moves — the condition they could
+    /// not distinguish is the one the real page meets, since the block
+    /// pre-pass has usually already given a full-width block its final width
+    /// and only the HEIGHT is resolved here.
+    ///
+    /// T-RED with the call gated on `width_changed`: the width is already
+    /// right, the height still goes 0 -> 120, and `top: 50%` keeps the 0 it
+    /// resolved against the stale height.
+    #[test]
+    fn the_grid_child_reanchor_does_not_wait_for_the_width_to_move() {
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Fr(1.0)]);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+
+        let mut item_style = ComputedStyle::new();
+        item_style.grid_column_start = GridLine::Number(1);
+        item_style.grid_column_end = GridLine::Number(2);
+        let mut item = LayoutBox::new(BoxType::Block, item_style);
+
+        let mut card_style = ComputedStyle::new();
+        card_style.height = Length::Px(120.0);
+        card_style.position = rustkit_css::Position::Relative;
+        let mut card = LayoutBox::new(BoxType::Block, card_style);
+        // The block pre-pass already sized this full-width block to the
+        // container, so Phase 9 recomputes the same number: the width does
+        // not move and only the height does.
+        card.dimensions.content.width = 600.0;
+
+        let mut circle_style = ComputedStyle::new();
+        circle_style.width = Length::Px(40.0);
+        circle_style.height = Length::Px(40.0);
+        circle_style.top = Some(Length::Percent(50.0));
+        card.children.push(LayoutBox::with_position(
+            BoxType::Block,
+            circle_style,
+            crate::Position::Absolute,
+        ));
+
+        item.children.push(card);
+        container.children.push(item);
+
+        layout_grid_container(&mut container, 600.0, 400.0);
+
+        let card = &container.children[0].children[0];
+        assert_eq!(
+            card.dimensions.content.width, 600.0,
+            "the precondition: Phase 9 must not have moved the width"
+        );
+        assert_eq!(card.dimensions.content.height, 120.0);
+        let lead = card.children[0].dimensions.content.y - card.dimensions.content.y;
+        assert!(
+            (lead - 60.0).abs() < 0.01,
+            "`top: 50%` of 120px is 60px, not {lead}"
         );
     }
 }

@@ -291,6 +291,14 @@ pub fn layout_flex_container_in(
     layout_flex_container_at(container, container_box, positioning_cb, None)
 }
 
+/// As [`layout_flex_container`], for a container that is a grid item whose
+/// grid has already fixed its used inner HEIGHT (its row, less its own
+/// edges). The container's box must already carry that height.
+pub(crate) fn layout_flex_container_at_used_height(container: &mut LayoutBox, used_inner_height: f32) {
+    let container_box = container.dimensions.clone();
+    layout_flex_container_at(container, &container_box, None, Some(used_inner_height));
+}
+
 /// As [`layout_flex_container_in`], for a container that is itself a flex
 /// item whose parent flex has already fixed its used inner HEIGHT.
 ///
