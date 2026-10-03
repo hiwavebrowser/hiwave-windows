@@ -9,6 +9,13 @@
 //! 3. **Safe interop**: Controlled boundary between Rust and JS
 //! 4. **Async support**: Event loop integration
 
+#[cfg(feature = "boa")]
+mod module;
+#[cfg(feature = "boa")]
+pub use module::{FetchedModule, ModuleHandle, ModuleState};
+#[cfg(all(test, feature = "boa"))]
+mod module_tests;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -116,6 +123,10 @@ pub struct JsRuntimeConfig {
 pub struct JsRuntime {
     #[cfg(feature = "boa")]
     context: boa_engine::Context,
+    /// The module host (see `module`): imports the graph asks for are
+    /// recorded here for the embedder to fetch.
+    #[cfg(feature = "boa")]
+    modules: module::ModuleHost,
     console_handler: Option<Arc<ConsoleHandler>>,
     timers: Arc<Mutex<HashMap<TimerId, PendingTimer>>>,
     globals: HashMap<String, JsValue>,
@@ -132,11 +143,18 @@ impl JsRuntime {
         info!("Initializing JavaScript runtime");
 
         #[cfg(feature = "boa")]
-        let context = boa_engine::Context::default();
+        let modules = module::ModuleHost::default();
+        #[cfg(feature = "boa")]
+        let context = boa_engine::Context::builder()
+            .module_loader(modules.loader())
+            .build()
+            .map_err(|e| JsError::ExecutionError(e.to_string()))?;
 
         let mut runtime = Self {
             #[cfg(feature = "boa")]
             context,
+            #[cfg(feature = "boa")]
+            modules,
             console_handler: None,
             timers: Arc::new(Mutex::new(HashMap::new())),
             globals: HashMap::new(),

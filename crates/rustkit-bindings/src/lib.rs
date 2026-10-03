@@ -11,6 +11,13 @@
 
 mod dom;
 mod inner_text;
+mod net_bridge;
+pub use net_bridge::{NetDelivery, NetRequest};
+pub use rustkit_js::{FetchedModule, ModuleHandle, ModuleState};
+#[cfg(test)]
+mod net_bridge_tests;
+#[cfg(test)]
+mod web_xhr_tests;
 #[cfg(test)]
 mod web_streams_tests;
 #[cfg(test)]
@@ -1084,6 +1091,40 @@ impl DomBindings {
         };
         self.runtime.borrow_mut().evaluate_script(&script)?;
         Ok(())
+    }
+
+    /// Fire `load` or `error` at a `<script>` element (by node id). Listener
+    /// exceptions are queued, see [`Self::take_reported_errors`].
+    pub fn fire_script_event(&self, node: usize, event_type: &str) -> Result<(), BindingError> {
+        self.runtime.borrow_mut().evaluate_script(&format!(
+            "document.__rkFireOn({node}, {event_type:?});"
+        ))?;
+        Ok(())
+    }
+
+    /// The document's URL: the base for a root module's imports.
+    pub fn set_module_base(&self, url: &str) {
+        self.runtime.borrow_mut().set_module_base(url);
+    }
+
+    /// Parse and start a module (see `JsRuntime::begin_module`).
+    pub fn begin_module(&self, url: &str, source: &str) -> Result<rustkit_js::ModuleHandle, String> {
+        self.runtime.borrow_mut().begin_module(url, source)
+    }
+
+    /// The URLs a module graph has asked for since the last call.
+    pub fn take_module_requests(&self) -> Vec<String> {
+        self.runtime.borrow_mut().take_module_requests()
+    }
+
+    /// Supply one requested module's source, or why there is none.
+    pub fn supply_module(&self, requested: &str, outcome: Result<rustkit_js::FetchedModule, String>) {
+        self.runtime.borrow_mut().supply_module(requested, outcome);
+    }
+
+    /// Advance a started module and say where it is.
+    pub fn poll_module(&self, handle: &rustkit_js::ModuleHandle) -> rustkit_js::ModuleState {
+        self.runtime.borrow_mut().poll_module(handle)
     }
 
     /// Set `document.readyState` (`loading` / `interactive` / `complete`).

@@ -34,6 +34,10 @@ futures = "0.3"
 # URL handling
 url = "2.5"
 
+# Script-network bridge (script_net.rs): request/response types
+http = "1.2"
+bytes = "1.9"
+
 # data: URI payloads (@font-face src)
 base64 = "0.22"
 

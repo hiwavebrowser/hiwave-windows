@@ -100,6 +100,38 @@ impl FontFamily {
 }
 
 impl Font {
+    /// The font's PostScript name ("Georgia-Bold"), or an empty string when
+    /// the font carries none.
+    pub fn postscript_name(&self) -> String {
+        unsafe {
+            let mut strings: Option<IDWriteLocalizedStrings> = None;
+            let mut exists = BOOL(0);
+            if self
+                .font
+                .GetInformationalStrings(
+                    DWRITE_INFORMATIONAL_STRING_POSTSCRIPT_NAME,
+                    &mut strings,
+                    &mut exists,
+                )
+                .is_err()
+                || !exists.as_bool()
+            {
+                return String::new();
+            }
+            let Some(strings) = strings else {
+                return String::new();
+            };
+            let Ok(len) = strings.GetStringLength(0) else {
+                return String::new();
+            };
+            let mut buf = vec![0u16; len as usize + 1];
+            if strings.GetString(0, &mut buf).is_err() {
+                return String::new();
+            }
+            String::from_utf16_lossy(&buf[..len as usize])
+        }
+    }
+
     pub fn create_font_face(&self) -> Result<FontFace, TextBackendError> {
         let face = unsafe { self.font.CreateFontFace() }
             .map_err(|e| TextBackendError::DirectWrite(format!("{e:?}")))?;
@@ -108,6 +140,16 @@ impl Font {
 }
 
 impl FontFace {
+    /// The DirectWrite face itself, for a rasterizer that draws with it.
+    pub fn raw(&self) -> &IDWriteFontFace {
+        &self.face
+    }
+
+    /// The face's index inside its font file.
+    pub fn index(&self) -> u32 {
+        unsafe { self.face.GetIndex() }
+    }
+
     pub fn metrics(&self) -> Result<FontMetrics, TextBackendError> {
         let mut m = DWRITE_FONT_METRICS::default();
         unsafe { self.face.GetMetrics(&mut m) };
@@ -162,4 +204,74 @@ fn to_wide_null(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// A stable id for a face: the font file it is read from (DirectWrite's
+/// reference key for it), the face's index inside that file, and its
+/// simulations (synthetic bold/oblique make a different face of the same
+/// file). Two faces that draw differently never share an id; 0 is left free
+/// to mean "no face".
+fn face_id_of(face: &IDWriteFontFace) -> u64 {
+    use std::hash::{Hash, Hasher};
 
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    unsafe {
+        face.GetIndex().hash(&mut hasher);
+        face.GetSimulations().0.hash(&mut hasher);
+        let mut count = 0u32;
+        if face.GetFiles(&mut count, None).is_ok() {
+            let mut files: Vec<Option<IDWriteFontFile>> = vec![None; count as usize];
+            if face.GetFiles(&mut count, Some(files.as_mut_ptr())).is_ok() {
+                for file in files.into_iter().flatten() {
+                    let mut key: *mut std::ffi::c_void = std::ptr::null_mut();
+                    let mut size = 0u32;
+                    if file.GetReferenceKey(&mut key as *mut _ as *mut _, &mut size).is_ok()
+                        && !key.is_null()
+                    {
+                        std::slice::from_raw_parts(key as *const u8, size as usize)
+                            .hash(&mut hasher);
+                    }
+                }
+            }
+        }
+    }
+    hasher.finish().max(1)
+}
+
+mod face_table {
+    use super::FontFace;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Bounds what the table keeps alive. Past it the table starts over; a
+    /// run whose face is gone is painted through the family-list path until
+    /// layout shapes it again.
+    const MAX_FACES: usize = 1024;
+
+    pub(super) fn with<R>(f: impl FnOnce(&mut HashMap<u64, FontFace>) -> R) -> R {
+        static FACES: OnceLock<Mutex<HashMap<u64, FontFace>>> = OnceLock::new();
+        let mut faces = FACES
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if faces.len() >= MAX_FACES {
+            faces.clear();
+        }
+        f(&mut faces)
+    }
+}
+
+/// Record `face` as a face a run was shaped with and return its id. The
+/// Windows counterpart of `macos::intern_face`; the face is size-independent
+/// here, so the table is keyed by id alone.
+pub fn intern_face(face: &FontFace) -> u64 {
+    let id = face_id_of(&face.face);
+    face_table::with(|faces| {
+        faces.entry(id).or_insert_with(|| face.clone());
+    });
+    id
+}
+
+/// The face `intern_face` recorded under `id`, if it is still held. The
+/// Windows counterpart of `macos::face_font`.
+pub fn face_by_id(id: u64) -> Option<FontFace> {
+    face_table::with(|faces| faces.get(&id).cloned())
+}

@@ -117,6 +117,20 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-10-03 (refresh #11, the first nightly, N0):** crates now verbatim from
+hiwave-macos develop `941b8516` (Merge #456), 71 upstream commits (33 PR
+merges) past refresh #10's `46f6d5f`. It brings the Z stack: the module host
+and module scripts (#451, #452), the script-network bridge and engine pump
+(#450), `XMLHttpRequest` (#455), the net policy and module-fetch entry point
+(#444, #445, #448), `FetchPolicy::cancel` (#456), the DirectWrite
+`FaceIdentity` (#428) and its loud-miss follow-up (#437), the CSS background
+image fetch (#443) and the cascade work. `fetch`/`Headers`/`Request`/`Response`
+(#459) is not in it: it is still in review upstream.
+
+Outside `crates/rustkit-*`: nothing. `apply_windows_patches.py` applied its six
+edits unchanged (no new patch, no patch files); the parity tooling sync found
+no changes.
+
 **2026-10-02 (refresh #10, after #108):** crates now verbatim from
 hiwave-macos develop `46f6d5f` (Merge #425), 19 upstream PRs past refresh #9.
 Highlights: nine of this seat's JS PRs (#413 `document.currentScript`, #414

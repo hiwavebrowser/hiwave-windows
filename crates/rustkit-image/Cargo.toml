@@ -16,9 +16,6 @@ rustkit-codecs = { path = "../rustkit-codecs" }
 # Async runtime
 tokio = { version = "1", features = ["sync", "time"] }
 
-# HTTP client for loading (RustKit-owned)
-rustkit-http = { path = "../rustkit-http" }
-
 # URL handling
 url = "2"
 
