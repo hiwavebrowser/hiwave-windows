@@ -1,0 +1,704 @@
+{
+  "results": [
+    {
+      "site_id": "google",
+      "url": "https://www.google.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\google\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\google\\rustkit_1s.ppm",
+          "diff_percent": 8.683789062499999
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\google\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\google\\rustkit_3s.ppm",
+          "diff_percent": 8.683789062499999
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\google\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\google\\rustkit_5s.ppm",
+          "diff_percent": 8.683789062499999
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\google\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\google\\rustkit_10s.ppm",
+          "diff_percent": 8.683789062499999
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "youtube",
+      "url": "https://www.youtube.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\youtube\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\youtube\\rustkit_1s.ppm",
+          "diff_percent": 1.63271484375
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\youtube\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\youtube\\rustkit_3s.ppm",
+          "diff_percent": 1.63271484375
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\youtube\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\youtube\\rustkit_5s.ppm",
+          "diff_percent": 1.63271484375
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\youtube\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\youtube\\rustkit_10s.ppm",
+          "diff_percent": 1.63271484375
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "facebook",
+      "url": "https://www.facebook.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\facebook\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\facebook\\rustkit_1s.ppm",
+          "diff_percent": 13.682128906249998
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\facebook\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\facebook\\rustkit_3s.ppm",
+          "diff_percent": 13.682128906249998
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\facebook\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\facebook\\rustkit_5s.ppm",
+          "diff_percent": 13.682128906249998
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\facebook\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\facebook\\rustkit_10s.ppm",
+          "diff_percent": 13.682128906249998
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "instagram",
+      "url": "https://www.instagram.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\instagram\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\instagram\\rustkit_1s.ppm",
+          "diff_percent": 14.405175781249998
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\instagram\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\instagram\\rustkit_3s.ppm",
+          "diff_percent": 14.405175781249998
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\instagram\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\instagram\\rustkit_5s.ppm",
+          "diff_percent": 14.405175781249998
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\instagram\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\instagram\\rustkit_10s.ppm",
+          "diff_percent": 14.405175781249998
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Web_browser",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\wikipedia\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\wikipedia\\rustkit_1s.ppm",
+          "diff_percent": 12.78095703125
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\wikipedia\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\wikipedia\\rustkit_3s.ppm",
+          "diff_percent": 12.78095703125
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\wikipedia\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\wikipedia\\rustkit_5s.ppm",
+          "diff_percent": 12.78095703125
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\wikipedia\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\wikipedia\\rustkit_10s.ppm",
+          "diff_percent": 12.78095703125
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "lyft",
+      "url": "https://www.lyft.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\lyft\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\lyft\\rustkit_1s.ppm",
+          "diff_percent": 17.723828125
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\lyft\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\lyft\\rustkit_3s.ppm",
+          "diff_percent": 17.723828125
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\lyft\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\lyft\\rustkit_5s.ppm",
+          "diff_percent": 17.723828125
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\lyft\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\lyft\\rustkit_10s.ppm",
+          "diff_percent": 17.723828125
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "reddit",
+      "url": "https://www.reddit.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\reddit\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\reddit\\rustkit_1s.ppm",
+          "diff_percent": 4.55234375
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\reddit\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\reddit\\rustkit_3s.ppm",
+          "diff_percent": 4.55234375
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\reddit\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\reddit\\rustkit_5s.ppm",
+          "diff_percent": 4.55234375
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\reddit\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\reddit\\rustkit_10s.ppm",
+          "diff_percent": 4.55234375
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "x",
+      "url": "https://x.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\x\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\x\\rustkit_1s.ppm",
+          "diff_percent": 10.89990234375
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\x\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\x\\rustkit_3s.ppm",
+          "diff_percent": 10.89990234375
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\x\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\x\\rustkit_5s.ppm",
+          "diff_percent": 10.89990234375
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\x\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\x\\rustkit_10s.ppm",
+          "diff_percent": 10.89990234375
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "linkedin",
+      "url": "https://www.linkedin.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\linkedin\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\linkedin\\rustkit_1s.ppm",
+          "diff_percent": 19.45859375
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\linkedin\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\linkedin\\rustkit_3s.ppm",
+          "diff_percent": 19.45859375
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\linkedin\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\linkedin\\rustkit_5s.ppm",
+          "diff_percent": 19.45859375
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\linkedin\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\linkedin\\rustkit_10s.ppm",
+          "diff_percent": 19.45859375
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "yahoo",
+      "url": "https://www.yahoo.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\yahoo\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\yahoo\\rustkit_1s.ppm",
+          "diff_percent": 32.8623046875
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\yahoo\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\yahoo\\rustkit_3s.ppm",
+          "diff_percent": 23.056542968749998
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\yahoo\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\yahoo\\rustkit_5s.ppm",
+          "diff_percent": 23.056542968749998
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\yahoo\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\yahoo\\rustkit_10s.ppm",
+          "diff_percent": 31.172167968749996
+        }
+      },
+      "chrome_motion_5_10": 15.90048828125,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "DYNAMIC",
+      "error": null,
+      "chrome_motion_1_10": 24.571484375,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": true
+    },
+    {
+      "site_id": "bing",
+      "url": "https://www.bing.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\bing\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\bing\\rustkit_1s.ppm",
+          "diff_percent": 60.75146484375
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\bing\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\bing\\rustkit_3s.ppm",
+          "diff_percent": 65.85810546875
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\bing\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\bing\\rustkit_5s.ppm",
+          "diff_percent": 64.84599609375
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\bing\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\bing\\rustkit_10s.ppm",
+          "diff_percent": 66.11679687499999
+        }
+      },
+      "chrome_motion_5_10": 4.630175781249999,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "DIVERGING",
+      "error": null,
+      "chrome_motion_1_10": 7.91806640625,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": true
+    },
+    {
+      "site_id": "walmart",
+      "url": "https://www.walmart.com/",
+      "status": "rustkit_error",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\walmart\\chrome_1s.png",
+          "rustkit_frame": null,
+          "diff_percent": null
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\walmart\\chrome_3s.png",
+          "rustkit_frame": null,
+          "diff_percent": null
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\walmart\\chrome_5s.png",
+          "rustkit_frame": null,
+          "diff_percent": null
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\walmart\\chrome_10s.png",
+          "rustkit_frame": null,
+          "diff_percent": null
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": null,
+      "trajectory": "UNKNOWN",
+      "error": "Expecting value: line 1 column 1 (char 0)",
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": null,
+      "late_content": false
+    },
+    {
+      "site_id": "microsoft",
+      "url": "https://www.microsoft.com/en-us",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\microsoft\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\microsoft\\rustkit_1s.ppm",
+          "diff_percent": 52.51474609375
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\microsoft\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\microsoft\\rustkit_3s.ppm",
+          "diff_percent": 52.51474609375
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\microsoft\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\microsoft\\rustkit_5s.ppm",
+          "diff_percent": 52.51474609375
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\microsoft\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\microsoft\\rustkit_10s.ppm",
+          "diff_percent": 56.922265625
+        }
+      },
+      "chrome_motion_5_10": 5.952734375,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "DYNAMIC",
+      "error": null,
+      "chrome_motion_1_10": 5.952734375,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": true
+    },
+    {
+      "site_id": "apple",
+      "url": "https://www.apple.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\apple\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\apple\\rustkit_1s.ppm",
+          "diff_percent": 42.0146484375
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\apple\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\apple\\rustkit_3s.ppm",
+          "diff_percent": 42.0146484375
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\apple\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\apple\\rustkit_5s.ppm",
+          "diff_percent": 42.0146484375
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\apple\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\apple\\rustkit_10s.ppm",
+          "diff_percent": 42.0146484375
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "netflix",
+      "url": "https://www.netflix.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\netflix\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\netflix\\rustkit_1s.ppm",
+          "diff_percent": 66.05234374999999
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\netflix\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\netflix\\rustkit_3s.ppm",
+          "diff_percent": 66.05234374999999
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\netflix\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\netflix\\rustkit_5s.ppm",
+          "diff_percent": 66.05234374999999
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\netflix\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\netflix\\rustkit_10s.ppm",
+          "diff_percent": 66.05234374999999
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "github",
+      "url": "https://github.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\github\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\github\\rustkit_1s.ppm",
+          "diff_percent": 10.7595703125
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\github\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\github\\rustkit_3s.ppm",
+          "diff_percent": 17.2791015625
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\github\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\github\\rustkit_5s.ppm",
+          "diff_percent": 17.09052734375
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\github\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\github\\rustkit_10s.ppm",
+          "diff_percent": 17.09052734375
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "DIVERGING",
+      "error": null,
+      "chrome_motion_1_10": 9.8595703125,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": true
+    },
+    {
+      "site_id": "shopify",
+      "url": "https://www.shopify.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\shopify\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\shopify\\rustkit_1s.ppm",
+          "diff_percent": 20.028515625
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\shopify\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\shopify\\rustkit_3s.ppm",
+          "diff_percent": 25.126855468749998
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\shopify\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\shopify\\rustkit_5s.ppm",
+          "diff_percent": 87.60048828125
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\shopify\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\shopify\\rustkit_10s.ppm",
+          "diff_percent": 80.9376953125
+        }
+      },
+      "chrome_motion_5_10": 83.41943359375,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "DYNAMIC",
+      "error": null,
+      "chrome_motion_1_10": 74.95078124999999,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": true
+    },
+    {
+      "site_id": "squarespace",
+      "url": "https://www.squarespace.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\squarespace\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\squarespace\\rustkit_1s.ppm",
+          "diff_percent": 43.37705078125
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\squarespace\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\squarespace\\rustkit_3s.ppm",
+          "diff_percent": 43.9150390625
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\squarespace\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\squarespace\\rustkit_5s.ppm",
+          "diff_percent": 78.33759765625
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\squarespace\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\squarespace\\rustkit_10s.ppm",
+          "diff_percent": 76.00478515625
+        }
+      },
+      "chrome_motion_5_10": 66.01503906250001,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "DYNAMIC",
+      "error": null,
+      "chrome_motion_1_10": 80.08427734375,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": true
+    },
+    {
+      "site_id": "cnn",
+      "url": "https://www.cnn.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\cnn\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\cnn\\rustkit_1s.ppm",
+          "diff_percent": 56.740429687500004
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\cnn\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\cnn\\rustkit_3s.ppm",
+          "diff_percent": 56.740429687500004
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\cnn\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\cnn\\rustkit_5s.ppm",
+          "diff_percent": 56.740429687500004
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\cnn\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\cnn\\rustkit_10s.ppm",
+          "diff_percent": 56.740429687500004
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    },
+    {
+      "site_id": "weather",
+      "url": "https://weather.com/",
+      "status": "ok",
+      "replay": false,
+      "milestones": {
+        "1s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\weather\\chrome_1s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\weather\\rustkit_1s.ppm",
+          "diff_percent": 35.16328125
+        },
+        "3s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\weather\\chrome_3s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\weather\\rustkit_3s.ppm",
+          "diff_percent": 35.16328125
+        },
+        "5s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\weather\\chrome_5s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\weather\\rustkit_5s.ppm",
+          "diff_percent": 35.16328125
+        },
+        "10s": {
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\weather\\chrome_10s.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\timestable\\weather\\rustkit_10s.ppm",
+          "diff_percent": 35.16328125
+        }
+      },
+      "chrome_motion_5_10": 0.0,
+      "rustkit_motion_5_10": 0.0,
+      "trajectory": "STABLE",
+      "error": null,
+      "chrome_motion_1_10": 0.0,
+      "rustkit_motion_1_10": 0.0,
+      "late_content": false
+    }
+  ]
+}
