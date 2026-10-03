@@ -117,6 +117,25 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-10-03 (refresh #12, N1):** crates now verbatim from hiwave-macos
+develop `877fa551`, the Z phase's module and script-network work on top of
+refresh #11: import maps and dynamic `import()` (Z2-C3), custom elements
+slice 1 (Z2-C4), `fetch`/`Headers`/`Request`/`Response` (#459), the vendored
+`boa_parser` fix for `let of` (#471), and the engine's per-phase timing log
+lines (#472).
+
+Outside `crates/rustkit-*`:
+
+- **`Cargo.toml`.** Mirrors upstream: `third_party/boa_parser` is vendored
+  (one changed line, see its `HIWAVE_PATCH.md`), excluded from the workspace
+  and wired through `[patch.crates-io]` next to `boa_gc`. Drop both when Boa
+  is upgraded to >= 0.22 (`docs/BOA_UPGRADE_PARKED_2026-10-03.md`).
+- `apply_windows_patches.py` applied its six edits unchanged; the parity
+  tooling sync found no changes.
+
+Gates (Windows, one step at a time): 2389 passed / 0 failed / 5 ignored.
+Parity swarm: 26/26 pass, mean 1.13%. Live board: see the PR body.
+
 **2026-10-03 (refresh #11, the first nightly, N0):** crates now verbatim from
 hiwave-macos develop `941b8516` (Merge #456), 71 upstream commits (33 PR
 merges) past refresh #10's `46f6d5f`. It brings the Z stack: the module host

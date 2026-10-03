@@ -106,3 +106,34 @@ setTimeout(function () { xhr('/timer', 'timer'); }, 100);
     // The page, plus four fetched requests; the refused one never connected.
     assert_eq!(server.hits.load(std::sync::atomic::Ordering::SeqCst), 5);
 }
+
+/// fetch() through a real page load: a GET, a POST that echoes its JSON
+/// body, a promise chain (response.json()) and a request to another private
+/// address that the policy refuses (the page sees a TypeError, nothing more).
+#[test]
+fn fetch_works_end_to_end_under_the_policy() {
+    let page = r#"<html><head><script>
+var log = [];
+fetch('/hello').then(function (r) { return r.text().then(function (t) { log.push('get:' + r.status + ':' + t); }); });
+fetch('/echo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ n: 7 }) })
+    .then(function (r) { return r.json(); }).then(function (j) { log.push('post:' + j.n); });
+fetch('http://127.0.0.2:' + location.port + '/secret').catch(function (e) { log.push('denied:' + e.constructor.name + ':' + e.message); });
+window.addEventListener('load', function () {
+    fetch('/after-load').then(function (r) { return r.text(); }).then(function (t) { log.push('load:' + t); });
+});
+setTimeout(function () {
+    fetch('/timer').then(function (r) { return r.text(); }).then(function (t) { log.push('timer:' + t); });
+}, 100);
+</script></head><body>hi</body></html>"#;
+    let (mut engine, view, server) = load(
+        EngineConfig::default(),
+        vec![("/", "text/html", page.to_string())],
+    );
+    let log = engine.execute_script(view, "log.slice().sort().join('|')").unwrap();
+    assert_eq!(
+        log,
+        r#"String("denied:TypeError:Failed to fetch|get:200:/hello|load:/after-load|post:7|timer:/timer")"#
+    );
+    // The page, plus four fetched requests; the refused one never connected.
+    assert_eq!(server.hits.load(std::sync::atomic::Ordering::SeqCst), 5);
+}

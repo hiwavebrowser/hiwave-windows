@@ -9,6 +9,7 @@
 //! 3. **Safe interop**: Controlled boundary between Rust and JS
 //! 4. **Async support**: Event loop integration
 
+mod import_map;
 #[cfg(feature = "boa")]
 mod module;
 #[cfg(feature = "boa")]

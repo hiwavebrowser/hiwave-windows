@@ -49,29 +49,22 @@ pub(crate) struct HostModuleLoader {
     requested: RefCell<Vec<String>>,
     /// URLs ever handed to the host (a URL is asked for once).
     asked: RefCell<HashSet<String>>,
+    /// The page's import maps, merged.
+    import_map: RefCell<crate::import_map::ImportMap>,
 }
 
 impl HostModuleLoader {
     fn resolve(&self, specifier: &str, referrer: Option<&str>) -> Result<Url, String> {
-        // An absolute URL stands on its own.
-        if let Ok(url) = Url::parse(specifier) {
-            return Ok(url);
-        }
-        // Otherwise only "./", "../" and "/" are URLs; anything else is a
-        // bare specifier, which needs an import map this engine does not have.
-        if !(specifier.starts_with("./") || specifier.starts_with("../") || specifier.starts_with('/')) {
-            return Err(format!(
-                "Failed to resolve module specifier '{specifier}': relative references must start with \"/\", \"./\" or \"../\""
-            ));
-        }
-        let base = match referrer {
-            Some(r) => Url::parse(r).ok(),
-            None => self.base.borrow().clone(),
-        }
-        .or_else(|| self.base.borrow().clone())
-        .ok_or_else(|| format!("Failed to resolve module specifier '{specifier}': no base URL"))?;
-        base.join(specifier)
-            .map_err(|e| format!("Failed to resolve module specifier '{specifier}': {e}"))
+        let document = self.base.borrow().clone();
+        let referrer_url = referrer.and_then(|r| Url::parse(r).ok()).or_else(|| document.clone());
+        let Some(referrer_url) = referrer_url else {
+            // No base at all: only an absolute URL can be resolved.
+            return Url::parse(specifier)
+                .map_err(|_| format!("Failed to resolve module specifier '{specifier}': no base URL"));
+        };
+        // A relative specifier resolves against the importing module; the
+        // import map (if any) decides everything else.
+        self.import_map.borrow().resolve(specifier, &referrer_url, &referrer_url)
     }
 }
 
@@ -189,6 +182,23 @@ impl JsRuntime {
     /// The document's URL: the base for resolving a root module's imports.
     pub fn set_module_base(&mut self, url: &str) {
         *self.modules.loader.base.borrow_mut() = Url::parse(url).ok();
+    }
+
+    /// Register an import map (`<script type=importmap>`'s text). Returns the
+    /// per-entry warnings; an unusable document is an error and changes
+    /// nothing. Must come before the modules that need it are started: what is
+    /// already resolved stays resolved.
+    pub fn add_import_map(&mut self, text: &str) -> Result<Vec<String>, String> {
+        let base = self
+            .modules
+            .loader
+            .base
+            .borrow()
+            .clone()
+            .ok_or_else(|| "no document URL to resolve the import map against".to_string())?;
+        let (map, warnings) = crate::import_map::ImportMap::parse(text, &base)?;
+        self.modules.loader.import_map.borrow_mut().merge(map);
+        Ok(warnings)
     }
 
     /// Parse `source` as the module served from `url` and start loading its

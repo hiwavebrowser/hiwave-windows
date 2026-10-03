@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
-# Vendored with a patch, not a workspace member (see third_party/boa_gc/HIWAVE_PATCH.md).
-exclude = ["third_party/boa_gc"]
+# Vendored with a patch, not a workspace member (see third_party/boa_gc/HIWAVE_PATCH.md and
+# third_party/boa_parser/HIWAVE_PATCH.md).
+exclude = ["third_party/boa_gc", "third_party/boa_parser"]
 members = [
     "crates/hiwave-core",
     "crates/hiwave-shield",
@@ -130,3 +131,4 @@ strip = true
 # Drop when Boa is upgraded to >= 0.22. See third_party/boa_gc/HIWAVE_PATCH.md.
 [patch.crates-io]
 boa_gc = { path = "third_party/boa_gc" }
+boa_parser = { path = "third_party/boa_parser" }

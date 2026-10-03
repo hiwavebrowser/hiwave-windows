@@ -461,6 +461,12 @@
     };
     Object.defineProperty(XMLHttpRequest.prototype, Symbol.toStringTag, { value: 'XMLHttpRequest', configurable: true });
 
+    // Shared with the other surfaces built on the bridge (fetch): body
+    // encoding and the byte/base64 helpers.
+    Object.defineProperty(net, 'util', {
+        value: { toBase64: toBase64, fromBase64: fromBase64, utf8: utf8, encodeBody: encodeBody, domError: domError, report: report }
+    });
+
     function def(name, value) {
         Object.defineProperty(g, name, { value: value, writable: true, configurable: true, enumerable: false });
     }
