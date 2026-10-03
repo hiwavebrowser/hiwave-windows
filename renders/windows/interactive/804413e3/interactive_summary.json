@@ -1,0 +1,1995 @@
+{
+  "timestamp": "20261003T210813Z",
+  "capture_bin": "P:\\repos\\hiwave-macos\\target\\release\\parity-capture.exe",
+  "target_count": 20,
+  "sites": {
+    "google": {
+      "url": "https://www.google.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 1.5861328125,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\google\\chrome\\google_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\google\\rustkit\\google_before.png",
+          "diff_percent": 2.9827148437499997,
+          "raw": {
+            "diffPixels": 30543,
+            "totalPixels": 1024000,
+            "diffPercent": 2.9827148437499997,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\google\\chrome\\google_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\google\\rustkit\\google_after.png",
+          "diff_percent": 4.11142578125,
+          "raw": {
+            "diffPixels": 42101,
+            "totalPixels": 1024000,
+            "diffPercent": 4.11142578125,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\google\\chrome\\google_before.png",
+          "label": "before",
+          "elapsed_ms": 8813
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "textarea[name='q']",
+          "elapsed_ms": 78
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1002
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\google\\chrome\\google_after.png",
+          "label": "after",
+          "elapsed_ms": 254
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\google\\rustkit\\google_before.png",
+          "label": "before",
+          "elapsed_ms": 400
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "textarea[name='q']",
+          "elapsed_ms": 5
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\google\\rustkit\\google_after.png",
+          "label": "after",
+          "elapsed_ms": 5065
+        }
+      ],
+      "outcome": "fail"
+    },
+    "youtube": {
+      "url": "https://www.youtube.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\youtube\\chrome\\youtube_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\youtube\\rustkit\\youtube_before.png",
+          "diff_percent": 1.63271484375,
+          "raw": {
+            "diffPixels": 16719,
+            "totalPixels": 1024000,
+            "diffPercent": 1.63271484375,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\youtube\\chrome\\youtube_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\youtube\\rustkit\\youtube_after.png",
+          "diff_percent": 1.63486328125,
+          "raw": {
+            "diffPixels": 16741,
+            "totalPixels": 1024000,
+            "diffPercent": 1.63486328125,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\youtube\\chrome\\youtube_before.png",
+          "label": "before",
+          "elapsed_ms": 92
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "button[aria-label='Search']",
+          "elapsed_ms": 92
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1500
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\youtube\\chrome\\youtube_after.png",
+          "label": "after",
+          "elapsed_ms": 50
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\youtube\\rustkit\\youtube_before.png",
+          "label": "before",
+          "elapsed_ms": 27
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector button#search-button-narrow, button[aria-label='Search'], #guide-button",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1500
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\youtube\\rustkit\\youtube_after.png",
+          "label": "after",
+          "elapsed_ms": 8
+        }
+      ],
+      "outcome": "fail"
+    },
+    "facebook": {
+      "url": "https://www.facebook.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\facebook\\chrome\\facebook_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\facebook\\rustkit\\facebook_before.png",
+          "diff_percent": 13.6990234375,
+          "raw": {
+            "diffPixels": 140278,
+            "totalPixels": 1024000,
+            "diffPercent": 13.6990234375,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\facebook\\chrome\\facebook_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\facebook\\rustkit\\facebook_after.png",
+          "diff_percent": 13.6990234375,
+          "raw": {
+            "diffPixels": 140278,
+            "totalPixels": 1024000,
+            "diffPercent": 13.6990234375,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\facebook\\chrome\\facebook_before.png",
+          "label": "before",
+          "elapsed_ms": 70
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 23
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1009
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\facebook\\chrome\\facebook_after.png",
+          "label": "after",
+          "elapsed_ms": 65
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\facebook\\rustkit\\facebook_before.png",
+          "label": "before",
+          "elapsed_ms": 7
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector input#email",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\facebook\\rustkit\\facebook_after.png",
+          "label": "after",
+          "elapsed_ms": 8
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "instagram": {
+      "url": "https://www.instagram.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\instagram\\chrome\\instagram_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\instagram\\rustkit\\instagram_before.png",
+          "diff_percent": 14.405175781249998,
+          "raw": {
+            "diffPixels": 147509,
+            "totalPixels": 1024000,
+            "diffPercent": 14.405175781249998,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\instagram\\chrome\\instagram_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\instagram\\rustkit\\instagram_after.png",
+          "diff_percent": 14.405175781249998,
+          "raw": {
+            "diffPixels": 147509,
+            "totalPixels": 1024000,
+            "diffPercent": 14.405175781249998,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\instagram\\chrome\\instagram_before.png",
+          "label": "before",
+          "elapsed_ms": 89
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 16
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1014
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\instagram\\chrome\\instagram_after.png",
+          "label": "after",
+          "elapsed_ms": 85
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\instagram\\rustkit\\instagram_before.png",
+          "label": "before",
+          "elapsed_ms": 4
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector input[name='username']",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\instagram\\rustkit\\instagram_after.png",
+          "label": "after",
+          "elapsed_ms": 5
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "wikipedia": {
+      "url": "https://en.wikipedia.org/wiki/Web_browser",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 1.33125,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\wikipedia\\chrome\\wikipedia_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\wikipedia\\rustkit\\wikipedia_before.png",
+          "diff_percent": 12.78095703125,
+          "raw": {
+            "diffPixels": 130877,
+            "totalPixels": 1024000,
+            "diffPercent": 12.78095703125,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\wikipedia\\chrome\\wikipedia_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\wikipedia\\rustkit\\wikipedia_after.png",
+          "diff_percent": 13.334375000000001,
+          "raw": {
+            "diffPixels": 136544,
+            "totalPixels": 1024000,
+            "diffPercent": 13.334375000000001,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\wikipedia\\chrome\\wikipedia_before.png",
+          "label": "before",
+          "elapsed_ms": 71
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "input#searchInput",
+          "elapsed_ms": 62
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1001
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\wikipedia\\chrome\\wikipedia_after.png",
+          "label": "after",
+          "elapsed_ms": 44
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\wikipedia\\rustkit\\wikipedia_before.png",
+          "label": "before",
+          "elapsed_ms": 65
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "input#searchInput",
+          "elapsed_ms": 101
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\wikipedia\\rustkit\\wikipedia_after.png",
+          "label": "after",
+          "elapsed_ms": 56
+        }
+      ],
+      "outcome": "fail"
+    },
+    "lyft": {
+      "url": "https://www.lyft.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 20.8396484375,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\lyft\\chrome\\lyft_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\lyft\\rustkit\\lyft_before.png",
+          "diff_percent": 17.723828125,
+          "raw": {
+            "diffPixels": 181492,
+            "totalPixels": 1024000,
+            "diffPercent": 17.723828125,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\lyft\\chrome\\lyft_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\lyft\\rustkit\\lyft_after.png",
+          "diff_percent": 26.2427734375,
+          "raw": {
+            "diffPixels": 268726,
+            "totalPixels": 1024000,
+            "diffPercent": 26.2427734375,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\lyft\\chrome\\lyft_before.png",
+          "label": "before",
+          "elapsed_ms": 120
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "a[href*='rider']",
+          "elapsed_ms": 292
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1513
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\lyft\\chrome\\lyft_after.png",
+          "label": "after",
+          "elapsed_ms": 73
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\lyft\\rustkit\\lyft_before.png",
+          "label": "before",
+          "elapsed_ms": 21
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "a[href*='rider']",
+          "elapsed_ms": 66
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1500
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\lyft\\rustkit\\lyft_after.png",
+          "label": "after",
+          "elapsed_ms": 23
+        }
+      ],
+      "outcome": "fail"
+    },
+    "reddit": {
+      "url": "https://www.reddit.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\reddit\\chrome\\reddit_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\reddit\\rustkit\\reddit_before.png",
+          "diff_percent": 4.55234375,
+          "raw": {
+            "diffPixels": 46616,
+            "totalPixels": 1024000,
+            "diffPercent": 4.55234375,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\reddit\\chrome\\reddit_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\reddit\\rustkit\\reddit_after.png",
+          "diff_percent": 4.55234375,
+          "raw": {
+            "diffPixels": 46616,
+            "totalPixels": 1024000,
+            "diffPercent": 4.55234375,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\reddit\\chrome\\reddit_before.png",
+          "label": "before",
+          "elapsed_ms": 65
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 18
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1004
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\reddit\\chrome\\reddit_after.png",
+          "label": "after",
+          "elapsed_ms": 57
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\reddit\\rustkit\\reddit_before.png",
+          "label": "before",
+          "elapsed_ms": 6
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "[role='search'] input",
+          "elapsed_ms": 1
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\reddit\\rustkit\\reddit_after.png",
+          "label": "after",
+          "elapsed_ms": 7
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "x": {
+      "url": "https://x.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\x\\chrome\\x_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\x\\rustkit\\x_before.png",
+          "diff_percent": 10.89990234375,
+          "raw": {
+            "diffPixels": 111615,
+            "totalPixels": 1024000,
+            "diffPercent": 10.89990234375,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\x\\chrome\\x_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\x\\rustkit\\x_after.png",
+          "diff_percent": 10.89990234375,
+          "raw": {
+            "diffPixels": 111615,
+            "totalPixels": 1024000,
+            "diffPercent": 10.89990234375,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\x\\chrome\\x_before.png",
+          "label": "before",
+          "elapsed_ms": 40
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 12
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1005
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\x\\chrome\\x_after.png",
+          "label": "after",
+          "elapsed_ms": 39
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\x\\rustkit\\x_before.png",
+          "label": "before",
+          "elapsed_ms": 11
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector input[data-testid='SearchBox_Search_Input'], a[href='/login']",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\x\\rustkit\\x_after.png",
+          "label": "after",
+          "elapsed_ms": 8
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "linkedin": {
+      "url": "https://www.linkedin.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\linkedin\\chrome\\linkedin_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\linkedin\\rustkit\\linkedin_before.png",
+          "diff_percent": 19.45859375,
+          "raw": {
+            "diffPixels": 199256,
+            "totalPixels": 1024000,
+            "diffPercent": 19.45859375,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\linkedin\\chrome\\linkedin_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\linkedin\\rustkit\\linkedin_after.png",
+          "diff_percent": 19.45859375,
+          "raw": {
+            "diffPixels": 199256,
+            "totalPixels": 1024000,
+            "diffPercent": 19.45859375,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\linkedin\\chrome\\linkedin_before.png",
+          "label": "before",
+          "elapsed_ms": 48
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 19
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1005
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\linkedin\\chrome\\linkedin_after.png",
+          "label": "after",
+          "elapsed_ms": 46
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\linkedin\\rustkit\\linkedin_before.png",
+          "label": "before",
+          "elapsed_ms": 9
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector input.search-global-typeahead__input, input#username",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\linkedin\\rustkit\\linkedin_after.png",
+          "label": "after",
+          "elapsed_ms": 16
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "yahoo": {
+      "url": "https://www.yahoo.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 12.8177734375,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\yahoo\\chrome\\yahoo_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\yahoo\\rustkit\\yahoo_before.png",
+          "diff_percent": 34.2185546875,
+          "raw": {
+            "diffPixels": 350398,
+            "totalPixels": 1024000,
+            "diffPercent": 34.2185546875,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\yahoo\\chrome\\yahoo_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\yahoo\\rustkit\\yahoo_after.png",
+          "diff_percent": 35.37763671875,
+          "raw": {
+            "diffPixels": 362267,
+            "totalPixels": 1024000,
+            "diffPercent": 35.37763671875,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\yahoo\\chrome\\yahoo_before.png",
+          "label": "before",
+          "elapsed_ms": 741
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 11
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1010
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\yahoo\\chrome\\yahoo_after.png",
+          "label": "after",
+          "elapsed_ms": 624
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\yahoo\\rustkit\\yahoo_before.png",
+          "label": "before",
+          "elapsed_ms": 84
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector input#ybar-sbq",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\yahoo\\rustkit\\yahoo_after.png",
+          "label": "after",
+          "elapsed_ms": 84
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "bing": {
+      "url": "https://www.bing.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 10.12822265625,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\bing\\chrome\\bing_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\bing\\rustkit\\bing_before.png",
+          "diff_percent": 66.2037109375,
+          "raw": {
+            "diffPixels": 677926,
+            "totalPixels": 1024000,
+            "diffPercent": 66.2037109375,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\bing\\chrome\\bing_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\bing\\rustkit\\bing_after.png",
+          "diff_percent": 65.1541015625,
+          "raw": {
+            "diffPixels": 667178,
+            "totalPixels": 1024000,
+            "diffPercent": 65.1541015625,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\bing\\chrome\\bing_before.png",
+          "label": "before",
+          "elapsed_ms": 333
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 18
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1001
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\bing\\chrome\\bing_after.png",
+          "label": "after",
+          "elapsed_ms": 210
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\bing\\rustkit\\bing_before.png",
+          "label": "before",
+          "elapsed_ms": 22
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector input#sb_form_q",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\bing\\rustkit\\bing_after.png",
+          "label": "after",
+          "elapsed_ms": 19
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "walmart": {
+      "url": "https://www.walmart.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0.253125,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\walmart\\chrome\\walmart_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\walmart\\rustkit\\walmart_before.png",
+          "diff_percent": 47.504492187500006,
+          "raw": {
+            "diffPixels": 486446,
+            "totalPixels": 1024000,
+            "diffPercent": 47.504492187500006,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\walmart\\chrome\\walmart_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\walmart\\rustkit\\walmart_after.png",
+          "diff_percent": 47.6576171875,
+          "raw": {
+            "diffPixels": 488014,
+            "totalPixels": 1024000,
+            "diffPercent": 47.6576171875,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\walmart\\chrome\\walmart_before.png",
+          "label": "before",
+          "elapsed_ms": 113
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "input[type='search']",
+          "elapsed_ms": 78
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1005
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\walmart\\chrome\\walmart_after.png",
+          "label": "after",
+          "elapsed_ms": 126
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\walmart\\rustkit\\walmart_before.png",
+          "label": "before",
+          "elapsed_ms": 14
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "input[type='search']",
+          "elapsed_ms": 30
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\walmart\\rustkit\\walmart_after.png",
+          "label": "after",
+          "elapsed_ms": 9
+        }
+      ],
+      "outcome": "fail"
+    },
+    "microsoft": {
+      "url": "https://www.microsoft.com/en-us",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\microsoft\\chrome\\microsoft_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\microsoft\\rustkit\\microsoft_before.png",
+          "diff_percent": 52.51787109375,
+          "raw": {
+            "diffPixels": 537783,
+            "totalPixels": 1024000,
+            "diffPercent": 52.51787109375,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\microsoft\\chrome\\microsoft_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\microsoft\\rustkit\\microsoft_after.png",
+          "diff_percent": 52.51787109375,
+          "raw": {
+            "diffPixels": 537783,
+            "totalPixels": 1024000,
+            "diffPercent": 52.51787109375,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\microsoft\\chrome\\microsoft_before.png",
+          "label": "before",
+          "elapsed_ms": 107
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 30
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1008
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\microsoft\\chrome\\microsoft_after.png",
+          "label": "after",
+          "elapsed_ms": 119
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\microsoft\\rustkit\\microsoft_before.png",
+          "label": "before",
+          "elapsed_ms": 58
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector button#search, a#search",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\microsoft\\rustkit\\microsoft_after.png",
+          "label": "after",
+          "elapsed_ms": 13
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "apple": {
+      "url": "https://www.apple.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 23.07412109375,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\apple\\chrome\\apple_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\apple\\rustkit\\apple_before.png",
+          "diff_percent": 42.0146484375,
+          "raw": {
+            "diffPixels": 430230,
+            "totalPixels": 1024000,
+            "diffPercent": 42.0146484375,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\apple\\chrome\\apple_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\apple\\rustkit\\apple_after.png",
+          "diff_percent": 45.11123046875,
+          "raw": {
+            "diffPixels": 461939,
+            "totalPixels": 1024000,
+            "diffPercent": 45.11123046875,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\apple\\chrome\\apple_before.png",
+          "label": "before",
+          "elapsed_ms": 102
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "a#globalnav-menubutton-link-search",
+          "elapsed_ms": 66
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1014
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\apple\\chrome\\apple_after.png",
+          "label": "after",
+          "elapsed_ms": 89
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\apple\\rustkit\\apple_before.png",
+          "label": "before",
+          "elapsed_ms": 57
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "a#globalnav-menubutton-link-search",
+          "elapsed_ms": 75
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\apple\\rustkit\\apple_after.png",
+          "label": "after",
+          "elapsed_ms": 51
+        }
+      ],
+      "outcome": "fail"
+    },
+    "netflix": {
+      "url": "https://www.netflix.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0.28173828125,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\netflix\\chrome\\netflix_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\netflix\\rustkit\\netflix_before.png",
+          "diff_percent": 66.1017578125,
+          "raw": {
+            "diffPixels": 676882,
+            "totalPixels": 1024000,
+            "diffPercent": 66.1017578125,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\netflix\\chrome\\netflix_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\netflix\\rustkit\\netflix_after.png",
+          "diff_percent": 66.10458984374999,
+          "raw": {
+            "diffPixels": 676911,
+            "totalPixels": 1024000,
+            "diffPercent": 66.10458984374999,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\netflix\\chrome\\netflix_before.png",
+          "label": "before",
+          "elapsed_ms": 321
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "input[name='email']",
+          "elapsed_ms": 79
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1014
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\netflix\\chrome\\netflix_after.png",
+          "label": "after",
+          "elapsed_ms": 313
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\netflix\\rustkit\\netflix_before.png",
+          "label": "before",
+          "elapsed_ms": 43
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "input[name='email']",
+          "elapsed_ms": 79
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\netflix\\rustkit\\netflix_after.png",
+          "label": "after",
+          "elapsed_ms": 50
+        }
+      ],
+      "outcome": "fail"
+    },
+    "github": {
+      "url": "https://github.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0.2658203125,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\github\\chrome\\github_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\github\\rustkit\\github_before.png",
+          "diff_percent": 17.286035156249998,
+          "raw": {
+            "diffPixels": 177009,
+            "totalPixels": 1024000,
+            "diffPercent": 17.286035156249998,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\github\\chrome\\github_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\github\\rustkit\\github_after.png",
+          "diff_percent": 17.090625,
+          "raw": {
+            "diffPixels": 175008,
+            "totalPixels": 1024000,
+            "diffPercent": 17.090625,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\github\\chrome\\github_before.png",
+          "label": "before",
+          "elapsed_ms": 248
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 16
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1516
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\github\\chrome\\github_after.png",
+          "label": "after",
+          "elapsed_ms": 284
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\github\\rustkit\\github_before.png",
+          "label": "before",
+          "elapsed_ms": 408
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector button.header-search-button, button[aria-label='Search or jump to\u00e2\u20ac\u00a6']",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1500
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\github\\rustkit\\github_after.png",
+          "label": "after",
+          "elapsed_ms": 146
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "shopify": {
+      "url": "https://www.shopify.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0.9888671874999999,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\shopify\\chrome\\shopify_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\shopify\\rustkit\\shopify_before.png",
+          "diff_percent": 19.67431640625,
+          "raw": {
+            "diffPixels": 201465,
+            "totalPixels": 1024000,
+            "diffPercent": 19.67431640625,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\shopify\\chrome\\shopify_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\shopify\\rustkit\\shopify_after.png",
+          "diff_percent": 18.847753906250002,
+          "raw": {
+            "diffPixels": 193001,
+            "totalPixels": 1024000,
+            "diffPercent": 18.847753906250002,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\shopify\\chrome\\shopify_before.png",
+          "label": "before",
+          "elapsed_ms": 119
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 17
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1009
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\shopify\\chrome\\shopify_after.png",
+          "label": "after",
+          "elapsed_ms": 134
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\shopify\\rustkit\\shopify_before.png",
+          "label": "before",
+          "elapsed_ms": 33
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector input[type='email']",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\shopify\\rustkit\\shopify_after.png",
+          "label": "after",
+          "elapsed_ms": 34
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "squarespace": {
+      "url": "https://www.squarespace.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 97.267578125,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\squarespace\\chrome\\squarespace_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\squarespace\\rustkit\\squarespace_before.png",
+          "diff_percent": 43.9498046875,
+          "raw": {
+            "diffPixels": 450046,
+            "totalPixels": 1024000,
+            "diffPercent": 43.9498046875,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\squarespace\\chrome\\squarespace_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\squarespace\\rustkit\\squarespace_after.png",
+          "diff_percent": 98.262109375,
+          "raw": {
+            "diffPixels": 1006204,
+            "totalPixels": 1024000,
+            "diffPercent": 98.262109375,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\squarespace\\chrome\\squarespace_before.png",
+          "label": "before",
+          "elapsed_ms": 159
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "a[href*='get-started']",
+          "elapsed_ms": 309
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1507
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\squarespace\\chrome\\squarespace_after.png",
+          "label": "after",
+          "elapsed_ms": 59
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\squarespace\\rustkit\\squarespace_before.png",
+          "label": "before",
+          "elapsed_ms": 29
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "ok",
+          "selector_used": "a[href*='get-started']",
+          "elapsed_ms": 132
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1500
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\squarespace\\rustkit\\squarespace_after.png",
+          "label": "after",
+          "elapsed_ms": 36
+        }
+      ],
+      "outcome": "fail"
+    },
+    "cnn": {
+      "url": "https://www.cnn.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\cnn\\chrome\\cnn_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\cnn\\rustkit\\cnn_before.png",
+          "diff_percent": 56.743261718750006,
+          "raw": {
+            "diffPixels": 581051,
+            "totalPixels": 1024000,
+            "diffPercent": 56.743261718750006,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\cnn\\chrome\\cnn_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\cnn\\rustkit\\cnn_after.png",
+          "diff_percent": 56.743261718750006,
+          "raw": {
+            "diffPixels": 581051,
+            "totalPixels": 1024000,
+            "diffPercent": 56.743261718750006,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\cnn\\chrome\\cnn_before.png",
+          "label": "before",
+          "elapsed_ms": 145
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 23
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1015
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\cnn\\chrome\\cnn_after.png",
+          "label": "after",
+          "elapsed_ms": 110
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\cnn\\rustkit\\cnn_before.png",
+          "label": "before",
+          "elapsed_ms": 26
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector button.search-icon, button[aria-label='Search']",
+          "elapsed_ms": 1
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\cnn\\rustkit\\cnn_after.png",
+          "label": "after",
+          "elapsed_ms": 24
+        }
+      ],
+      "outcome": "unstable"
+    },
+    "weather": {
+      "url": "https://weather.com/",
+      "chrome_status": "ok",
+      "rustkit_status": "ok",
+      "chrome_action_delta": 0,
+      "rustkit_action_delta": 0,
+      "step_diffs": [
+        {
+          "step": 0,
+          "label": "before",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\weather\\chrome\\weather_before.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\weather\\rustkit\\weather_before.png",
+          "diff_percent": 31.17138671875,
+          "raw": {
+            "diffPixels": 319195,
+            "totalPixels": 1024000,
+            "diffPercent": 31.17138671875,
+            "width": 1280,
+            "height": 800
+          }
+        },
+        {
+          "step": 3,
+          "label": "after",
+          "chrome_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\weather\\chrome\\weather_after.png",
+          "rustkit_frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\weather\\rustkit\\weather_after.png",
+          "diff_percent": 31.17138671875,
+          "raw": {
+            "diffPixels": 319195,
+            "totalPixels": 1024000,
+            "diffPercent": 31.17138671875,
+            "width": 1280,
+            "height": 800
+          }
+        }
+      ],
+      "chrome_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\weather\\chrome\\weather_before.png",
+          "label": "before",
+          "elapsed_ms": 175
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "elapsed_ms": 12
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1009
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\weather\\chrome\\weather_after.png",
+          "label": "after",
+          "elapsed_ms": 135
+        }
+      ],
+      "rustkit_action_results": [
+        {
+          "step": 0,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\weather\\rustkit\\weather_before.png",
+          "label": "before",
+          "elapsed_ms": 47
+        },
+        {
+          "step": 1,
+          "type": "click",
+          "status": "selector_not_found",
+          "error": "no matching element found for selector input[id*='LocationSearch'], input[type='search']",
+          "elapsed_ms": 0
+        },
+        {
+          "step": 2,
+          "type": "wait",
+          "status": "ok",
+          "elapsed_ms": 1000
+        },
+        {
+          "step": 3,
+          "type": "capture",
+          "status": "ok",
+          "frame": "P:\\repos\\hiwave-macos\\trench\\realsite\\interactive_runs\\20261003T210813Z\\weather\\rustkit\\weather_after.png",
+          "label": "after",
+          "elapsed_ms": 51
+        }
+      ],
+      "outcome": "unstable"
+    }
+  }
+}
