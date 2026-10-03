@@ -1,0 +1,43 @@
+{
+  "ts": "20261003T214120Z",
+  "chrome": "148.0.7778.216",
+  "viewport": [
+    1280,
+    800
+  ],
+  "sites": 20,
+  "points": 25,
+  "max_points": 60,
+  "loads": 15,
+  "readable": 6,
+  "looks_right": 4,
+  "looks_right_unstable": [
+    "shopify",
+    "weather"
+  ],
+  "readable_unscored": [],
+  "oracle_failed": [],
+  "blocked": {},
+  "per_site": {
+    "google": 3,
+    "youtube": 0,
+    "facebook": 2,
+    "instagram": 0,
+    "wikipedia": 2,
+    "lyft": 2,
+    "reddit": 0,
+    "x": 2,
+    "linkedin": 0,
+    "yahoo": 1,
+    "bing": 1,
+    "walmart": 1,
+    "microsoft": 0,
+    "apple": 2,
+    "netflix": 2,
+    "github": 1,
+    "shopify": 2,
+    "squarespace": 2,
+    "cnn": 1,
+    "weather": 1
+  }
+}

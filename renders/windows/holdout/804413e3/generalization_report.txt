@@ -1,0 +1,17 @@
+﻿======================================================================================
+OVERFITTING GENERALIZATION REPORT: TOP-20 PRIMARY vs HOLDOUT-20 (Package Z2-N1)
+======================================================================================
+Metric                               Top-20          Holdout-20      Generalization Gap  
+--------------------------------------------------------------------------------------
+V1 Points Rate                        41.67%         26.67%        +15.00%
+V1 LOADS Pass Rate                    75.00%         70.00%         +5.00%
+V2 Adjusted LOADS Rate                85.00%         70.00%        +15.00%
+--------------------------------------------------------------------------------------
+V2 Category Distribution:
+  ACCESS_BLOCKED       Top-20:  0   Holdout:  6   (delta: +6)
+  BLANK_SHELL          Top-20:  3   Holdout:  3   (delta: +0)
+  CONTENT_LOADED       Top-20:  9   Holdout:  5   (delta: -4)
+  GOOGLE_LOGO          Top-20:  1   Holdout:  0   (delta: -1)
+  MISSING_ART          Top-20:  5   Holdout:  6   (delta: +1)
+  SMALL_SPLASH         Top-20:  2   Holdout:  0   (delta: -2)
+======================================================================================

@@ -1,0 +1,50 @@
+{
+  "ts": "20261003T215102Z",
+  "chrome": "148.0.7778.216",
+  "viewport": [
+    1280,
+    800
+  ],
+  "sites": 20,
+  "points": 16,
+  "max_points": 60,
+  "loads": 14,
+  "readable": 1,
+  "looks_right": 1,
+  "looks_right_unstable": [],
+  "readable_unscored": [
+    "chatgpt",
+    "nytimes"
+  ],
+  "oracle_failed": [],
+  "blocked": {
+    "amazon": "aws-waf/202",
+    "ebay": "akamai/403",
+    "nytimes": "datadome/403",
+    "cars": "cloudflare/403",
+    "edmunds": "akamai/403",
+    "topps": "cloudflare/403"
+  },
+  "per_site": {
+    "amazon": 0,
+    "chatgpt": 0,
+    "ebay": 1,
+    "nytimes": 2,
+    "espn": 2,
+    "hulu": 1,
+    "hbo": 1,
+    "disney": 1,
+    "nbc": 1,
+    "foxnews": 1,
+    "paypal": 1,
+    "abc": 1,
+    "autotrader": 1,
+    "cars": 0,
+    "edmunds": 1,
+    "kbb": 0,
+    "carmax": 0,
+    "carvana": 1,
+    "carfax": 1,
+    "topps": 0
+  }
+}
