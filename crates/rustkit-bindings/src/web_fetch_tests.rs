@@ -186,6 +186,75 @@ fn the_body_is_a_stream_of_one_chunk() {
 }
 
 #[test]
+fn body_stream_locking_rejects_consuming_and_cloning() {
+    let b = bindings();
+    // 1. Response body locked by reader rejects text() and throws on clone()
+    b.evaluate(
+        "var log = []; \
+         var r = new Response('locked response'); \
+         var reader = r.body.getReader(); \
+         r.text().then( \
+             function () { log.push('resolved'); }, \
+             function (e) { log.push('text:' + e.name + ':' + e.message); } \
+         ); \
+         try { r.clone(); } catch (e) { log.push('clone:' + e.name + ':' + e.message); }",
+    )
+    .unwrap();
+    let res = ev(&b, "log.join('|')");
+    assert_eq!(
+        res,
+        "clone:TypeError:Failed to execute 'clone' on 'Response': body stream is locked|text:TypeError:Failed to execute 'text' on 'Response': body stream is locked"
+    );
+
+    // 2. Request body locked rejects consume and clone, and blocks Request constructor
+    b.evaluate(
+        "var reqLog = []; \
+         var req = new Request('/test', { method: 'POST', body: 'locked request' }); \
+         var reqReader = req.body.getReader(); \
+         req.text().then( \
+             function () { reqLog.push('resolved'); }, \
+             function (e) { reqLog.push('text:' + e.name + ':' + e.message); } \
+         ); \
+         try { req.clone(); } catch (e) { reqLog.push('clone:' + e.name + ':' + e.message); } \
+         try { new Request(req); } catch (e) { reqLog.push('newReq:' + e.name + ':' + e.message); }",
+    )
+    .unwrap();
+    let req_res = ev(&b, "reqLog.join('|')");
+    assert_eq!(
+        req_res,
+        "clone:TypeError:Failed to execute 'clone' on 'Request': body stream is locked|newReq:TypeError:Failed to construct 'Request': Cannot construct a Request with a Request object that is locked.|text:TypeError:Failed to execute 'text' on 'Request': body stream is locked"
+    );
+
+    // 3. Releasing lock allows subsequent consume
+    b.evaluate(
+        "var freeLog = []; \
+         var r2 = new Response('unlocked again'); \
+         var r2Reader = r2.body.getReader(); \
+         r2Reader.releaseLock(); \
+         r2.text().then(function (t) { freeLog.push('unlocked:' + t); });",
+    )
+    .unwrap();
+    assert_eq!(ev(&b, "freeLog.join()"), "unlocked:unlocked again");
+
+    // 4. Cancelling the body marks it disturbed and rejects subsequent consume with already read
+    b.evaluate(
+        "var cancelLog = []; \
+         var r3 = new Response('to be cancelled'); \
+         r3.body.cancel().then(function () { \
+             r3.text().then( \
+                 function () { cancelLog.push('unexpected resolve'); }, \
+                 function (e) { cancelLog.push('cancelled:' + e.name + ':' + e.message); } \
+             ); \
+         });",
+    )
+    .unwrap();
+    assert_eq!(
+        ev(&b, "cancelLog.join()"),
+        "cancelled:TypeError:Failed to execute 'text' on 'Response': body stream already read"
+    );
+}
+
+#[test]
 fn fetch_asks_the_bridge_and_resolves_with_a_response() {
     let b = bindings();
     b.evaluate(

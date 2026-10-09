@@ -1,0 +1,109 @@
+{
+ "chrome": "143.0.7499.4",
+ "cases": [
+  {
+   "name": "new EventTarget() is an object of its own class",
+   "js": "var t = new EventTarget(); [typeof t, Object.prototype.toString.call(t), t instanceof EventTarget, Object.getPrototypeOf(t) === EventTarget.prototype, EventTarget.name, EventTarget.length].join()",
+   "chrome": "object,[object EventTarget],true,true,EventTarget,0"
+  },
+  {
+   "name": "EventTarget() without new throws",
+   "js": "var r; try { EventTarget(); r = 'no throw'; } catch (e) { r = e.name; } r",
+   "chrome": "TypeError"
+  },
+  {
+   "name": "the other node interfaces stay illegal",
+   "js": "var r = []; ['Node', 'Element', 'HTMLElement', 'HTMLDivElement'].forEach(function (n) { try { new window[n](); r.push('no throw'); } catch (e) { r.push(e.name); } }); r.join()",
+   "chrome": "TypeError,TypeError,TypeError,TypeError"
+  },
+  {
+   "name": "a listener on a plain target hears a dispatched event",
+   "js": "var t = new EventTarget(), log = []; t.addEventListener('ping', function (e) { log.push([this === t, e.target === t, e.currentTarget === t, e.eventPhase, e.type].join('/')); }); var e = new Event('ping'); var ret = t.dispatchEvent(e); log.push([ret, e.target === t, e.currentTarget, e.eventPhase].join('/')); log.join()",
+   "chrome": "true/true/true/2/ping,true/true//0"
+  },
+  {
+   "name": "a bubbling event on a plain target does not reach window or document",
+   "js": "var t = new EventTarget(), log = []; function w() { log.push('window'); } function d() { log.push('document'); } window.addEventListener('zz', w, true); window.addEventListener('zz', w); document.addEventListener('zz', d); t.addEventListener('zz', function (e) { log.push('target:' + e.composedPath().length); }); t.dispatchEvent(new Event('zz', { bubbles: true })); window.removeEventListener('zz', w, true); window.removeEventListener('zz', w); document.removeEventListener('zz', d); log.join()",
+   "chrome": "target:1"
+  },
+  {
+   "name": "capture and bubble listeners both run at the target, in order added",
+   "js": "var t = new EventTarget(), log = []; t.addEventListener('x', function () { log.push('bubble'); }); t.addEventListener('x', function () { log.push('capture'); }, true); t.dispatchEvent(new Event('x')); log.join()",
+   "chrome": "bubble,capture",
+   "engine": "capture,bubble",
+   "gap": "the engine runs capture listeners first at the target, as DOM 2.9 has it and as Chrome does for a node; Chrome runs a non-node target's listeners in the order added"
+  },
+  {
+   "name": "once, removeEventListener and the same listener twice",
+   "js": "var t = new EventTarget(), n = 0, m = 0, k = 0; function a() { n++; } function b() { m++; } function c() { k++; } t.addEventListener('x', a, { once: true }); t.addEventListener('x', b); t.addEventListener('x', b); t.addEventListener('x', c); t.removeEventListener('x', c); t.dispatchEvent(new Event('x')); t.dispatchEvent(new Event('x')); [n, m, k].join()",
+   "chrome": "1,2,0"
+  },
+  {
+   "name": "preventDefault decides what dispatchEvent returns",
+   "js": "var t = new EventTarget(); t.addEventListener('x', function (e) { e.preventDefault(); }); [t.dispatchEvent(new Event('x', { cancelable: true })), t.dispatchEvent(new Event('x'))].join()",
+   "chrome": "false,true"
+  },
+  {
+   "name": "a handleEvent object is a listener",
+   "js": "var t = new EventTarget(), got = ''; var o = { handleEvent: function (e) { got = (this === o) + ':' + e.type; } }; t.addEventListener('x', o); t.dispatchEvent(new Event('x')); got",
+   "chrome": "true:x"
+  },
+  {
+   "name": "an on<type> property on a plain target is not a handler",
+   "js": "var t = new EventTarget(), n = 0; t.onping = function () { n++; }; t.dispatchEvent(new Event('ping')); n",
+   "chrome": "0"
+  },
+  {
+   "name": "a class can extend EventTarget and call super()",
+   "js": "class Bus extends EventTarget { constructor() { super(); this.count = 0; } bump() { this.count++; this.dispatchEvent(new Event('bump')); } } var b = new Bus(), seen = 0; b.addEventListener('bump', function () { seen = b.count; }); b.bump(); b.bump(); [seen, b instanceof Bus, b instanceof EventTarget, Object.prototype.toString.call(b), Object.getPrototypeOf(Bus) === EventTarget].join()",
+   "chrome": "2,true,true,[object EventTarget],true"
+  },
+  {
+   "name": "a class that extends EventTarget without its own constructor",
+   "js": "class Quiet extends EventTarget {} var q = new Quiet(), n = 0; q.addEventListener('x', function () { n++; }); q.dispatchEvent(new Event('x')); [n, q instanceof EventTarget].join()",
+   "chrome": "1,true"
+  },
+  {
+   "name": "a subclass with private fields, a static instance and an Event subclass (github react-core router state)",
+   "js": "var NAME = 'router:state-update'; class Update extends Event { constructor() { super(NAME); } } class Store extends EventTarget { static #one; #state = null; constructor() { super(); } static getInstance() { return Store.#one || (Store.#one = new Store()), Store.#one; } getState() { return this.#state; } setState(s) { this.#state = s; this.dispatchEvent(new Update()); } subscribe(f) { var c = new AbortController(); this.addEventListener(NAME, () => { f(this.#state); }, { signal: c.signal }); f(this.#state); return () => { c.abort(); }; } } var s = Store.getInstance(), log = []; var stop = s.subscribe(function (v) { log.push(String(v)); }); s.setState('a'); s.setState('b'); stop(); s.setState('c'); [log.join('|'), s === Store.getInstance(), s.getState()].join()",
+   "chrome": "null|a|b,true,c"
+  },
+  {
+   "name": "the signal option: abort removes the listener",
+   "js": "var t = new EventTarget(), c = new AbortController(), n = 0; t.addEventListener('x', function () { n++; }, { signal: c.signal }); t.dispatchEvent(new Event('x')); c.abort(); t.dispatchEvent(new Event('x')); n",
+   "chrome": "1"
+  },
+  {
+   "name": "the signal option: an aborted signal adds nothing",
+   "js": "var t = new EventTarget(), c = new AbortController(), n = 0; c.abort(); t.addEventListener('x', function () { n++; }, { signal: c.signal }); t.dispatchEvent(new Event('x')); n",
+   "chrome": "0"
+  },
+  {
+   "name": "the signal option on an element",
+   "js": "var el = document.createElement('div'), c = new AbortController(), n = 0; el.addEventListener('x', function () { n++; }, { signal: c.signal }); el.dispatchEvent(new Event('x')); c.abort(); el.dispatchEvent(new Event('x')); n",
+   "chrome": "1"
+  },
+  {
+   "name": "the signal option: abort removes only the listener it was given with",
+   "js": "var t = new EventTarget(), c = new AbortController(), n = 0; function f() { n++; } t.addEventListener('x', f, { signal: c.signal }); t.removeEventListener('x', f); t.addEventListener('x', f); c.abort(); t.dispatchEvent(new Event('x')); n",
+   "chrome": "0"
+  },
+  {
+   "name": "the signal option: a listener added again with a signal keeps its first registration",
+   "js": "var t = new EventTarget(), c = new AbortController(), n = 0; function f() { n++; } t.addEventListener('x', f); t.addEventListener('x', f, { signal: c.signal }); c.abort(); t.dispatchEvent(new Event('x')); n",
+   "chrome": "1"
+  },
+  {
+   "name": "two targets do not share listeners",
+   "js": "var a = new EventTarget(), b = new EventTarget(), n = 0; a.addEventListener('x', function () { n++; }); b.dispatchEvent(new Event('x')); n",
+   "chrome": "0"
+  },
+  {
+   "name": "dispatchEvent wants an Event",
+   "js": "var t = new EventTarget(), r; try { t.dispatchEvent({ type: 'x' }); r = 'no throw'; } catch (e) { r = e.name; } r",
+   "chrome": "TypeError",
+   "engine": "no throw",
+   "gap": "dispatchEvent takes any object with a type, for every target, as it did before; not changed here"
+  }
+ ]
+}

@@ -1,0 +1,65 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "an-icon-label-pinned-to-24px-by-min-and-max",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{place-items:start}#a{min-width:24px;max-width:24px;max-height:24px}</style></head><body><div class=g id=g><label id=a><svg id=s width=25 height=24 viewBox='0 0 25 24'><rect width=25 height=24 /></svg></label><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:24 a:0:0:24:24 s:0:0:25:24 b:48:0:38:20 after:0:24:1280:20"
+  },
+  {
+   "name": "a-lone-svg-in-a-start-aligned-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{place-items:start}</style></head><body><div class=g id=g><div id=a><svg id=s width=25 height=24 viewBox='0 0 25 24'><rect width=25 height=24 /></svg></div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:29 a:0:0:25:29 s:0:0:25:24 b:48:0:38:20 after:0:29:1280:20"
+  },
+  {
+   "name": "min-width-on-a-start-aligned-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{grid-template-columns:300px auto;justify-items:start}#a{min-width:100px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 a:0:0:100:20 b:300:0:38:20 after:0:20:1280:20"
+  },
+  {
+   "name": "max-width-on-a-start-aligned-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{grid-template-columns:300px auto;justify-items:start}#a{max-width:50px}</style></head><body><div class=g id=g><div id=a>aaaa bbbb cccc</div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:60 a:0:0:50:60 b:300:0:38:60 after:0:60:1280:20"
+  },
+  {
+   "name": "min-width-on-a-centered-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{grid-template-columns:300px auto;justify-items:center}#a{min-width:100px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 a:100:0:100:20 b:431:0:38:20 after:0:20:1280:20"
+  },
+  {
+   "name": "max-width-on-a-stretched-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{grid-template-columns:300px auto}#a{max-width:100px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 a:0:0:100:20 b:300:0:300:20 after:0:20:1280:20"
+  },
+  {
+   "name": "max-height-on-a-start-aligned-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{align-items:start}#a{max-height:24px}</style></head><body><div class=g id=g><div id=a><div>one</div><div>two</div><div>three</div></div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:24 a:0:0:48:24 b:48:0:552:20 after:0:24:1280:20"
+  },
+  {
+   "name": "max-height-on-a-stretched-item-in-a-px-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{grid-template-rows:100px}#a{max-height:40px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:48:40 b:48:0:552:100 after:0:100:1280:20"
+  },
+  {
+   "name": "min-height-on-a-start-aligned-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{align-items:start}#a{min-height:50px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:50 a:0:0:48:50 b:48:0:552:20 after:0:50:1280:20"
+  },
+  {
+   "name": "start-aligned-in-a-px-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{grid-template-rows:100px;align-items:start}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:48:20 b:48:0:552:20 after:0:100:1280:20"
+  },
+  {
+   "name": "min-width-wider-than-its-column",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:48px auto}.g{place-items:start}#a{min-width:80px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>text</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 a:0:0:80:20 b:48:0:38:20 after:0:20:1280:20"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

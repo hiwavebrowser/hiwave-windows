@@ -127,6 +127,13 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+# Pixel-capture builds keep release optimizations without serial LTO/codegen.
+[profile.parity]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
+
 # boa_gc 0.20.0 with the weak-phase mark fix backported from 0.22.
 # Drop when Boa is upgraded to >= 0.22. See third_party/boa_gc/HIWAVE_PATCH.md.
 [patch.crates-io]

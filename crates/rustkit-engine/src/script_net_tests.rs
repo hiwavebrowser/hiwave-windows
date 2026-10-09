@@ -26,7 +26,8 @@ fn serve() -> Server {
 }
 
 /// `serve`, plus fixed `routes` (path, content type, body) that take
-/// precedence.
+/// precedence. A route whose path starts with `/held` answers after
+/// 300 ms.
 pub(crate) fn serve_routes(routes: Vec<(&'static str, &'static str, String)>) -> Server {
     let routes = Arc::new(routes);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -68,6 +69,10 @@ pub(crate) fn serve_routes(routes: Vec<(&'static str, &'static str, String)>) ->
                     }
                 }
                 let fixed = routes.iter().find(|(p, _, _)| *p == path);
+                // A fixed route can be slow too: `/held...`.
+                if path.starts_with("/held") {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
                 let content_type = fixed.map(|(_, ct, _)| *ct).unwrap_or("text/plain");
                 let body = if let Some((_, _, body)) = fixed {
                     body.clone().into_bytes()

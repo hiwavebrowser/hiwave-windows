@@ -114,7 +114,68 @@ fn existing_singletons_get_their_interfaces_and_the_rest_are_interface_only() {
     // Constructors for features the engine does not have stay UNDEFINED, so
     // `typeof Worker` style feature detection keeps working.
     assert_eq!(
-        ev(&b, "[typeof Worker, typeof WebAssembly, typeof Notification, typeof AudioContext, typeof OffscreenCanvas, typeof BroadcastChannel, typeof MessageChannel].join()"),
-        "undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+        ev(&b, "[typeof Worker, typeof WebAssembly, typeof Notification, typeof AudioContext, typeof OffscreenCanvas, typeof BroadcastChannel].join()"),
+        "undefined,undefined,undefined,undefined,undefined,undefined"
     );
 }
+
+#[test]
+fn cdatasection_and_processinginstruction_interfaces_exist() {
+    let b = bound();
+    assert_eq!(
+        ev(&b, "[typeof CDATASection, typeof ProcessingInstruction].join()"),
+        "function,function"
+    );
+    assert_eq!(
+        ev(&b, "[CDATASection.prototype instanceof Text, CDATASection.prototype instanceof CharacterData, CDATASection.prototype instanceof Node].join()"),
+        "true,true,true"
+    );
+    assert_eq!(
+        ev(&b, "[ProcessingInstruction.prototype instanceof CharacterData, ProcessingInstruction.prototype instanceof Node].join()"),
+        "true,true"
+    );
+    assert_eq!(
+        ev(&b, "var t1; try { new CDATASection(); t1 = 'no throw'; } catch (e) { t1 = e.name; } t1"),
+        "TypeError"
+    );
+    assert_eq!(
+        ev(&b, "var t2; try { new ProcessingInstruction(); t2 = 'no throw'; } catch (e) { t2 = e.name; } t2"),
+        "TypeError"
+    );
+    // YouTube webcomponents-sd Tag 878 iteration
+    assert_eq!(
+        ev(&b, "['Document','DocumentFragment','Element','Text','Comment','CDATASection','ProcessingInstruction'].every(function(a){ return typeof Object.create(window[a].prototype) === 'object'; })"),
+        "true"
+    );
+}
+
+#[test]
+fn window_inherits_from_window_prototype_and_event_target_prototype() {
+    let b = bound();
+    // 1. Object.getPrototypeOf(window) === Window.prototype
+    assert_eq!(
+        ev(&b, "String(Object.getPrototypeOf(window) === Window.prototype)"),
+        "true"
+    );
+    // 2. window instanceof Window
+    assert_eq!(
+        ev(&b, "String(window instanceof Window)"),
+        "true"
+    );
+    // 3. window instanceof EventTarget
+    assert_eq!(
+        ev(&b, "String(window instanceof EventTarget)"),
+        "true"
+    );
+    // 4. a property defined on EventTarget.prototype is visible on window
+    assert_eq!(
+        ev(&b, "EventTarget.prototype.__custom_test_prop = 'from_event_target'; window.__custom_test_prop"),
+        "from_event_target"
+    );
+    // 5. webcomponents-sd __shady_native_addEventListener pattern works on window
+    assert_eq!(
+        ev(&b, "var called = false; EventTarget.prototype.__shady_native_addEventListener = function() { called = true; }; window.__shady_native_addEventListener('test', function(){}, true); String(called)"),
+        "true"
+    );
+}
+

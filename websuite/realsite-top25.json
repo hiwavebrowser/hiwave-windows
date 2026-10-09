@@ -1,0 +1,113 @@
+{
+  "description": "Real-site board, 25 sites: the pinned top 20 (realsite-top20.json, same order) plus five Pete added on 2026-10-06 (chrono24, cargurus, autotrader, cars, bringatrailer). On 2026-10-08 Pete added simonwillison (simonwillison.net/tags/browser-challenge/), 26 sites. Scored out of 78 (3 per site) with its own trend file; the first 20 are also reported as the /60 board so the trend stays comparable. Pinned list \u2014 change it only with a dated note in trench/BASELINE-realsite.md, never to make the number move.",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "sites": [
+    {
+      "id": "google",
+      "url": "https://www.google.com/"
+    },
+    {
+      "id": "youtube",
+      "url": "https://www.youtube.com/"
+    },
+    {
+      "id": "facebook",
+      "url": "https://www.facebook.com/"
+    },
+    {
+      "id": "instagram",
+      "url": "https://www.instagram.com/"
+    },
+    {
+      "id": "wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Web_browser"
+    },
+    {
+      "id": "lyft",
+      "url": "https://www.lyft.com/"
+    },
+    {
+      "id": "reddit",
+      "url": "https://www.reddit.com/"
+    },
+    {
+      "id": "x",
+      "url": "https://x.com/"
+    },
+    {
+      "id": "linkedin",
+      "url": "https://www.linkedin.com/"
+    },
+    {
+      "id": "yahoo",
+      "url": "https://www.yahoo.com/"
+    },
+    {
+      "id": "bing",
+      "url": "https://www.bing.com/"
+    },
+    {
+      "id": "walmart",
+      "url": "https://www.walmart.com/"
+    },
+    {
+      "id": "microsoft",
+      "url": "https://www.microsoft.com/en-us"
+    },
+    {
+      "id": "apple",
+      "url": "https://www.apple.com/"
+    },
+    {
+      "id": "netflix",
+      "url": "https://www.netflix.com/"
+    },
+    {
+      "id": "github",
+      "url": "https://github.com/"
+    },
+    {
+      "id": "shopify",
+      "url": "https://www.shopify.com/"
+    },
+    {
+      "id": "squarespace",
+      "url": "https://www.squarespace.com/"
+    },
+    {
+      "id": "cnn",
+      "url": "https://www.cnn.com/"
+    },
+    {
+      "id": "weather",
+      "url": "https://weather.com/"
+    },
+    {
+      "id": "chrono24",
+      "url": "https://www.chrono24.com/"
+    },
+    {
+      "id": "cargurus",
+      "url": "https://www.cargurus.com/"
+    },
+    {
+      "id": "autotrader",
+      "url": "https://www.autotrader.com/"
+    },
+    {
+      "id": "cars",
+      "url": "https://www.cars.com/"
+    },
+    {
+      "id": "bringatrailer",
+      "url": "https://bringatrailer.com/"
+    },
+    {
+      "id": "simonwillison",
+      "url": "https://simonwillison.net/tags/browser-challenge/"
+    }
+  ]
+}

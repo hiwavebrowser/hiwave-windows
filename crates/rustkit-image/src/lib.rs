@@ -960,8 +960,7 @@ fn parse_svg_color(s: &str) -> (u8, u8, u8, u8) {
     let s = s.trim();
 
     // Hex colors
-    if s.starts_with('#') {
-        let hex = &s[1..];
+    if let Some(hex) = s.strip_prefix('#') {
         match hex.len() {
             3 => {
                 let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).unwrap_or(0);
@@ -980,16 +979,12 @@ fn parse_svg_color(s: &str) -> (u8, u8, u8, u8) {
     }
 
     // URL-encoded hex (e.g., %23ff0000 for #ff0000)
-    if s.starts_with("%23") {
-        let hex = &s[3..];
-        match hex.len() {
-            6 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-                return (r, g, b, 255);
-            }
-            _ => {}
+    if let Some(hex) = s.strip_prefix("%23") {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+            return (r, g, b, 255);
         }
     }
 
@@ -1105,6 +1100,59 @@ mod tests {
         let rect = fit.compute_rect(100.0, 100.0, 400.0, 200.0, (0.5, 0.5));
         assert!((rect.width - 100.0).abs() < 0.001);
         assert!((rect.height - 50.0).abs() < 0.001);
+    }
+
+    // 4x4 opaque red PNG (same bytes the engine routing tests use).
+    const RED_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0xa9, 0xf1, 0x9e, 0x7e, 0x00, 0x00, 0x00,
+        0x15, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xfc, 0xcf, 0xc0, 0xf0,
+        0x9f, 0x01, 0x09, 0x30, 0x31, 0xa0, 0x01, 0xc2, 0x02, 0x00, 0x83, 0xd1,
+        0x02, 0x06, 0xb3, 0x4b, 0xd2, 0x9b, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// After #438 the image manager has no HTTP client: a network URL is an
+    /// error until the engine's loader hands a body to `insert_fetched`.
+    /// The engine's end-to-end pin is macOS+headless only; this is the
+    /// crate-level contract that runs everywhere.
+    #[test]
+    fn insert_fetched_caches_a_raster_body_and_load_does_not_fetch() {
+        let manager = ImageManager::new();
+        let url = Url::parse("https://cdn.example/a.png").unwrap();
+
+        assert!(manager.load_blocking(url.clone()).is_err());
+        assert!(!manager.is_cached(&url));
+
+        let loaded = manager
+            .insert_fetched(&url, Some("image/png"), RED_PNG)
+            .expect("decode png");
+        assert_eq!((loaded.natural_width, loaded.natural_height), (4, 4));
+        assert_eq!(loaded.content_type.as_deref(), Some("image/png"));
+        assert!(manager.is_cached(&url));
+
+        let again = manager.load_blocking(url.clone()).expect("cache hit");
+        assert_eq!((again.natural_width, again.natural_height), (4, 4));
+        assert!(Arc::ptr_eq(&loaded, &again));
+    }
+
+    /// linkedin's hero is an extensionless URL served as `image/svg+xml`.
+    /// `insert_fetched` must hand it back as `ImageError::Svg` so the engine
+    /// can route it to the SVG lane instead of failing as "Unknown image format".
+    #[test]
+    fn insert_fetched_routes_svg_content_type_without_caching() {
+        let manager = ImageManager::new();
+        let url = Url::parse("https://static.licdn.com/aero-v1/sc/h/abcdef").unwrap();
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"></svg>"#;
+
+        match manager.insert_fetched(&url, Some("image/svg+xml; charset=utf-8"), svg.as_bytes()) {
+            Err(ImageError::Svg(xml)) => assert!(xml.contains("<svg"), "{xml}"),
+            Ok(_) => panic!("expected Svg error, got Ok"),
+            Err(other) => panic!("expected Svg, got {other}"),
+        }
+        assert!(!manager.is_cached(&url));
+        assert!(manager.load_blocking(url).is_err());
     }
 }
 

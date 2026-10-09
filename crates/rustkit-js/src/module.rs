@@ -20,18 +20,16 @@ use std::path::Path;
 use std::rc::Rc;
 
 use boa_engine::builtins::promise::PromiseState;
-use boa_engine::module::{ModuleLoader, Referrer};
+use boa_engine::module::{ModuleLoader, ModuleRequest, Referrer};
 use boa_engine::object::builtins::JsPromise;
-use boa_engine::{js_string, Context, JsNativeError, JsObject, JsResult, JsString, JsValue, Module, Source};
+use boa_engine::{js_string, Context, JsNativeError, JsObject, JsResult, JsValue, Module, Source};
 use url::Url;
 
 use crate::JsRuntime;
 
-type Finish = Box<dyn FnOnce(JsResult<Module>, &mut Context)>;
-
 struct Waiter {
     url: String,
-    finish: Finish,
+    sender: tokio::sync::oneshot::Sender<JsResult<Module>>,
 }
 
 /// Boa's `ModuleLoader` for a document. Interior-mutable and `Rc`-shared:
@@ -66,6 +64,14 @@ impl HostModuleLoader {
         // import map (if any) decides everything else.
         self.import_map.borrow().resolve(specifier, &referrer_url, &referrer_url)
     }
+
+    pub fn register_module(&self, specifier: &str, module: Module) {
+        self.modules.borrow_mut().insert(specifier.to_string(), module);
+    }
+
+    pub fn get_module(&self, specifier: &str) -> Option<Module> {
+        self.modules.borrow().get(specifier).cloned()
+    }
 }
 
 fn path_string(path: Option<&Path>) -> Option<String> {
@@ -73,46 +79,42 @@ fn path_string(path: Option<&Path>) -> Option<String> {
 }
 
 impl ModuleLoader for HostModuleLoader {
-    fn load_imported_module(
-        &self,
+    async fn load_imported_module(
+        self: Rc<Self>,
         referrer: Referrer,
-        specifier: JsString,
-        finish_load: Box<dyn FnOnce(JsResult<Module>, &mut Context)>,
-        context: &mut Context,
-    ) {
-        let specifier = specifier.to_std_string_escaped();
+        request: ModuleRequest,
+        _context: &RefCell<&mut Context>,
+    ) -> JsResult<Module> {
+        let specifier = request.specifier().to_std_string_escaped();
         let referrer_url = path_string(referrer.path());
         let url = match self.resolve(&specifier, referrer_url.as_deref()) {
             Ok(url) => url.to_string(),
             Err(message) => {
-                finish_load(Err(JsNativeError::typ().with_message(message).into()), context);
-                return;
+                return Err(JsNativeError::typ().with_message(message).into());
             }
         };
         // Already parsed: the same module, every time.
         let known = self.modules.borrow().get(&url).cloned();
         if let Some(module) = known {
-            finish_load(Ok(module), context);
-            return;
+            return Ok(module);
         }
+        let (tx, rx) = tokio::sync::oneshot::channel();
         self.waiting.borrow_mut().push(Waiter {
             url: url.clone(),
-            finish: finish_load,
+            sender: tx,
         });
         if self.asked.borrow_mut().insert(url.clone()) {
             self.requested.borrow_mut().push(url);
         }
+        match rx.await {
+            Ok(res) => res,
+            Err(_) => Err(JsNativeError::typ()
+                .with_message("Module fetch cancelled")
+                .into()),
+        }
     }
 
-    fn register_module(&self, specifier: JsString, module: Module) {
-        self.modules.borrow_mut().insert(specifier.to_std_string_escaped(), module);
-    }
-
-    fn get_module(&self, specifier: JsString) -> Option<Module> {
-        self.modules.borrow().get(&specifier.to_std_string_escaped()).cloned()
-    }
-
-    fn init_import_meta(&self, import_meta: &JsObject, module: &Module, context: &mut Context) {
+    fn init_import_meta(self: Rc<Self>, import_meta: &JsObject, module: &Module, context: &mut Context) {
         if let Some(url) = path_string(module.path()) {
             let _ = import_meta.set(js_string!("url"), js_string!(url.as_str()), false, context);
         }
@@ -227,7 +229,7 @@ impl JsRuntime {
             .borrow_mut()
             .insert(url.to_string(), module.clone());
         let load = module.load(&mut self.context);
-        self.context.run_jobs();
+        let _ = self.context.run_jobs();
         self.modules.entries.insert(
             url.to_string(),
             ModuleEntry {
@@ -292,22 +294,23 @@ impl JsRuntime {
         };
         for waiter in waiters {
             match &module {
-                Ok(module) => (waiter.finish)(Ok(module.clone()), &mut self.context),
-                Err(message) => (waiter.finish)(
-                    Err(JsNativeError::typ()
+                Ok(module) => {
+                    let _ = waiter.sender.send(Ok(module.clone()));
+                }
+                Err(message) => {
+                    let _ = waiter.sender.send(Err(JsNativeError::typ()
                         .with_message(format!("Failed to fetch dynamically imported module: {message}"))
-                        .into()),
-                    &mut self.context,
-                ),
+                        .into()));
+                }
             }
         }
-        self.context.run_jobs();
+        let _ = self.context.run_jobs();
     }
 
     /// Advance a started module as far as it can go and say where it is:
     /// once its graph is loaded it is linked and evaluated.
     pub fn poll_module(&mut self, handle: &ModuleHandle) -> ModuleState {
-        self.context.run_jobs();
+        let _ = self.context.run_jobs();
         let Some(entry) = self.modules.entries.get_mut(&handle.0) else {
             return ModuleState::Failed("unknown module".into());
         };
@@ -334,8 +337,17 @@ impl JsRuntime {
                 }
                 return ModuleState::Failed(message);
             }
-            let evaluation = module.evaluate(&mut self.context);
-            self.context.run_jobs();
+            let evaluation = match module.evaluate(&mut self.context) {
+                Ok(p) => p,
+                Err(e) => {
+                    let message = describe(&e, &mut self.context);
+                    if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
+                        entry.failed = Some(message.clone());
+                    }
+                    return ModuleState::Failed(message);
+                }
+            };
+            let _ = self.context.run_jobs();
             if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
                 entry.evaluation = Some(evaluation);
             }

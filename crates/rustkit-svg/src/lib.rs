@@ -130,7 +130,49 @@ impl SvgDocument {
 
         // Parse elements (simplified)
         let mut servers = HashMap::new();
-        doc.root = parse_svg_content(xml, &root_style, &mut servers)?;
+        // The root's user units: what the percentages of a nested viewport
+        // and of a `<use>` resolve against.
+        let viewport = doc.view_box.map(|vb| (vb.width, vb.height)).unwrap_or_else(|| {
+            (
+                doc.width.map(|w| w.to_px(300.0)).unwrap_or(300.0),
+                doc.height.map(|h| h.to_px(150.0)).unwrap_or(150.0),
+            )
+        });
+        // The root's own tag is read above: what is parsed here is its
+        // content, so an `<svg>` met there is a nested one. Markup after its
+        // close tag (the sprite sheet the engine appends) never paints; it
+        // is read for the paint servers it defines.
+        let (body, appended) = xml
+            .find("<svg")
+            .and_then(|start| {
+                let after_tag = start + xml[start..].find('>')? + 1;
+                if xml[..after_tag].ends_with("/>") {
+                    return Some(("", &xml[after_tag..]));
+                }
+                let lower = xml.to_ascii_lowercase();
+                Some(match element_extent(&lower, after_tag, "svg") {
+                    Some((body_end, after_close)) => (&xml[after_tag..body_end], &xml[after_close..]),
+                    None => (&xml[after_tag..], ""),
+                })
+            })
+            .unwrap_or((xml, ""));
+        doc.root = parse_svg_content(body, &root_style, &mut servers, viewport)?;
+        parse_svg_content(appended, &root_style, &mut servers, viewport)?;
+
+        // `<use>` names its target by id, anywhere in the markup and possibly
+        // after itself, so every reference is resolved once the whole
+        // document has been read. The instances are built before paint
+        // servers resolve so a gradient they name is swapped in too.
+        let ids = collect_ids(xml);
+        if !ids.is_empty() {
+            let mut ctx = UseContext {
+                ids,
+                stack: Vec::new(),
+                budget: MAX_USE_INSTANCES,
+                servers: &mut servers,
+            };
+            resolve_uses(&mut doc.root, &mut ctx, viewport);
+        }
 
         // A paint server may be defined after the shape that names it, and
         // may take its stops from another one, so `url(#id)` paints are
@@ -1177,7 +1219,13 @@ impl SvgElement {
             SvgElement::Polygon(p) => p.render(transform, parent_style, commands),
             SvgElement::Path(p) => p.render(transform, parent_style, commands),
             SvgElement::Text(t) => t.render(transform, parent_style, commands),
-            SvgElement::Use(_) => {} // TODO: resolve references
+            SvgElement::Use(u) => {
+                // An unresolved reference (missing target, cycle, external
+                // file) paints nothing.
+                if let Some(instance) = &u.instance {
+                    instance.render(transform, parent_style, commands);
+                }
+            }
         }
     }
 
@@ -1198,7 +1246,12 @@ impl SvgElement {
             SvgElement::Polygon(p) => &mut p.style,
             SvgElement::Path(p) => &mut p.style,
             SvgElement::Text(t) => &mut t.style,
-            SvgElement::Use(_) => return,
+            SvgElement::Use(u) => {
+                if let Some(instance) = &mut u.instance {
+                    instance.resolve_paint(servers);
+                }
+                return;
+            }
         };
         if let Paint::Url(id) = &style.fill {
             if let Some(gradient) = servers.get(id) {
@@ -1219,6 +1272,10 @@ pub struct SvgGroup {
     pub style: SvgStyle,
     /// ID.
     pub id: Option<String>,
+    /// A nested `<svg>`'s viewport `(x, y, width, height)` in its parent's
+    /// user units, when its content is clipped to it (`overflow` other
+    /// than `visible`).
+    pub viewport: Option<(f32, f32, f32, f32)>,
 }
 
 impl SvgGroup {
@@ -1233,8 +1290,27 @@ impl SvgGroup {
         let mut style = self.style.clone();
         style.inherit_from(parent_style);
 
+        // An upright viewport clips what it holds; under a rotation or a
+        // skew it is no rectangle here, and its content is left whole.
+        let clip = self.viewport.filter(|_| parent_transform.b == 0.0 && parent_transform.c == 0.0).map(
+            |(x, y, width, height)| {
+                let (x0, y0) = parent_transform.apply(x, y);
+                let (x1, y1) = parent_transform.apply(x + width, y + height);
+                Rect::new(x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs())
+            },
+        );
+        let Some(clip) = clip else {
+            for child in &self.children {
+                child.render(&transform, &style, commands);
+            }
+            return;
+        };
+        let mut content = Vec::new();
         for child in &self.children {
-            child.render(&transform, &style, commands);
+            child.render(&transform, &style, &mut content);
+        }
+        for command in content {
+            rustkit_layout::clip_vector_command(command, clip, commands);
         }
     }
 }
@@ -1293,7 +1369,7 @@ impl SvgRect {
         if let Some(color) = style.fill_color() {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
-            commands.push(DisplayCommand::FillRect { rect: rect.clone(), color: fill_color });
+            commands.push(DisplayCommand::FillRect { rect, color: fill_color });
         }
         let (right, bottom) = (self.x + self.width, self.y + self.height);
         fill_outline_with_gradient(
@@ -1308,7 +1384,7 @@ impl SvgRect {
             let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
             let stroke_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::StrokeRect {
-                rect: rect.clone(),
+                rect,
                 color: stroke_color,
                 width: style.stroke_width,
             });
@@ -1432,7 +1508,7 @@ impl SvgEllipse {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::FillEllipse {
-                rect: rect.clone(),
+                rect,
                 color: fill_color,
             });
         }
@@ -2120,15 +2196,241 @@ impl SvgText {
     }
 }
 
-/// Use element (<use>).
+/// Use element (<use>, SVG 2 §5.6).
 #[derive(Debug, Clone, Default)]
 pub struct SvgUse {
+    /// The reference as authored (`href`, else `xlink:href`).
     pub href: String,
     pub x: f32,
     pub y: f32,
-    pub width: Option<f32>,
-    pub height: Option<f32>,
+    /// Size of the viewport a `<symbol>` / `<svg>` target is drawn into.
+    pub width: Option<SvgLength>,
+    pub height: Option<SvgLength>,
     pub transform: Transform2D,
+    /// The use's own style: what its instance inherits from.
+    pub style: SvgStyle,
+    /// The referenced subtree instantiated under the use, as a group
+    /// carrying `transform`, the x/y translation and any viewBox mapping.
+    /// `None` when the reference does not resolve.
+    pub instance: Option<Box<SvgElement>>,
+}
+
+/// Instances one document may build; past it further `<use>`s paint
+/// nothing. Bounds the exponential case (each level using the one below
+/// several times), which a cycle check alone does not.
+const MAX_USE_INSTANCES: usize = 4096;
+/// Deepest chain of `<use>` → target → `<use>` followed.
+const MAX_USE_DEPTH: usize = 32;
+
+/// An element that carries an `id`, as markup, so a `<use>` can instantiate
+/// it with its own style as the inherited one.
+#[derive(Clone)]
+struct IdDef {
+    name: String,
+    open_tag: String,
+    body: String,
+}
+
+struct UseContext<'a> {
+    ids: HashMap<String, IdDef>,
+    /// Ids being instantiated, outermost first: naming one again is a cycle.
+    stack: Vec<String>,
+    budget: usize,
+    servers: &'a mut HashMap<String, GradientDef>,
+}
+
+/// The extent of the element whose open tag ends at `after_tag`: where its
+/// content ends and where its close tag ends. Same-name elements nested in
+/// it are counted, so `<g><g></g></g>` closes at the outer `</g>`. `lower`
+/// is the markup ASCII-lowercased (same byte offsets).
+fn element_extent(lower: &str, after_tag: usize, name: &str) -> Option<(usize, usize)> {
+    let is_name_end = |rest: &str| {
+        rest.chars()
+            .next()
+            .is_none_or(|c| c.is_whitespace() || c == '>' || c == '/')
+    };
+    let mut depth = 1;
+    let mut pos = after_tag;
+    while let Some(i) = lower[pos..].find('<').map(|i| pos + i) {
+        let rest = &lower[i + 1..];
+        let tag_end = lower[i..].find('>').map(|e| i + e + 1)?;
+        if let Some(after) = rest.strip_prefix('/').and_then(|r| r.strip_prefix(name)) {
+            if is_name_end(after) {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((i, tag_end));
+                }
+            }
+        } else if let Some(after) = rest.strip_prefix(name) {
+            if is_name_end(after) && !lower[i..tag_end].ends_with("/>") {
+                depth += 1;
+            }
+        }
+        pos = tag_end;
+    }
+    None
+}
+
+/// Every element a `<use>` can name, by id; the first in document order
+/// wins, as `getElementById` does.
+fn collect_ids(xml: &str) -> HashMap<String, IdDef> {
+    const REFERABLE: &[&str] = &[
+        "symbol", "g", "svg", "use", "rect", "circle", "ellipse", "line", "path", "polyline", "polygon", "text",
+    ];
+    let lower = xml.to_ascii_lowercase();
+    let mut ids = HashMap::new();
+    let mut pos = 0;
+    while let Some(start) = xml[pos..].find('<').map(|i| pos + i) {
+        let Some(end) = xml[start..].find('>').map(|e| start + e + 1) else {
+            break;
+        };
+        pos = end;
+        let tag = &xml[start..end];
+        let name = lower[start + 1..end]
+            .split(|c: char| c.is_whitespace() || c == '>' || c == '/')
+            .next()
+            .unwrap_or("");
+        if !REFERABLE.contains(&name) {
+            continue;
+        }
+        let Some(id) = tag_attributes(tag).remove("id") else {
+            continue;
+        };
+        if ids.contains_key(&id) {
+            continue;
+        }
+        let body = if tag.ends_with("/>") {
+            ""
+        } else {
+            element_extent(&lower, end, name).map_or("", |(body_end, _)| &xml[end..body_end])
+        };
+        ids.insert(
+            id,
+            IdDef {
+                name: name.to_string(),
+                open_tag: tag.to_string(),
+                body: body.to_string(),
+            },
+        );
+    }
+    ids
+}
+
+/// The transform mapping `vb` into a `width` × `height` viewport under
+/// `preserveAspectRatio` (SVG 2 §8.2, default `xMidYMid meet`). `None` for
+/// an empty viewBox, which disables rendering.
+fn viewbox_transform(vb: &ViewBox, width: f32, height: f32, par: Option<&str>) -> Option<Transform2D> {
+    if vb.width <= 0.0 || vb.height <= 0.0 {
+        return None;
+    }
+    let par = par.unwrap_or("").to_ascii_lowercase();
+    let mut tokens = par.split_whitespace().filter(|t| *t != "defer");
+    let align = tokens.next().unwrap_or("xmidymid");
+    let (sx, sy) = (width / vb.width, height / vb.height);
+    if align == "none" {
+        return Some(Transform2D::identity().translate(-vb.min_x * sx, -vb.min_y * sy).scale(sx, sy));
+    }
+    let scale = if tokens.next() == Some("slice") { sx.max(sy) } else { sx.min(sy) };
+    let place = |min: &str, max: &str, extra: f32| {
+        if align.contains(min) {
+            0.0
+        } else if align.contains(max) {
+            extra
+        } else {
+            extra / 2.0
+        }
+    };
+    let tx = place("xmin", "xmax", width - vb.width * scale);
+    let ty = place("ymin", "ymax", height - vb.height * scale);
+    Some(
+        Transform2D::identity()
+            .translate(tx - vb.min_x * scale, ty - vb.min_y * scale)
+            .scale(scale, scale),
+    )
+}
+
+/// Instantiate every `<use>` under `element`. `viewport` is the size, in
+/// the current user units, that percentages and a symbol's auto size
+/// resolve against.
+fn resolve_uses(element: &mut SvgElement, ctx: &mut UseContext, viewport: (f32, f32)) {
+    match element {
+        SvgElement::Group(g) => {
+            for child in &mut g.children {
+                resolve_uses(child, ctx, viewport);
+            }
+        }
+        SvgElement::Use(u) => {
+            let instance = instantiate_use(u, ctx, viewport);
+            u.instance = instance.map(Box::new);
+        }
+        _ => {}
+    }
+}
+
+/// Build the instance of one `<use>` (SVG 2 §5.6): its target re-read with
+/// the use's style as the inherited one, under `transform` then
+/// `translate(x, y)`; a `<symbol>` (or `<svg>`) target becomes a viewport
+/// of the use's width/height (else its own, else 100%) with its viewBox
+/// mapped in. Only same-document `#id` references resolve.
+fn instantiate_use(u: &SvgUse, ctx: &mut UseContext, viewport: (f32, f32)) -> Option<SvgElement> {
+    let id = u.href.trim().strip_prefix('#')?;
+    if ctx.budget == 0 || ctx.stack.len() >= MAX_USE_DEPTH || ctx.stack.iter().any(|s| s == id) {
+        return None;
+    }
+    let def = ctx.ids.get(id)?.clone();
+    ctx.budget -= 1;
+
+    let mut transform = u.transform.translate(u.x, u.y);
+    let mut inner_viewport = viewport;
+    let mut group = match def.name.as_str() {
+        "symbol" | "svg" | "g" => {
+            let attrs = tag_attributes(&def.open_tag);
+            let mut style = u.style.clone();
+            style.parse_attributes(&attrs);
+            if def.name == "g" {
+                if let Some(t) = attrs.get("transform") {
+                    transform = transform.multiply(&Transform2D::parse(t));
+                }
+            } else {
+                let size = |used: Option<SvgLength>, own: &str, full: f32| {
+                    used.or_else(|| attrs.get(own).and_then(|v| SvgLength::parse(v)))
+                        .map_or(full, |l| l.to_px(full))
+                };
+                let width = size(u.width, "width", viewport.0);
+                let height = size(u.height, "height", viewport.1);
+                inner_viewport = (width, height);
+                if let Some(vb) = attrs.get("viewbox").and_then(|v| ViewBox::parse(v)) {
+                    let fit = viewbox_transform(&vb, width, height, attrs.get("preserveaspectratio").map(String::as_str))?;
+                    transform = transform.multiply(&fit);
+                    inner_viewport = (vb.width, vb.height);
+                }
+            }
+            let SvgElement::Group(mut g) = parse_svg_content(&def.body, &style, ctx.servers, inner_viewport).ok()? else {
+                return None;
+            };
+            g.style = style;
+            g
+        }
+        "text" => {
+            let mut g = SvgGroup::new();
+            g.children.push(parse_text_element(&def.open_tag, &def.body, &u.style)?);
+            g.style = u.style.clone();
+            g
+        }
+        _ => {
+            let mut g = SvgGroup::new();
+            g.children.push(parse_element(&def.open_tag, &u.style)?);
+            g.style = u.style.clone();
+            g
+        }
+    };
+    group.transform = transform;
+
+    ctx.stack.push(id.to_string());
+    let mut instance = SvgElement::Group(group);
+    resolve_uses(&mut instance, ctx, inner_viewport);
+    ctx.stack.pop();
+    Some(instance)
 }
 
 // ==================== Helper Functions ====================
@@ -2338,8 +2640,7 @@ fn parse_svg_color(s: &str) -> Option<Color> {
     let s = s.trim().to_lowercase();
 
     // Hex colors
-    if s.starts_with('#') {
-        let hex = &s[1..];
+    if let Some(hex) = s.strip_prefix('#') {
         return match hex.len() {
             3 => {
                 let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
@@ -2362,7 +2663,7 @@ fn parse_svg_color(s: &str) -> Option<Color> {
         let inner = s.trim_start_matches("rgba(")
             .trim_start_matches("rgb(")
             .trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(|c| c == ',' || c == '/').collect();
+        let parts: Vec<&str> = inner.split([',', '/']).collect();
         
         if parts.len() >= 3 {
             let r: u8 = parts[0].trim().parse().ok()?;
@@ -2398,9 +2699,11 @@ fn parse_svg_content(
     xml: &str,
     base_style: &SvgStyle,
     servers: &mut HashMap<String, GradientDef>,
+    viewport: (f32, f32),
 ) -> Result<SvgElement, SvgError> {
     let mut group = SvgGroup::new();
-    
+    let lower = xml.to_ascii_lowercase();
+
     // Simple element parsing
     let mut pos = 0;
     while pos < xml.len() {
@@ -2452,6 +2755,80 @@ fn parse_svg_content(
                     }
                 }
 
+                // Nothing inside <defs> or a <symbol> renders where it is
+                // written: it is drawn only through a <use> (SVG 2 §5.3,
+                // §5.5). Its content is still read for the paint servers it
+                // defines, then the whole element is consumed.
+                if (tag_name == "defs" || tag_name == "symbol") && !tag.ends_with("/>") {
+                    let (body_end, after_close) =
+                        element_extent(&lower, after_tag, &tag_name).unwrap_or((xml.len(), xml.len()));
+                    parse_svg_content(&xml[after_tag..body_end], base_style, servers, viewport)?;
+                    pos = after_close;
+                    continue;
+                }
+
+                // A `<g>` and a nested `<svg>` are containers (SVG 2 §5.2,
+                // §8.2): their children are read with the container's style
+                // as the inherited one and drawn under its transform. A
+                // nested `<svg>` is a viewport at (x, y) with its viewBox
+                // mapped in, and clips to it. Until 2026-10-08
+                // both tags were dropped and their children read as the
+                // root's: no group transform, no inherited fill, and every
+                // icon of a sprite sheet at its viewBox's own units.
+                if matches!(tag_name.as_str(), "g" | "a" | "svg") && !tag.ends_with("/>") {
+                    let (body_end, after_close) =
+                        element_extent(&lower, after_tag, &tag_name).unwrap_or((xml.len(), xml.len()));
+                    let attrs = tag_attributes(tag);
+                    let mut style = base_style.clone();
+                    style.parse_attributes(&attrs);
+                    let mut transform = attrs
+                        .get("transform")
+                        .map_or_else(Transform2D::identity, |t| Transform2D::parse(t));
+                    let mut inner_viewport = viewport;
+                    let mut renders = true;
+                    let mut clip = None;
+                    if tag_name == "svg" {
+                        let length = |name: &str, full: f32, default: f32| {
+                            attrs
+                                .get(name)
+                                .and_then(|v| SvgLength::parse(v))
+                                .map_or(default, |l| l.to_px(full))
+                        };
+                        let width = length("width", viewport.0, viewport.0);
+                        let height = length("height", viewport.1, viewport.1);
+                        let (x, y) = (length("x", viewport.0, 0.0), length("y", viewport.1, 0.0));
+                        // `overflow: hidden` by the UA sheet; a viewport
+                        // under its own `transform` is left unclipped.
+                        let visible = attrs.get("overflow").is_some_and(|v| v.trim().eq_ignore_ascii_case("visible"));
+                        if !visible && !attrs.contains_key("transform") {
+                            clip = Some((x, y, width, height));
+                        }
+                        transform = transform.translate(x, y);
+                        inner_viewport = (width, height);
+                        if let Some(vb) = attrs.get("viewbox").and_then(|v| ViewBox::parse(v)) {
+                            let par = attrs.get("preserveaspectratio").map(String::as_str);
+                            match viewbox_transform(&vb, width, height, par) {
+                                Some(fit) => {
+                                    transform = transform.multiply(&fit);
+                                    inner_viewport = (vb.width, vb.height);
+                                }
+                                // An empty viewBox disables rendering.
+                                None => renders = false,
+                            }
+                        }
+                    }
+                    let content = parse_svg_content(&xml[after_tag..body_end], &style, servers, inner_viewport)?;
+                    if let (true, SvgElement::Group(mut container)) = (renders, content) {
+                        container.transform = transform;
+                        container.style = style;
+                        container.id = attrs.get("id").cloned();
+                        container.viewport = clip;
+                        group.children.push(SvgElement::Group(container));
+                    }
+                    pos = after_close;
+                    continue;
+                }
+
                 // A gradient's stops are its children: read them up to its
                 // closing tag and consume the element.
                 if tag_name == "lineargradient" || tag_name == "radialgradient" {
@@ -2497,7 +2874,7 @@ struct GradientDef {
 /// of an inline `style` laid over them.
 fn tag_attributes(tag: &str) -> HashMap<String, String> {
     let tag = tag.trim_start_matches('<').trim_end_matches('>').trim_end_matches('/');
-    let mut attr_str = tag.splitn(2, char::is_whitespace).nth(1).unwrap_or("");
+    let mut attr_str = tag.split_once(char::is_whitespace).map(|x| x.1).unwrap_or("");
     let mut attrs = HashMap::new();
     while let Some((key, value, rest)) = parse_attr(attr_str) {
         attrs.insert(key.to_lowercase(), value);
@@ -2694,6 +3071,21 @@ fn parse_element(tag: &str, base_style: &SvgStyle) -> Option<SvgElement> {
             polygon.style.parse_attributes(&attrs);
             Some(SvgElement::Polygon(polygon))
         }
+        "use" => {
+            let coord = |key: &str| attrs.get(key).and_then(|s| SvgLength::parse(s)).map(|l| l.to_px(0.0)).unwrap_or(0.0);
+            let mut style = base_style.clone();
+            style.parse_attributes(&attrs);
+            Some(SvgElement::Use(SvgUse {
+                href: attrs.get("href").or_else(|| attrs.get("xlink:href")).cloned().unwrap_or_default(),
+                x: coord("x"),
+                y: coord("y"),
+                width: attrs.get("width").and_then(|s| SvgLength::parse(s)),
+                height: attrs.get("height").and_then(|s| SvgLength::parse(s)),
+                transform: attrs.get("transform").map(|t| Transform2D::parse(t)).unwrap_or_default(),
+                style,
+                instance: None,
+            }))
+        }
         _ => None,
     }
 }
@@ -2705,8 +3097,8 @@ fn parse_text_element(tag: &str, content: &str, base_style: &SvgStyle) -> Option
     let attrs_str = tag
         .trim_start_matches('<')
         .trim_end_matches('>')
-        .splitn(2, char::is_whitespace)
-        .nth(1)
+        .split_once(char::is_whitespace)
+        .map(|x| x.1)
         .unwrap_or("");
 
     let mut attrs = HashMap::new();
@@ -3191,6 +3583,187 @@ mod tests {
         )
         .expect("parse");
         assert!(doc.render(0.0, 0.0, 10.0, 10.0).is_empty());
+    }
+
+    /// Every `FillRect` the commands paint, as `(x, y, w, h, (r, g, b))`.
+    fn fill_rects(commands: &[DisplayCommand]) -> Vec<(f32, f32, f32, f32, (u8, u8, u8))> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                DisplayCommand::FillRect { rect, color } => {
+                    Some((rect.x, rect.y, rect.width, rect.height, (color.r, color.g, color.b)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_group_transform_and_fill_reach_its_children() {
+        // A <g> is a container: its transform and its presentation
+        // attributes are its children's, at any depth, and end with it.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <g transform="translate(50,10)" fill="#ff0000">
+                    <g transform="scale(2)"><rect x="1" y="1" width="3" height="3"/></g>
+                </g>
+                <rect width="2" height="2" fill="#0000ff"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(
+            rects,
+            vec![(52.0, 12.0, 6.0, 6.0, (255, 0, 0)), (0.0, 0.0, 2.0, 2.0, (0, 0, 255))]
+        );
+    }
+
+    #[test]
+    fn test_nested_svg_is_a_viewport() {
+        // A sprite sheet as wikipedia.org's portal ships it: one <svg> per
+        // icon inside the root, each with its own size and viewBox. SVG 2
+        // §8.2: a nested <svg> is a viewport at (x, y) with its viewBox
+        // mapped in. Drawn flat, a 47px icon in a 612-unit viewBox was 612px.
+        let doc = SvgDocument::parse(
+            r##"<svg width="176" height="811" viewBox="0 0 176 811">
+                <svg width="40" height="40" viewBox="-100 -100 200 200"><rect x="-100" y="-100" width="200" height="200" fill="#990000"/></svg>
+                <svg x="10" y="50" width="20" height="10" viewBox="0 0 10 10"><rect width="10" height="10" fill="#006699"/></svg>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 176.0, 811.0));
+        assert_eq!(
+            rects,
+            vec![(0.0, 0.0, 40.0, 40.0, (153, 0, 0)), (15.0, 50.0, 10.0, 10.0, (0, 102, 153))]
+        );
+    }
+
+    #[test]
+    fn test_nested_svg_clips_to_its_viewport() {
+        // `overflow` is `hidden` on a nested <svg> by the UA sheet (SVG 2
+        // §8.2): in a sprite sheet an icon drawn past its own viewport must
+        // not show in its neighbour's. `overflow="visible"` lifts it.
+        let sheet = |overflow: &str| {
+            let doc = SvgDocument::parse(&format!(
+                r##"<svg width="100" height="100">
+                    <svg x="10" y="10" width="20" height="20" viewBox="0 0 20 20"{overflow}>
+                        <rect x="-10" y="5" width="100" height="5" fill="#ff0000"/>
+                        <rect x="0" y="50" width="5" height="5" fill="#00ff00"/>
+                    </svg>
+                </svg>"##
+            ))
+            .expect("parse");
+            fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0))
+        };
+        assert_eq!(sheet(""), vec![(10.0, 15.0, 20.0, 5.0, (255, 0, 0))]);
+        assert_eq!(
+            sheet(r#" overflow="visible""#),
+            vec![(0.0, 15.0, 100.0, 5.0, (255, 0, 0)), (10.0, 60.0, 5.0, 5.0, (0, 255, 0))]
+        );
+    }
+
+    #[test]
+    fn test_use_instantiates_a_symbol_into_the_use_viewport() {
+        // The sprite-sheet idiom (cnn, reddit, shopify, youtube): a <symbol>
+        // with its own viewBox, drawn by a <use> that sets x/y/width/height.
+        // SVG 2 §5.6: the symbol becomes a viewport at (x, y) sized by the
+        // use, its viewBox mapped into it; the symbol itself never renders
+        // where it is defined.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs><symbol id="s" viewBox="0 0 10 10"><rect x="1" y="2" width="4" height="4" fill="#00ff00"/></symbol></defs>
+                <use href="#s" x="20" y="30" width="20" height="20"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(rects, vec![(22.0, 34.0, 8.0, 8.0, (0, 255, 0))], "one green rect, translated and scaled x2");
+    }
+
+    #[test]
+    fn test_use_of_a_group_by_xlink_href_inherits_the_use_presentation_attributes() {
+        // `xlink:href` and a <g> target; the rect names no fill, so it takes
+        // the <use>'s (SVG 2 §5.6.1: the instance inherits from the use).
+        // A rect that sets its own fill keeps it.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs><g id="g" transform="translate(1 1)"><rect width="5" height="5"/><rect x="10" width="5" height="5" fill="#0000ff"/></g></defs>
+                <use xlink:href="#g" x="10" y="20" fill="#ff0000"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(
+            rects,
+            vec![(11.0, 21.0, 5.0, 5.0, (255, 0, 0)), (21.0, 21.0, 5.0, 5.0, (0, 0, 255))],
+        );
+    }
+
+    #[test]
+    fn test_use_of_a_shape_and_currentcolor_through_the_use() {
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs><rect id="r" width="3" height="3"/></defs>
+                <use href="#r" x="5" y="6" fill="currentColor"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let css = Color::new(10, 20, 30, 1.0);
+        let rects = fill_rects(&doc.render_with_color(0.0, 0.0, 100.0, 100.0, css));
+        assert_eq!(rects, vec![(5.0, 6.0, 3.0, 3.0, (10, 20, 30))]);
+    }
+
+    #[test]
+    fn test_nested_use_composes_the_translations() {
+        // use(#outer) -> symbol containing use(#inner) -> g with a rect.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs>
+                    <g id="inner"><rect width="2" height="2" fill="#00ff00"/></g>
+                    <symbol id="outer"><use href="#inner" x="3" y="4"/></symbol>
+                </defs>
+                <use href="#outer" x="10" y="20"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(rects, vec![(13.0, 24.0, 2.0, 2.0, (0, 255, 0))]);
+    }
+
+    #[test]
+    fn test_use_reference_cycles_and_missing_targets_paint_nothing_and_end() {
+        // a -> b -> a, a use naming itself, and a use naming no element:
+        // parse and render must return (no hang, no panic) with only the
+        // shapes outside the cycle painted.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs>
+                    <g id="a"><rect width="1" height="1" fill="#ff0000"/><use href="#b"/></g>
+                    <g id="b"><use href="#a"/></g>
+                </defs>
+                <use id="self" href="#self"/>
+                <use href="#nowhere"/>
+                <use href="#a" x="50"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        // #a's rect once, at the use's x; a -> b -> a is refused there.
+        assert_eq!(rects.len(), 1, "{rects:?}");
+        assert_eq!(rects[0].0, 50.0);
+    }
+
+    #[test]
+    fn test_use_resolves_against_markup_appended_after_the_root() {
+        // The engine appends a sprite sheet that lives in ANOTHER <svg> of
+        // the page (the diagnostics repro) after the root's close tag. It
+        // must resolve but never paint on its own.
+        let doc = SvgDocument::parse(
+            r##"<svg height="50" width="50"><use href="#icon" x="1"></use></svg><defs><g id="icon"><rect x="5" y="5" width="40" height="40" fill="green"></rect></g></defs>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 50.0, 50.0));
+        assert_eq!(rects, vec![(6.0, 5.0, 40.0, 40.0, (0, 128, 0))]);
     }
 
     #[test]

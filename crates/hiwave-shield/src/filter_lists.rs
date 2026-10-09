@@ -84,20 +84,21 @@ impl FilterListManager {
             source.url
         );
 
-        let client = rustkit_http::blocking::Client::builder()
+        let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
         let response = client
             .get(source.url)
+            .send()
             .map_err(|e| format!("Failed to download {}: {}", source.name, e))?;
 
-        if !response.is_success() {
+        if !response.status().is_success() {
             return Err(format!(
                 "Failed to download {}: HTTP {}",
                 source.name,
-                response.status
+                response.status()
             ));
         }
 

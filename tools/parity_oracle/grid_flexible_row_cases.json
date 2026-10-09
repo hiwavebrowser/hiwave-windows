@@ -1,0 +1,179 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "cases": [
+  {
+   "name": "one-line-of-many-text-nodes",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-rows:min-content 1fr}</style></head><body><div class=g id=g><div id=a>t</div><div id=b><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:40 a:0:20 b:20:20 after:40:20"
+  },
+  {
+   "name": "three-blocks",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-rows:min-content 1fr}</style></head><body><div class=g id=g><div id=a>t</div><div id=b><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:80 a:0:20 b:20:60 after:80:20"
+  },
+  {
+   "name": "minmax-0-1fr",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-rows:min-content minmax(0,1fr)}</style></head><body><div class=g id=g><div id=a>t</div><div id=b><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:80 a:0:20 b:20:60 after:80:20"
+  },
+  {
+   "name": "two-flexible-rows",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-rows:1fr 2fr}</style></head><body><div class=g id=g><div id=a><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div><div id=b><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:180 a:0:60 b:60:120 after:180:20"
+  },
+  {
+   "name": "min-height-on-the-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-rows:min-content 1fr;min-height:300px}</style></head><body><div class=g id=g><div id=a>t</div><div id=b><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:300 a:0:20 b:20:280 after:300:20"
+  },
+  {
+   "name": "short-item-spans-into-the-flexible-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template:'t e' min-content 'u e' min-content 'c e' 1fr / minmax(0,1fr) min-content}#a{grid-area:t}#u{grid-area:u}#b{grid-area:c}#e{grid-area:e;width:100px}</style></head><body><div class=g id=g><div id=a>t</div><div id=u>u</div><div id=e><div style='height:30px'></div></div><div id=b><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:100 a:0:20 u:20:20 e:0:100 b:40:60 after:100:20"
+  },
+  {
+   "name": "tall-item-spans-into-the-flexible-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template:'t e' min-content 'u e' min-content 'c e' 1fr / minmax(0,1fr) min-content}#a{grid-area:t}#u{grid-area:u}#b{grid-area:c}#e{grid-area:e;width:100px}</style></head><body><div class=g id=g><div id=a>t</div><div id=u>u</div><div id=e><div style='height:400px'></div></div><div id=b><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:400 a:0:20 u:20:20 e:0:400 b:40:360 after:400:20"
+  },
+  {
+   "name": "fixed-height-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-rows:min-content 1fr}#b{height:50px;overflow:hidden}</style></head><body><div class=g id=g><div id=a>t</div><div id=b><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:70 a:0:20 b:20:50 after:70:20"
+  },
+  {
+   "name": "fixed-height-item-in-an-auto-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-rows:min-content auto}#b{height:50px}</style></head><body><div class=g id=g><div id=a>t</div><div id=b><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div><div><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:70 a:0:20 b:20:50 after:70:20"
+  },
+  {
+   "name": "one-line-of-many-text-nodes-in-an-auto-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-rows:min-content auto}</style></head><body><div class=g id=g><div id=a>t</div><div id=b><span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> <span>a</span> </div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:40 a:0:20 b:20:20 after:40:20"
+  },
+  {
+   "name": "label-and-value-in-one-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b>Label: <b>value</b> tail</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:20 b:0:20 after:20:20"
+  },
+  {
+   "name": "two-columns-of-mixed-inline-content",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-columns:1fr 1fr}</style></head><body><div class=g id=g><div id=a>Label: <b>value</b> tail <a href=#>link</a></div><div id=b>one</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:20 a:0:20 b:0:20 after:20:20"
+  },
+  {
+   "name": "a-forced-break-between-inline-children",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b>one<br><b>two</b> <i>three</i></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:40 b:0:40 after:40:20"
+  },
+  {
+   "name": "label-and-value-with-a-px-height",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}#b{height:48px}</style></head><body><div class=g id=g><div id=b>Label: <b>value</b> tail</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:48 b:0:48 after:48:20"
+  },
+  {
+   "name": "label-and-value-start-aligned-with-a-min-height",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}#b{align-self:start;min-height:48px}</style></head><body><div class=g id=g><div id=b>Label: <b>value</b> tail</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:48 b:0:48 after:48:20"
+  },
+  {
+   "name": "label-and-value-stretched-with-a-min-height",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}#b{min-height:48px}</style></head><body><div class=g id=g><div id=b>Label: <b>value</b> tail</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:48 b:0:48 after:48:20"
+  },
+  {
+   "name": "two-lines-in-a-shorter-px-height",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}#b{height:10px}</style></head><body><div class=g id=g><div id=b>one<br><b>two</b> <i>three</i></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:10 b:0:10 after:10:20"
+  },
+  {
+   "name": "two-lines-under-a-max-height",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}#b{max-height:30px}</style></head><body><div class=g id=g><div id=b>one<br><b>two</b> <i>three</i></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:30 b:0:30 after:30:20"
+  },
+  {
+   "name": "label-and-value-with-a-percent-height",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{height:100px}#b{height:50%}</style></head><body><div class=g id=g><div id=b>Label: <b>value</b> tail</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:100 b:0:50 after:100:20"
+  },
+  {
+   "name": "label-and-value-start-aligned",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{grid-template-rows:100px}#b{align-self:start}</style></head><body><div class=g id=g><div id=b>Label: <b>value</b> tail</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:100 b:0:20 after:100:20"
+  },
+  {
+   "name": "label-and-value-with-padding-and-a-px-height",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}#b{height:48px;padding:4px;border:1px solid}</style></head><body><div class=g id=g><div id=b>Label: <b>value</b> tail</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:58 b:0:58 after:58:20"
+  },
+  {
+   "name": "lone-text-with-a-percent-height",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}.g{height:100px}#b{height:50%}</style></head><body><div class=g id=g><div id=b>Label</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:100 b:0:50 after:100:20"
+  },
+  {
+   "name": "text-then-a-block-then-text",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b>Label <div>block</div> tail</div></div><div id=p style='width:600px'>Label <div>block</div> tail</div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:60 b:0:60 p:60:60 after:120:20"
+  },
+  {
+   "name": "inline-run-then-a-block",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b>Label: <b>value</b> <div>block</div></div></div><div id=p style='width:600px'>Label: <b>value</b> <div>block</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:40 b:0:40 p:40:40 after:80:20"
+  },
+  {
+   "name": "a-block-between-two-inline-runs",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b><b>a</b> <i>b</i> <div>c</div> <b>d</b> <i>e</i></div></div><div id=p style='width:600px'><b>a</b> <i>b</i> <div>c</div> <b>d</b> <i>e</i></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:60 b:0:60 p:60:60 after:120:20"
+  },
+  {
+   "name": "text-and-an-image",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b>Label <img src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' style='width:50px;height:50px'> tail</div></div><div id=p style='width:600px'>Label <img src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' style='width:50px;height:50px'> tail</div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:55 b:0:55 p:55:55 after:110:20"
+  },
+  {
+   "name": "text-and-a-text-input",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b>Name: <input></div></div><div id=p style='width:600px'>Name: <input></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:21 b:0:21 p:21:21 after:42:20"
+  },
+  {
+   "name": "text-and-a-button",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b>Go: <button>Press</button> now</div></div><div id=p style='width:600px'>Go: <button>Press</button> now</div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:21 b:0:21 p:21:21 after:42:20"
+  },
+  {
+   "name": "text-and-an-inline-block",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b>a <span style='display:inline-block;width:50px;height:30px'></span> b</div></div><div id=p style='width:600px'>a <span style='display:inline-block;width:50px;height:30px'></span> b</div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:35 b:0:35 p:35:35 after:70:20"
+  },
+  {
+   "name": "text-and-a-checkbox",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b><input type=checkbox> Remember me</div></div><div id=p style='width:600px'><input type=checkbox> Remember me</div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:21 b:0:21 p:21:21 after:42:20"
+  },
+  {
+   "name": "a-lone-image",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b><img src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' style='width:50px;height:50px'></div></div><div id=p style='width:600px'><img src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' style='width:50px;height:50px'></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:55 b:0:55 p:55:55 after:110:20"
+  },
+  {
+   "name": "two-inline-blocks",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b><span style='display:inline-block;width:50px;height:30px'></span> <span style='display:inline-block;width:50px;height:30px'></span></div></div><div id=p style='width:600px'><span style='display:inline-block;width:50px;height:30px'></span> <span style='display:inline-block;width:50px;height:30px'></span></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:35 b:0:35 p:35:35 after:70:20"
+  },
+  {
+   "name": "two-buttons",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b><button>One</button> <button>Two</button></div></div><div id=p style='width:600px'><button>One</button> <button>Two</button></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:21 b:0:21 p:21:21 after:42:20"
+  },
+  {
+   "name": "text-and-a-select",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px}</style></head><body><div class=g id=g><div id=b>Pick: <select><option>one</option></select></div></div><div id=p style='width:600px'>Pick: <select><option>one</option></select></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:20 b:0:20 p:20:20 after:40:20"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

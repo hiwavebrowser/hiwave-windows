@@ -110,7 +110,7 @@ fn feature_matches(feature: &str, width: f32, height: f32) -> bool {
             let Some(actual) = actual_value(base, width, height) else {
                 return false;
             };
-            let Some(wanted) = parse_value(base, v) else {
+            let Some(wanted) = parse_value(base, v, width, height) else {
                 return false;
             };
             compare(actual, wanted, prefix)
@@ -153,9 +153,9 @@ fn actual_value(base: &str, width: f32, height: f32) -> Option<f32> {
     }
 }
 
-fn parse_value(base: &str, v: &str) -> Option<f32> {
+fn parse_value(base: &str, v: &str, width: f32, height: f32) -> Option<f32> {
     match base {
-        "width" | "height" => parse_length(v),
+        "width" | "height" => parse_length(v, width, height),
         "aspect-ratio" => match v.split_once('/') {
             Some((a, b)) => Some(parse_number(a)? / parse_number(b)?),
             None => parse_number(v),
@@ -175,15 +175,39 @@ fn parse_value(base: &str, v: &str) -> Option<f32> {
     }
 }
 
-/// px, em/rem (16px, the initial font size), or unitless 0.
-fn parse_length(v: &str) -> Option<f32> {
+/// A length in px: unitless 0, an absolute unit, em/rem (16px, the initial
+/// font size, whatever the page sets), a viewport unit, or `calc()`,
+/// `min()`, `max()`, `clamp()` over those. A percentage is not a length here.
+fn parse_length(v: &str, width: f32, height: f32) -> Option<f32> {
     let v = v.trim();
-    if let Some(n) = v.strip_suffix("px") {
-        parse_number(n)
-    } else if let Some(n) = v.strip_suffix("rem").or_else(|| v.strip_suffix("em")) {
-        Some(parse_number(n)? * 16.0)
-    } else {
-        parse_number(v).filter(|n| *n == 0.0)
+    if v.contains('%') {
+        return None;
+    }
+    if let Some(n) = parse_number(v) {
+        return Some(n).filter(|n| *n == 0.0);
+    }
+    const ABSOLUTE: [(&str, f32); 6] = [
+        ("in", 96.0),
+        ("cm", 96.0 / 2.54),
+        ("mm", 96.0 / 25.4),
+        ("pt", 96.0 / 72.0),
+        ("pc", 16.0),
+        ("q", 96.0 / 101.6),
+    ];
+    for (unit, px) in ABSOLUTE {
+        if let Some(n) = v.strip_suffix(unit).and_then(parse_number) {
+            return Some(n * px);
+        }
+    }
+    // A bare number inside a math function (`calc(10)`) is not a length.
+    let has_unit = v
+        .as_bytes()
+        .windows(2)
+        .any(|w| w[0].is_ascii_digit() && w[1].is_ascii_alphabetic());
+    match crate::parse_length(v)? {
+        crate::Length::Auto | crate::Length::FitContent => None,
+        _ if !has_unit => None,
+        length => Some(length.to_px_with_viewport(16.0, 16.0, 0.0, width, height)),
     }
 }
 
@@ -235,7 +259,7 @@ fn range_matches(feature: &str, width: f32, height: f32) -> bool {
         if p == name {
             Some(actual)
         } else {
-            parse_value(&name, p)
+            parse_value(&name, p, width, height)
         }
     };
     ops.iter().enumerate().all(|(i, op)| {
@@ -340,6 +364,56 @@ mod tests {
         assert!(m("(orientation: landscape)", w, h));
         assert!(m("(min-aspect-ratio: 16/10)", w, h));
         assert!(!m("(min-aspect-ratio: 16/9)", w, h));
+    }
+
+    /// A length in a media feature may be a math function or carry any
+    /// length unit. Every row is what the oracle Chromium (143) answers from
+    /// `matchMedia` at 1280x800; the first four are en.wikipedia.org's.
+    #[test]
+    fn math_functions_and_other_units_in_a_feature_length() {
+        let (w, h) = (1280.0, 800.0);
+        assert!(m("(min-width: calc(639px))", w, h));
+        assert!(!m("(max-width: calc(1119px))", w, h));
+        assert!(!m("(max-width: calc(639px))", w, h));
+        assert!(m("screen and (min-width: calc(639px)) and (max-width: calc(1679px))", w, h));
+        assert!(m("(min-width: calc(1280px))", w, h));
+        assert!(!m("(min-width: calc(1280px + 1px))", w, h));
+        assert!(m("(max-width: calc(1281px - 1px))", w, h));
+        assert!(!m("(max-width: calc(640px - 1px))", w, h));
+        assert!(m("(min-width: calc(40em + 1px))", w, h));
+        assert!(m("(min-width: calc(80em))", w, h));
+        assert!(!m("(min-width: calc(80em + 1px))", w, h));
+        assert!(m("(min-width: calc(2 * 640px))", w, h));
+        assert!(!m("(min-width: calc(2 * 640.5px))", w, h));
+        assert!(m("(min-width: min(1000px, 2000px))", w, h));
+        assert!(!m("(min-width: max(1000px, 2000px))", w, h));
+        assert!(!m("(min-width: clamp(100px, 1300px, 1290px))", w, h));
+        assert!(m("(min-width: 100vw)", w, h));
+        assert!(!m("(min-width: 101vw)", w, h));
+        assert!(m("(min-height: 100vh)", w, h));
+        assert!(m("(min-width: calc(50vw + 640px))", w, h));
+        assert!(!m("(min-width: calc(50vw + 641px))", w, h));
+        assert!(m("(width >= calc(1000px + 280px))", w, h));
+        assert!(!m("(width > calc(1000px + 280px))", w, h));
+        assert!(m("(calc(600px) <= width < calc(1280px + 1px))", w, h));
+        assert!(m("(min-height: calc(799px + 1px))", w, h));
+        assert!(!m("(max-height: calc(100px * 7))", w, h));
+        assert!(m("(min-width: CALC(639PX))", w, h));
+        assert!(m("(min-width: calc( 639px ))", w, h));
+        assert!(m("(min-width: 1in)", w, h));
+        assert!(!m("(min-width: 14in)", w, h));
+        assert!(m("(min-width: 960pt)", w, h));
+        assert!(!m("(min-width: 961pt)", w, h));
+        assert!(m("(min-width: 33.8cm)", w, h));
+        assert!(!m("(min-width: 33.9cm)", w, h));
+        // Not lengths: a percentage, a bare number other than 0.
+        assert!(!m("(min-width: calc(50%))", w, h));
+        assert!(!m("(min-width: calc(10))", w, h));
+        assert!(!m("(min-width: 10)", w, h));
+        // Narrower viewports, where the `max-` forms are the ones that hold.
+        assert!(m("(max-width: calc(1119px))", 1000.0, h));
+        assert!(m("(max-width: calc(639px))", 600.0, h));
+        assert!(!m("(min-width: calc(639px))", 600.0, h));
     }
 
     #[test]

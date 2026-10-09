@@ -401,7 +401,7 @@ pub struct AnimationEventData {
 // ==================== Message Event ====================
 
 /// Message event data for postMessage.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MessageEventData {
     /// The data sent by the message emitter.
     pub data: String,
@@ -413,18 +413,6 @@ pub struct MessageEventData {
     pub source: Option<u64>,
     /// Message ports.
     pub ports: Vec<u64>,
-}
-
-impl Default for MessageEventData {
-    fn default() -> Self {
-        Self {
-            data: String::new(),
-            origin: String::new(),
-            last_event_id: String::new(),
-            source: None,
-            ports: Vec::new(),
-        }
-    }
 }
 
 // ==================== requestAnimationFrame ====================

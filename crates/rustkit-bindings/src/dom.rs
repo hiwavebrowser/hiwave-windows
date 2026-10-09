@@ -28,9 +28,33 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod node_apis;
+
 /// Does this element match this selector list? `None` means the list is
 /// invalid, and script throws `SyntaxError`.
-pub type SelectorMatchFn = Rc<dyn Fn(&Rc<Node>, &str) -> Option<bool>>;
+pub type SelectorMatchFn = Rc<dyn Fn(&Rc<Node>, &str, &HashMap<usize, bool>) -> Option<bool>>;
+
+/// Where the layout put one element, in document coordinates, as the engine
+/// last measured it (`DomBindings::set_geometry`). The border box is what
+/// `getBoundingClientRect()` and `offsetWidth` report; the client box is the
+/// padding box (`clientWidth`); the scroll size is the extent of the content
+/// and descendants inside the padding box (`scrollWidth`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BoxGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// Left and top border widths (`clientLeft`, `clientTop`).
+    pub border_left: f32,
+    pub border_top: f32,
+    pub client_width: f32,
+    pub client_height: f32,
+    pub scroll_width: f32,
+    pub scroll_height: f32,
+    /// 0 static, 1 positioned (relative, absolute, sticky), 2 fixed.
+    pub position: u8,
+}
 
 /// The document the host functions read, and its generation.
 #[derive(Default)]
@@ -39,6 +63,12 @@ pub(crate) struct DomHost {
     generation: u32,
     /// The injected selector matcher (`DomBindings::set_selector_matcher`).
     pub(crate) matcher: Option<SelectorMatchFn>,
+    /// Where each element's box is, by NodeId; empty until the engine has
+    /// laid the page out (`DomBindings::set_geometry`).
+    pub(crate) geometry: HashMap<usize, BoxGeometry>,
+    /// The computed style of each laid-out element, by NodeId, as
+    /// `name\tvalue` lines (`DomBindings::set_computed_styles`).
+    pub(crate) computed: HashMap<usize, String>,
     /// HTML §4.10.5.4 "dirty value" of the `<input>`/`<textarea>` controls
     /// that script or the user changed, by NodeId. A control missing here
     /// shows its default value (the `value` attribute, or a textarea's text).
@@ -46,6 +76,25 @@ pub(crate) struct DomHost {
     /// Script value writes the engine has not yet copied into its edit
     /// state, which is what layout paints (`DomBindings::take_value_writes`).
     value_writes: Vec<(usize, String)>,
+    /// Checkedness changes the engine has not yet taken
+    /// (`DomBindings::take_checked_writes`): (NodeId, the control's
+    /// checkedness, or `None` when it follows its `checked` attribute
+    /// again). The state itself is script's (web_forms.js).
+    checked_writes: Vec<(usize, Option<bool>)>,
+    /// The checkedness script holds for each control that no longer
+    /// follows its `checked` attribute, by NodeId. The selector matcher
+    /// reads it, so `:checked` in a query answers what the page paints.
+    checked: HashMap<usize, bool>,
+    /// Forms whose `submit` event was not cancelled, with the button that
+    /// submitted each, by NodeId (`DomBindings::take_submit_requests`).
+    submit_requests: Vec<(usize, Option<usize>)>,
+    /// URLs script asked this document to navigate to (`location.href =`,
+    /// `link.click()`, `form.submit()`), oldest first
+    /// (`DomBindings::take_navigation_requests`).
+    navigation_requests: Vec<String>,
+    /// HTML §4.12.3 template contents: each `<template>`'s content
+    /// fragment, by the template's NodeId (see `adopt_template_contents`).
+    templates: RefCell<HashMap<usize, Rc<Node>>>,
 }
 
 pub(crate) type SharedDomHost = Rc<RefCell<DomHost>>;
@@ -53,10 +102,17 @@ pub(crate) type SharedDomHost = Rc<RefCell<DomHost>>;
 impl DomHost {
     /// Bind `document`, returning the new generation.
     pub(crate) fn bind(&mut self, document: Rc<Document>) -> u32 {
+        let templates = self.templates.get_mut();
+        templates.clear();
+        adopt_template_contents(&document, document.root(), templates);
         self.document = Some(document);
         self.generation += 1;
         self.values.clear();
         self.value_writes.clear();
+        self.checked_writes.clear();
+        self.checked.clear();
+        self.submit_requests.clear();
+        self.navigation_requests.clear();
         self.generation
     }
 
@@ -67,6 +123,18 @@ impl DomHost {
 
     pub(crate) fn take_value_writes(&mut self) -> Vec<(usize, String)> {
         std::mem::take(&mut self.value_writes)
+    }
+
+    pub(crate) fn take_checked_writes(&mut self) -> Vec<(usize, Option<bool>)> {
+        std::mem::take(&mut self.checked_writes)
+    }
+
+    pub(crate) fn take_submit_requests(&mut self) -> Vec<(usize, Option<usize>)> {
+        std::mem::take(&mut self.submit_requests)
+    }
+
+    pub(crate) fn take_navigation_requests(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.navigation_requests)
     }
 
     fn document_for(&self, generation: &JsValue) -> Option<&Rc<Document>> {
@@ -188,6 +256,38 @@ fn is_fragment(node: &Node) -> bool {
     matches!(node.node_type, NodeType::DocumentFragment)
 }
 
+fn is_template(node: &Node) -> bool {
+    is_html_element(node) && node.tag_name() == Some("template")
+}
+
+/// HTML §4.12.3: a parsed `<template>`'s children belong to its content,
+/// a DocumentFragment outside the tree, not to the element. Gives every
+/// template in `root`'s subtree (`root` included, and templates nested in
+/// the moved content) a content fragment and moves its children there.
+/// Run on freshly parsed nodes only: children script appends to a
+/// template later stay real children, as in the spec.
+fn adopt_template_contents(
+    document: &Document,
+    root: &Rc<Node>,
+    templates: &mut HashMap<usize, Rc<Node>>,
+) {
+    let mut pending = vec![root.clone()];
+    while let Some(node) = pending.pop() {
+        if is_template(&node) {
+            let content = templates
+                .entry(node.id.raw())
+                .or_insert_with(|| document.create_node(NodeType::DocumentFragment))
+                .clone();
+            for child in node.children() {
+                child.remove_from_parent();
+                content.append_child(child);
+            }
+            pending.push(content);
+        }
+        pending.extend(node.children());
+    }
+}
+
 /// `mutate(gen, op, parentId, nodeId, childId)`: one tree write. Answers
 /// null on success, else the DOMException name to throw.
 fn mutate(host: &DomHost, args: &[JsValue]) -> Result<(), &'static str> {
@@ -232,6 +332,37 @@ fn write(host: &DomHost, args: &[JsValue]) -> Result<(JsValue, DomDirty), &'stat
     let op = string_arg(args, 1).ok_or("NotSupportedError")?;
     if let Some(kind) = op.strip_prefix("create:") {
         let data = string_arg(args, 2).unwrap_or("").to_string();
+        // DOMParser (HTML §8.5.1): parse `data` as a whole HTML document,
+        // then copy it under a detached Document node here. Its nodes share
+        // this Document's node table (so wrappers and tree moves work on
+        // them) but are in no rendered tree.
+        if kind == "document" {
+            let parsed = Document::parse_html(&data).map_err(|_| "SyntaxError")?;
+            let doc = document.create_node(NodeType::Document);
+            let templates = &mut host.templates.borrow_mut();
+            for child in parsed.root().children() {
+                // The parsed tree's NodeIds are its own: clone with an
+                // empty template table, then give its templates content.
+                doc.append_child(clone_node(document, &child, true, &mut HashMap::new()));
+            }
+            // An HTML document always has a body, but rustkit-html drops
+            // it (and the text) for text-only input; supply an empty one.
+            if let Some(html) = doc
+                .children()
+                .into_iter()
+                .find(|n| n.tag_name() == Some("html"))
+            {
+                if !html.children().iter().any(|n| n.tag_name() == Some("body")) {
+                    html.append_child(document.create_node(NodeType::Element {
+                        tag_name: String::from("body"),
+                        namespace: String::from("http://www.w3.org/1999/xhtml"),
+                        attributes: Default::default(),
+                    }));
+                }
+            }
+            adopt_template_contents(document, &doc, templates);
+            return Ok((node_id(Some(doc)), DomDirty::Clean));
+        }
         let node_type = match kind {
             "element" if is_valid_name(&data) => NodeType::Element {
                 // An HTML document lowercases the name it is given.
@@ -246,10 +377,9 @@ fn write(host: &DomHost, args: &[JsValue]) -> Result<(JsValue, DomDirty), &'stat
             _ => return Err("NotSupportedError"),
         };
         // A detached node is in no tree, so nothing needs a restyle yet.
-        return Ok((
-            node_id(Some(document.create_node(node_type))),
-            DomDirty::Clean,
-        ));
+        let node = document.create_node(node_type);
+        adopt_template_contents(document, &node, &mut host.templates.borrow_mut());
+        return Ok((node_id(Some(node)), DomDirty::Clean));
     }
     let node = host.node_at(args, 2).ok_or("NotFoundError")?;
     match (op, &node.node_type) {
@@ -321,23 +451,31 @@ fn write(host: &DomHost, args: &[JsValue]) -> Result<(JsValue, DomDirty), &'stat
         // The clone is detached, so nothing needs a restyle yet.
         ("clone", _) => {
             let deep = matches!(args.get(3), Some(JsValue::Boolean(true)));
+            let templates = &mut host.templates.borrow_mut();
             Ok((
-                node_id(Some(clone_node(document, &node, deep))),
+                node_id(Some(clone_node(document, &node, deep, templates))),
                 DomDirty::Clean,
             ))
         }
         // HTML §8.5 innerHTML setter: parse as the element's contents (the
         // fragment parsing algorithm), then replace all children with it.
+        // A template's innerHTML is its content's (HTML §4.12.3).
         ("setHTML", NodeType::Element { tag_name, .. }) => {
             let html = string_arg(args, 3).unwrap_or("");
             let nodes = document
                 .parse_fragment(html, tag_name)
                 .map_err(|_| "SyntaxError")?;
-            for child in node.children() {
+            let templates = &mut host.templates.borrow_mut();
+            let target = templates
+                .get(&node.id.raw())
+                .cloned()
+                .unwrap_or(node.clone());
+            for child in target.children() {
                 child.remove_from_parent();
             }
             for child in nodes {
-                node.append_child(child);
+                adopt_template_contents(document, &child, templates);
+                target.append_child(child);
             }
             Ok((JsValue::Null, DomDirty::Style))
         }
@@ -347,6 +485,23 @@ fn write(host: &DomHost, args: &[JsValue]) -> Result<(JsValue, DomDirty), &'stat
         }
         _ => Err("NotSupportedError"),
     }
+}
+
+/// Diagnostic (`RUST_LOG=rustkit_bindings::dom=trace`): the write that
+/// dirtied the page, and whether its node (the parent, for a tree write) is
+/// in the document at all.
+fn trace_dirty(host: &DomHost, args: &[JsValue], bucket: DomDirty) {
+    if bucket == DomDirty::Clean || !tracing::enabled!(tracing::Level::TRACE) {
+        return;
+    }
+    let node = host.node_at(args, 2);
+    let connected = match (&node, args.first().and_then(|g| host.document_for(g))) {
+        (Some(node), Some(document)) => is_connected(node, document),
+        _ => false,
+    };
+    let tag = node.as_ref().and_then(|n| n.tag_name()).unwrap_or("").to_string();
+    let detail: String = string_arg(args, 3).unwrap_or("").chars().take(48).collect();
+    tracing::trace!(op = string_arg(args, 1).unwrap_or(""), %tag, connected, %detail, ?bucket, "DOM write dirtied the page");
 }
 
 /// `value(gen, id[, v])`: a text control's value (HTML §4.10.5.4, value
@@ -396,14 +551,54 @@ fn control_value(host: &mut DomHost, args: &[JsValue]) -> (JsValue, DomDirty) {
     (JsValue::String(value), DomDirty::Layout)
 }
 
+/// `checked(gen, id, v)`: an input's checkedness (HTML §4.10.5.4) became
+/// `v`, or with `v` null follows its `checked` attribute again (form
+/// reset). Script keeps the state; this tells the engine, which styles
+/// (`:checked`) and paints the control from it.
+fn control_checked(host: &mut DomHost, args: &[JsValue]) -> DomDirty {
+    let Some(node) = host.node(args) else {
+        return DomDirty::Clean;
+    };
+    let state = match args.get(2) {
+        Some(JsValue::Boolean(checked)) => Some(*checked),
+        _ => None,
+    };
+    host.checked_writes.push((node.id.raw(), state));
+    match state {
+        Some(checked) => host.checked.insert(node.id.raw(), checked),
+        None => host.checked.remove(&node.id.raw()),
+    };
+    DomDirty::Style
+}
+
+/// `submit(gen, form, submitter)`: the form's `submit` event ran and no
+/// listener cancelled it. The engine builds the submission and navigates.
+fn form_submit(host: &mut DomHost, args: &[JsValue]) {
+    let Some(form) = host.node(args) else {
+        return;
+    };
+    let submitter = host.node_at(args, 2).map(|n| n.id.raw());
+    host.submit_requests.push((form.id.raw(), submitter));
+}
+
 /// DOM §4.4 "clone a node": a detached copy with fresh NodeIds, its
-/// descendants copied too when `deep`.
-fn clone_node(document: &Document, node: &Rc<Node>, deep: bool) -> Rc<Node> {
+/// descendants copied too when `deep`. A template's copy gets a content
+/// fragment of its own, holding copies of the content when `deep`.
+fn clone_node(
+    document: &Document,
+    node: &Rc<Node>,
+    deep: bool,
+    templates: &mut HashMap<usize, Rc<Node>>,
+) -> Rc<Node> {
     let copy = document.create_node(node.node_type.clone());
     if deep {
         for child in node.children() {
-            copy.append_child(clone_node(document, &child, true));
+            copy.append_child(clone_node(document, &child, true, templates));
         }
+    }
+    if let Some(content) = templates.get(&node.id.raw()).cloned() {
+        let content = clone_node(document, &content, deep, templates);
+        templates.insert(copy.id.raw(), content);
     }
     copy
 }
@@ -455,7 +650,7 @@ const RAW_TEXT_ELEMENTS: &[&str] = &[
 /// HTML §13.3 "serializing HTML fragments" for one node (`outerHTML`).
 /// Attributes come out sorted by name: rustkit-dom keeps them in a
 /// HashMap, so source order is gone.
-fn serialize_node(node: &Rc<Node>, out: &mut String) {
+fn serialize_node(node: &Rc<Node>, out: &mut String, templates: &HashMap<usize, Rc<Node>>) {
     match &node.node_type {
         NodeType::Element {
             tag_name,
@@ -475,7 +670,7 @@ fn serialize_node(node: &Rc<Node>, out: &mut String) {
             }
             out.push('>');
             if !VOID_ELEMENTS.contains(&tag_name.as_str()) {
-                serialize_children(node, out);
+                serialize_children(node, out, templates);
                 out.push_str("</");
                 out.push_str(tag_name);
                 out.push('>');
@@ -509,14 +704,16 @@ fn serialize_node(node: &Rc<Node>, out: &mut String) {
             out.push_str(name);
             out.push('>');
         }
-        NodeType::Document | NodeType::DocumentFragment => serialize_children(node, out),
+        NodeType::Document | NodeType::DocumentFragment => serialize_children(node, out, templates),
     }
 }
 
-/// The children of `node`, serialized (`innerHTML`).
-fn serialize_children(node: &Rc<Node>, out: &mut String) {
-    for child in node.children() {
-        serialize_node(&child, out);
+/// The children of `node`, serialized (`innerHTML`); a template's are
+/// its content's children.
+fn serialize_children(node: &Rc<Node>, out: &mut String, templates: &HashMap<usize, Rc<Node>>) {
+    let source = templates.get(&node.id.raw()).unwrap_or(node);
+    for child in source.children() {
+        serialize_node(&child, out, templates);
     }
 }
 
@@ -536,7 +733,7 @@ fn escape_into(s: &str, attribute: bool, out: &mut String) {
 }
 
 /// `info(gen, id, field)`: one read of one node.
-fn node_info(node: &Rc<Node>, field: &str) -> JsValue {
+fn node_info(node: &Rc<Node>, field: &str, templates: &HashMap<usize, Rc<Node>>) -> JsValue {
     match field {
         "type" => JsValue::Number(match node.node_type {
             NodeType::Element { .. } => 1.0,
@@ -592,14 +789,15 @@ fn node_info(node: &Rc<Node>, field: &str) -> JsValue {
         },
         "innerHTML" => {
             let mut out = String::new();
-            serialize_children(node, &mut out);
+            serialize_children(node, &mut out, templates);
             JsValue::String(out)
         }
         "outerHTML" => {
             let mut out = String::new();
-            serialize_node(node, &mut out);
+            serialize_node(node, &mut out, templates);
             JsValue::String(out)
         }
+        "content" => node_id(templates.get(&node.id.raw()).cloned()),
         "innerText" if node.is_element() => JsValue::String(inner_text::inner_text(node)),
         _ => JsValue::Undefined,
     }
@@ -696,12 +894,12 @@ pub(crate) fn install(
                 // throws even where nothing could match. Matching reads each
                 // element's whole ancestor chain, so `.outer p` scoped to
                 // an inner element still sees `.outer` above the scope.
-                if matcher(&scope, arg).is_none() {
+                if matcher(&scope, arg, &host.checked).is_none() {
                     return JsValue::Boolean(false);
                 }
                 let mut all = Vec::new();
                 descendant_elements(&scope, &mut all);
-                return id_list(all.into_iter().filter(|n| matcher(n, arg) == Some(true)));
+                return id_list(all.into_iter().filter(|n| matcher(n, arg, &host.checked) == Some(true)));
             }
             let found = match string_arg(args, 2) {
                 Some("tag") if arg == "*" => {
@@ -739,7 +937,7 @@ pub(crate) fn install(
                 return JsValue::Null;
             };
             let matched = match (&host.matcher, &host.document) {
-                (Some(matcher), _) => matcher(&node, selector),
+                (Some(matcher), _) => matcher(&node, selector, &host.checked),
                 (None, Some(document)) => Some(
                     QuerySelector::select(document, selector)
                         .iter()
@@ -761,7 +959,21 @@ pub(crate) fn install(
         Box::new(move |args| {
             let host = h.borrow();
             match (host.node(args), string_arg(args, 2)) {
-                (Some(node), Some(field)) => node_info(&node, field),
+                (Some(_), Some("laidout")) => {
+                    JsValue::String(if host.geometry.is_empty() { String::new() } else { "1".into() })
+                }
+                (Some(node), Some("computed")) => JsValue::String(
+                    host.computed.get(&node.id.raw()).cloned().unwrap_or_default(),
+                ),
+                (Some(node), Some("geom")) => match host.geometry.get(&node.id.raw()) {
+                    Some(g) => JsValue::String(format!(
+                        "{} {} {} {} {} {} {} {} {} {} {}",
+                        g.x, g.y, g.width, g.height, g.border_left, g.border_top,
+                        g.client_width, g.client_height, g.scroll_width, g.scroll_height, g.position
+                    )),
+                    None => JsValue::String(String::new()),
+                },
+                (Some(node), Some(field)) => node_info(&node, field, &host.templates.borrow()),
                 _ => JsValue::Null,
             }
         }),
@@ -794,6 +1006,7 @@ pub(crate) fn install(
         5,
         Box::new(move |args| match mutate(&h.borrow(), args) {
             Ok(()) => {
+                trace_dirty(&h.borrow(), args, DomDirty::Style);
                 // Pin §3.3: a structure insert/remove/move restyles.
                 d.set(d.get().max(DomDirty::Style));
                 JsValue::Null
@@ -811,6 +1024,7 @@ pub(crate) fn install(
         5,
         Box::new(move |args| match write(&h.borrow(), args) {
             Ok((result, bucket)) => {
+                trace_dirty(&h.borrow(), args, bucket);
                 d.set(d.get().max(bucket));
                 result
             }
@@ -830,8 +1044,44 @@ pub(crate) fn install(
         }),
     )?;
 
+    let h = host.clone();
+    let d = dirty.clone();
+    runtime.register_host_function(
+        "__rustkit_dom_checked",
+        3,
+        Box::new(move |args| {
+            let bucket = control_checked(&mut h.borrow_mut(), args);
+            d.set(d.get().max(bucket));
+            JsValue::Null
+        }),
+    )?;
+
+    let h = host.clone();
+    runtime.register_host_function(
+        "__rustkit_dom_submit",
+        3,
+        Box::new(move |args| {
+            form_submit(&mut h.borrow_mut(), args);
+            JsValue::Null
+        }),
+    )?;
+
+    // `navigate(url)`: script asked for another document at this absolute
+    // URL. Nothing navigates here; the embedder takes the request.
+    let h = host.clone();
+    runtime.register_host_function(
+        "__rustkit_dom_navigate",
+        1,
+        Box::new(move |args| {
+            if let Some(JsValue::String(url)) = args.first() {
+                h.borrow_mut().navigation_requests.push(url.clone());
+            }
+            JsValue::Null
+        }),
+    )?;
+
     runtime.evaluate_script(WRAPPERS_JS)?;
-    Ok(())
+    node_apis::install(runtime, host)
 }
 
 /// Wrapper prototypes, the identity cache, and the `document` read
@@ -843,9 +1093,11 @@ const WRAPPERS_JS: &str = r#"
         collect: __rustkit_dom_collect, info: __rustkit_dom_info,
         attr: __rustkit_dom_attr, mutate: __rustkit_dom_mutate,
         write: __rustkit_dom_write, matches: __rustkit_dom_matches,
-        value: __rustkit_dom_value, resolve: __rustkit_dom_resolve
+        value: __rustkit_dom_value, resolve: __rustkit_dom_resolve,
+        checked: __rustkit_dom_checked, submit: __rustkit_dom_submit,
+        navigate: __rustkit_dom_navigate
     };
-    ['root', 'by_id', 'collect', 'info', 'attr', 'mutate', 'write', 'matches', 'value', 'resolve'].forEach(function (n) {
+    ['root', 'by_id', 'collect', 'info', 'attr', 'mutate', 'write', 'matches', 'value', 'resolve', 'checked', 'submit', 'navigate'].forEach(function (n) {
         delete g['__rustkit_dom_' + n];
     });
 
@@ -862,6 +1114,16 @@ const WRAPPERS_JS: &str = r#"
     var DOMException = g.DOMException;
 
     var SLOT = Symbol('rustkit.node');
+    // Hooks web_shadow.js fills in so that events and tree queries can cross
+    // a shadow boundary: `shadowParent(root, event)` is the host a composed
+    // event goes on to from a shadow root, `retarget(target, against)` the
+    // target as seen from another node's tree, `hostOf(root)` a shadow
+    // root's host (or null for any other node). `mutation` is the
+    // MutationObserver's (web_mutation_observer.js): set from the first
+    // observe(), it sees every write below before it happens and gets back
+    // what to record once it has.
+    var HOOKS = {};
+    Object.defineProperty(g, '__rkDomHooks', { value: HOOKS, configurable: true, enumerable: false });
     var gen = 0;
     var cache = new Map();
 
@@ -874,7 +1136,19 @@ const WRAPPERS_JS: &str = r#"
         g[name] = ctor;
         return ctor;
     }
-    var EventTarget = iface('EventTarget');
+    // EventTarget is the one interface of this family script may construct
+    // (DOM §2.7), on its own or as the base of a class. PLAIN holds the
+    // objects made that way: they have no on<type> handler attributes.
+    var PLAIN = new WeakSet();
+    var EventTarget = function EventTarget() {
+        if (!new.target) {
+            throw new TypeError("Failed to construct 'EventTarget': Please use the 'new' operator, " +
+                "this DOM object constructor cannot be called as a function.");
+        }
+        PLAIN.add(this);
+    };
+    Object.defineProperty(EventTarget.prototype, Symbol.toStringTag, { value: 'EventTarget' });
+    g.EventTarget = EventTarget;
     var Node = iface('Node', EventTarget);
     var Document = iface('Document', Node);
     var CharacterData = iface('CharacterData', Node);
@@ -942,13 +1216,17 @@ const WRAPPERS_JS: &str = r#"
         if (!s) throw new TypeError('Illegal invocation');
         return s;
     }
+    // An element's interface; node_apis.js extends this by namespace.
+    var elementProto = function (id) {
+        return elementProtos[N.info(gen, id, 'local')] || HTMLElement.prototype;
+    };
     function wrap(id) {
         if (typeof id !== 'number') return null;
         var w = cache.get(id);
         if (w) return w;
         var t = N.info(gen, id, 'type');
-        var proto = t === 1 ? elementProtos[N.info(gen, id, 'local')] || HTMLElement.prototype
-                  : t === 3 ? Text.prototype
+        var proto = t === 1 ? elementProto(id)
+                  : t === 3 ? Text.prototype : t === 9 ? Document.prototype
                   : t === 8 ? Comment.prototype : t === 11 ? DocumentFragment.prototype
                   : Node.prototype;
         w = Object.create(proto);
@@ -997,10 +1275,12 @@ const WRAPPERS_JS: &str = r#"
     // throw; an old-document wrapper names no node (-1) and throws NotFoundError.
     function setData(o, op, a, b, method) {
         var s = slotOf(o);
+        var m = HOOKS.mutation && HOOKS.mutation.data(o, op, a);
         var r = N.write(gen, op, s.gen === gen ? s.id : -1, a, b);
         if (typeof r === 'string') {
             throw new DOMException("Failed to execute '" + method + "'.", r);
         }
+        if (m) m();
         return r;
     }
     function create(kind, data, method) {
@@ -1026,8 +1306,13 @@ const WRAPPERS_JS: &str = r#"
         var s = slotOf(this);
         return list(NodeList.prototype, s.gen === gen ? N.info(s.gen, s.id, 'children') : '', false);
     });
+    // A node in a DOMParser document is owned by it; every other node by
+    // the global document.
     getter(Node.prototype, 'ownerDocument', function () {
-        return info(this, 'type') === 9 ? null : g.document;
+        if (info(this, 'type') === 9) return null;
+        var n = this;
+        while (n.parentNode) n = n.parentNode;
+        return n.nodeType === 9 ? n : g.document;
     });
     Node.prototype.hasChildNodes = function () { return this.firstChild !== null; };
 
@@ -1046,8 +1331,10 @@ const WRAPPERS_JS: &str = r#"
         function here(s) { return s.gen === gen ? s.id : -1; }
         var p = slotOf(parent), n = nodeArg(node, method);
         var c = child == null ? null : here(nodeArg(child, method));
+        var m = HOOKS.mutation && HOOKS.mutation.tree(op, parent, node, child);
         var err = N.mutate(gen, op, here(p), here(n), c);
         if (err) throw new DOMException("Failed to execute '" + method + "' on 'Node'.", err);
+        if (m) m();
         return node;
     }
     Node.prototype.appendChild = function (node) {
@@ -1083,8 +1370,11 @@ const WRAPPERS_JS: &str = r#"
             }
             return child;
         }
-        write('insert', this, node, child, 'replaceChild');
-        return write('remove', this, child, null, 'replaceChild');
+        var self = this;
+        return batch(function () {
+            write('insert', self, node, child, 'replaceChild');
+            return write('remove', self, child, null, 'replaceChild');
+        });
     };
 
     // ParentNode.append/prepend and ChildNode.before/after/replaceWith
@@ -1103,6 +1393,14 @@ const WRAPPERS_JS: &str = r#"
     function insertAll(parent, nodes, ref, method) {
         nodes.forEach(function (n) { write('insert', parent, n, ref, method); });
     }
+    // DOM queues one record per call of these; they make several writes,
+    // which an observer merges into one while `fn` runs.
+    function batch(fn) {
+        var m = HOOKS.mutation;
+        if (!m) return fn();
+        m.batch(1);
+        try { return fn(); } finally { m.batch(-1); }
+    }
     function viableSibling(node, field, nodes) {
         var s = node[field];
         while (s && nodes.indexOf(s) >= 0) s = s[field];
@@ -1110,16 +1408,19 @@ const WRAPPERS_JS: &str = r#"
     }
     [Element, DocumentFragment].forEach(function (C) {
         C.prototype.append = function () {
-            insertAll(this, toNodes(arguments), null, 'append');
+            var self = this, nodes = toNodes(arguments);
+            batch(function () { insertAll(self, nodes, null, 'append'); });
         };
         C.prototype.prepend = function () {
-            var nodes = toNodes(arguments);
-            insertAll(this, nodes, this.firstChild, 'prepend');
+            var self = this, nodes = toNodes(arguments);
+            batch(function () { insertAll(self, nodes, self.firstChild, 'prepend'); });
         };
         C.prototype.replaceChildren = function () {
-            var nodes = toNodes(arguments);
-            while (this.firstChild) this.removeChild(this.firstChild);
-            insertAll(this, nodes, null, 'replaceChildren');
+            var self = this, nodes = toNodes(arguments);
+            batch(function () {
+                while (self.firstChild) self.removeChild(self.firstChild);
+                insertAll(self, nodes, null, 'replaceChildren');
+            });
         };
     });
     [Element, CharacterData].forEach(function (C) {
@@ -1129,27 +1430,30 @@ const WRAPPERS_JS: &str = r#"
             var args = Array.prototype.slice.call(arguments);
             var prev = viableSibling(this, 'previousSibling', args);
             var nodes = toNodes(args);
-            insertAll(p, nodes, prev ? prev.nextSibling : p.firstChild, 'before');
+            batch(function () { insertAll(p, nodes, prev ? prev.nextSibling : p.firstChild, 'before'); });
         };
         C.prototype.after = function () {
             var p = this.parentNode;
             if (!p) return;
             var args = Array.prototype.slice.call(arguments);
             var next = viableSibling(this, 'nextSibling', args);
-            insertAll(p, toNodes(args), next, 'after');
+            var nodes = toNodes(args);
+            batch(function () { insertAll(p, nodes, next, 'after'); });
         };
         C.prototype.replaceWith = function () {
             var p = this.parentNode;
             if (!p) return;
             var args = Array.prototype.slice.call(arguments);
             var next = viableSibling(this, 'nextSibling', args);
-            var nodes = toNodes(args);
-            if (this.parentNode === p) {
-                insertAll(p, nodes, this, 'replaceWith');
-                p.removeChild(this);
-            } else {
-                insertAll(p, nodes, next, 'replaceWith');
-            }
+            var self = this, nodes = toNodes(args);
+            batch(function () {
+                if (self.parentNode === p) {
+                    insertAll(p, nodes, self, 'replaceWith');
+                    p.removeChild(self);
+                } else {
+                    insertAll(p, nodes, next, 'replaceWith');
+                }
+            });
         };
     });
     Node.prototype.contains = function (other) {
@@ -1157,9 +1461,14 @@ const WRAPPERS_JS: &str = r#"
         return false;
     };
     Node.prototype.isSameNode = function (other) { return this === other; };
-    Node.prototype.getRootNode = function () {
+    Node.prototype.getRootNode = function (options) {
         var n = this;
         while (n.parentNode) n = n.parentNode;
+        // { composed: true } continues through shadow roots to their hosts.
+        for (var host; options && options.composed && HOOKS.hostOf && (host = HOOKS.hostOf(n));) {
+            n = host;
+            while (n.parentNode) n = n.parentNode;
+        }
         return n;
     };
     Node.prototype.cloneNode = function (deep) {
@@ -1280,13 +1589,23 @@ const WRAPPERS_JS: &str = r#"
             return elementSibling(this, 'previousSibling');
         });
     });
-    // A node is connected when its root is the current document; an old
-    // document's wrappers have no parent and are never connected.
+    // A node is connected when its root is a document (the current one,
+    // or a DOMParser one); an old document's wrappers have no parent and
+    // are never connected.
     getter(Node.prototype, 'isConnected', function () {
         var n = this;
         while (n.parentNode) n = n.parentNode;
-        return n === g.document && slotOf(n).gen === gen;
+        // A node in a shadow tree is connected when its host is.
+        for (var host; HOOKS.hostOf && (host = HOOKS.hostOf(n));) {
+            n = host;
+            while (n.parentNode) n = n.parentNode;
+        }
+        return n.nodeType === 9 && slotOf(n).gen === gen;
     });
+
+    // HTML §4.12.3 template.content: the fragment its parsed children
+    // were moved into (the host keeps one per template).
+    getter(elementProtos.template, 'content', function () { return related(this, 'content'); });
 
     // HTMLElement reflected attributes (HTML §3.2.6) and dataset (§3.2.6.6).
     ['title', 'lang', 'dir'].forEach(function (k) {
@@ -1299,6 +1618,17 @@ const WRAPPERS_JS: &str = r#"
     function dataAttr(p) {
         if (typeof p !== 'string' || /-[a-z]/.test(p)) return null;
         return 'data-' + p.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); });
+    }
+    // The DOMStringMap's names (HTML §3.2.6.6): each `data-*` attribute
+    // with no ASCII upper alpha after the prefix, `-x` camel-cased.
+    function dataNames(el) {
+        var out = [];
+        el.getAttributeNames().forEach(function (a) {
+            if (a.slice(0, 5) === 'data-' && !/[A-Z]/.test(a.slice(5))) {
+                out.push(a.slice(5).replace(/-([a-z])/g, function (m, c) { return c.toUpperCase(); }));
+            }
+        });
+        return out;
     }
     getter(HTMLElement.prototype, 'dataset', function () {
         slotOf(this);
@@ -1321,6 +1651,13 @@ const WRAPPERS_JS: &str = r#"
                 return true;
             },
             has: function (t, p) { var a = dataAttr(p); return !!a && el.hasAttribute(a); },
+            // Enumeration (Object.keys, for-in, JSON.stringify).
+            ownKeys: function () { return dataNames(el); },
+            getOwnPropertyDescriptor: function (t, p) {
+                var a = dataAttr(p), v = a ? el.getAttribute(a) : null;
+                return v === null ? undefined
+                    : { value: v, writable: true, enumerable: true, configurable: true };
+            },
             deleteProperty: function (t, p) {
                 var a = dataAttr(p);
                 if (a) el.removeAttribute(a);
@@ -1492,10 +1829,7 @@ const WRAPPERS_JS: &str = r#"
         Object.defineProperty(out, 'length', { value: els.length });
         return out;
     });
-    // Focus is engine-side (pin §4) and not reachable from script yet; these
-    // keep handlers that call them (`input.focus()` after a submit) running.
-    HTMLElement.prototype.focus = function () {};
-    HTMLElement.prototype.blur = function () {};
+    // focus()/blur() and document.activeElement are in node_apis.js.
 
     Element.prototype.getAttribute = function (name) {
         var s = slotOf(this); return N.attr(s.gen, s.id, String(name));
@@ -1624,9 +1958,185 @@ const WRAPPERS_JS: &str = r#"
         if (!l) {
             l = Object.create(DOMTokenList.prototype);
             Object.defineProperty(l, TOKENS, { value: this });
+            // The indexed getter (`classList[0]`) answers like item().
+            l = new Proxy(l, {
+                get: function (t, p, r) {
+                    return typeof p === 'string' && /^(0|[1-9][0-9]*)$/.test(p)
+                        ? tokens(t)[Number(p)] : Reflect.get(t, p, r);
+                }
+            });
             classLists.set(this, l);
         }
         return l;
+    });
+
+    // Layout geometry (CSSOM View). The engine publishes where each element's
+    // box is after a layout (`set_geometry`); a read answers from the last
+    // layout, so it can be stale between a script's own DOM writes and the
+    // next layout. An element with no box (display:none, not rendered, or
+    // measured before any layout) reads as all zeros, and has no offsetParent.
+    function geom(el) {
+        var raw = info(el, 'geom');
+        if (!raw) return null;
+        var p = raw.split(' ');
+        var n = [];
+        for (var i = 0; i < p.length; i++) n.push(Number(p[i]));
+        return { x: n[0], y: n[1], w: n[2], h: n[3], bl: n[4], bt: n[5], cw: n[6], ch: n[7], sw: n[8], sh: n[9], pos: n[10] };
+    }
+    function scrollOffset(axis) {
+        var v = axis === 'x' ? (g.scrollX || g.pageXOffset) : (g.scrollY || g.pageYOffset);
+        return typeof v === 'number' ? v : 0;
+    }
+    // DOMRect is installed after this layer (web_interfaces.js), so it is
+    // looked up when a rect is made.
+    function rect(x, y, w, h) {
+        return typeof g.DOMRect === 'function'
+            ? new g.DOMRect(x, y, w, h)
+            : { x: x, y: y, width: w, height: h, top: y, left: x, right: x + w, bottom: y + h };
+    }
+    Element.prototype.getBoundingClientRect = function () {
+        var b = geom(this);
+        if (!b) return rect(0, 0, 0, 0);
+        return rect(b.x - scrollOffset('x'), b.y - scrollOffset('y'), b.w, b.h);
+    };
+    Element.prototype.getClientRects = function () {
+        var b = geom(this);
+        var out = b ? [rect(b.x - scrollOffset('x'), b.y - scrollOffset('y'), b.w, b.h)] : [];
+        return out;
+    };
+    function metric(name, pick) {
+        getter(HTMLElement.prototype, name, function () {
+            var b = geom(this);
+            return b ? pick(b, this) : 0;
+        });
+    }
+    function round(v) { return Math.round(v); }
+    metric('offsetWidth', function (b) { return round(b.w); });
+    metric('offsetHeight', function (b) { return round(b.h); });
+    // offsetParent: the nearest positioned ancestor, else body. null when
+    // the element has no box, is fixed, or is the body itself.
+    function offsetParentOf(el) {
+        var b = geom(el);
+        if (!b || b.pos === 2) return null;
+        var body = document.body;
+        if (el === body || el === document.documentElement) return null;
+        for (var p = el.parentElement; p; p = p.parentElement) {
+            if (p === body) return body;
+            var pb = geom(p);
+            if (pb && pb.pos !== 0) return p;
+        }
+        return body;
+    }
+    getter(HTMLElement.prototype, 'offsetParent', function () { return offsetParentOf(this); });
+    // Offsets are from the offsetParent's padding edge; from the document
+    // origin when that is the body.
+    function offsetFrom(el, axis) {
+        var b = geom(el);
+        if (!b) return 0;
+        var parent = offsetParentOf(el);
+        var base = 0;
+        if (parent && parent !== document.body) {
+            var pb = geom(parent);
+            if (pb) base = axis === 'x' ? pb.x + pb.bl : pb.y + pb.bt;
+        }
+        return round((axis === 'x' ? b.x : b.y) - base);
+    }
+    getter(HTMLElement.prototype, 'offsetLeft', function () { return offsetFrom(this, 'x'); });
+    getter(HTMLElement.prototype, 'offsetTop', function () { return offsetFrom(this, 'y'); });
+    // getComputedStyle. The engine publishes each laid-out element's computed
+    // style (`set_computed_styles`); a read answers from the last layout,
+    // with the element's own inline declarations laid over it so that
+    // `el.style.display = 'none'` is seen at once. An element with no box
+    // after a layout is not rendered (display:none, or <head>, <script>,
+    // <style>, ...): its display reads 'none'. Before any layout everything
+    // reads as the empty string.
+    var COMPUTED_NAMES = {};
+    function kebab(p) { return p.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); }); }
+    function computedMap(el) {
+        var raw = info(el, 'computed');
+        var m = {};
+        if (raw) {
+            raw.split('\n').forEach(function (line) {
+                var i = line.indexOf('\t');
+                if (i > 0) m[line.slice(0, i)] = line.slice(i + 1);
+            });
+        } else if (info(el, 'laidout')) {
+            m.display = 'none';
+            m.visibility = 'visible';
+        }
+        var inline = el.style;
+        if (inline) {
+            for (var i = 0; i < inline.length; i++) {
+                var name = inline.item(i);
+                var v = inline.getPropertyValue(name);
+                if (v) m[name] = v;
+            }
+        }
+        return m;
+    }
+    function makeComputed(el) {
+        var m = computedMap(el);
+        var names = Object.keys(m).sort();
+        var decl = Object.create(CSSStyleDeclaration.prototype);
+        function ro() { throw new DOMException('These styles are computed, and therefore read-only.', 'NoModificationAllowedError'); }
+        var own = {
+            getPropertyValue: function (n) { n = kebab(String(n)); return Object.prototype.hasOwnProperty.call(m, n) ? m[n] : ''; },
+            getPropertyPriority: function () { return ''; },
+            item: function (i) { return names[i >>> 0] || ''; },
+            setProperty: ro, removeProperty: ro,
+            cssText: names.map(function (n) { return n + ': ' + m[n] + ';'; }).join(' '),
+            length: names.length,
+            parentRule: null
+        };
+        Object.keys(own).forEach(function (k) {
+            Object.defineProperty(decl, k, { value: own[k], writable: false, configurable: true, enumerable: false });
+        });
+        return new Proxy(decl, {
+            get: function (t, p, r) {
+                if (typeof p !== 'string' || p in t) return Reflect.get(t, p, r);
+                if (/^(0|[1-9][0-9]*)$/.test(p)) return names[Number(p)];
+                var n = kebab(p.indexOf('--') === 0 ? p : p);
+                return Object.prototype.hasOwnProperty.call(m, n) ? m[n] : (p === 'cssFloat' ? (m['float'] || '') : '');
+            },
+            set: function (t, p) { if (typeof p === 'string' && !(p in t)) ro(); return false; }
+        });
+    }
+    g.getComputedStyle = function getComputedStyle(el) {
+        if (!el || el.nodeType !== 1) {
+            throw new TypeError("Failed to execute 'getComputedStyle' on 'Window': parameter 1 is not of type 'Element'.");
+        }
+        return makeComputed(el);
+    };
+
+    // The root element's client size is the viewport's, and its scroll size
+    // is the document's (the body's bottom/right edge, at least the viewport).
+    function isRoot(el) { return el === document.documentElement; }
+    function viewport(axis) {
+        var v = axis === 'x' ? g.innerWidth : g.innerHeight;
+        return typeof v === 'number' ? v : 0;
+    }
+    function documentExtent(axis) {
+        var body = document.body, b = body ? geom(body) : null;
+        var edge = b ? (axis === 'x' ? b.x + b.w + b.sw - b.cw : b.y + b.h + b.sh - b.ch) : 0;
+        return Math.max(viewport(axis), edge);
+    }
+    getter(Element.prototype, 'clientWidth', function () {
+        if (isRoot(this)) return round(viewport('x'));
+        var b = geom(this); return b ? round(b.cw) : 0;
+    });
+    getter(Element.prototype, 'clientHeight', function () {
+        if (isRoot(this)) return round(viewport('y'));
+        var b = geom(this); return b ? round(b.ch) : 0;
+    });
+    getter(Element.prototype, 'clientLeft', function () { var b = geom(this); return b ? round(b.bl) : 0; });
+    getter(Element.prototype, 'clientTop', function () { var b = geom(this); return b ? round(b.bt) : 0; });
+    getter(Element.prototype, 'scrollWidth', function () {
+        if (isRoot(this)) return round(documentExtent('x'));
+        var b = geom(this); return b ? round(Math.max(b.sw, b.cw)) : 0;
+    });
+    getter(Element.prototype, 'scrollHeight', function () {
+        if (isRoot(this)) return round(documentExtent('y'));
+        var b = geom(this); return b ? round(Math.max(b.sh, b.ch)) : 0;
     });
 
     // style: a CSSStyleDeclaration over the style attribute, one per
@@ -1756,7 +2266,8 @@ const WRAPPERS_JS: &str = r#"
     DocumentFragment.prototype.querySelectorAll = queries.querySelectorAll;
     // NonElementParentNode on a fragment: the id table only knows the
     // document, so walk the fragment's own subtree.
-    DocumentFragment.prototype.getElementById = function (id) {
+    // A DOMParser document's ids are not in the table either.
+    function findById(root, id) {
         id = String(id);
         function find(n) {
             for (var c = n.firstChild; c; c = c.nextSibling) {
@@ -1767,8 +2278,9 @@ const WRAPPERS_JS: &str = r#"
             }
             return null;
         }
-        return find(this);
-    };
+        return find(root);
+    }
+    DocumentFragment.prototype.getElementById = function (id) { return findById(this, id); };
     function matches(el, sel, method) {
         var s = slotOf(el);
         if (s.gen !== gen) return false;
@@ -1799,17 +2311,46 @@ const WRAPPERS_JS: &str = r#"
     Document.prototype.createComment = function (data) {
         return create('comment', String(data), 'createComment');
     };
+    // DOM §4.5 importNode: a copy for this document. Nodes here all share
+    // the one Rust Document, so importing is cloning.
+    Document.prototype.importNode = function (node, deep) {
+        nodeArg(node, 'importNode');
+        if (node.nodeType === 9) {
+            throw new DOMException("Failed to execute 'importNode' on 'Document': " +
+                'The node provided is a document, which may not be imported.', 'NotSupportedError');
+        }
+        return node.cloneNode(!!deep);
+    };
     Document.prototype.createDocumentFragment = function () {
         return create('fragment', '', 'createDocumentFragment');
     };
     Document.prototype.getElementById = function (id) {
         var s = slotOf(this);
+        if (this !== g.document) return findById(this, id);
         return s.gen === gen ? wrap(N.byId(s.gen, String(id))) : null;
     };
+    // A DOMParser document answers these from its own tree.
+    function childNamed(n, name) {
+        for (var c = n && n.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 1 && (!name || c.localName === name)) return c;
+        }
+        return null;
+    }
     ['documentElement', 'head', 'body'].forEach(function (k) {
         getter(Document.prototype, k, function () {
-            var s = slotOf(this); return s.gen === gen ? wrap(N.root(s.gen, k)) : null;
+            var s = slotOf(this);
+            if (this !== g.document) {
+                var root = childNamed(this);
+                return k === 'documentElement' ? root : childNamed(root, k);
+            }
+            return s.gen === gen ? wrap(N.root(s.gen, k)) : null;
         });
+    });
+    // The global document's title is an own property the engine sets; a
+    // DOMParser document reads its first <title> (HTML §3.1.3).
+    getter(Document.prototype, 'title', function () {
+        var t = this.querySelector('title');
+        return t ? t.textContent.replace(/[\t\n\f\r ]+/g, ' ').trim() : '';
     });
 
     // `document.currentScript` (HTML §3.1.1): the classic <script> element
@@ -1837,6 +2378,99 @@ const WRAPPERS_JS: &str = r#"
         },
         configurable: true, enumerable: false, writable: true
     });
+    // The engine delivers the user's mouse input: a trusted event that
+    // bubbles and can be cancelled (UI Events §3.4), except the enter and
+    // leave events, which do neither and go to one element each.
+    // `pointer*` and `click` are PointerEvents of the mouse (Pointer
+    // Events §4, §12); `mousedown`, `mouseup` and `click` carry the click
+    // count. Returns false when a listener called preventDefault().
+    Object.defineProperty(Document.prototype, '__rkFireMouse', {
+        value: function (id, type, init) {
+            var target = typeof id === 'number' ? wrap(id) : null;
+            if (!target) return true;
+            var pointer = type === 'click' || type.indexOf('pointer') === 0;
+            var edge = /(enter|leave)$/.test(type);
+            var press = type === 'mousedown' || type === 'mouseup' || type === 'click';
+            init.bubbles = !edge;
+            init.cancelable = !edge;
+            init.composed = !edge;
+            init.view = g;
+            init.detail = press ? 1 : 0;
+            init.relatedTarget = typeof init.related === 'number' ? wrap(init.related) : null;
+            if (pointer) {
+                init.pointerId = 1;
+                init.pointerType = 'mouse';
+                init.isPrimary = true;
+                init.pressure = init.buttons ? 0.5 : 0;
+            }
+            var ev = new (pointer && g.PointerEvent || g.MouseEvent)(type, init);
+            ev.isTrusted = true;
+            // Where the point is in the document and in the target's box.
+            var at = {
+                pageX: init.clientX + (g.scrollX || 0), pageY: init.clientY + (g.scrollY || 0),
+                offsetX: init.offsetX, offsetY: init.offsetY,
+                movementX: init.movementX, movementY: init.movementY
+            };
+            // A move or a boundary event has no button of its own: `which`
+            // is the primary button while it is held.
+            if (!press && !pointer) at.which = init.buttons & 1;
+            Object.keys(at).forEach(function (k) {
+                Object.defineProperty(ev, k, { value: at[k], configurable: true, enumerable: true });
+            });
+            return target.dispatchEvent(ev);
+        },
+        configurable: true, enumerable: false, writable: true
+    });
+
+    // The engine delivers the user's key press or release to the focused
+    // element: a trusted KeyboardEvent that bubbles and can be cancelled
+    // (UI Events §3.7). With nothing focused in the engine (`id` null) it
+    // goes to the page's active element: what script focused, else the
+    // body. Returns false when a listener called preventDefault().
+    Object.defineProperty(Document.prototype, '__rkFireKey', {
+        value: function (id, type, init) {
+            var target = typeof id === 'number' ? wrap(id) : g.document.activeElement;
+            if (!target) return true;
+            init.bubbles = true;
+            init.cancelable = true;
+            init.composed = true;
+            init.view = g;
+            var ev = new g.KeyboardEvent(type, init);
+            ev.isTrusted = true;
+            return target.dispatchEvent(ev);
+        },
+        configurable: true, enumerable: false, writable: true
+    });
+    // What the user typed changed the control's value: `input`, which
+    // bubbles and cannot be cancelled (Input Events §5.1). `data` is the
+    // inserted text, null for a deletion.
+    Object.defineProperty(Document.prototype, '__rkFireInput', {
+        value: function (id, data) {
+            var target = typeof id === 'number' ? wrap(id) : null;
+            if (!target) return;
+            // The user edited it: `change` when it loses the focus
+            // (node_apis.js).
+            Object.defineProperty(target, '__rkEdited', {
+                value: true, configurable: true, enumerable: false, writable: true
+            });
+            var ev = new g.InputEvent('input', {
+                bubbles: true, composed: true, view: g, data: data,
+                inputType: data === null ? 'deleteContentBackward' : 'insertText'
+            });
+            ev.isTrusted = true;
+            target.dispatchEvent(ev);
+        },
+        configurable: true, enumerable: false, writable: true
+    });
+    // Enter in a field (web_forms.js's implicit submission).
+    var implicitSubmit = null;
+    Object.defineProperty(Document.prototype, '__rkImplicitSubmit', {
+        value: function (id) {
+            var target = typeof id === 'number' ? wrap(id) : null;
+            if (target && implicitSubmit) implicitSubmit(target);
+        },
+        configurable: true, enumerable: false, writable: true
+    });
 
     // EventTarget (DOM §2.7) for node wrappers, document and window: a
     // JS-side listener registry, and dispatch through capture, target and
@@ -1855,10 +2489,17 @@ const WRAPPERS_JS: &str = r#"
         if (!all) { all = {}; LISTENERS.set(t, all); }
         type = String(type);
         var list = all[type] || (all[type] = []), capture = flag(opts, 'capture');
+        // The `signal` option: an aborted signal adds nothing, and a later
+        // abort removes the listener.
+        var signal = opts && typeof opts === 'object' ? opts.signal : undefined;
+        if (signal != null && signal.aborted) return;
         for (var i = 0; i < list.length; i++) {
             if (list[i].cb === cb && list[i].capture === capture) return;
         }
         list.push({ cb: cb, capture: capture, once: flag(opts, 'once'), removed: false });
+        if (signal != null && typeof signal.addEventListener === 'function') {
+            signal.addEventListener('abort', function () { t.removeEventListener(type, cb, capture); }, { once: true });
+        }
     };
     EventTarget.prototype.removeEventListener = function (type, cb, opts) {
         var all = LISTENERS.get(thisTarget(this)), list = all && all[String(type)];
@@ -1883,9 +2524,42 @@ const WRAPPERS_JS: &str = r#"
             if (g.__rustkit_errors) g.__rustkit_errors.push(msg);
         }
     }
+    // An element's on<type> handler: the property when one was assigned
+    // (`null` included, which turns the handler off), else its `on<type>`
+    // content attribute (HTML §8.1.8.1). The attribute's text is the body of
+    // `function (event)`, with the element and its document in scope,
+    // compiled on first use and again when the text changes. A body that
+    // does not compile is logged once and is no handler.
+    var INLINE = new WeakMap();
+    function handlerOf(t, type) {
+        if (PLAIN.has(t)) return undefined;
+        var h = t['on' + type];
+        if (h !== undefined || !t[SLOT] || t.nodeType !== 1) return h;
+        var src = t.getAttribute('on' + type);
+        if (src === null) return h;
+        var all = INLINE.get(t);
+        if (!all) { all = {}; INLINE.set(t, all); }
+        var c = all[type];
+        if (!c || c.src !== src) {
+            c = all[type] = { src: src, fn: null };
+            try {
+                c.fn = new Function('event',
+                    'with (this.ownerDocument || {}) { with (this) {\n' + src + '\n} }');
+            } catch (e) {
+                var msg;
+                try { msg = String(e); } catch (_) { msg = '<unprintable exception>'; }
+                if (g.__rustkit_errors) g.__rustkit_errors.push(msg);
+            }
+        }
+        return c.fn;
+    }
+    var ORIGIN = Symbol('rustkit.origin'), PATH = Symbol('rustkit.path');
     function invoke(t, event, phase, capture) {
         event.currentTarget = t;
         event.eventPhase = phase;
+        // A listener sees the target as its own tree sees it: a node inside a
+        // shadow tree is the host to a listener outside.
+        if (HOOKS.retarget && event[ORIGIN]) event.target = HOOKS.retarget(event[ORIGIN], t);
         var all = LISTENERS.get(t), list = all && all[event.type];
         if (list) {
             list = list.slice();
@@ -1897,7 +2571,7 @@ const WRAPPERS_JS: &str = r#"
             }
         }
         // The on<type> handler runs with the non-capture listeners.
-        var h = capture || event[STOP_NOW] ? null : t['on' + event.type];
+        var h = capture || event[STOP_NOW] ? null : handlerOf(t, event.type);
         if (typeof h === 'function' && callListener(t, h, event) === false && event.cancelable) {
             event.defaultPrevented = true;
         }
@@ -1907,7 +2581,21 @@ const WRAPPERS_JS: &str = r#"
     function eventParent(n, event) {
         if (n === g) return null;
         if (n === doc) return event.type === 'load' ? null : g;
-        return n[SLOT] ? n.parentNode : null;
+        if (!n[SLOT]) return null;
+        var p = n.parentNode;
+        // A composed event goes on from a shadow root to its host.
+        return p || (HOOKS.shadowParent ? HOOKS.shadowParent(n, event) : null);
+    }
+    // Activation behaviour (DOM §2.9 "dispatch", steps 5 and 11): a click
+    // (the user's, `el.click()`, or a MouseEvent script dispatches) checks a
+    // checkbox before its listeners run and clicks a label's control after.
+    // `activation(target)` is web_forms.js's; it answers the function to
+    // call with "was not cancelled" once the listeners have run, or null.
+    var activation = null, SYNTHETIC_CLICK = Symbol('rustkit.click');
+    function activationFor(t, event) {
+        if (!activation || event.type !== 'click' || !t[SLOT]) return null;
+        if (!event[SYNTHETIC_CLICK] && !(typeof g.MouseEvent === 'function' && event instanceof g.MouseEvent)) return null;
+        return activation(t);
     }
     EventTarget.prototype.dispatchEvent = function (event) {
         if (event == null || typeof event !== 'object' || event.type === undefined) {
@@ -1917,6 +2605,9 @@ const WRAPPERS_JS: &str = r#"
         var t = thisTarget(this), path = [], i;
         for (var n = t; n; n = eventParent(n, event)) path.push(n);
         event.target = t;
+        event[ORIGIN] = t;
+        event[PATH] = path;
+        var activated = activationFor(t, event);
         for (i = path.length - 1; i > 0 && !event[STOP]; i--) invoke(path[i], event, 1, true);
         if (!event[STOP]) invoke(t, event, 2, true);
         if (!event[STOP]) invoke(t, event, 2, false);
@@ -1926,6 +2617,12 @@ const WRAPPERS_JS: &str = r#"
         event[STOP] = event[STOP_NOW] = false;
         event.currentTarget = null;
         event.eventPhase = 0;
+        // After dispatch the target is the outermost host (the node itself
+        // when it is in the document), and there is no path.
+        event.target = HOOKS.retarget ? HOOKS.retarget(t, g) : t;
+        event[ORIGIN] = null;
+        event[PATH] = null;
+        if (activated) activated(!event.defaultPrevented);
         return !event.defaultPrevented;
     };
 
@@ -1948,7 +2645,16 @@ const WRAPPERS_JS: &str = r#"
         this.isTrusted = false;
         this.timeStamp = Date.now();
     }
+    // The legacy initializers; they do nothing during dispatch.
+    Event.prototype.initEvent = function (type, bubbles, cancelable) {
+        if (this.eventPhase !== 0) return;
+        this.type = String(type);
+        this.bubbles = !!bubbles;
+        this.cancelable = !!cancelable;
+    };
     Event.prototype.preventDefault = function () { if (this.cancelable) this.defaultPrevented = true; };
+    // The nodes the event is going through, target first; empty outside dispatch.
+    Event.prototype.composedPath = function () { return this[PATH] ? this[PATH].slice() : []; };
     Event.prototype.stopPropagation = function () { this[STOP] = true; };
     Event.prototype.stopImmediatePropagation = function () { this[STOP] = this[STOP_NOW] = true; };
     getter(Event.prototype, 'srcElement', function () { return this.target; });
@@ -1967,10 +2673,42 @@ const WRAPPERS_JS: &str = r#"
         constructor: { value: CustomEvent, writable: true, configurable: true }
     });
     Object.defineProperty(CustomEvent.prototype, Symbol.toStringTag, { value: 'CustomEvent' });
+    CustomEvent.prototype.initCustomEvent = function (type, bubbles, cancelable, detail) {
+        if (this.eventPhase !== 0) return;
+        this.initEvent(type, bubbles, cancelable);
+        this.detail = detail === undefined ? null : detail;
+    };
     g.Event = Event;
     g.CustomEvent = CustomEvent;
+
+    // DOMParser (HTML §8.5.1), for 'text/html' only: the XML types need an
+    // XML parser, which RustKit does not have yet.
+    var DOMParser = function DOMParser() {
+        if (!(this instanceof DOMParser)) {
+            throw new TypeError("Failed to construct 'DOMParser': Please use the 'new' operator.");
+        }
+    };
+    DOMParser.prototype.parseFromString = function (str, type) {
+        type = String(type);
+        if (type === 'text/xml' || type === 'application/xml' ||
+            type === 'application/xhtml+xml' || type === 'image/svg+xml') {
+            throw new DOMException("Failed to execute 'parseFromString' on 'DOMParser': " +
+                "XML documents are not supported yet.", 'NotSupportedError');
+        }
+        if (type !== 'text/html') {
+            throw new TypeError("Failed to execute 'parseFromString' on 'DOMParser': The provided value '" +
+                type + "' is not a valid enum value of type DOMParserSupportedType.");
+        }
+        return create('document', String(str), 'parseFromString');
+    };
+    Object.defineProperty(DOMParser.prototype, Symbol.toStringTag, { value: 'DOMParser' });
+    g.DOMParser = DOMParser;
     HTMLElement.prototype.click = function () {
-        this.dispatchEvent(new Event('click', { bubbles: true, cancelable: true }));
+        var e = new Event('click', { bubbles: true, cancelable: true });
+        e[SYNTHETIC_CLICK] = true;
+        // A link's activation behaviour (HTML §4.6.4): the user's click is
+        // followed by the engine, script's own click() here.
+        if (this.dispatchEvent(e) && g.__rustkit_follow_link) g.__rustkit_follow_link(this);
     };
 
     // The global `document` becomes the Document wrapper.
@@ -1986,6 +2724,32 @@ const WRAPPERS_JS: &str = r#"
         delete doc[k];
         g[k] = EventTarget.prototype[k];
     });
+
+    // For web_forms.js, which deletes it: the engine is told of a
+    // checkedness change, and dispatch is given the activation behaviours.
+    g.__rkFormInternals = {
+        noteChecked: function (el, v) {
+            var s = el != null ? el[SLOT] : undefined;
+            if (s && s.gen === gen) N.checked(s.gen, s.id, v);
+        },
+        noteSubmit: function (form, submitter) {
+            var s = form != null ? form[SLOT] : undefined, b = submitter != null ? submitter[SLOT] : undefined;
+            if (s && s.gen === gen) N.submit(s.gen, s.id, b && b.gen === gen ? b.id : null);
+        },
+        setActivation: function (f) { activation = f; },
+        setImplicitSubmit: function (f) { implicitSubmit = f; }
+    };
+    // For web_history.js, which deletes it: script asks for a navigation.
+    g.__rkNavInternals = { navigate: function (url) { N.navigate(String(url)); } };
+
+    // For node_apis.js, which runs next and deletes it.
+    g.__rkNodeInternals = {
+        wrap: wrap, slotOf: slotOf, gen: function () { return gen; },
+        extendElementProto: function (f) {
+            var base = elementProto;
+            elementProto = function (id) { return f(id, base); };
+        }
+    };
 
     g.__rustkit_dom_reset = function (newGen) {
         gen = newGen;

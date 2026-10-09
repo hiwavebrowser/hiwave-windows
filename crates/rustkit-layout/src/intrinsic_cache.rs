@@ -390,8 +390,8 @@ mod tests {
         let (lookups, hits, stores) = stats();
         // Check that stats increased by expected amounts
         assert!(lookups >= initial_lookups + 2, "Expected at least 2 more lookups");
-        assert!(hits >= initial_hits + 1, "Expected at least 1 more hit");
-        assert!(stores >= initial_stores + 1, "Expected at least 1 more store");
+        assert!(hits > initial_hits, "Expected at least 1 more hit");
+        assert!(stores > initial_stores, "Expected at least 1 more store");
     }
 
     #[test]

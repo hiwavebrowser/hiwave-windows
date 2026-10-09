@@ -261,7 +261,7 @@ pub fn generate_diff_image(
     
     // Process as RGBA
     for (e_chunk, a_chunk) in expected.chunks(4).zip(actual.chunks(4)) {
-        let r_diff = (e_chunk.get(0).unwrap_or(&0).wrapping_sub(*a_chunk.get(0).unwrap_or(&0))) as i16;
+        let r_diff = (e_chunk.first().unwrap_or(&0).wrapping_sub(*a_chunk.first().unwrap_or(&0))) as i16;
         let g_diff = (e_chunk.get(1).unwrap_or(&0).wrapping_sub(*a_chunk.get(1).unwrap_or(&0))) as i16;
         let b_diff = (e_chunk.get(2).unwrap_or(&0).wrapping_sub(*a_chunk.get(2).unwrap_or(&0))) as i16;
         
@@ -275,7 +275,7 @@ pub fn generate_diff_image(
             diff.push(255); // A
         } else {
             // Show original (dimmed)
-            diff.push(a_chunk.get(0).unwrap_or(&0) / 2);
+            diff.push(a_chunk.first().unwrap_or(&0) / 2);
             diff.push(a_chunk.get(1).unwrap_or(&0) / 2);
             diff.push(a_chunk.get(2).unwrap_or(&0) / 2);
             diff.push(255);

@@ -1362,6 +1362,14 @@ pub fn layout_grid_container(
         container.children.len()
     );
 
+    // A grid with a px (or font- or viewport-relative) `height` has that
+    // height, whatever the caller measured. The block path lays a grid out
+    // BEFORE it resolves the box's height, so what it passes is the height
+    // of the children stacked as blocks: a 300px grid of three one-line
+    // items was laid out as if 60px tall, and `align-content` had no free
+    // space to share, nor `stretch` any to give its rows.
+    let container_height = own_definite_height(container).unwrap_or(container_height);
+
     // Compute gaps
     // Against the container's own font size and viewport, not a fixed 16px:
     // `column-gap: 1em` at 20px is 20.
@@ -1624,16 +1632,6 @@ pub fn layout_grid_container(
     // This ensures single-span items get priority and multi-span items
     // distribute extra space among their spanned tracks.
 
-    // Collect item info for span-based processing
-    struct ItemSizing {
-        row_start: usize,
-        row_span: usize,
-        col_start: usize,
-        col_span: usize,
-        height_contribution: f32,
-        width_contribution: f32,
-    }
-
     // For auto-height containers, use 0.0 for height contribution calculation.
     // This prevents percentage heights from resolving against the incorrect block-flow
     // computed height (which stacks children vertically). Items with percentage heights
@@ -1641,73 +1639,143 @@ pub fn layout_grid_container(
     let has_definite_height = !matches!(style.height, Length::Auto);
     let height_for_contributions = if has_definite_height { container_height } else { 0.0 };
 
-    let item_sizings: Vec<ItemSizing> = items
+    // Columns first, all the way to their final sizes and positions. Rows
+    // and columns do not read each other in this phase, and a row
+    // contribution that is a real layout (the L0 fragments below) needs
+    // the item's inline size.
+    let column_contributions: Vec<(usize, usize, f32)> = items
         .iter()
-        .map(|item| ItemSizing {
-            row_start: (item.row_start - 1).max(0) as usize,
-            row_span: item.row_span.max(1) as usize,
-            col_start: (item.column_start - 1).max(0) as usize,
-            col_span: item.column_span.max(1) as usize,
-            height_contribution: item.get_height_contribution(height_for_contributions),
-            width_contribution: item.get_width_contribution(container_width),
+        .map(|item| {
+            (
+                (item.column_start - 1).max(0) as usize,
+                item.column_span.max(1) as usize,
+                item.get_width_contribution(container_width),
+            )
         })
         .collect();
-
-    // Find max spans
-    let max_row_span = item_sizings.iter().map(|s| s.row_span).max().unwrap_or(1);
-    let max_col_span = item_sizings.iter().map(|s| s.col_span).max().unwrap_or(1);
-
-    // DEBUG: Uncomment to trace track sizing issues
-    // let initial_base_sizes: Vec<f32> = grid.rows.iter().map(|t| t.base_size).collect();
-    // debug!("Before contribution loop: row base_sizes = {:?}", initial_base_sizes);
-
-    // Rows and columns: the same span-ordered distribution (see
-    // distribute_span_contributions).
-    let row_contributions: Vec<(usize, usize, f32)> = item_sizings
-        .iter()
-        .map(|s| (s.row_start, s.row_span, s.height_contribution))
-        .collect();
-    distribute_span_contributions(&mut grid.rows, &row_contributions, row_gap, max_row_span);
-    let column_contributions: Vec<(usize, usize, f32)> = item_sizings
-        .iter()
-        .map(|s| (s.col_start, s.col_span, s.width_contribution))
-        .collect();
+    let max_col_span = column_contributions.iter().map(|c| c.1).max().unwrap_or(1);
     distribute_span_contributions(
         &mut grid.columns,
         &column_contributions,
         column_gap,
         max_col_span,
     );
-
-    // DEBUG: Uncomment to trace track sizing issues
-    // let after_base_sizes: Vec<f32> = grid.rows.iter().map(|t| t.base_size).collect();
-    // debug!("After contribution loop: row base_sizes = {:?}", after_base_sizes);
-
     // Size tracks (handles percentages, intrinsic sizing, flexible tracks)
+    size_grid_tracks(&mut grid.columns, container_width, column_gap);
+    // Apply content alignment (justify-content for columns)
+    apply_content_alignment(&mut grid.columns, container_width, column_gap, &style.justify_content);
+
+    // L0 (docs/LAYOUT_CONSTRAINTS_FRAGMENTS_2026-09-30.md §4, call site 1):
+    // the block-size contribution of a nested flex or grid item that holds
+    // text or a control is the block size of its fragment, laid out at the
+    // inline size its columns give it. `estimate_content_height` charges
+    // such an item one line per text NODE, and Phase 9.5 repairs the row
+    // afterwards where it can. Everything else keeps the estimate, and for
+    // an in-slice item the estimate still runs, for the differential.
+    let l0_fragments: Vec<Option<crate::fragment::Fragment>> = items
+        .iter()
+        .map(|item| {
+            if item.row_span > 1 {
+                return None;
+            }
+            let c0 = (item.column_start - 1).max(0) as usize;
+            let c1 = ((item.column_end - 1).max(0) as usize).min(grid.columns.len());
+            if c0 >= c1 {
+                return None;
+            }
+            let area = Rect {
+                x: container.dimensions.content.x + grid.columns[c0].position,
+                y: container.dimensions.content.y,
+                width: (c0..c1).map(|i| grid.columns[i].size).sum::<f32>()
+                    + (c1 - c0 - 1) as f32 * column_gap,
+                // An indefinite block size: the row does not exist yet.
+                height: 0.0,
+            };
+            let (margin_left, margin_right, _, _) = item_margins(&item.layout_box.style);
+            let constraint = crate::fragment::Constraint::definite_inline(
+                (area.width - margin_left - margin_right).max(0.0),
+                item.layout_box.style.writing_mode,
+                container.element_id,
+            );
+            crate::fragment::intrinsic_fragment(item.layout_box, &constraint, |probe| {
+                place_item_in_area(probe, &area, style)
+            })
+        })
+        .collect();
+    // Per item, for the differential: (selector, old estimate, fragment).
+    let mut l0_records: Vec<Option<(Option<String>, f32, crate::fragment::Fragment)>> =
+        Vec::with_capacity(items.len());
+
+    let row_contributions: Vec<(usize, usize, f32)> = items
+        .iter()
+        .zip(l0_fragments)
+        .map(|(item, fragment)| {
+            let estimate = item.get_height_contribution(height_for_contributions);
+            let blocks = fragment
+                .as_ref()
+                .and_then(|f| Some((f.border_box.block.px()?, f.content_box.block.px()?)));
+            let contribution = match (fragment, blocks) {
+                (Some(fragment), Some((mut border_box, content_block))) => {
+                    let item_style = &item.layout_box.style;
+                    if let Length::Px(min_h) = item_style.min_height {
+                        let floor = if item_style.box_sizing == BoxSizing::BorderBox {
+                            min_h
+                        } else {
+                            min_h + border_box - content_block
+                        };
+                        border_box = border_box.max(floor);
+                    }
+                    let outer = border_box + vertical_margins(item_style);
+                    l0_records.push(Some((
+                        item.layout_box.identity.as_ref().map(|i| i.selector.clone()),
+                        estimate,
+                        fragment,
+                    )));
+                    outer
+                }
+                _ => {
+                    l0_records.push(None);
+                    estimate
+                }
+            };
+            (
+                (item.row_start - 1).max(0) as usize,
+                item.row_span.max(1) as usize,
+                contribution,
+            )
+        })
+        .collect();
+    let max_row_span = row_contributions.iter().map(|c| c.1).max().unwrap_or(1);
+
+    // Rows: the same span-ordered distribution (see
+    // distribute_span_contributions).
+    distribute_span_contributions(&mut grid.rows, &row_contributions, row_gap, max_row_span);
+
     // For auto-height containers, pass 0 as container height to prevent distributing
     // "remaining space" that doesn't exist (the container sizes to content, not vice versa)
     let row_container_height = if has_definite_height { container_height } else { 0.0 };
-    size_grid_tracks(&mut grid.columns, container_width, column_gap);
-    size_grid_tracks(&mut grid.rows, row_container_height, row_gap);
-
-    // DEBUG: Uncomment to trace track sizing issues
-    // let row_sizes: Vec<f32> = grid.rows.iter().map(|t| t.size).collect();
-    // debug!("After size_grid_tracks: row sizes = {:?}, row_container_height = {}", row_sizes, row_container_height);
+    // The space no row claims goes to the auto rows only under
+    // `align-content: stretch` (the initial value); any other value keeps
+    // them at their content and places the rows as a group.
+    size_grid_tracks_filling(
+        &mut grid.rows,
+        row_container_height,
+        row_gap,
+        style.align_content == AlignContent::Stretch,
+    );
 
     // Stretch auto tracks if align-content is stretch AND container has definite height
     // Per CSS Grid spec, stretch distributes remaining space to auto tracks
     // Note: justify-content doesn't have a stretch value in the current CSS spec
     // IMPORTANT: Only stretch if the container has an explicit height (not auto).
     // When height is auto, the grid sizes to content and there's no extra space to distribute.
-    // (has_definite_height was computed earlier for height contribution calculation)
     if style.align_content == AlignContent::Stretch && has_definite_height {
         stretch_auto_tracks(&mut grid.rows, container_height, row_gap);
     }
 
-    // Apply content alignment (justify-content for columns, align-content for rows)
+    // Apply content alignment (align-content for rows)
     // For auto-height containers, skip row alignment - there's no "free space" to distribute
     // when the container sizes to its content.
-    apply_content_alignment(&mut grid.columns, container_width, column_gap, &style.justify_content);
     if has_definite_height {
         apply_content_alignment(&mut grid.rows, container_height, row_gap, &align_content_to_justify(&style.align_content));
     }
@@ -1775,7 +1843,7 @@ pub fn layout_grid_container(
 
     // Phase 7: Collect final positions (drops immutable borrow of children)
     let item_count = items.len();
-    let positions: Vec<Rect> = items.iter().map(|item| item.rect.clone()).collect();
+    let positions: Vec<Rect> = items.iter().map(|item| item.rect).collect();
     // Row spans for Phase 9.5 (real-height row growth): (row_start, row_end)
     // as 0-based track indices, in the same order as `positions`.
     let row_spans: Vec<(usize, usize)> = items
@@ -1797,104 +1865,7 @@ pub fn layout_grid_container(
         }
 
         if let Some(rect) = positions.get(position_idx) {
-            // css-grid-1 §6.5: the grid area is filled by the item's MARGIN
-            // box. Alignment — including `stretch`, which is what makes this
-            // load-bearing — runs on the area shrunk by the margins, so a
-            // stretched item ends up `area - margins` tall rather than
-            // swallowing its own margin back into its border box.
-            let (margin_left, margin_right, margin_top, margin_bottom) =
-                item_margins(&child.style);
-            let area = Rect::new(
-                rect.x + margin_left,
-                rect.y + margin_top,
-                (rect.width - margin_left - margin_right).max(0.0),
-                (rect.height - margin_top - margin_bottom).max(0.0),
-            );
-            child.dimensions.margin.left = margin_left;
-            child.dimensions.margin.right = margin_right;
-            child.dimensions.margin.top = margin_top;
-            child.dimensions.margin.bottom = margin_bottom;
-
-            // Apply alignment - returns border-box dimensions
-            let (x, border_box_width) = apply_justify_self(
-                &child.style.justify_self,
-                &style.justify_items,
-                area.x,
-                area.width,
-                child,
-            );
-
-            let (y, border_box_height) = apply_align_self(
-                &child.style.align_self,
-                &style.align_items,
-                area.y,
-                area.height,
-                child,
-            );
-
-            // Calculate padding and border. `rem` resolves against the ROOT
-            // font size (16px, the crate-wide convention in length_to_px /
-            // intrinsic_len_px), never the item's own: with the item's
-            // font-size passed as the root, `padding: 0.75rem` on a 14px
-            // card read as 10.5px, and every flex/block grid item with rem
-            // padding came out 2·(rem·(16 − font)) short in both axes
-            // (new_tab's .shortcut rows 57 for Chrome's 60, kbd x 387 for
-            // 389).
-            let font_size = match child.style.font_size {
-                Length::Px(px) => px,
-                _ => 16.0,
-            };
-            let px = |l: &Length, against: f32| l.to_px(font_size, 16.0, against);
-            let padding_left = px(&child.style.padding_left, border_box_width);
-            let padding_right = px(&child.style.padding_right, border_box_width);
-            let padding_top = px(&child.style.padding_top, border_box_height);
-            let padding_bottom = px(&child.style.padding_bottom, border_box_height);
-            let border_left = px(&child.style.border_left_width, border_box_width);
-            let border_right = px(&child.style.border_right_width, border_box_width);
-            let border_top = px(&child.style.border_top_width, border_box_height);
-            let border_bottom = px(&child.style.border_bottom_width, border_box_height);
-
-            // Set padding and border dimensions
-            child.dimensions.padding.left = padding_left;
-            child.dimensions.padding.right = padding_right;
-            child.dimensions.padding.top = padding_top;
-            child.dimensions.padding.bottom = padding_bottom;
-            child.dimensions.border.left = border_left;
-            child.dimensions.border.right = border_right;
-            child.dimensions.border.top = border_top;
-            child.dimensions.border.bottom = border_bottom;
-
-            // Derive the content box. The alignment helpers hand back the
-            // SPECIFIED size: an explicit `width`/`height` verbatim (so
-            // box-sizing decides what it covers), or the grid area for
-            // `auto`. An auto-sized item fills the area with its margin box
-            // (css-grid-1 §6.6 / css-align-3 §5.4 stretch), so its content
-            // is the area minus padding and border whatever its box-sizing.
-            // Treating the area as a content-box size added the padding on
-            // top: a padded content-box item overflowed its track by its
-            // padding in both axes (repro grid-auto-fit-minmax: 223.3 wide
-            // in a 199.3 track).
-            let is_border_box = child.style.box_sizing == BoxSizing::BorderBox;
-            let explicit_width = !matches!(child.style.width, Length::Auto);
-            let explicit_height = !matches!(child.style.height, Length::Auto);
-            let h_padding_border = padding_left + padding_right + border_left + border_right;
-            let v_padding_border = padding_top + padding_bottom + border_top + border_bottom;
-            let content_width = if explicit_width && !is_border_box {
-                border_box_width
-            } else {
-                (border_box_width - h_padding_border).max(0.0)
-            };
-            let content_height = if explicit_height && !is_border_box {
-                border_box_height
-            } else {
-                (border_box_height - v_padding_border).max(0.0)
-            };
-
-            // Position includes padding and border offset
-            child.dimensions.content.x = x + padding_left + border_left;
-            child.dimensions.content.y = y + padding_top + border_top;
-            child.dimensions.content.width = content_width;
-            child.dimensions.content.height = content_height;
+            place_item_in_area(child, rect, style);
         }
         position_idx += 1;
     }
@@ -1935,15 +1906,78 @@ pub fn layout_grid_container(
                     child.dimensions.content.height = area_height;
                 }
             } else if child.style.display.is_grid() {
-                // Nested grid container
+                // Nested grid container. As in the flex arm above: the grid
+                // pass sizes an auto-height container by its content and
+                // writes that over the area, the content height is what
+                // Phase 9.5 sizes the row from, and a stretched item gets
+                // its area back. Without this it kept the content height
+                // unless a row repair happened to fire.
+                let area_height = child.dimensions.content.height;
                 layout_grid_container(
                     child,
                     child.dimensions.content.width,
                     child.dimensions.content.height,
                 );
+                let content_height = child.dimensions.content.height;
                 if let Some(slot) = real_heights.get_mut(item_idx) {
-                    *slot = Some(child.dimensions.content.height);
+                    *slot = Some(content_height);
                 }
+                if area_height > content_height
+                    && stretches_to_its_row(child, &container_align_items)
+                {
+                    child.dimensions.content.height = area_height;
+                }
+            } else if item_children_flow_inline(child) {
+                // An inline formatting context: the item's children are
+                // inline boxes and text, which share lines. The block arm
+                // below stacks an item's children one under the other, so
+                // `<div>Label: <b>value</b> tail</div>` came out three lines
+                // tall (Chrome: one). Flow them as the item's own lines.
+                //
+                // The flow writes the line extent over the item's height
+                // whatever its style says, so the box Phase 8 gave it is put
+                // back unless the height is `auto`: with `height: 48px` (or
+                // a percentage) around one line the item is 48px tall, and
+                // with `height: 10px` around two lines it is 10 and they
+                // overflow. An auto height is the line extent, capped by a
+                // px `max-height`.
+                let area_height = child.dimensions.content.height;
+                let mut margins = crate::MarginCollapseContext::new();
+                let mut floats = crate::FloatContext::new();
+                child.layout_block_children_with_collapse(&mut margins, &mut floats, None);
+                let cap = match child.style.max_height {
+                    Length::Px(max_h) if child.style.box_sizing == BoxSizing::BorderBox => {
+                        let pb = child.dimensions.padding.top
+                            + child.dimensions.padding.bottom
+                            + child.dimensions.border.top
+                            + child.dimensions.border.bottom;
+                        (max_h - pb).max(0.0)
+                    }
+                    Length::Px(max_h) => max_h,
+                    _ => f32::INFINITY,
+                };
+                let content_height = child.dimensions.content.height.min(cap);
+                if let Some(slot) = real_heights.get_mut(item_idx) {
+                    *slot = Some(content_height);
+                }
+                // A stretched item in rows of a fixed size is as tall as
+                // they are and its lines overflow (Chrome: five lines in a
+                // 40px row, the item is 40). In an intrinsic row the area is
+                // only the estimate so far, and the lines are the floor.
+                let in_fixed_rows = row_spans.get(item_idx).is_some_and(|&(r0, r1)| {
+                    r0 < grid.rows.len()
+                        && (r0..r1.clamp(r0 + 1, grid.rows.len()))
+                            .all(|r| track_is_fixed(&grid.rows[r]))
+                });
+                child.dimensions.content.height = if !matches!(child.style.height, Length::Auto) {
+                    area_height
+                } else if (area_height > content_height || in_fixed_rows)
+                    && stretches_to_its_row(child, &container_align_items)
+                {
+                    area_height.min(cap)
+                } else {
+                    content_height
+                };
             } else {
                 // Block container: re-layout children with correct positioning and height resolution.
                 // The grid item's dimensions.content.height is the grid-assigned height.
@@ -2301,6 +2335,8 @@ pub fn layout_grid_container(
     // single-row item's margin box, the same figure the grow path already
     // computes. Rows a multi-row item spans, and rows with an item whose
     // real height is unknown, keep the grow-only behaviour.
+    // What Phase 9.5 adds to each row, for the L0 differential.
+    let mut phase_9_5_row_delta: Option<Vec<f32>> = None;
     if !has_definite_height && !grid.rows.is_empty() {
         // Per row: the tallest single-row item's margin box (`None` = no
         // single-row item with a known height), and whether the row may
@@ -2324,6 +2360,10 @@ pub fn layout_grid_container(
             .collect();
         // Items spanning a flexible row: (rows, outer height needed).
         let mut flex_spanners: Vec<(std::ops::Range<usize>, f32)> = Vec::new();
+        // False once a flexible row holds (or is crossed by) an item whose
+        // real height is not known: the flexible rows then keep the
+        // grow-only repair.
+        let mut flexible_rows_known = true;
         {
             let mut idx = 0usize;
             for child in container.children.iter() {
@@ -2353,6 +2393,8 @@ pub fn layout_grid_container(
                                     rows_spanned,
                                     real_h + pb + vertical_margins(&child.style),
                                 ));
+                            } else if !child.children.is_empty() {
+                                flexible_rows_known = false;
                             }
                         } else {
                             for r in rows_spanned {
@@ -2383,7 +2425,17 @@ pub fn layout_grid_container(
                         let is_border_box = child.style.box_sizing == BoxSizing::BorderBox;
                         if let Length::Px(h) = child.style.height {
                             let border_box = if is_border_box { h } else { h + pb };
-                            wanted = Some(border_box.max(wanted.unwrap_or(0.0)));
+                            // Not the taller of the two: content that
+                            // overflows a fixed height does not size the row.
+                            wanted = Some(border_box);
+                        }
+                        // A px `max-height` caps what the item asks of its
+                        // row (three lines under `max-height: 24px` make a
+                        // 24px row, and overflow it); `min-height` then
+                        // floors it.
+                        if let Length::Px(max_h) = child.style.max_height {
+                            let cap = if is_border_box { max_h } else { max_h + pb };
+                            wanted = wanted.map(|w| w.min(cap));
                         }
                         if let Length::Px(min_h) = child.style.min_height {
                             let floor = if is_border_box { min_h } else { min_h + pb };
@@ -2396,6 +2448,9 @@ pub fn layout_grid_container(
                             // estimate and the flow disagree on what it
                             // resolves against; do not shrink under it.
                             row_shrinkable[r0] = false;
+                            if grid.rows[r0].is_flexible {
+                                flexible_rows_known = false;
+                            }
                         }
 
                         // css-sizing-4 §4: an `aspect-ratio` item whose block
@@ -2440,7 +2495,12 @@ pub fn layout_grid_container(
                                 row_real[r0] =
                                     Some(row_real[r0].map_or(outer, |r: f32| r.max(outer)));
                             }
-                            None => row_shrinkable[r0] = false,
+                            None => {
+                                row_shrinkable[r0] = false;
+                                if grid.rows[r0].is_flexible {
+                                    flexible_rows_known = false;
+                                }
+                            }
                         }
                     }
                 }
@@ -2470,6 +2530,81 @@ pub fn layout_grid_container(
                 None => 0.0,
             })
             .collect();
+        // Flexible rows. With an auto height there is no free space to
+        // share, so css-grid-1 12.7.1 sizes an `fr` from the items: the
+        // largest of each flexible row's content over its flex factor, and
+        // of each crossing item's height (less the other rows it crosses)
+        // over the factors it crosses. That content is the items' REAL
+        // height, like an `auto` row's, and track sizing only had the
+        // estimate. A Wikipedia article sits in the `1fr` last row of
+        // `main.mw-body`: charged a line per text node, the row was 73554px
+        // around 12338px of article. So a flexible row shrinks to the real
+        // figure too, and a `min-height` on the grid is shared out by the
+        // same `fr` (Chrome: `min-height: 300px` over a 20px row and a
+        // `1fr` row of 60px content gives the flexible row 280).
+        if flexible_rows_known && grid.rows.iter().any(|t| t.is_flexible) {
+            let factor = |t: &GridTrack| t.flex_factor.max(0.0);
+            // Rows after the repair above, flexible rows as their content.
+            let content: Vec<f32> = grid
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    if t.is_flexible {
+                        row_real[i].unwrap_or(0.0)
+                    } else {
+                        (t.size + row_delta[i]).max(0.0)
+                    }
+                })
+                .collect();
+            let mut fr = 0.0f32;
+            for (i, t) in grid.rows.iter().enumerate() {
+                if t.is_flexible {
+                    fr = fr.max(content[i] / factor(t).max(1.0));
+                }
+            }
+            let fr_to_fill = |space: f32, rows: std::ops::Range<usize>| -> f32 {
+                let fixed: f32 = rows
+                    .clone()
+                    .filter(|&r| !grid.rows[r].is_flexible)
+                    .map(|r| content[r])
+                    .sum();
+                let factors: f32 = rows
+                    .clone()
+                    .filter(|&r| grid.rows[r].is_flexible)
+                    .map(|r| factor(&grid.rows[r]))
+                    .sum();
+                let gaps = row_gap * rows.len().saturating_sub(1) as f32;
+                (space - fixed - gaps) / factors.max(1.0)
+            };
+            for (rows_spanned, needed) in &flex_spanners {
+                fr = fr.max(fr_to_fill(*needed, rows_spanned.clone()));
+            }
+            let min_height = match &style.min_height {
+                Length::Px(h) => *h,
+                l if is_font_or_viewport_relative(l) => container.length_to_px(l, 0.0),
+                _ => 0.0,
+            };
+            if min_height > 0.0 {
+                let own = if style.box_sizing == BoxSizing::BorderBox {
+                    container.dimensions.padding.top
+                        + container.dimensions.padding.bottom
+                        + container.dimensions.border.top
+                        + container.dimensions.border.bottom
+                } else {
+                    0.0
+                };
+                fr = fr.max(fr_to_fill(min_height - own, 0..grid.rows.len()));
+            }
+            for (i, t) in grid.rows.iter().enumerate() {
+                if t.is_flexible {
+                    // Never under the row's own content (a factor below 1).
+                    let size = (fr * factor(t)).max(content[i]);
+                    let delta = size - t.size;
+                    row_delta[i] = if delta.abs() > 0.5 { delta } else { 0.0 };
+                }
+            }
+        }
         // A flexible-row spanner still gets its full height: whatever the
         // re-sized rows leave short goes to its first flexible row.
         for (rows_spanned, needed) in &flex_spanners {
@@ -2485,6 +2620,8 @@ pub fn layout_grid_container(
                 }
             }
         }
+
+        phase_9_5_row_delta = Some(row_delta.clone());
 
         if row_delta.iter().any(|g| *g != 0.0) {
             let old_positions: Vec<f32> = grid.rows.iter().map(|t| t.position).collect();
@@ -2522,7 +2659,7 @@ pub fn layout_grid_container(
                         // tallest item's real height, so an item still
                         // holding the stale area height (the block path
                         // hands it the pre-pass area) gives it back.
-                        if matches!(child.style.height, Length::Auto) {
+                        if stretches_to_its_row(child, &container_align_items) {
                             let pb = child.dimensions.padding.top
                                 + child.dimensions.padding.bottom
                                 + child.dimensions.border.top
@@ -2548,6 +2685,110 @@ pub fn layout_grid_container(
             let total_gaps = non_collapsed.saturating_sub(1) as f32 * row_gap;
             container.dimensions.content.height =
                 grid.rows.iter().map(|t| t.size).sum::<f32>() + total_gaps;
+        }
+    }
+
+    // Phase 9.55: a `min-height` taller than the rows of an auto-height grid
+    // is free space, like a `height` is.
+    //
+    // `body { display: grid; min-height: 100vh; place-items: center }` is the
+    // usual way to centre a page: the grid is as tall as the viewport, its
+    // one auto row stretches to that, and the item is centred in the row.
+    // With `height: auto` nothing above shares any space out, so the row
+    // stayed at its content and the item at the top. Rows are final here
+    // (Phase 9.5 has run); flexible rows already took a `min-height` there
+    // and leave nothing free.
+    if !has_definite_height && !grid.rows.is_empty() {
+        let min_height = match &style.min_height {
+            Length::Px(h) => *h,
+            l if is_font_or_viewport_relative(l) => container.length_to_px(l, 0.0),
+            _ => 0.0,
+        };
+        let own = if style.box_sizing == BoxSizing::BorderBox {
+            container.dimensions.padding.top
+                + container.dimensions.padding.bottom
+                + container.dimensions.border.top
+                + container.dimensions.border.bottom
+        } else {
+            0.0
+        };
+        let min_height = min_height - own;
+        let non_collapsed = grid.rows.iter().filter(|t| t.size > 0.0).count();
+        let used = grid.rows.iter().map(|t| t.size).sum::<f32>()
+            + non_collapsed.saturating_sub(1) as f32 * row_gap;
+        if min_height - used > 0.5 {
+            let old: Vec<(f32, f32)> = grid.rows.iter().map(|t| (t.position, t.size)).collect();
+            if style.align_content == AlignContent::Stretch {
+                stretch_auto_tracks(&mut grid.rows, min_height, row_gap);
+            }
+            apply_content_alignment(
+                &mut grid.rows,
+                min_height,
+                row_gap,
+                &align_content_to_justify(&style.align_content),
+            );
+            let mut idx = 0usize;
+            for child in container.children.iter_mut() {
+                if child.style.display == Display::None {
+                    continue;
+                }
+                let item_idx = idx;
+                idx += 1;
+                let Some(&(r0, r1)) = row_spans.get(item_idx) else {
+                    continue;
+                };
+                if r0 >= grid.rows.len() {
+                    continue;
+                }
+                let r1 = r1.clamp(r0 + 1, grid.rows.len());
+                let dy = grid.rows[r0].position - old[r0].0;
+                if dy.abs() > 0.01 {
+                    crate::flex::translate_subtree(child, 0.0, dy);
+                }
+                let grew = (r0..r1).any(|r| grid.rows[r].size - old[r].1 > 0.01);
+                if grew && stretches_to_its_row(child, &container_align_items) {
+                    let pb = child.dimensions.padding.top
+                        + child.dimensions.padding.bottom
+                        + child.dimensions.border.top
+                        + child.dimensions.border.bottom;
+                    let area = grid.rows[r1 - 1].position + grid.rows[r1 - 1].size
+                        - grid.rows[r0].position;
+                    let target = area - vertical_margins(&child.style) - pb;
+                    if child.dimensions.content.height < target {
+                        child.dimensions.content.height = target;
+                    }
+                }
+            }
+        }
+    }
+
+    // The L0 differential (§4): for each in-slice item, the estimate that
+    // no longer sizes its row, the fragment that does, and what the repair
+    // pass above still did to that row. On an in-slice item that last
+    // number is 0, or L0 is not done.
+    if crate::fragment::differential::wanted() {
+        for (idx, record) in l0_records.into_iter().enumerate() {
+            let Some((selector, old_estimate_px, fragment)) = record else {
+                continue;
+            };
+            let Some(&(r0, _)) = row_spans.get(idx) else {
+                continue;
+            };
+            let crate::fragment::AxisSize::Definite(fragment_block) = fragment.border_box.block
+            else {
+                continue;
+            };
+            let outer = row_contributions.get(idx).map_or(0.0, |c| c.2);
+            crate::fragment::differential::record(crate::fragment::Differential {
+                selector,
+                old_estimate_px,
+                fragment_outer_px: outer,
+                fragment_block,
+                unsnapped_block_px: fragment.unsnapped_block_px,
+                phase_9_5_delta_px: phase_9_5_row_delta
+                    .as_ref()
+                    .map(|d| d.get(r0).copied().unwrap_or(0.0)),
+            });
         }
     }
 
@@ -2646,6 +2887,111 @@ pub fn layout_grid_container(
         }
     }
 
+    // Phase 9.75: an item that is not stretched is as tall as its content
+    // and sits at the start, centre or end of its area (css-align-3 §6.2).
+    //
+    // Phase 8 runs before any item has a content height, so it hands every
+    // auto-height item the whole area, and at that height `center` and `end`
+    // have nothing to move: `display: grid; place-items: center` centred
+    // nothing on the block axis. The content height exists once Phase 9 has
+    // flowed the item and the rows are final once Phase 9.5 has re-sized
+    // them, so the item gets its height and its place here. An item with a
+    // height of its own is placed again too: Phase 8 centred it by its
+    // specified height (not its border box) in a row that may have changed
+    // since.
+    {
+        let mut idx = 0usize;
+        for child in container.children.iter_mut() {
+            if child.style.display == Display::None {
+                continue;
+            }
+            let item_idx = idx;
+            idx += 1;
+            let align = match child.style.align_self {
+                AlignSelf::Auto => match container_align_items {
+                    AlignItems::FlexStart | AlignItems::Baseline => AlignSelf::FlexStart,
+                    AlignItems::FlexEnd => AlignSelf::FlexEnd,
+                    AlignItems::Center => AlignSelf::Center,
+                    AlignItems::Stretch => AlignSelf::Stretch,
+                },
+                // Baseline alignment is not implemented: such an item sits
+                // at the start, at its content height.
+                AlignSelf::Baseline => AlignSelf::FlexStart,
+                other => other,
+            };
+            if !matches!(align, AlignSelf::FlexStart | AlignSelf::Center | AlignSelf::FlexEnd) {
+                continue;
+            }
+            let Some(&(r0, r1)) = row_spans.get(item_idx) else {
+                continue;
+            };
+            if r0 >= grid.rows.len() {
+                continue;
+            }
+            let pb = child.dimensions.padding.top
+                + child.dimensions.padding.bottom
+                + child.dimensions.border.top
+                + child.dimensions.border.bottom;
+            let pb_w = child.dimensions.padding.left
+                + child.dimensions.padding.right
+                + child.dimensions.border.left
+                + child.dimensions.border.right;
+            let has_ratio = crate::aspect_ratio_content_height(
+                &child.style,
+                child.dimensions.content.width,
+                pb_w,
+                pb,
+            )
+            .is_some();
+            if matches!(child.style.height, Length::Auto) && !has_ratio {
+                // What Phase 9 flowed. An empty block flowed nothing and is
+                // 0 tall; an image or a control with no children has a
+                // height this pass does not know, and keeps the area.
+                let content = match real_heights.get(item_idx) {
+                    Some(Some(real_h)) => Some(*real_h),
+                    _ if child.children.is_empty()
+                        && matches!(child.box_type, crate::BoxType::Block) =>
+                    {
+                        Some(0.0)
+                    }
+                    _ => None,
+                };
+                if let Some(mut height) = content {
+                    let is_border_box = child.style.box_sizing == BoxSizing::BorderBox;
+                    let own = if is_border_box { pb } else { 0.0 };
+                    if let Length::Px(max_h) = child.style.max_height {
+                        height = height.min((max_h - own).max(0.0));
+                    }
+                    if let Length::Px(min_h) = child.style.min_height {
+                        height = height.max((min_h - own).max(0.0));
+                    }
+                    child.dimensions.content.height = height;
+                }
+            }
+            let r1 = r1.clamp(r0 + 1, grid.rows.len());
+            let area_top = content_y + grid.rows[r0].position;
+            let area_height =
+                grid.rows[r1 - 1].position + grid.rows[r1 - 1].size - grid.rows[r0].position;
+            let margin_top = child.dimensions.margin.top;
+            let free = area_height
+                - margin_top
+                - child.dimensions.margin.bottom
+                - (child.dimensions.content.height + pb);
+            let offset = match align {
+                AlignSelf::Center => free / 2.0,
+                AlignSelf::FlexEnd => free,
+                _ => 0.0,
+            };
+            let border_top = child.dimensions.content.y
+                - child.dimensions.padding.top
+                - child.dimensions.border.top;
+            let dy = area_top + margin_top + offset - border_top;
+            if dy.abs() > 0.01 {
+                crate::flex::translate_subtree(child, 0.0, dy);
+            }
+        }
+    }
+
     // Phase 9.8: a flex container that is a grid item lays its items out at
     // the item's USED height.
     //
@@ -2680,6 +3026,32 @@ pub fn layout_grid_container(
                 crate::flex::layout_flex_container_at_used_height(child, used);
             }
         }
+    }
+
+    // Phase 9.9: every item's box is final; anchor the absolutely positioned
+    // children of a positioned item to it.
+    //
+    // An abspos child is first placed against a stand-in whose height is the
+    // flow cursor, and the owner of the box re-anchors it once the box is
+    // final (`reanchor_absolute_children`). For a grid item that is here and
+    // nowhere earlier: the inline arm of Phase 9 flows the children and then
+    // writes the item's height, the flex and grid arms give a stretched item
+    // its area back after their own pass, Phase 9.5 grows rows and the items
+    // in them, 9.55 to 9.7 set heights, and 9.75 shrinks and moves an item
+    // that is not stretched. A whole-card `inset: 0` link over a text-only
+    // card was 0px tall, and the overlay of a centred card ran 80px past it
+    // (issue #560).
+    //
+    // The STYLE position, as in the block arm of Phase 9: the layout field
+    // reads Static for `position: relative`. A static item is not the
+    // containing block and its abspos children are left alone.
+    for child in container.children.iter_mut() {
+        if child.style.display == Display::None
+            || matches!(child.style.position, rustkit_css::Position::Static)
+        {
+            continue;
+        }
+        child.reanchor_absolute_children();
     }
 
     debug!(
@@ -2732,6 +3104,9 @@ pub(crate) fn own_min_content_width(layout_box: &LayoutBox) -> f32 {
     }
     if let BoxType::Text(text) = &layout_box.box_type {
         return text_min_content_width(text, style);
+    }
+    if style.display.is_table() {
+        return crate::table::table_intrinsic_widths(layout_box).0;
     }
 
     let padding_border = horizontal_padding_border(style);
@@ -3057,6 +3432,9 @@ pub(crate) fn own_max_content_width(layout_box: &LayoutBox) -> f32 {
     if let BoxType::Text(text) = &layout_box.box_type {
         return text_max_content_width(text, style);
     }
+    if style.display.is_table() {
+        return crate::table::table_intrinsic_widths(layout_box).1;
+    }
 
     let padding_border = horizontal_padding_border(style);
 
@@ -3180,7 +3558,7 @@ pub(crate) fn own_max_content_width(layout_box: &LayoutBox) -> f32 {
 /// `width: 12.25rem` is as explicit as `196px`, but the contribution arms only
 /// matched `Px`, so it fell through to the content estimate and a
 /// `min-content` track (wikipedia's page-tools column) came out too narrow.
-fn is_font_or_viewport_relative(l: &Length) -> bool {
+pub(crate) fn is_font_or_viewport_relative(l: &Length) -> bool {
     matches!(
         l,
         Length::Em(_) | Length::Rem(_) | Length::Vw(_) | Length::Vh(_) | Length::Vmin(_) | Length::Vmax(_)
@@ -3359,6 +3737,18 @@ fn distribute_span_contributions(
 }
 
 fn size_grid_tracks(tracks: &mut [GridTrack], container_size: f32, gap: f32) {
+    size_grid_tracks_filling(tracks, container_size, gap, true);
+}
+
+/// `size_grid_tracks`, with the choice of whether the space no track claims
+/// is shared among the auto tracks (`fill_auto`, what `stretch` content
+/// alignment does) or left free for the content alignment to place.
+fn size_grid_tracks_filling(
+    tracks: &mut [GridTrack],
+    container_size: f32,
+    gap: f32,
+    fill_auto: bool,
+) {
     if tracks.is_empty() {
         return;
     }
@@ -3546,7 +3936,7 @@ fn size_grid_tracks(tracks: &mut [GridTrack], container_size: f32, gap: f32) {
 
     // If there's still remaining space and we have tracks with infinite growth_limit,
     // distribute to them equally
-    if remaining > 0.01 {
+    if remaining > 0.01 && fill_auto {
         let infinite_tracks: Vec<usize> = tracks
             .iter()
             .enumerate()
@@ -3760,6 +4150,112 @@ fn align_content_to_justify(align: &AlignContent) -> JustifyContent {
     }
 }
 
+/// Give a grid item its box in its grid area `rect`: margins, the two
+/// self-alignments, padding and border, and the content box they leave.
+/// Phase 8 of `layout_grid_container`, and the placement step of the L0
+/// query (`crate::fragment::intrinsic_fragment`), which must put the same
+/// box to the item's layout that final layout does.
+fn place_item_in_area(child: &mut LayoutBox, rect: &Rect, container_style: &ComputedStyle) {
+    // css-grid-1 §6.5: the grid area is filled by the item's MARGIN
+    // box. Alignment — including `stretch`, which is what makes this
+    // load-bearing — runs on the area shrunk by the margins, so a
+    // stretched item ends up `area - margins` tall rather than
+    // swallowing its own margin back into its border box.
+    let (margin_left, margin_right, margin_top, margin_bottom) =
+        item_margins(&child.style);
+    let area = Rect::new(
+        rect.x + margin_left,
+        rect.y + margin_top,
+        (rect.width - margin_left - margin_right).max(0.0),
+        (rect.height - margin_top - margin_bottom).max(0.0),
+    );
+    child.dimensions.margin.left = margin_left;
+    child.dimensions.margin.right = margin_right;
+    child.dimensions.margin.top = margin_top;
+    child.dimensions.margin.bottom = margin_bottom;
+
+    // Apply alignment - returns border-box dimensions
+    let (x, border_box_width) = apply_justify_self(
+        &child.style.justify_self,
+        &container_style.justify_items,
+        area.x,
+        area.width,
+        child,
+    );
+
+    let (y, border_box_height) = apply_align_self(
+        &child.style.align_self,
+        &container_style.align_items,
+        area.y,
+        area.height,
+        child,
+    );
+
+    // Calculate padding and border. `rem` resolves against the ROOT
+    // font size (16px, the crate-wide convention in length_to_px /
+    // intrinsic_len_px), never the item's own: with the item's
+    // font-size passed as the root, `padding: 0.75rem` on a 14px
+    // card read as 10.5px, and every flex/block grid item with rem
+    // padding came out 2·(rem·(16 − font)) short in both axes
+    // (new_tab's .shortcut rows 57 for Chrome's 60, kbd x 387 for
+    // 389).
+    let font_size = match child.style.font_size {
+        Length::Px(px) => px,
+        _ => 16.0,
+    };
+    let px = |l: &Length, against: f32| l.to_px(font_size, 16.0, against);
+    let padding_left = px(&child.style.padding_left, border_box_width);
+    let padding_right = px(&child.style.padding_right, border_box_width);
+    let padding_top = px(&child.style.padding_top, border_box_height);
+    let padding_bottom = px(&child.style.padding_bottom, border_box_height);
+    let border_left = px(&child.style.border_left_width, border_box_width);
+    let border_right = px(&child.style.border_right_width, border_box_width);
+    let border_top = px(&child.style.border_top_width, border_box_height);
+    let border_bottom = px(&child.style.border_bottom_width, border_box_height);
+
+    // Set padding and border dimensions
+    child.dimensions.padding.left = padding_left;
+    child.dimensions.padding.right = padding_right;
+    child.dimensions.padding.top = padding_top;
+    child.dimensions.padding.bottom = padding_bottom;
+    child.dimensions.border.left = border_left;
+    child.dimensions.border.right = border_right;
+    child.dimensions.border.top = border_top;
+    child.dimensions.border.bottom = border_bottom;
+
+    // Derive the content box. The alignment helpers hand back the
+    // SPECIFIED size: an explicit `width`/`height` verbatim (so
+    // box-sizing decides what it covers), or the grid area for
+    // `auto`. An auto-sized item fills the area with its margin box
+    // (css-grid-1 §6.6 / css-align-3 §5.4 stretch), so its content
+    // is the area minus padding and border whatever its box-sizing.
+    // Treating the area as a content-box size added the padding on
+    // top: a padded content-box item overflowed its track by its
+    // padding in both axes (repro grid-auto-fit-minmax: 223.3 wide
+    // in a 199.3 track).
+    let is_border_box = child.style.box_sizing == BoxSizing::BorderBox;
+    let explicit_width = !matches!(child.style.width, Length::Auto);
+    let explicit_height = !matches!(child.style.height, Length::Auto);
+    let h_padding_border = padding_left + padding_right + border_left + border_right;
+    let v_padding_border = padding_top + padding_bottom + border_top + border_bottom;
+    let content_width = if explicit_width && !is_border_box {
+        border_box_width
+    } else {
+        (border_box_width - h_padding_border).max(0.0)
+    };
+    let content_height = if explicit_height && !is_border_box {
+        border_box_height
+    } else {
+        (border_box_height - v_padding_border).max(0.0)
+    };
+
+    // Position includes padding and border offset
+    child.dimensions.content.x = x + padding_left + border_left;
+    child.dimensions.content.y = y + padding_top + border_top;
+    child.dimensions.content.width = content_width;
+    child.dimensions.content.height = content_height;
+}
+
 /// Apply justify-self alignment.
 fn apply_justify_self(
     self_align: &JustifySelf,
@@ -3794,20 +4290,118 @@ fn apply_justify_self(
         Length::Percent(p) => cell_width * p / 100.0,
         _ => cell_width,
     };
+    let stretched = align == JustifySelf::Stretch && !has_explicit_width;
+    let child_width = if stretched { cell_width } else { child_width };
+
+    // A px `min-width` and `max-width` bound the item whatever its alignment
+    // (max first, then min, CSS 2.1 §10.4): a `max-width: 100px` item
+    // stretched over a 300px column is 100 wide, and a `min-width: 100px`
+    // item holding one letter is 100 wide where it is start-aligned or
+    // centred. The size handled here is the SPECIFIED width for an explicit
+    // `width` (box-sizing decides what it covers) and a border box for
+    // `auto`, so a content-box bound on an auto width gets the item's px
+    // padding and border added.
+    let own = {
+        let px = |l: &Length| match l {
+            Length::Px(v) => *v,
+            _ => 0.0,
+        };
+        let pb = px(&child.style.padding_left)
+            + px(&child.style.padding_right)
+            + px(&child.style.border_left_width)
+            + px(&child.style.border_right_width);
+        if !has_explicit_width && child.style.box_sizing != BoxSizing::BorderBox {
+            pb
+        } else {
+            0.0
+        }
+    };
+    let mut child_width = child_width;
+    if let Length::Px(max_w) = child.style.max_width {
+        child_width = child_width.min(max_w + own);
+    }
+    if let Length::Px(min_w) = child.style.min_width {
+        child_width = child_width.max(min_w + own);
+    }
 
     match align {
-        JustifySelf::Start | JustifySelf::Auto => (cell_x, child_width),
         JustifySelf::End => (cell_x + cell_width - child_width, child_width),
         JustifySelf::Center => (cell_x + (cell_width - child_width) / 2.0, child_width),
-        // Per CSS spec: stretch only applies when width is auto
-        JustifySelf::Stretch => {
-            if has_explicit_width {
-                (cell_x, child_width)
-            } else {
-                (cell_x, cell_width)
-            }
-        },
+        JustifySelf::Start | JustifySelf::Auto | JustifySelf::Stretch => (cell_x, child_width),
     }
+}
+
+/// True for a grid item with more than one in-flow child, at least one of
+/// them inline-level: an inline box, text, an image, a form control, a
+/// forced break or an atomic inline (the same test the block children pass
+/// makes). Such an item is flowed by that pass, which builds line boxes and
+/// wraps the inline runs around any block children. An item with only block
+/// children keeps the block arm of Phase 9.
+///
+/// An item with a single child is flowed when that child is text or an
+/// inline box: the block arm gives a lone text child the item's width
+/// without wrapping it again, so a sentence in a 100px column was one line
+/// tall. A lone image, control or atomic inline keeps the block arm, which
+/// draws an image at its own size even where the item's column came out too
+/// narrow (bing's search icon: an svg in a label whose column is 1.6px
+/// wide; flowed, the icon shrank to a dot).
+fn item_children_flow_inline(item: &LayoutBox) -> bool {
+    let mut in_flow = item.children.iter().filter(|c| {
+        !matches!(
+            c.style.position,
+            rustkit_css::Position::Absolute | rustkit_css::Position::Fixed
+        ) && c.float == crate::Float::None
+    });
+    let inline_level = |c: &LayoutBox| {
+        c.style.display.is_atomic_inline()
+            || matches!(
+                c.box_type,
+                crate::BoxType::Inline
+                    | crate::BoxType::Text(_)
+                    | crate::BoxType::Image { .. }
+                    | crate::BoxType::FormControl(_)
+                    | crate::BoxType::LineBreak
+            )
+    };
+    let lone_run = |c: &LayoutBox| {
+        !c.style.display.is_atomic_inline()
+            && matches!(c.box_type, crate::BoxType::Inline | crate::BoxType::Text(_))
+    };
+    let (first, second) = (in_flow.clone().next(), in_flow.clone().nth(1));
+    match (first, second) {
+        (Some(only), None) => lone_run(only),
+        _ => in_flow.any(inline_level),
+    }
+}
+
+/// The content-box height a grid container's own style gives it outright: a
+/// px, font-relative or viewport-relative `height`, less its padding and
+/// border under `box-sizing: border-box`, and held between a px `min-height`
+/// and `max-height`. `None` for `auto`, and for a percentage or `calc()`,
+/// which only the caller can resolve.
+fn own_definite_height(container: &LayoutBox) -> Option<f32> {
+    let style = &container.style;
+    let px = |l: &Length| match l {
+        Length::Px(h) => Some(*h),
+        l if is_font_or_viewport_relative(l) => Some(container.length_to_px(l, 0.0)),
+        _ => None,
+    };
+    let own = if style.box_sizing == BoxSizing::BorderBox {
+        container.dimensions.padding.top
+            + container.dimensions.padding.bottom
+            + container.dimensions.border.top
+            + container.dimensions.border.bottom
+    } else {
+        0.0
+    };
+    let mut height = (px(&style.height)? - own).max(0.0);
+    if let Some(max_h) = px(&style.max_height) {
+        height = height.min((max_h - own).max(0.0));
+    }
+    if let Some(min_h) = px(&style.min_height) {
+        height = height.max((min_h - own).max(0.0));
+    }
+    Some(height)
 }
 
 /// Whether a grid item fills its area on the block axis: `align-self`
@@ -6000,7 +6594,7 @@ mod tests {
         assert_eq!(item3.order(), 0, "Item3 should have order 0");
 
         // Create a vector and sort by order
-        let mut items = vec![item1, item2, item3];
+        let mut items = [item1, item2, item3];
         items.sort_by_key(|item| item.order());
 
         // Verify order after sorting: -1, 0, 2
@@ -6031,7 +6625,7 @@ mod tests {
         let item_b = GridItem::new(&layout_box_b);
         let item_c = GridItem::new(&layout_box_c);
 
-        let mut items = vec![item_a, item_b, item_c];
+        let mut items = [item_a, item_b, item_c];
 
         // Store original positions by pointer comparison
         let ptr_a = items[0].layout_box as *const _;
@@ -6510,7 +7104,7 @@ mod tests {
         // Single-span items should be processed first, then multi-span
 
         // Create tracks: [auto, auto, auto]
-        let mut tracks = vec![
+        let mut tracks = [
             GridTrack::new(&TrackSize::Auto),
             GridTrack::new(&TrackSize::Auto),
             GridTrack::new(&TrackSize::Auto),
@@ -6571,7 +7165,7 @@ mod tests {
         // Fixed tracks should not grow if there are growable alternatives
 
         // Create tracks: [100px (fixed), auto (growable)]
-        let mut tracks = vec![
+        let mut tracks = [
             GridTrack::new(&TrackSize::Px(100.0)),
             GridTrack::new(&TrackSize::Auto),
         ];
@@ -7157,6 +7751,231 @@ mod tests {
         );
     }
 
+    /// Two auto rows. Column 1 holds a 10px-tall block spanning both rows;
+    /// column 2 holds one flex row of three chips in each row.
+    fn chip_rows_beside_a_spanning_item(font_px: f32, gap: f32) -> LayoutBox {
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Px(40.0), TrackSize::Px(262.0)]);
+        container_style.row_gap = Length::Px(gap);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+
+        let mut span = ComputedStyle::new();
+        span.height = Length::Px(10.0);
+        span.align_self = AlignSelf::FlexStart;
+        span.grid_column_start = GridLine::Number(1);
+        span.grid_row_start = GridLine::Number(1);
+        span.grid_row_end = GridLine::Number(3);
+        container.children.push(LayoutBox::new(BoxType::Block, span));
+
+        for row in 1..=2 {
+            let mut item = shortcut_row(font_px);
+            item.style.grid_column_start = GridLine::Number(2);
+            item.style.grid_row_start = GridLine::Number(row);
+            container.children.push(item);
+        }
+        layout_grid_container(&mut container, 302.0, 0.0);
+        container
+    }
+
+    /// L0 (docs/LAYOUT_CONSTRAINTS_FRAGMENTS_2026-09-30.md §4, call site 1).
+    /// Three one-word chips on one line are charged three lines by
+    /// `count_text_lines`. Phase 9.5 shrinks an over-estimated row only when
+    /// no item spans it; beside a spanning item the rows are grow-only, so
+    /// they keep the estimate: each chip row is two lines too tall and the
+    /// second starts two lines low. The spanning item is 10px and asks
+    /// nothing of either row.
+    #[test]
+    fn l0_a_one_line_flex_item_sizes_a_row_the_repair_pass_cannot_shrink() {
+        const FONT: f32 = 14.0;
+        const GAP: f32 = 12.0;
+        let container = chip_rows_beside_a_spanning_item(FONT, GAP);
+        let first = container.children[1].dimensions.border_box();
+        let second = container.children[2].dimensions.border_box();
+        let one_line = crate::resolve_line_height(&container.children[1].style, FONT);
+        let real = one_line + 26.0;
+        assert!(
+            (first.height - real).abs() < 1.0,
+            "a flex row of three chips is one line tall ({real}), got {} \
+             (three lines + padding is the per-text-node estimate)",
+            first.height
+        );
+        assert!(
+            (second.y - (first.y + real + GAP)).abs() < 1.0,
+            "row 2 starts one real row + gap below row 1: expected {}, got {}",
+            first.y + real + GAP,
+            second.y
+        );
+        assert!(
+            (container.dimensions.content.height - (2.0 * real + GAP)).abs() < 1.0,
+            "the container is two real rows and a gap ({}), got {}",
+            2.0 * real + GAP,
+            container.dimensions.content.height
+        );
+    }
+
+    /// A flex row holding one block of text long enough to wrap in a narrow
+    /// column: one text node, several lines.
+    fn wrapping_row(font_px: f32) -> LayoutBox {
+        let mut s = ComputedStyle::new();
+        s.display = Display::Flex;
+        s.font_size = Length::Px(font_px);
+        let mut row = LayoutBox::new(BoxType::Block, s);
+        let mut cs = ComputedStyle::new();
+        cs.font_size = Length::Px(font_px);
+        let mut para = LayoutBox::new(BoxType::Block, cs.clone());
+        para.children.push(LayoutBox::new(
+            BoxType::Text(
+                "one two three four five six seven eight nine ten eleven twelve".to_string(),
+            ),
+            cs,
+        ));
+        row.children.push(para);
+        row
+    }
+
+    /// The differential of the same grid (§4, §6): the estimate still runs
+    /// and says three lines, the fragment is the height final layout gives
+    /// the item, track sizing used the fragment, and Phase 9.5 then had
+    /// nothing to add to either row.
+    #[test]
+    fn l0_the_fragment_is_the_final_height_and_the_repair_pass_adds_nothing() {
+        const FONT: f32 = 14.0;
+        crate::fragment::differential::start();
+        let container = chip_rows_beside_a_spanning_item(FONT, 12.0);
+        let records = crate::fragment::differential::take();
+        assert_eq!(records.len(), 2, "two in-slice items, got {records:?}");
+
+        let one_line = crate::resolve_line_height(&container.children[1].style, FONT);
+        for (record, item) in records.iter().zip(&container.children[1..]) {
+            let laid_out = item.dimensions.border_box().height;
+            assert!(
+                (record.old_estimate_px - (3.0 * one_line + 24.0)).abs() < 0.01,
+                "the estimate is line-height x three text nodes + padding, got {}",
+                record.old_estimate_px
+            );
+            assert!(
+                (record.fragment_block.to_px() - laid_out).abs() < 1.0 / 64.0,
+                "the fragment block size ({}) is the height final layout produced ({laid_out})",
+                record.fragment_block.to_px()
+            );
+            assert!(
+                (record.fragment_outer_px - record.old_estimate_px).abs() > one_line,
+                "the fragment is not the estimate"
+            );
+            assert_eq!(
+                record.phase_9_5_delta_px,
+                Some(0.0),
+                "Phase 9.5 adds nothing to a row a fragment sized"
+            );
+            // Units: the fragment is written in 1/64 px, and the size it
+            // was snapped from is carried beside it.
+            assert_eq!(
+                record.fragment_block,
+                crate::fragment::LayoutUnit::from_px(record.unsnapped_block_px)
+            );
+            assert!((record.unsnapped_block_px - laid_out).abs() < 0.01);
+        }
+    }
+
+    /// The under-estimate (holdout-grid-mosaic's shape): one text node that
+    /// wraps to several lines is charged one line. Phase 9.5 used to grow
+    /// the row afterwards. The fragment is the wrapped height, so the row
+    /// is right when it is first sized and the repair is 0.
+    #[test]
+    fn l0_a_wrapping_flex_item_contributes_its_wrapped_height() {
+        const FONT: f32 = 14.0;
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Px(120.0)]);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+        container.children.push(wrapping_row(FONT));
+        container.children.push(wrapping_row(FONT));
+
+        crate::fragment::differential::start();
+        layout_grid_container(&mut container, 120.0, 0.0);
+        let records = crate::fragment::differential::take();
+        assert_eq!(records.len(), 2, "two in-slice items, got {records:?}");
+
+        let one_line = crate::resolve_line_height(&container.children[0].style, FONT);
+        let first = &container.children[0];
+        let para = first.children[0].dimensions.border_box();
+        assert!(
+            para.height > 2.5 * one_line,
+            "the fixture's text wraps to at least three lines in 120px, got {}",
+            para.height
+        );
+        let first_box = first.dimensions.border_box();
+        assert!(
+            (first_box.height - para.height).abs() < 0.5,
+            "the item is as tall as its wrapped text ({}), got {}",
+            para.height,
+            first_box.height
+        );
+        let second = container.children[1].dimensions.border_box();
+        assert!(
+            (second.y - (first_box.y + first_box.height)).abs() < 0.5,
+            "row 2 starts where row 1's wrapped text ends ({}), got {}",
+            first_box.y + first_box.height,
+            second.y
+        );
+        for record in &records {
+            assert!(
+                (record.old_estimate_px - one_line).abs() < 0.01,
+                "the estimate is one line for one text node, got {}",
+                record.old_estimate_px
+            );
+            assert!(
+                (record.fragment_block.to_px() - first_box.height).abs() < 1.0 / 64.0,
+                "the fragment is the wrapped height ({}), got {}",
+                first_box.height,
+                record.fragment_block.to_px()
+            );
+            assert_eq!(record.phase_9_5_delta_px, Some(0.0));
+        }
+    }
+
+    /// Out of the slice, so still on the estimate and the repair pass: a
+    /// column flex item, a percentage height, an aspect-ratio item, a plain
+    /// block, and an item that spans two rows. None of them is queried.
+    #[test]
+    fn l0_items_outside_the_class_keep_the_estimate() {
+        const FONT: f32 = 14.0;
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Px(120.0), TrackSize::Px(120.0)]);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+
+        let mut column = wrapping_row(FONT);
+        column.style.flex_direction = rustkit_css::FlexDirection::Column;
+        container.children.push(column);
+
+        let mut percent = wrapping_row(FONT);
+        percent.style.height = Length::Percent(50.0);
+        container.children.push(percent);
+
+        let mut ratio = wrapping_row(FONT);
+        ratio.style.aspect_ratio = Some(2.0);
+        container.children.push(ratio);
+
+        let mut block = wrapping_row(FONT);
+        block.style.display = Display::Block;
+        container.children.push(block);
+
+        let mut spanning = wrapping_row(FONT);
+        spanning.style.grid_row_start = GridLine::Number(3);
+        spanning.style.grid_row_end = GridLine::Number(5);
+        container.children.push(spanning);
+
+        crate::fragment::differential::start();
+        layout_grid_container(&mut container, 240.0, 0.0);
+        let records = crate::fragment::differential::take();
+        assert!(records.is_empty(), "no item here is in the slice, got {records:?}");
+    }
+
     /// A grid of one row: a 100px-tall block beside a flex container holding
     /// one 30x20 box. `item` styles the flex container.
     fn flex_item_beside_a_tall_sibling(item: impl FnOnce(&mut ComputedStyle)) -> LayoutBox {
@@ -7209,6 +8028,41 @@ mod tests {
             (mark.dimensions.content.height - 20.0).abs() < 0.01,
             "the box keeps its own height, got {}",
             mark.dimensions.content.height
+        );
+    }
+
+    /// The same for an item that is itself a grid: it fills its row. The
+    /// nested grid pass writes the content height over the area, and the
+    /// only thing that gave the row back was the stretch inside Phase 9.5,
+    /// which runs only when some row changed size. Beside a 100px sibling
+    /// no row changes, and the nested grid stayed as tall as its content.
+    #[test]
+    fn a_grid_grid_item_fills_its_row() {
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Px(200.0), TrackSize::Px(200.0)]);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+
+        let mut tall = ComputedStyle::new();
+        tall.height = Length::Px(100.0);
+        container.children.push(LayoutBox::new(BoxType::Block, tall));
+
+        let mut inner_style = ComputedStyle::new();
+        inner_style.display = Display::Grid;
+        let mut inner = LayoutBox::new(BoxType::Block, inner_style);
+        let mut mark = ComputedStyle::new();
+        mark.height = Length::Px(20.0);
+        inner.children.push(LayoutBox::new(BoxType::Block, mark));
+        container.children.push(inner);
+
+        layout_grid_container(&mut container, 400.0, 0.0);
+
+        let item = &container.children[1];
+        assert!(
+            (item.dimensions.content.height - 100.0).abs() < 0.01,
+            "the nested grid fills the 100px row, got {}",
+            item.dimensions.content.height
         );
     }
 
@@ -7446,6 +8300,11 @@ mod tests {
     /// the clause removed, `gradient-backgrounds` loses height under its grid
     /// items and Gate A goes 2500 -> 2572 failing axes, 72 of them added and
     /// 45 worsened.
+    ///
+    /// The test used a lone text box until an item whose ONLY child is text
+    /// was given to the inline flow (`item_children_flow_inline`), which
+    /// measures the text again. A childless block with a measured height is
+    /// the same shape and stays on this arm.
     #[test]
     fn a_childless_grandchild_keeps_its_measured_height() {
         const CONTAINER_WIDTH: f32 = 1000.0;
@@ -7462,16 +8321,15 @@ mod tests {
         item_style.box_sizing = BoxSizing::BorderBox;
         let mut item = LayoutBox::new(BoxType::Block, item_style);
 
-        // A text box: measured height, no children. The pre-pass measured it
+        // A leaf box: measured height, no children. The pre-pass measured it
         // against the CONTAINER, so the column assignment moves its width and
         // anything keyed on "the width changed" fires on it.
-        let text_style = ComputedStyle::new();
-        let mut text = LayoutBox::new(BoxType::Text("a text run".to_string()), text_style);
-        text.dimensions.content.width = CONTAINER_WIDTH;
-        text.dimensions.content.height = TEXT_HEIGHT;
+        let mut leaf = LayoutBox::new(BoxType::Block, ComputedStyle::new());
+        leaf.dimensions.content.width = CONTAINER_WIDTH;
+        leaf.dimensions.content.height = TEXT_HEIGHT;
 
         item.dimensions.content.width = CONTAINER_WIDTH;
-        item.children.push(text);
+        item.children.push(leaf);
         container.children.push(item);
 
         layout_grid_container(&mut container, CONTAINER_WIDTH, 600.0);
@@ -8098,6 +8956,94 @@ mod tests {
         assert!(
             from_bottom.abs() < 0.01,
             "a `bottom: 0` caption sits on the card's padding edge, {from_bottom}px off"
+        );
+    }
+
+    /// One `position: relative` item in a 288px column and a 100px row,
+    /// holding `content` and then an `inset: 0` overlay (issue #560).
+    fn positioned_item_with_an_overlay(
+        align_items: AlignItems,
+        content: Vec<LayoutBox>,
+    ) -> LayoutBox {
+        let mut container_style = ComputedStyle::new();
+        container_style.display = Display::Grid;
+        container_style.align_items = align_items;
+        container_style.grid_template_columns =
+            GridTemplate::from_sizes(vec![TrackSize::Px(288.0)]);
+        container_style.grid_template_rows = GridTemplate::from_sizes(vec![TrackSize::Px(100.0)]);
+        let mut container = LayoutBox::new(BoxType::Block, container_style);
+
+        let mut item_style = ComputedStyle::new();
+        item_style.position = rustkit_css::Position::Relative;
+        let mut item = LayoutBox::new(BoxType::Block, item_style);
+        item.children = content;
+
+        let mut overlay = LayoutBox::with_position(
+            BoxType::Block,
+            ComputedStyle::new(),
+            crate::Position::Absolute,
+        );
+        overlay.set_offsets(Some(0.0), Some(0.0), Some(0.0), Some(0.0));
+        item.children.push(overlay);
+        container.children.push(item);
+
+        layout_grid_container(&mut container, 288.0, 100.0);
+        container
+    }
+
+    /// Issue #560, the inline arm of Phase 9: a card of text with a
+    /// whole-card link. The arm flows the item's children, the overlay is
+    /// placed against the flow cursor, and the item's height is written
+    /// afterwards.
+    ///
+    /// T-RED without Phase 9.9: the overlay is 0px tall.
+    #[test]
+    fn an_overlay_fills_a_positioned_grid_item_of_text() {
+        let text = LayoutBox::new(BoxType::Text("Card title".to_string()), ComputedStyle::new());
+        let container = positioned_item_with_an_overlay(AlignItems::Stretch, vec![text]);
+
+        let item = &container.children[0];
+        assert_eq!(
+            item.dimensions.content.height, 100.0,
+            "the precondition: a stretched item fills its 100px row"
+        );
+        let overlay = item.children.last().unwrap();
+        assert!(
+            (overlay.dimensions.content.height - 100.0).abs() < 0.01
+                && (overlay.dimensions.content.y - item.dimensions.content.y).abs() < 0.01,
+            "an `inset: 0` overlay fills the 100px item, got {}px at +{}",
+            overlay.dimensions.content.height,
+            overlay.dimensions.content.y - item.dimensions.content.y
+        );
+    }
+
+    /// Issue #560, Phase 9.75: a centred item is shrunk to its content and
+    /// moved, and its overlay goes with it.
+    ///
+    /// T-RED without Phase 9.9: the overlay keeps the 100px area and runs
+    /// 80px past the 20px item.
+    #[test]
+    fn an_overlay_follows_a_centred_grid_item() {
+        let mut block_style = ComputedStyle::new();
+        block_style.height = Length::Px(20.0);
+        let block = LayoutBox::new(BoxType::Block, block_style);
+        let container = positioned_item_with_an_overlay(AlignItems::Center, vec![block]);
+
+        let item = &container.children[0];
+        assert!(
+            (item.dimensions.content.height - 20.0).abs() < 0.01
+                && (item.dimensions.content.y - container.dimensions.content.y - 40.0).abs() < 0.01,
+            "the precondition: the item is 20px tall, centred at +40; got {}px at +{}",
+            item.dimensions.content.height,
+            item.dimensions.content.y - container.dimensions.content.y
+        );
+        let overlay = item.children.last().unwrap();
+        assert!(
+            (overlay.dimensions.content.height - 20.0).abs() < 0.01
+                && (overlay.dimensions.content.y - item.dimensions.content.y).abs() < 0.01,
+            "an `inset: 0` overlay is the item's box, got {}px at +{}",
+            overlay.dimensions.content.height,
+            overlay.dimensions.content.y - item.dimensions.content.y
         );
     }
 

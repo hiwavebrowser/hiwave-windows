@@ -81,9 +81,10 @@ pub struct ScrollPosition {
 
 /// State object for pushState/replaceState.
 /// In a real implementation this would be a JSON-serializable value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum HistoryState {
     /// Null state.
+    #[default]
     Null,
     /// Boolean value.
     Bool(bool),
@@ -95,12 +96,6 @@ pub enum HistoryState {
     Array(Vec<HistoryState>),
     /// Object (key-value pairs).
     Object(HashMap<String, HistoryState>),
-}
-
-impl Default for HistoryState {
-    fn default() -> Self {
-        Self::Null
-    }
 }
 
 impl HistoryState {

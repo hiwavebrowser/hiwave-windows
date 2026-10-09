@@ -26,6 +26,8 @@ import argparse
 import json
 import multiprocessing as mp
 import sys
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
 import time
 from collections import defaultdict
 from dataclasses import dataclass, asdict

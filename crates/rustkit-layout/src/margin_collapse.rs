@@ -155,6 +155,17 @@ pub fn establishes_bfc(style: &ComputedStyle, float: Float) -> bool {
         return true;
     }
 
+    // Tables, cells and captions establish a BFC for their contents
+    // (CSS 2.1 §9.4.1, §17.4)
+    if style.display.is_table()
+        || matches!(
+            style.display,
+            rustkit_css::Display::TableCell | rustkit_css::Display::TableCaption
+        )
+    {
+        return true;
+    }
+
     // Multi-column containers establish a BFC (css-multicol-1 §2)
     if style.column_count.is_some_and(|n| n > 1) {
         return true;

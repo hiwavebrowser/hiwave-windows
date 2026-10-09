@@ -1,0 +1,90 @@
+{
+  "description": "Additive proposed sites 81\u2013100 only (see realsite-top100.json). PROPOSED PIN 2026-10-07.",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "proposed_pin": true,
+  "sites": [
+    {
+      "id": "cargurus",
+      "url": "https://www.cargurus.com/"
+    },
+    {
+      "id": "bringatrailer",
+      "url": "https://bringatrailer.com/"
+    },
+    {
+      "id": "target",
+      "url": "https://www.target.com/"
+    },
+    {
+      "id": "bestbuy",
+      "url": "https://www.bestbuy.com/"
+    },
+    {
+      "id": "costco",
+      "url": "https://www.costco.com/"
+    },
+    {
+      "id": "homedepot",
+      "url": "https://www.homedepot.com/"
+    },
+    {
+      "id": "etsy",
+      "url": "https://www.etsy.com/"
+    },
+    {
+      "id": "nike",
+      "url": "https://www.nike.com/"
+    },
+    {
+      "id": "tiktok",
+      "url": "https://www.tiktok.com/"
+    },
+    {
+      "id": "pinterest",
+      "url": "https://www.pinterest.com/"
+    },
+    {
+      "id": "spotify",
+      "url": "https://www.spotify.com/"
+    },
+    {
+      "id": "twitch",
+      "url": "https://www.twitch.tv/"
+    },
+    {
+      "id": "zillow",
+      "url": "https://www.zillow.com/"
+    },
+    {
+      "id": "expedia",
+      "url": "https://www.expedia.com/"
+    },
+    {
+      "id": "washingtonpost",
+      "url": "https://www.washingtonpost.com/"
+    },
+    {
+      "id": "imdb",
+      "url": "https://www.imdb.com/"
+    },
+    {
+      "id": "duckduckgo",
+      "url": "https://duckduckgo.com/"
+    },
+    {
+      "id": "adobe",
+      "url": "https://www.adobe.com/"
+    },
+    {
+      "id": "discord",
+      "url": "https://discord.com/"
+    },
+    {
+      "id": "wayfair",
+      "url": "https://www.wayfair.com/"
+    }
+  ]
+}

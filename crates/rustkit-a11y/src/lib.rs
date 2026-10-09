@@ -75,7 +75,7 @@ impl Default for AccessibleId {
 // ==================== ARIA Roles ====================
 
 /// ARIA role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Role {
     // Landmark roles
     Banner,
@@ -146,6 +146,7 @@ pub enum Role {
     Table,
 
     // Generic
+    #[default]
     Generic,
     None,
 }
@@ -259,12 +260,6 @@ impl Role {
                 | Role::TextBox
                 | Role::TreeItem
         )
-    }
-}
-
-impl Default for Role {
-    fn default() -> Self {
-        Self::Generic
     }
 }
 

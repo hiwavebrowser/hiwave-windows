@@ -349,6 +349,50 @@ def test_the_two_layout_gaps_stay_named():
         )
 
 
+def test_top_three_buckets_with_owners():
+    """Package Z2-M2: CSS declaration census bounded to top three buckets with owners."""
+    from declaration_census import BUCKETS, bucket_for_property
+
+    # 1. Bucket taxonomy exists with explicit owners
+    check("top three buckets defined", set(BUCKETS.keys()) == {"interactive", "paint", "structure"})
+    for b_id, meta in BUCKETS.items():
+        check(f"bucket {b_id} has title", bool(meta.get("title")))
+        check(f"bucket {b_id} has owner", meta.get("owner") in ("engine", "renderer", "layout"))
+        check(f"bucket {b_id} has properties", len(meta.get("properties", set())) > 0)
+
+    # 2. Every active gap in the gating corpus maps into the top three buckets
+    report = run_census(
+        ENGINE_SOURCE.read_text(encoding="utf-8"),
+        load_registry(include_holdout=False),
+        load_ledger(),
+    )
+    gaps = report["gaps"]
+    check("census measured gaps", len(gaps) == 13)
+
+    gap_props = {g["property"] for g in gaps}
+    unmapped = [p for p in gap_props if bucket_for_property(p)[0] not in BUCKETS]
+    check("all gaps belong to top three buckets", len(unmapped) == 0, str(unmapped))
+
+    # 3. Top three buckets account for 100% of unhandled declarations
+    top_buckets = report.get("top_three_buckets", [])
+    check("top three buckets generated in report", len(top_buckets) == 3)
+
+    total_gap_decls = sum(g["declarations"] for g in gaps)
+    top_decls = sum(b["declarations"] for b in top_buckets)
+    check(
+        "top three buckets cover 100% of gap declarations",
+        top_decls == total_gap_decls,
+        f"{top_decls} vs {total_gap_decls}",
+    )
+
+    # 4. Check bucket ranking: interactive (29) > paint (12) > structure (4)
+    b_order = [b["key"] for b in top_buckets]
+    check("bucket ranking order is interactive, paint, structure", b_order == ["interactive", "paint", "structure"], str(b_order))
+    check("bucket interactive has 29 declarations", top_buckets[0]["declarations"] == 29)
+    check("bucket paint has 12 declarations", top_buckets[1]["declarations"] == 12)
+    check("bucket structure has 4 declarations", top_buckets[2]["declarations"] == 4)
+
+
 def main():
     print(__doc__.strip().splitlines()[0])
     for fn in (
@@ -362,6 +406,7 @@ def main():
         test_ledger_ratchet,
         test_committed_ledger_holds_on_the_real_trees,
         test_the_two_layout_gaps_stay_named,
+        test_top_three_buckets_with_owners,
     ):
         print(f"\n{fn.__name__}")
         fn()
@@ -375,3 +420,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

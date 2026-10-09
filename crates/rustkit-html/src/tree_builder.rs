@@ -351,12 +351,7 @@ impl<S: TreeSink> TreeBuilder<S> {
     /// Find the index of the last table element in the stack.
     #[allow(dead_code)]
     fn find_last_table_index(&self) -> Option<usize> {
-        for i in (0..self.open_elements.len()).rev() {
-            if self.open_elements[i].0 == "table" {
-                return Some(i);
-            }
-        }
-        None
+        (0..self.open_elements.len()).rev().find(|&i| self.open_elements[i].0 == "table")
     }
 
     /// Get the foster parent location (element before table, or table's parent).
@@ -424,6 +419,46 @@ impl<S: TreeSink> TreeBuilder<S> {
             }
         }
         self.mode = InsertionMode::InRow;
+    }
+
+    /// Pop elements, closing each in the sink, until a `tag_name` element
+    /// has been popped. `pop_until` only pops the builder's stack, which
+    /// leaves the sink's stack (and so the sink's insertion point) behind.
+    fn pop_until_closed(&mut self, tag_name: &str) {
+        while let Some((name, _)) = self.open_elements.pop() {
+            self.sink.end_element(name.clone());
+            if name == tag_name {
+                break;
+            }
+        }
+    }
+
+    /// The table to foster-parent before, when foster parenting is enabled
+    /// and the current node is a table, tbody, tfoot, thead or tr
+    /// (§13.2.6.1, "appropriate place for inserting a node").
+    fn foster_parent_table(&self) -> Option<S::NodeId> {
+        if !self.foster_parenting
+            || !matches!(
+                self.current_node_name(),
+                Some("table" | "tbody" | "tfoot" | "thead" | "tr")
+            )
+        {
+            return None;
+        }
+        let table_idx = self.find_last_table_index()?;
+        let table = self.open_elements[table_idx].1.clone();
+        // A table with no parent: leave the node where it is.
+        self.sink.get_parent(table.clone())?;
+        Some(table)
+    }
+
+    /// Move a just-inserted element to the foster parent location. The
+    /// element stays on the sink's stack, so its children follow it.
+    fn foster_parent_element(&mut self, table: Option<S::NodeId>, node: &S::NodeId) {
+        if let Some(table) = table {
+            self.sink.remove_from_parent(node.clone());
+            self.sink.foster_parent(table, node.clone());
+        }
     }
 
     // ==================== ADOPTION AGENCY ALGORITHM ====================
@@ -811,24 +846,24 @@ impl<S: TreeSink> TreeBuilder<S> {
         }
 
         // HTML 4.01 Transitional/Frameset without system identifier = quirks
-        if public_lower.contains("html 4.01") && system_id.is_empty() {
-            if public_lower.contains("transitional") || public_lower.contains("frameset") {
-                return QuirksMode::Quirks;
-            }
+        if public_lower.contains("html 4.01") && system_id.is_empty()
+            && (public_lower.contains("transitional") || public_lower.contains("frameset"))
+        {
+            return QuirksMode::Quirks;
         }
 
         // XHTML 1.0 Transitional/Frameset = limited quirks
-        if public_lower.contains("xhtml 1.0") {
-            if public_lower.contains("transitional") || public_lower.contains("frameset") {
-                return QuirksMode::LimitedQuirks;
-            }
+        if public_lower.contains("xhtml 1.0")
+            && (public_lower.contains("transitional") || public_lower.contains("frameset"))
+        {
+            return QuirksMode::LimitedQuirks;
         }
 
         // HTML 4.01 Transitional/Frameset with system identifier = limited quirks
-        if public_lower.contains("html 4.01") && !system_id.is_empty() {
-            if public_lower.contains("transitional") || public_lower.contains("frameset") {
-                return QuirksMode::LimitedQuirks;
-            }
+        if public_lower.contains("html 4.01") && !system_id.is_empty()
+            && (public_lower.contains("transitional") || public_lower.contains("frameset"))
+        {
+            return QuirksMode::LimitedQuirks;
         }
 
         // Default to no quirks for valid doctypes
@@ -1012,11 +1047,13 @@ impl<S: TreeSink> TreeBuilder<S> {
                 // Handle table specially - switch to InTable mode
                 if name == "table" {
                     self.close_p_element();
+                    let foster = self.foster_parent_table();
                     let node_id = self.sink.start_element(
                         name.clone(),
                         attrs.into_iter().collect(),
                         false,
                     );
+                    self.foster_parent_element(foster, &node_id);
                     self.open_elements.push((name, node_id));
                     // Push marker when entering table (scope boundary)
                     self.push_formatting_marker();
@@ -1032,7 +1069,9 @@ impl<S: TreeSink> TreeBuilder<S> {
                     }
                     self.reconstruct_active_formatting();
                     let attrs_vec: Vec<(String, String)> = attrs.into_iter().collect();
+                    let foster = self.foster_parent_table();
                     let node_id = self.sink.start_element(name.clone(), attrs_vec, false);
+                    self.foster_parent_element(foster, &node_id);
                     self.open_elements.push((name, node_id));
                     self.push_formatting_marker();
                     return Ok(());
@@ -1046,7 +1085,9 @@ impl<S: TreeSink> TreeBuilder<S> {
                     }
                     self.reconstruct_active_formatting();
                     let attrs_vec: Vec<(String, String)> = attrs.into_iter().collect();
+                    let foster = self.foster_parent_table();
                     let node_id = self.sink.start_element(name.clone(), attrs_vec.clone(), false);
+                    self.foster_parent_element(foster, &node_id);
                     self.open_elements.push((name.clone(), node_id.clone()));
                     self.push_formatting_element(name, attrs_vec, node_id);
                     return Ok(());
@@ -1064,11 +1105,13 @@ impl<S: TreeSink> TreeBuilder<S> {
 
                 let is_void = VOID_ELEMENTS.contains(&name.as_str());
                 let attrs_vec: Vec<(String, String)> = attrs.into_iter().collect();
+                let foster = self.foster_parent_table();
                 let node_id = self.sink.start_element(
                     name.clone(),
                     attrs_vec.clone(),
                     self_closing || is_void,
                 );
+                self.foster_parent_element(foster, &node_id);
 
                 if !is_void && !self_closing {
                     self.open_elements.push((name.clone(), node_id.clone()));
@@ -1132,15 +1175,35 @@ impl<S: TreeSink> TreeBuilder<S> {
     // ==================== TABLE MODE HANDLERS ====================
 
     fn handle_in_table(&mut self, token: Token) -> ParseResult<()> {
+        // Text buffered inside a fostered element (the only way text is
+        // buffered in this mode) belongs there; write it out before this
+        // token pops anything.
+        if !matches!(token, Token::Character(_)) {
+            self.flush_text();
+        }
         match &token {
-            Token::Character(ch) if ch.is_whitespace() => {
-                // Switch to InTableText mode to accumulate whitespace
-                self.original_mode = Some(InsertionMode::InTable);
+            // §13.2.6.4.9: a character token while the current node is a
+            // table, tbody, tfoot, thead or tr starts "in table text". The
+            // original insertion mode is the mode that dispatched here: "in
+            // table body" and "in row" fall through to this handler, and
+            // returning to "in table" instead made the next <tr> open a new
+            // tbody (#621).
+            Token::Character(ch)
+                if matches!(
+                    self.current_node_name(),
+                    Some("table" | "tbody" | "tfoot" | "thead" | "tr")
+                ) =>
+            {
+                self.original_mode = Some(self.mode);
                 self.mode = InsertionMode::InTableText;
-                self.pending_table_chars.push(*ch);
+                if *ch != '\0' {
+                    self.pending_table_chars.push(*ch);
+                }
             }
             Token::Character(_) => {
-                // Non-whitespace character - foster parent it
+                // Anything else: "in body" with foster parenting enabled.
+                // The current node is not a table element here (e.g. a
+                // fostered <div>), so the text goes into it.
                 self.foster_parenting = true;
                 self.handle_in_body(token)?;
                 self.foster_parenting = false;
@@ -1207,10 +1270,23 @@ impl<S: TreeSink> TreeBuilder<S> {
                     "table" => {
                         // Parse error - close current table and reprocess
                         if self.has_element_in_table_scope("table") {
-                            self.pop_until("table");
+                            self.pop_until_closed("table");
                             self.reset_insertion_mode();
                             self.process_token(token)?;
                         }
+                    }
+                    "style" | "script" | "template" => {
+                        // §13.2.6.4.9: processed using the "in head" rules,
+                        // i.e. inserted in place, not foster-parented.
+                        self.handle_in_body(token)?;
+                    }
+                    "input"
+                        if attrs
+                            .iter()
+                            .any(|(k, v)| k == "type" && v.eq_ignore_ascii_case("hidden")) =>
+                    {
+                        // §13.2.6.4.9: a hidden input is inserted in place.
+                        self.handle_in_body(token)?;
                     }
                     _ => {
                         // Anything else - foster parent
@@ -1224,8 +1300,9 @@ impl<S: TreeSink> TreeBuilder<S> {
                 match name.as_str() {
                     "table" => {
                         if self.has_element_in_table_scope("table") {
-                            self.pop_until("table");
-                            self.sink.end_element("table".to_string());
+                            // Close everything above the table in the sink
+                            // too (e.g. a fostered element left open).
+                            self.pop_until_closed("table");
                             self.reset_insertion_mode();
                         }
                     }
@@ -1261,16 +1338,22 @@ impl<S: TreeSink> TreeBuilder<S> {
             _ => {
                 // Process pending characters
                 let chars: Vec<char> = std::mem::take(&mut self.pending_table_chars);
-                let has_non_whitespace = chars.iter().any(|c| !c.is_whitespace());
+                // "ASCII whitespace": tab, LF, FF, CR, space.
+                let has_non_whitespace = chars.iter().any(|c| !c.is_ascii_whitespace());
 
                 if has_non_whitespace {
-                    // Foster parent all characters
-                    self.foster_parenting = true;
-                    for ch in chars {
-                        self.text_buffer.push(ch);
-                    }
+                    // §13.2.6.4.10: foster-parent all of them, before the
+                    // table. (Reconstructing active formatting elements
+                    // first, as "in body" would, is not done here.)
                     self.flush_text();
+                    self.foster_parenting = true;
+                    let table = self.foster_parent_table();
                     self.foster_parenting = false;
+                    let text: String = chars.into_iter().collect();
+                    match table {
+                        Some(table) => self.sink.foster_parent_text(table, text),
+                        None => self.sink.text(text),
+                    }
                 } else {
                     // Insert whitespace normally
                     for ch in chars {
@@ -1391,6 +1474,12 @@ impl<S: TreeSink> TreeBuilder<S> {
     }
 
     fn handle_in_table_body(&mut self, token: Token) -> ParseResult<()> {
+        // Text buffered inside a fostered element (the only way text is
+        // buffered in this mode) belongs there; write it out before this
+        // token pops anything.
+        if !matches!(token, Token::Character(_)) {
+            self.flush_text();
+        }
         match &token {
             Token::StartTag { name, attrs, .. } if name == "tr" => {
                 self.clear_stack_to_table_body_context();
@@ -1462,6 +1551,12 @@ impl<S: TreeSink> TreeBuilder<S> {
     }
 
     fn handle_in_row(&mut self, token: Token) -> ParseResult<()> {
+        // Text buffered inside a fostered element (the only way text is
+        // buffered in this mode) belongs there; write it out before this
+        // token pops anything.
+        if !matches!(token, Token::Character(_)) {
+            self.flush_text();
+        }
         match &token {
             Token::StartTag { name, attrs, .. } if TABLE_CELL_ELEMENTS.contains(&name.as_str()) => {
                 self.clear_stack_to_table_row_context();

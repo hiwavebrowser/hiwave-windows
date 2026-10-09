@@ -43,7 +43,7 @@
 use bytemuck::{Pod, Zeroable};
 use hashbrown::HashMap;
 use rustkit_css::Color;
-use rustkit_layout::{BackgroundRepeat, BackgroundSize, DisplayCommand, Rect};
+use rustkit_layout::{BackgroundRepeat, BackgroundSize, DisplayCommand, ObjectFit, Rect};
 use std::sync::Arc;
 use thiserror::Error;
 use wgpu::util::DeviceExt;
@@ -168,6 +168,27 @@ pub struct CachedTexture {
     pub bind_group: wgpu::BindGroup,
     pub width: u32,
     pub height: u32,
+}
+
+/// The screen rect and texture coordinates `[u0, v0, u1, v1]` a replaced
+/// image paints with: `object-fit`/`object-position` (CSS Images 3 §5.5,
+/// §5.6) resolved against the texture's intrinsic size, clipped to the
+/// content box. `cover` therefore crops by UV instead of squashing the
+/// whole texture into the box.
+pub(crate) fn image_paint_quad(
+    content_box: Rect,
+    natural: (u32, u32),
+    object_fit: ObjectFit,
+    object_position: (f32, f32),
+    object_position_offset: (f32, f32),
+) -> Option<(Rect, [f32; 4])> {
+    object_fit.paint_quad(
+        content_box,
+        natural.0 as f32,
+        natural.1 as f32,
+        object_position,
+        object_position_offset,
+    )
 }
 
 /// Shrink an RGBA image so neither side exceeds `limit`, keeping its aspect.
@@ -1338,6 +1359,32 @@ impl Renderer {
         commands: &[DisplayCommand],
         target: &wgpu::TextureView,
     ) -> Result<(), RendererError> {
+        let resets = self.glyph_cache.resets();
+        self.execute_once(commands, target)?;
+        if self.glyph_cache.resets() == resets {
+            return Ok(());
+        }
+        // The glyph atlas filled up and started over while this frame was
+        // being built. Text batched before that samples the glyphs written
+        // over its own since: "static" over a page opened after others.
+        // Build the frame again: every glyph it needs is now placed after
+        // the reset, as long as one frame's glyphs fit in the atlas.
+        let resets = self.glyph_cache.resets();
+        self.execute_once(commands, target)?;
+        if self.glyph_cache.resets() != resets {
+            tracing::warn!(
+                commands = commands.len(),
+                "One frame's glyphs do not fit in the glyph atlas: some of its text is drawn wrong"
+            );
+        }
+        Ok(())
+    }
+
+    fn execute_once(
+        &mut self,
+        commands: &[DisplayCommand],
+        target: &wgpu::TextureView,
+    ) -> Result<(), RendererError> {
         // Clear batches
         self.color_vertices.clear();
         self.color_indices.clear();
@@ -2110,12 +2157,21 @@ impl Renderer {
             DisplayCommand::Image {
                 url,
                 src_rect: _,
-                dest_rect,
-                object_fit: _,
+                dest_rect: _,
+                object_fit,
+                content_box,
+                object_position,
+                object_position_offset,
                 opacity: _,
                 current_color: _,
             } => {
-                self.draw_image(url, *dest_rect);
+                self.draw_image(
+                    url,
+                    *content_box,
+                    *object_fit,
+                    *object_position,
+                    *object_position_offset,
+                );
             }
 
             DisplayCommand::BackgroundImage {
@@ -2123,9 +2179,22 @@ impl Renderer {
                 rect,
                 size,
                 position,
+                offset,
                 repeat,
             } => {
-                self.draw_background_image(url, *rect, size, *position, repeat);
+                self.draw_background_image(url, *rect, size, *position, *offset, repeat);
+            }
+
+            DisplayCommand::MaskedColor {
+                color,
+                url,
+                rect,
+                size,
+                position,
+                offset,
+                repeat,
+            } => {
+                self.draw_masked_color(url, *color, *rect, size, *position, *offset, *repeat);
             }
 
             DisplayCommand::BoxShadow {
@@ -5480,41 +5549,65 @@ impl Renderer {
     }
 
     /// Draw an image.
-    fn draw_image(&mut self, url: &str, rect: Rect) {
-        if self.texture_cache.contains(url) {
-            // `overflow: hidden` clips replaced content like everything else.
-            for ([[x0, y0], [x1, y1], [x2, y2], [x3, y3]], tex, coverage) in
-                self.textured_pieces(rect, [0.0, 0.0, 1.0, 1.0])
-            {
-                let color = [1.0, 1.0, 1.0, coverage];
-                self.push_image_quad(
-                    url,
-                    [
-                        TextureVertex {
-                            position: [x0, y0],
-                            tex_coords: [tex[0], tex[1]],
-                            color,
-                        },
-                        TextureVertex {
-                            position: [x1, y1],
-                            tex_coords: [tex[2], tex[1]],
-                            color,
-                        },
-                        TextureVertex {
-                            position: [x2, y2],
-                            tex_coords: [tex[2], tex[3]],
-                            color,
-                        },
-                        TextureVertex {
-                            position: [x3, y3],
-                            tex_coords: [tex[0], tex[3]],
-                            color,
-                        },
-                    ],
-                );
-            }
+    /// Draw an `<img>`-style replaced image into its content box, fitted
+    /// per `object-fit`/`object-position` against the texture's intrinsic
+    /// size (layout may only have had a placeholder size).
+    fn draw_image(
+        &mut self,
+        url: &str,
+        content_box: Rect,
+        object_fit: ObjectFit,
+        object_position: (f32, f32),
+        object_position_offset: (f32, f32),
+    ) {
+        let Some(natural) = self
+            .texture_cache
+            .get(url)
+            .map(|cached| (cached.width, cached.height))
+        else {
+            // If image not loaded, skip (async loading handled elsewhere)
+            return;
+        };
+        let Some((rect, uv)) = image_paint_quad(
+            content_box,
+            natural,
+            object_fit,
+            object_position,
+            object_position_offset,
+        ) else {
+            return;
+        };
+        // `overflow: hidden` clips replaced content like everything else.
+        for ([[x0, y0], [x1, y1], [x2, y2], [x3, y3]], tex, coverage) in
+            self.textured_pieces(rect, uv)
+        {
+            let color = [1.0, 1.0, 1.0, coverage];
+            self.push_image_quad(
+                url,
+                [
+                    TextureVertex {
+                        position: [x0, y0],
+                        tex_coords: [tex[0], tex[1]],
+                        color,
+                    },
+                    TextureVertex {
+                        position: [x1, y1],
+                        tex_coords: [tex[2], tex[1]],
+                        color,
+                    },
+                    TextureVertex {
+                        position: [x2, y2],
+                        tex_coords: [tex[2], tex[3]],
+                        color,
+                    },
+                    TextureVertex {
+                        position: [x3, y3],
+                        tex_coords: [tex[0], tex[3]],
+                        color,
+                    },
+                ],
+            );
         }
-        // If image not loaded, skip (async loading handled elsewhere)
     }
 
     /// Append a quad to the image batch, extending the current run when the
@@ -5540,6 +5633,7 @@ impl Renderer {
         container: Rect,
         size: &BackgroundSize,
         position: (f32, f32),
+        offset: (f32, f32),
         repeat: &BackgroundRepeat,
     ) {
         // Get the texture to retrieve image dimensions
@@ -5554,45 +5648,79 @@ impl Renderer {
             return;
         }
 
-        for tile in rustkit_layout::background_tiles(container, size, position, *repeat, image_width, image_height) {
-            self.draw_background_image_tile(url, tile, container);
+        for (draw_rect, tex) in background_tile_quads(
+            container,
+            size,
+            position,
+            offset,
+            *repeat,
+            image_width,
+            image_height,
+        ) {
+            self.draw_background_image_tile(url, draw_rect, tex, [1.0, 1.0, 1.0, 1.0]);
         }
     }
 
-    /// Draw a single tile of a background image, clipped to the container bounds.
-    fn draw_background_image_tile(&mut self, url: &str, tile_rect: Rect, container: Rect) {
+    /// Paint `color` through the alpha of the mask image at `url`, tiled in
+    /// `container` like a background (CSS Masking 1 §6). The mask texture
+    /// is the image with its colour channels made white (see
+    /// [`mask_alpha_rgba`]): the image pipeline multiplies texel by vertex
+    /// colour, so a white texel of alpha `m` paints `color` at alpha
+    /// `color.a * m`. A vector (SVG) mask never reaches here: the engine
+    /// splices it as recoloured commands.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_masked_color(
+        &mut self,
+        url: &str,
+        color: Color,
+        container: Rect,
+        size: &BackgroundSize,
+        position: (f32, f32),
+        offset: (f32, f32),
+        repeat: BackgroundRepeat,
+    ) {
+        let key = mask_texture_key(url);
+        let (image_width, image_height) = match self.texture_cache.get(&key) {
+            Some(cached) => (cached.width as f32, cached.height as f32),
+            // Not loaded (or not decodable): nothing paints, as Chrome
+            // paints nothing through a mask image that has not loaded.
+            None => return,
+        };
+        if image_width == 0.0 || image_height == 0.0 {
+            return;
+        }
+        let tint = [
+            color.r as f32 / 255.0,
+            color.g as f32 / 255.0,
+            color.b as f32 / 255.0,
+            color.a,
+        ];
+        for (draw_rect, tex) in background_tile_quads(
+            container,
+            size,
+            position,
+            offset,
+            repeat,
+            image_width,
+            image_height,
+        ) {
+            self.draw_background_image_tile(&key, draw_rect, tex, tint);
+        }
+    }
+
+    /// Draw one tile of a background (or mask) image, already cut to its
+    /// container: `draw_rect` with texture coordinates `tex`, every texel
+    /// multiplied by `tint`.
+    fn draw_background_image_tile(&mut self, url: &str, draw_rect: Rect, tex: [f32; 4], tint: [f32; 4]) {
         if !self.texture_cache.contains(url) {
             return;
         }
 
-        // Clip tile to container bounds
-        let clip_left = (container.x - tile_rect.x).max(0.0);
-        let clip_top = (container.y - tile_rect.y).max(0.0);
-        let clip_right = (tile_rect.x + tile_rect.width - container.x - container.width).max(0.0);
-        let clip_bottom = (tile_rect.y + tile_rect.height - container.y - container.height).max(0.0);
-
-        let draw_rect = Rect {
-            x: tile_rect.x + clip_left,
-            y: tile_rect.y + clip_top,
-            width: tile_rect.width - clip_left - clip_right,
-            height: tile_rect.height - clip_top - clip_bottom,
-        };
-
-        if draw_rect.width <= 0.0 || draw_rect.height <= 0.0 {
-            return;
-        }
-
-        // Calculate texture coordinates for the clipped portion
-        let tex_left = clip_left / tile_rect.width;
-        let tex_top = clip_top / tile_rect.height;
-        let tex_right = 1.0 - clip_right / tile_rect.width;
-        let tex_bottom = 1.0 - clip_bottom / tile_rect.height;
-
         // Then the overflow clip on top of the container clip.
         for ([[x0, y0], [x1, y1], [x2, y2], [x3, y3]], [tex_left, tex_top, tex_right, tex_bottom], coverage) in
-            self.textured_pieces(draw_rect, [tex_left, tex_top, tex_right, tex_bottom])
+            self.textured_pieces(draw_rect, tex)
         {
-            let color = [1.0, 1.0, 1.0, coverage];
+            let color = [tint[0], tint[1], tint[2], tint[3] * coverage];
             self.push_image_quad(
                 url,
                 [
@@ -5652,6 +5780,24 @@ impl Renderer {
         Ok(())
     }
     
+    /// Upload a decoded raster image (RGBA) for use as a mask image: it is
+    /// stored under [`mask_texture_key`] with its colour made white and its
+    /// alpha kept (`mask-mode: alpha`, the initial for an image).
+    pub fn upload_mask_image(
+        &mut self,
+        url: &str,
+        width: u32,
+        height: u32,
+        rgba_data: &[u8],
+    ) -> Result<(), RendererError> {
+        self.upload_image(&mask_texture_key(url), width, height, &mask_alpha_rgba(rgba_data))
+    }
+
+    /// Whether the mask texture for `url` is uploaded.
+    pub fn has_mask_image(&self, url: &str) -> bool {
+        self.texture_cache.contains(&mask_texture_key(url))
+    }
+
     /// Check if an image is already uploaded.
     pub fn has_image(&self, url: &str) -> bool {
         self.texture_cache.contains(url)
@@ -6202,6 +6348,61 @@ fn invert_matrix_2d(m: [f32; 6]) -> Option<[f32; 6]> {
     Some([a, b, c, d, -(a * m[4] + c * m[5]), -(b * m[4] + d * m[5])])
 }
 
+/// The texture-cache key a mask image is stored under: the same image
+/// used as a mask and as an ordinary image needs two textures, the mask
+/// one white.
+pub fn mask_texture_key(url: &str) -> String {
+    format!("mask-alpha:{url}")
+}
+
+/// `rgba` (straight alpha, 4 bytes a pixel) as a mask texture: every
+/// colour channel 255, alpha kept. Drawn through the image pipeline
+/// (texel times vertex colour) it paints the vertex colour at the mask's
+/// alpha, which is CSS `mask-mode: alpha`.
+pub fn mask_alpha_rgba(rgba: &[u8]) -> Vec<u8> {
+    rgba.chunks_exact(4).flat_map(|px| [255, 255, 255, px[3]]).collect()
+}
+
+/// The quads a background or mask image paints in `container`: each tile
+/// from [`rustkit_layout::background_tiles`] cut to the container, with
+/// the texture coordinates `[left, top, right, bottom]` of the part kept.
+/// Tiles wholly outside the container are dropped.
+pub fn background_tile_quads(
+    container: Rect,
+    size: &BackgroundSize,
+    position: (f32, f32),
+    offset: (f32, f32),
+    repeat: BackgroundRepeat,
+    image_width: f32,
+    image_height: f32,
+) -> Vec<(Rect, [f32; 4])> {
+    rustkit_layout::background_tiles(container, size, position, offset, repeat, image_width, image_height)
+        .into_iter()
+        .filter_map(|tile| {
+            let clip_left = (container.x - tile.x).max(0.0);
+            let clip_top = (container.y - tile.y).max(0.0);
+            let clip_right = (tile.x + tile.width - container.x - container.width).max(0.0);
+            let clip_bottom = (tile.y + tile.height - container.y - container.height).max(0.0);
+            let draw_rect = Rect {
+                x: tile.x + clip_left,
+                y: tile.y + clip_top,
+                width: tile.width - clip_left - clip_right,
+                height: tile.height - clip_top - clip_bottom,
+            };
+            if draw_rect.width <= 0.0 || draw_rect.height <= 0.0 {
+                return None;
+            }
+            let tex = [
+                clip_left / tile.width,
+                clip_top / tile.height,
+                1.0 - clip_right / tile.width,
+                1.0 - clip_bottom / tile.height,
+            ];
+            Some((draw_rect, tex))
+        })
+        .collect()
+}
+
 /// The clip entry a `PushClip`/`PushClipRounded` issued under transform `m`
 /// produces on top of `current`. The command's `rect` is in document space;
 /// the entry is in screen space, so a clip and the quads drawn under it are
@@ -6657,7 +6858,7 @@ fn clip_quad_to_rounded(
     }
 
     let mut out = Vec::new();
-    let mut emit_rows = |out: &mut Vec<(Rect, f32)>, from: f32, to: f32| {
+    let emit_rows = |out: &mut Vec<(Rect, f32)>, from: f32, to: f32| {
         let mut y = from;
         while y < to {
             let height = 1.0_f32.min(to - y);
@@ -6973,7 +7174,7 @@ mod tests {
     #[test]
     fn an_oversized_image_is_downscaled_to_the_limit_keeping_its_aspect() {
         // 20x10 solid red, limit 8: longest side becomes 8, the other 4.
-        let data = vec![255u8, 0, 0, 255].repeat(20 * 10);
+        let data = [255u8, 0, 0, 255].repeat(20 * 10);
         let (w, h, px) = super::downscale_rgba_to_fit(20, 10, &data, 8);
         assert_eq!((w, h), (8, 4));
         assert_eq!(px.len(), 8 * 4 * 4);
@@ -6987,6 +7188,44 @@ mod tests {
         let (w, h, px) = super::downscale_rgba_to_fit(2, 1, &data, 1);
         assert_eq!((w, h), (1, 1));
         assert_eq!(px, vec![128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn a_cover_image_is_cropped_by_uv_not_squashed_into_its_box() {
+        // eBay's hero: a 2.9:1 texture in a 1.4:1 box. Painting the whole
+        // texture ([0, 0, 1, 1]) into the box squashed it.
+        let (rect, uv) = super::image_paint_quad(
+            super::Rect::new(0.0, 0.0, 140.0, 100.0),
+            (290, 100),
+            super::ObjectFit::Cover,
+            (0.5, 0.5),
+            (0.0, 0.0),
+        )
+        .expect("a visible quad");
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (0.0, 0.0, 140.0, 100.0)
+        );
+        let shown = ((uv[2] - uv[0]) * 290.0) / ((uv[3] - uv[1]) * 100.0);
+        assert!((shown - 1.4).abs() < 1e-3, "shown aspect {shown}, uv {uv:?}");
+        assert!((uv[0] - 75.0 / 290.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_fill_image_still_paints_the_whole_texture_over_the_box() {
+        let (rect, uv) = super::image_paint_quad(
+            super::Rect::new(5.0, 6.0, 140.0, 100.0),
+            (290, 100),
+            super::ObjectFit::Fill,
+            (0.5, 0.5),
+            (0.0, 0.0),
+        )
+        .expect("a visible quad");
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (5.0, 6.0, 140.0, 100.0)
+        );
+        assert_eq!(uv, [0.0, 0.0, 1.0, 1.0]);
     }
 
     #[test]
@@ -9105,5 +9344,87 @@ mod shaped_run_windows_paint_tests {
         let mut unknown = key(&run, run.glyphs[0].glyph_id);
         unknown.face ^= 0x5a5a;
         assert!(rasterize_run_glyph(&unknown, 24.0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod mask_layer_tests {
+    //! The GPU-free half of `DisplayCommand::MaskedColor`: which texels the
+    //! mask texture holds and where its tiles land. The draw itself needs
+    //! a device and is covered by reading.
+    use super::*;
+
+    fn xywh(r: Rect) -> (f32, f32, f32, f32) {
+        (r.x, r.y, r.width, r.height)
+    }
+
+    #[test]
+    fn a_mask_texture_is_white_with_the_images_alpha() {
+        let rgba = [0, 0, 0, 255, 10, 200, 30, 128, 255, 0, 0, 0];
+        assert_eq!(
+            mask_alpha_rgba(&rgba),
+            vec![255, 255, 255, 255, 255, 255, 255, 128, 255, 255, 255, 0]
+        );
+    }
+
+    #[test]
+    fn the_mask_texture_has_its_own_key() {
+        assert_ne!(mask_texture_key("a.png"), "a.png");
+        assert_eq!(mask_texture_key("a.png"), mask_texture_key("a.png"));
+    }
+
+    #[test]
+    fn the_repro_mask_contained_in_its_box_is_one_full_quad() {
+        // 10x10 mask, `mask-size: contain` in the repro's 50x50 box at (8, 8).
+        let quads = background_tile_quads(
+            Rect::new(8.0, 8.0, 50.0, 50.0),
+            &BackgroundSize::Contain,
+            (0.0, 0.0),
+            (0.0, 0.0),
+            BackgroundRepeat::NoRepeat,
+            10.0,
+            10.0,
+        );
+        let quads: Vec<_> = quads.into_iter().map(|(r, t)| (xywh(r), t)).collect();
+        assert_eq!(quads, vec![((8.0, 8.0, 50.0, 50.0), [0.0, 0.0, 1.0, 1.0])]);
+    }
+
+    #[test]
+    fn a_repeated_mask_tiles_and_the_last_tile_is_cut_to_the_box() {
+        // A 20x20 mask tiled across 50x20: tiles at 0, 20, and half a tile at 40.
+        let quads = background_tile_quads(
+            Rect::new(0.0, 0.0, 50.0, 20.0),
+            &BackgroundSize::Auto,
+            (0.0, 0.0),
+            (0.0, 0.0),
+            BackgroundRepeat::RepeatX,
+            20.0,
+            20.0,
+        );
+        let quads: Vec<_> = quads.into_iter().map(|(r, t)| (xywh(r), t)).collect();
+        assert_eq!(
+            quads,
+            vec![
+                ((0.0, 0.0, 20.0, 20.0), [0.0, 0.0, 1.0, 1.0]),
+                ((20.0, 0.0, 20.0, 20.0), [0.0, 0.0, 1.0, 1.0]),
+                ((40.0, 0.0, 10.0, 20.0), [0.0, 0.0, 0.5, 1.0]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_mask_offset_past_the_box_edge_keeps_only_the_inside_part() {
+        // 16x16 at -4px, -8px: the top-left is cut away.
+        let quads = background_tile_quads(
+            Rect::new(0.0, 0.0, 16.0, 16.0),
+            &BackgroundSize::Auto,
+            (0.0, 0.0),
+            (-4.0, -8.0),
+            BackgroundRepeat::NoRepeat,
+            16.0,
+            16.0,
+        );
+        let quads: Vec<_> = quads.into_iter().map(|(r, t)| (xywh(r), t)).collect();
+        assert_eq!(quads, vec![((0.0, 0.0, 12.0, 8.0), [0.25, 0.5, 1.0, 1.0])]);
     }
 }

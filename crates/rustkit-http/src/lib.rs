@@ -135,22 +135,57 @@ pub fn default_user_agent() -> String {
 /// #355 already removed the second (per-connection) load site.
 #[cfg(not(feature = "native-tls"))]
 fn platform_roots() -> Result<Arc<tokio_rustls::rustls::RootCertStore>, HttpError> {
-    static ROOTS: std::sync::OnceLock<Arc<tokio_rustls::rustls::RootCertStore>> =
-        std::sync::OnceLock::new();
-    let roots = ROOTS.get_or_init(|| {
+    static ROOTS: RootsCache = std::sync::Mutex::new(None);
+    roots_cached(&ROOTS, || {
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
-        for cert in rustls_native_certs::load_native_certs().certs {
+        let loaded = rustls_native_certs::load_native_certs();
+        let mut rejected = 0usize;
+        for cert in loaded.certs {
             // A single unparseable platform cert must not kill the store.
-            let _ = roots.add(cert);
+            if roots.add(cert).is_err() {
+                rejected += 1;
+            }
         }
-        Arc::new(roots)
-    });
-    if roots.is_empty() {
-        return Err(HttpError::TlsError(
-            "no usable platform root certificates".into(),
-        ));
+        let mut diagnostics = String::new();
+        if !loaded.errors.is_empty() || rejected > 0 {
+            diagnostics = format!(
+                "{} load errors, {} rejected certs, accepted {}",
+                loaded.errors.len(),
+                rejected,
+                roots.len()
+            );
+            if let Some(first) = loaded.errors.first() {
+                diagnostics.push_str(&format!(", first error: {first}"));
+            }
+            warn!(target: "rustkit_http::roots", "platform root load: {diagnostics}");
+        }
+        (roots, diagnostics)
+    })
+}
+
+type RootsCache = std::sync::Mutex<Option<Arc<tokio_rustls::rustls::RootCertStore>>>;
+
+fn roots_cached(
+    cache: &RootsCache,
+    load: impl FnOnce() -> (tokio_rustls::rustls::RootCertStore, String),
+) -> Result<Arc<tokio_rustls::rustls::RootCertStore>, HttpError> {
+    let mut slot = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(roots) = slot.as_ref() {
+        return Ok(roots.clone());
     }
-    Ok(roots.clone())
+    // Only a usable store is cached: a transient platform failure (keychain
+    // busy under load) must not turn every later handshake into an error.
+    let (roots, diagnostics) = load();
+    let roots = Arc::new(roots);
+    if roots.is_empty() {
+        return Err(HttpError::TlsError(if diagnostics.is_empty() {
+            "no usable platform root certificates".into()
+        } else {
+            format!("no usable platform root certificates ({diagnostics})")
+        }));
+    }
+    *slot = Some(roots.clone());
+    Ok(roots)
 }
 
 /// ALPN outcome of a TLS handshake.
@@ -497,45 +532,7 @@ impl Client {
             .version(http::Version::HTTP_2);
 
         // Browser-shaped known set, minus h2-illegal connection headers.
-        const ORDERED_H2: &[(&str, Option<&str>)] = &[
-            (
-                "accept",
-                Some(
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,\
-image/avif,image/webp,*/*;q=0.8",
-                ),
-            ),
-            ("accept-language", None),
-            ("accept-encoding", Some(ACCEPT_ENCODING)),
-            ("upgrade-insecure-requests", Some("1")),
-            ("sec-fetch-dest", Some("document")),
-            ("sec-fetch-mode", Some("navigate")),
-            ("sec-fetch-site", Some("none")),
-            ("sec-fetch-user", Some("?1")),
-            ("referer", None),
-            ("cookie", None),
-        ];
-        const H2_ILLEGAL: &[&str] =
-            &["connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "host"];
-
-        request = request.header("user-agent", &self.config.user_agent);
-        let mut written: Vec<&str> = vec![];
-        for (name, default) in ORDERED_H2 {
-            let value = headers
-                .get(*name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-                .or_else(|| default.map(str::to_string));
-            if let Some(v) = value {
-                request = request.header(*name, v);
-                written.push(name);
-            }
-        }
-        for (name, value) in headers.iter() {
-            let n = name.as_str();
-            if written.contains(&n) || H2_ILLEGAL.contains(&n) || n == "user-agent" {
-                continue;
-            }
+        for (name, value) in h2_request_headers(&self.config.user_agent, headers) {
             request = request.header(name, value);
         }
 
@@ -637,7 +634,8 @@ image/avif,image/webp,*/*;q=0.8",
         // first, remaining caller headers after, all in canonical casing.
         let mut request = Vec::new();
         writeln!(request, "{} {} HTTP/1.1\r", method, path)?;
-        writeln!(request, "Host: {}\r", host)?;
+        let host_header = headers.get("host").and_then(|v| v.to_str().ok()).unwrap_or(host);
+        writeln!(request, "Host: {}\r", host_header)?;
         writeln!(request, "Connection: keep-alive\r")?;
         writeln!(request, "User-Agent: {}\r", self.config.user_agent)?;
 
@@ -691,7 +689,7 @@ image/avif,image/webp,*/*;q=0.8",
 
         // Remaining caller headers, canonical casing, after the known set.
         for (name, value) in headers.iter() {
-            if written.contains(&name.as_str()) {
+            if name.as_str() == "host" || written.contains(&name.as_str()) {
                 continue;
             }
             if let Ok(v) = value.to_str() {
@@ -855,6 +853,75 @@ fn parse_status_line(line: &str) -> Result<(Version, StatusCode), HttpError> {
 /// The `Accept-Encoding` sent on requests: what `decode_content_encoding`
 /// can undo.
 const ACCEPT_ENCODING: &str = "gzip, deflate";
+
+/// Connection-specific header fields (RFC 9113 §8.1.2) plus `host`
+/// (carried by `:authority`). Must not appear on an HTTP/2 request.
+fn is_h2_illegal_request_header(name: &str) -> bool {
+    matches!(
+        name,
+        "connection"
+            | "keep-alive"
+            | "proxy-connection"
+            | "transfer-encoding"
+            | "upgrade"
+            | "host"
+    )
+}
+
+/// Header pairs `send_request_h2` writes onto the request, in emission order.
+/// Caller headers that are connection-specific, already emitted, or the
+/// user-agent (set from config) are dropped.
+fn h2_request_headers(user_agent: &str, headers: &HeaderMap) -> Vec<(HeaderName, HeaderValue)> {
+    const ORDERED_H2: &[(&str, Option<&str>)] = &[
+        (
+            "accept",
+            Some(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,\
+image/avif,image/webp,*/*;q=0.8",
+            ),
+        ),
+        ("accept-language", None),
+        ("accept-encoding", Some(ACCEPT_ENCODING)),
+        ("upgrade-insecure-requests", Some("1")),
+        ("sec-fetch-dest", Some("document")),
+        ("sec-fetch-mode", Some("navigate")),
+        ("sec-fetch-site", Some("none")),
+        ("sec-fetch-user", Some("?1")),
+        ("referer", None),
+        ("cookie", None),
+    ];
+
+    let mut out = Vec::new();
+    out.push((
+        HeaderName::from_static("user-agent"),
+        HeaderValue::from_str(user_agent).unwrap_or_else(|_| HeaderValue::from_static("")),
+    ));
+    let mut written: Vec<&str> = vec![];
+    for (name, default) in ORDERED_H2 {
+        // Same as before the extract: a non-UTF-8 caller value falls through
+        // to the default (or is omitted when there is none).
+        let value = headers
+            .get(*name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .or_else(|| default.map(str::to_string));
+        if let Some(v) = value {
+            out.push((
+                HeaderName::from_static(*name),
+                HeaderValue::from_str(&v).unwrap_or_else(|_| HeaderValue::from_static("")),
+            ));
+            written.push(name);
+        }
+    }
+    for (name, value) in headers.iter() {
+        let n = name.as_str();
+        if written.contains(&n) || is_h2_illegal_request_header(n) || n == "user-agent" {
+            continue;
+        }
+        out.push((name.clone(), value.clone()));
+    }
+    out
+}
 
 /// Undo the response's `Content-Encoding`, so callers always see the
 /// resource's bytes. A decoded body drops `Content-Encoding` and
@@ -1214,7 +1281,7 @@ pub mod blocking {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|e| HttpError::IoError(io::Error::new(io::ErrorKind::Other, e)))?;
+                .map_err(|e| HttpError::IoError(io::Error::other(e)))?;
 
             let inner = super::Client::with_config(self.config)?;
 
@@ -1228,6 +1295,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn h2_request_headers_strip_connection_specific_fields() {
+        // RFC 9113 §8.1.2: these are illegal on h2. Before the extract they
+        // lived only inside `send_request_h2`, so a regression could only be
+        // caught by a live h2 negotiation.
+        let mut headers = HeaderMap::new();
+        headers.insert("connection", HeaderValue::from_static("keep-alive"));
+        headers.insert("keep-alive", HeaderValue::from_static("timeout=5"));
+        headers.insert("proxy-connection", HeaderValue::from_static("close"));
+        headers.insert("transfer-encoding", HeaderValue::from_static("chunked"));
+        headers.insert("upgrade", HeaderValue::from_static("h2c"));
+        headers.insert("host", HeaderValue::from_static("evil.example"));
+        headers.insert("x-custom", HeaderValue::from_static("ok"));
+        headers.insert("referer", HeaderValue::from_static("https://doc.example/p"));
+
+        let pairs = h2_request_headers("HiWave/test", &headers);
+        let names: Vec<&str> = pairs.iter().map(|(n, _)| n.as_str()).collect();
+
+        for illegal in [
+            "connection",
+            "keep-alive",
+            "proxy-connection",
+            "transfer-encoding",
+            "upgrade",
+            "host",
+        ] {
+            assert!(
+                !names.contains(&illegal),
+                "{illegal} must not appear on an h2 request: {names:?}"
+            );
+            assert!(is_h2_illegal_request_header(illegal));
+        }
+
+        assert_eq!(names[0], "user-agent");
+        assert_eq!(pairs[0].1.to_str().unwrap(), "HiWave/test");
+        assert!(names.contains(&"referer"));
+        assert!(names.contains(&"x-custom"));
+        assert!(names.contains(&"accept-encoding"));
+        assert!(!is_h2_illegal_request_header("referer"));
+        assert!(!is_h2_illegal_request_header("x-custom"));
+    }
+
+    #[test]
     fn test_parse_status_line() {
         let (version, status) = parse_status_line("HTTP/1.1 200 OK\r\n").unwrap();
         assert_eq!(version, Version::HTTP_11);
@@ -1236,6 +1345,56 @@ mod tests {
         let (version, status) = parse_status_line("HTTP/1.0 404 Not Found").unwrap();
         assert_eq!(version, Version::HTTP_10);
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn an_empty_platform_root_load_is_not_cached_for_the_life_of_the_process() {
+        use tokio_rustls::rustls::pki_types::{Der, TrustAnchor};
+        use tokio_rustls::rustls::RootCertStore;
+        let one_anchor = || RootCertStore {
+            roots: vec![TrustAnchor {
+                subject: Der::from_slice(b"subject"),
+                subject_public_key_info: Der::from_slice(b"spki"),
+                name_constraints: None,
+            }],
+        };
+        let cache: RootsCache = std::sync::Mutex::new(None);
+        let mut loads = 0;
+        assert!(
+            roots_cached(&cache, || {
+                loads += 1;
+                (RootCertStore::empty(), String::new())
+            })
+            .is_err(),
+            "an empty load is an error"
+        );
+        let got = roots_cached(&cache, || {
+            loads += 1;
+            (one_anchor(), String::new())
+        });
+        assert!(got.is_ok(), "a later successful load must be used, not the earlier empty one");
+        assert_eq!(loads, 2);
+        assert!(
+            roots_cached(&cache, || {
+                loads += 1;
+                (RootCertStore::empty(), String::new())
+            })
+            .is_ok()
+        );
+        assert_eq!(loads, 2, "a good store is cached and not reloaded");
+    }
+
+    #[test]
+    fn an_empty_platform_root_error_says_why() {
+        use tokio_rustls::rustls::RootCertStore;
+        let cache: RootsCache = std::sync::Mutex::new(None);
+        let err = roots_cached(&cache, || {
+            (RootCertStore::empty(), "2 load errors, first: keychain busy".to_string())
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("keychain busy"), "the platform's reason must reach the caller: {err}");
+        assert!(err.contains("no usable platform root certificates"), "{err}");
     }
 
     #[test]

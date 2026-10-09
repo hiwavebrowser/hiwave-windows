@@ -31,6 +31,7 @@ use super::tabs::{TabModel, TabSwitch};
 use rustkit_engine::{Engine, EngineBuilder, EngineViewId, IpcMessage};
 use rustkit_viewhost::{Bounds, MainWindowConfig, ViewEvent, ViewHost};
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, trace, warn};
@@ -64,6 +65,9 @@ pub struct NativeBrowser {
     viewhost: ViewHost,
     /// RustKit engine for rendering
     engine: RefCell<Engine>,
+    /// One runtime owns page I/O across loads and subsequent live turns.
+    runtime: tokio::runtime::Runtime,
+    live_clocks: RefCell<HashMap<EngineViewId, Instant>>,
     /// Map of view types to engine view IDs
     views: HashMap<ViewType, EngineViewId>,
     /// Reverse map: engine view ID to view type (for IPC routing)
@@ -110,6 +114,9 @@ impl NativeBrowser {
             )
             .javascript_enabled(true)
             .cookies_enabled(true)
+            .script_budget_ms(15_000)
+            .interrupt_scripts_at_budget(true)
+            .request_interceptor(crate::shield_adapter::create_shield_interceptor())
             .build()
             .map_err(|e| format!("Failed to create engine: {}", e))?;
 
@@ -122,6 +129,11 @@ impl NativeBrowser {
         Ok(Self {
             viewhost: ViewHost::new(),
             engine: RefCell::new(engine),
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("Failed to create page runtime: {e}"))?,
+            live_clocks: RefCell::new(HashMap::new()),
             views: HashMap::new(),
             engine_view_types: HashMap::new(),
             event_queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -535,7 +547,10 @@ impl NativeBrowser {
                     }
                 }
             }
-            self.engine.borrow_mut().handle_view_event(event);
+            let navigation = self.engine.borrow_mut().handle_view_event(event);
+            if let Some((id, url)) = navigation {
+                self.navigate_view(id, &url);
+            }
         }
     }
 
@@ -561,11 +576,7 @@ impl NativeBrowser {
             return;
         };
         let mut engine = self.engine.borrow_mut();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        rt.block_on(async {
+        self.runtime.block_on(async {
             let result = match direction {
                 "back" => engine.go_back(content_id).await,
                 "forward" => engine.go_forward(content_id).await,
@@ -580,29 +591,53 @@ impl NativeBrowser {
                 Err(e) => error!(error = %e, direction, "History traversal failed"),
             }
         });
+        self.live_clocks.borrow_mut().insert(content_id, Instant::now());
     }
 
     pub fn navigate(&self, url: &str) {
         if let Some(&content_id) = self.views.get(&ViewType::Content) {
-            match url::Url::parse(url) {
-                Ok(parsed) => {
-                    let mut engine = self.engine.borrow_mut();
-                    // Create a runtime for the async operation
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("Failed to create runtime");
+            self.navigate_view(content_id, url);
+        }
+    }
 
-                    rt.block_on(async {
-                        if let Err(e) = engine.load_url(content_id, parsed).await {
-                            error!(error = %e, url, "Failed to navigate");
-                        }
-                    });
-                }
-                Err(e) => {
-                    warn!(error = %e, url, "Invalid URL");
+    fn navigate_view(&self, content_id: EngineViewId, url: &str) {
+        match url::Url::parse(url) {
+            Ok(parsed) => {
+                let mut engine = self.engine.borrow_mut();
+                self.runtime.block_on(async {
+                    if let Err(e) = engine.load_url(content_id, parsed).await {
+                        error!(error = %e, url, "Failed to navigate");
+                    }
+                });
+                self.live_clocks.borrow_mut().insert(content_id, Instant::now());
+            }
+            Err(e) => {
+                warn!(error = %e, url, "Invalid URL");
+            }
+        }
+    }
+
+    /// Advance all documents, including background tabs, before dispatching
+    /// input so a timer created by a click starts at the click's time.
+    fn pump_live_views(&self) {
+        let mut navigations = Vec::new();
+        {
+            let mut engine = self.engine.borrow_mut();
+            let mut clocks = self.live_clocks.borrow_mut();
+            clocks.retain(|id, _| self.engine_view_types.contains_key(id));
+            for &id in self.engine_view_types.keys() {
+                let now = Instant::now();
+                let clock = clocks.entry(id).or_insert(now);
+                let elapsed_ms = now.duration_since(*clock).as_millis() as u64;
+                *clock += Duration::from_millis(elapsed_ms);
+                self.runtime.block_on(engine.pump_live(id, elapsed_ms));
+                if let Some(url) = engine.take_script_navigation(id) {
+                    navigations.push((id, url));
                 }
             }
+        }
+        for (id, url) in navigations {
+            self.navigate_view(id, &url);
         }
     }
 
@@ -634,14 +669,16 @@ impl NativeBrowser {
                 break;
             }
 
-            // Render all views
-            self.engine.borrow_mut().render_all_views();
+            self.pump_live_views();
 
             // Process any IPC messages from views
             self.process_ipc_messages();
 
             // Run any keyboard shortcuts pressed since the last frame
             self.process_input_events();
+
+            self.pump_live_views();
+            self.engine.borrow_mut().render_changed_views();
 
             // Small sleep to prevent busy-waiting (target ~60fps)
             std::thread::sleep(std::time::Duration::from_millis(16));
@@ -893,8 +930,10 @@ fn run_screenshot_mode(config: super::screenshot_harness::ScreenshotConfig) -> R
     for frame in 0..config.wait_frames {
         // Process messages and render
         browser.viewhost.pump_messages();
-        browser.engine.borrow_mut().render_all_views();
+        browser.pump_live_views();
         browser.process_ipc_messages();
+        browser.process_input_events();
+        browser.engine.borrow_mut().render_changed_views();
         
         debug!(frame, "Frame rendered");
         std::thread::sleep(std::time::Duration::from_millis(50));

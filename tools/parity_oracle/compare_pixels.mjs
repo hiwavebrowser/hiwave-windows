@@ -129,11 +129,30 @@ export function savePng(data, width, height, outputPath) {
  */
 export async function comparePixels(chromePath, rustkitPath, diffPath, options = {}) {
   // Load Chrome baseline
-  const chrome = await loadPng(chromePath);
+  let chrome;
+  let chromeIsPpm = chromePath.endsWith('.ppm');
+  if (!chromeIsPpm && existsSync(chromePath)) {
+    try {
+      const header = readFileSync(chromePath).slice(0, 2).toString();
+      if (header === 'P6') chromeIsPpm = true;
+    } catch (_) {}
+  }
+  if (chromeIsPpm) {
+    chrome = ppmToRgba(chromePath);
+  } else {
+    chrome = await loadPng(chromePath);
+  }
   
   // Load RustKit capture (detect format)
   let rustkit;
-  if (rustkitPath.endsWith('.ppm')) {
+  let rkIsPpm = rustkitPath.endsWith('.ppm');
+  if (!rkIsPpm && existsSync(rustkitPath)) {
+    try {
+      const header = readFileSync(rustkitPath).slice(0, 2).toString();
+      if (header === 'P6') rkIsPpm = true;
+    } catch (_) {}
+  }
+  if (rkIsPpm) {
     rustkit = ppmToRgba(rustkitPath);
   } else {
     rustkit = await loadPng(rustkitPath);

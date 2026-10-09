@@ -232,7 +232,8 @@
             var out;
             if (v instanceof Date) { out = new Date(v.getTime()); seen.set(v, out); return out; }
             if (v instanceof RegExp) { out = new RegExp(v.source, v.flags); seen.set(v, out); return out; }
-            if (v instanceof Boolean || v instanceof Number || v instanceof String) { out = Object(v.valueOf()); seen.set(v, out); return out; }
+            if (v instanceof Boolean || v instanceof Number || v instanceof String ||
+                (typeof BigInt === 'function' && v instanceof BigInt)) { out = Object(v.valueOf()); seen.set(v, out); return out; }
             if (v instanceof ArrayBuffer) { out = v.slice(0); seen.set(v, out); return out; }
             if (ArrayBuffer.isView(v)) {
                 var buf = clone(v.buffer);

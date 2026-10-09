@@ -658,6 +658,22 @@ mod tests {
     }
 
     #[test]
+    fn a_prefixed_mask_with_a_quoted_svg_data_uri_parses_whole() {
+        // The icon idiom on the board sites: a `-webkit-` mask whose quoted
+        // SVG has `;`, `:`, `{`-free markup and quotes of the other kind.
+        let svg = "data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M0 0h16v16z'/></svg>";
+        let css = format!(
+            ".icon {{ -webkit-mask-image: url(\"{svg}\"); mask: url(\"{svg}\") no-repeat 50% / contain; background-color: currentColor; }}"
+        );
+        let ast = parse_stylesheet(&css).expect("parse");
+        let decls = &ast.rules[0].declarations;
+        let names: Vec<&str> = decls.iter().map(|d| d.property.as_str()).collect();
+        assert_eq!(names, ["-webkit-mask-image", "mask", "background-color"]);
+        assert_eq!(decls[0].value, format!("url(\"{svg}\")"));
+        assert_eq!(decls[1].value, format!("url(\"{svg}\") no-repeat 50% / contain"));
+    }
+
+    #[test]
     fn a_url_containing_colons_parses_whole() {
         // Documents behaviour; NOT a guard. The obvious `structural` check on
         // the property/value colon was removed after falsification showed this

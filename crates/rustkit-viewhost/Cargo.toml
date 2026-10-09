@@ -38,5 +38,32 @@ objc = "0.2"
 objc2 = "0.5"
 raw-window-handle = "0.6"
 
+# The window loop hiwave-app runs, for the wheel test.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tao = { workspace = true }
+
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Makes an NSWindow, which AppKit only allows on the main thread, so it runs
+# without the test harness.
+[[test]]
+name = "macos_set_bounds"
+harness = false
+
+[[test]]
+name = "macos_click_point"
+harness = false
+
+[[test]]
+name = "macos_key_events"
+harness = false
+
+[[test]]
+name = "macos_pointer_moves"
+harness = false
+
+# Runs a tao event loop, which must own the main thread.
+[[test]]
+name = "macos_wheel_recorded"
+harness = false

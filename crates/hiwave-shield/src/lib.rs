@@ -6,9 +6,9 @@ pub mod filter_lists;
 
 use adblock::lists::ParseOptions;
 use adblock::Engine;
-use hiwave_core::HiWaveResult;
 use std::sync::atomic::{AtomicU64, Ordering};
 use url::Url;
+use hiwave_core::HiWaveResult;
 
 pub use filter_lists::{FilterListManager, FilterListSource, FILTER_LISTS};
 
@@ -296,5 +296,74 @@ mod tests {
 
         let blocked = blocker.should_block(&url, &source, ResourceType::Script);
         assert!(blocked);
+    }
+
+    #[test]
+    fn type_option_blocks_only_matching_resource_types() {
+        // Privacy pin #364 tags every fetch with a destination so EasyList
+        // `$script` / `$image` options apply. A mis-mapped type would either
+        // leak tracker scripts or break first-party images.
+        let blocker = AdBlocker::with_rules(&["||ads.example.com^$script"]);
+        let url = Url::parse("https://ads.example.com/x").unwrap();
+        let source = Url::parse("https://news.example/").unwrap();
+
+        assert!(blocker.should_block(&url, &source, ResourceType::Script));
+        assert!(
+            !blocker.should_block(&url, &source, ResourceType::Image),
+            "image must not match a $script rule"
+        );
+        assert!(
+            !blocker.should_block(&url, &source, ResourceType::Document),
+            "document must not match a $script rule"
+        );
+        assert!(!blocker.should_block(&url, &source, ResourceType::Stylesheet));
+        assert!(!blocker.should_block(&url, &source, ResourceType::Font));
+    }
+
+    #[test]
+    fn third_party_option_spares_first_party_requests() {
+        let blocker = AdBlocker::with_rules(&["||tracker.example^$third-party"]);
+        let url = Url::parse("https://tracker.example/pixel").unwrap();
+        let first_party = Url::parse("https://tracker.example/page").unwrap();
+        let third_party = Url::parse("https://news.example/").unwrap();
+
+        assert!(
+            !blocker.should_block(&url, &first_party, ResourceType::Image),
+            "same-site request must not match $third-party"
+        );
+        assert!(blocker.should_block(&url, &third_party, ResourceType::Image));
+    }
+
+    #[test]
+    fn default_rules_block_known_trackers_and_spare_benign_hosts() {
+        let blocker = AdBlocker::new();
+        let source = Url::parse("https://example.com/").unwrap();
+
+        let tracker = Url::parse("https://doubleclick.net/pagead/js").unwrap();
+        assert!(blocker.should_block(&tracker, &source, ResourceType::Script));
+
+        let benign = Url::parse("https://example.com/app.js").unwrap();
+        assert!(!blocker.should_block(&benign, &source, ResourceType::Script));
+    }
+
+    #[test]
+    fn disabled_blocker_never_matches() {
+        let mut blocker = AdBlocker::with_rules(&["||ads.example.com^"]);
+        blocker.set_enabled(false);
+        let url = Url::parse("https://ads.example.com/banner.js").unwrap();
+        let source = Url::parse("https://example.com/").unwrap();
+        assert!(!blocker.should_block(&url, &source, ResourceType::Script));
+        assert_eq!(blocker.get_stats().requests_blocked, 0);
+    }
+
+    #[test]
+    fn a_match_increments_blocking_stats() {
+        let blocker = AdBlocker::with_rules(&["||ads.example.com^"]);
+        let url = Url::parse("https://ads.example.com/banner.js").unwrap();
+        let source = Url::parse("https://example.com/").unwrap();
+        assert!(blocker.should_block(&url, &source, ResourceType::Script));
+        let stats = blocker.get_stats();
+        assert_eq!(stats.requests_blocked, 1);
+        assert_eq!(stats.trackers_blocked, 1);
     }
 }
