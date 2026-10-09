@@ -31,6 +31,9 @@ A fresh replay from the macOS files was compared against all four resulting
 Windows files and matched exactly. Keep the separate screenshot metadata test
 when copying renderer sources.
 
+The Windows metrics workflow installs the pinned 1.91.0 toolchain and runs
+tests serially, matching the validated gate and avoiding GPU-guard queue timeouts.
+
 ## Validation
 
 Windows x64, Rust 1.91.0, local GPU:
