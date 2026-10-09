@@ -14,6 +14,8 @@ mod import_map;
 mod module;
 #[cfg(feature = "boa")]
 pub use module::{FetchedModule, ModuleHandle, ModuleState};
+#[cfg(feature = "boa")]
+mod executor;
 #[cfg(all(test, feature = "boa"))]
 mod module_tests;
 
@@ -111,13 +113,38 @@ struct PendingTimer {
     repeat: bool,
 }
 
+/// Default maximum number of loop iterations/pumps per `run_jobs` call.
+pub const DEFAULT_MAX_JOB_ITERATIONS: u64 = 10_000;
+
 /// JavaScript runtime configuration.
-#[derive(Default)]
+#[derive(Clone, Debug)]
 pub struct JsRuntimeConfig {
     /// Enable strict mode.
     pub strict_mode: bool,
-    /// Maximum execution time.
+    /// Maximum execution time for script evaluation and job processing.
     pub timeout: Option<Duration>,
+    /// Maximum number of job iterations per `run_jobs` call before halting runaway recursion.
+    pub max_job_iterations: u64,
+}
+
+impl Default for JsRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            strict_mode: false,
+            timeout: None,
+            max_job_iterations: DEFAULT_MAX_JOB_ITERATIONS,
+        }
+    }
+}
+
+/// A wall-clock time after which the host stops answering script (see
+/// [`JsRuntime::set_execution_deadline`]), and whether that has happened.
+#[derive(Default)]
+struct ExecutionDeadline {
+    at: std::cell::Cell<Option<std::time::Instant>>,
+    hit: std::cell::Cell<bool>,
+    /// How long after `at` the first refused host call came.
+    late: std::cell::Cell<Option<std::time::Duration>>,
 }
 
 /// JavaScript runtime that wraps the underlying engine.
@@ -128,9 +155,13 @@ pub struct JsRuntime {
     /// recorded here for the embedder to fetch.
     #[cfg(feature = "boa")]
     modules: module::ModuleHost,
+    #[cfg(feature = "boa")]
+    executor: std::rc::Rc<executor::HostJobExecutor>,
+    config: JsRuntimeConfig,
     console_handler: Option<Arc<ConsoleHandler>>,
     timers: Arc<Mutex<HashMap<TimerId, PendingTimer>>>,
     globals: HashMap<String, JsValue>,
+    deadline: std::rc::Rc<ExecutionDeadline>,
 }
 
 impl JsRuntime {
@@ -140,25 +171,38 @@ impl JsRuntime {
     }
 
     /// Create a new JavaScript runtime with configuration.
-    pub fn with_config(_config: JsRuntimeConfig) -> Result<Self, JsError> {
+    pub fn with_config(config: JsRuntimeConfig) -> Result<Self, JsError> {
         info!("Initializing JavaScript runtime");
 
         #[cfg(feature = "boa")]
         let modules = module::ModuleHost::default();
         #[cfg(feature = "boa")]
-        let context = boa_engine::Context::builder()
+        let executor = std::rc::Rc::new(executor::HostJobExecutor::with_limits(
+            config.max_job_iterations,
+            config.timeout,
+        ));
+        #[cfg(feature = "boa")]
+        let mut context = boa_engine::Context::builder()
             .module_loader(modules.loader())
+            .job_executor(executor.clone())
             .build()
             .map_err(|e| JsError::ExecutionError(e.to_string()))?;
+
+        #[cfg(feature = "boa")]
+        context.strict(config.strict_mode);
 
         let mut runtime = Self {
             #[cfg(feature = "boa")]
             context,
             #[cfg(feature = "boa")]
             modules,
+            #[cfg(feature = "boa")]
+            executor,
+            config,
             console_handler: None,
             timers: Arc::new(Mutex::new(HashMap::new())),
             globals: HashMap::new(),
+            deadline: std::rc::Rc::default(),
         };
 
         // Set up built-in APIs
@@ -166,6 +210,39 @@ impl JsRuntime {
 
         debug!("JavaScript runtime initialized");
         Ok(runtime)
+    }
+
+    /// Get the runtime configuration.
+    pub fn config(&self) -> &JsRuntimeConfig {
+        &self.config
+    }
+
+    /// Set the microtask job iteration limit per `run_jobs` turn.
+    pub fn set_max_job_iterations(&mut self, limit: u64) {
+        self.config.max_job_iterations = limit;
+        #[cfg(feature = "boa")]
+        self.executor.set_max_job_iterations(limit);
+    }
+
+    /// Set the timeout for job execution.
+    pub fn set_job_timeout(&mut self, timeout: Option<Duration>) {
+        self.config.timeout = timeout;
+        #[cfg(feature = "boa")]
+        self.executor.set_timeout(timeout);
+    }
+
+    /// Run all currently pending jobs (microtasks and async completions).
+    pub fn run_jobs(&mut self) -> Result<(), JsError> {
+        #[cfg(feature = "boa")]
+        {
+            self.context
+                .run_jobs()
+                .map_err(|e| JsError::ExecutionError(e.to_string()))
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            Ok(())
+        }
     }
 
     /// Set the console output handler.
@@ -219,15 +296,25 @@ impl JsRuntime {
             // Promise reactions (`.then`, `await`) are jobs Boa queues but
             // does not run on its own; a page's async code never resumes
             // without this.
-            self.context.run_jobs();
+            let job_result = self.context.run_jobs();
 
             match result {
                 Ok(value) => {
-                    let js_value = self.convert_boa_value(&value);
                     self.flush_console_logs();
+                    if let Err(job_err) = job_result {
+                        let msg = job_err.to_string();
+                        // Only promote job queue limit or timeout breaches (runaway RangeError policy)
+                        // to script failure; ordinary microtask rejections are handled by Promise rejection events
+                        // and do not fail the synchronous script value that already completed successfully.
+                        if msg.contains("Job queue") || msg.contains("limit") || msg.contains("timeout") {
+                            return Err(JsError::ExecutionError(msg));
+                        }
+                    }
+                    let js_value = self.convert_boa_value(&value);
                     Ok(js_value)
                 }
                 Err(err) => {
+                    self.flush_console_logs();
                     let msg = err.to_string();
                     Err(JsError::ExecutionError(msg))
                 }
@@ -253,15 +340,128 @@ impl JsRuntime {
         let _ = max_iterations;
     }
 
-    /// Flush console logs and call handler.
-    fn flush_console_logs(&mut self) {
-        if self.console_handler.is_none() {
-            return;
+    /// Stop script that is still running at `at`: from then on every host
+    /// function fails, before it does anything, with an error the script
+    /// cannot catch, so the whole call stack unwinds to whoever started
+    /// it. `None` lifts it. Boa has no wall-clock interrupt of its own and
+    /// the loop limit counts loop statements only; a script inside nested
+    /// `forEach` callbacks is stopped by this and by nothing else. Script
+    /// that never calls the host is not stopped.
+    pub fn set_execution_deadline(&mut self, at: Option<std::time::Instant>) {
+        self.deadline.at.set(at);
+        self.deadline.hit.set(false);
+        self.deadline.late.set(None);
+    }
+
+    /// Whether the deadline has stopped a host call since it was last set
+    /// or asked about.
+    pub fn take_deadline_hit(&mut self) -> bool {
+        self.deadline.hit.replace(false)
+    }
+
+    /// How long after the deadline the host call that stopped script came,
+    /// once per stop. Script is only stopped where it calls the host, so
+    /// this is the time it ran on past its budget.
+    pub fn take_deadline_overrun(&mut self) -> Option<std::time::Duration> {
+        self.deadline.late.take()
+    }
+
+    #[cfg(feature = "boa")]
+    fn drain_console(&mut self) -> Vec<(LogLevel, String)> {
+        use boa_engine::Source;
+
+        // Evaluate console._flush() directly on the context without calling
+        // evaluate_script, preventing infinite recursion.
+        let Ok(logs_val) = self.context.eval(Source::from_bytes("console._flush()")) else {
+            return Vec::new();
+        };
+
+        let Some(logs_obj) = logs_val.as_object() else {
+            return Vec::new();
+        };
+
+        let Ok(len_val) = logs_obj.get(boa_engine::js_string!("length"), &mut self.context) else {
+            return Vec::new();
+        };
+
+        let Some(len) = len_val.as_number() else {
+            return Vec::new();
+        };
+
+        if len < 0.0 || !len.is_finite() {
+            return Vec::new();
         }
 
-        let _flush_result = self.evaluate_script("console._flush()");
-        // Note: In a real implementation, we'd parse the returned array
-        // and call the console handler for each log entry
+        const MAX_FLUSH_ENTRIES: u32 = 10_000;
+        const MAX_FLUSH_ARGS: u32 = 256;
+
+        let count = (len as u32).min(MAX_FLUSH_ENTRIES);
+        let mut entries = Vec::with_capacity(count as usize);
+
+        for i in 0..count {
+            let Ok(entry_val) = logs_obj.get(i, &mut self.context) else {
+                continue;
+            };
+            let Some(entry_obj) = entry_val.as_object() else {
+                continue;
+            };
+
+            let level_str = entry_obj
+                .get(boa_engine::js_string!("level"), &mut self.context)
+                .ok()
+                .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
+                .unwrap_or_else(|| "log".to_string());
+
+            let level = match level_str.as_str() {
+                "info" => LogLevel::Info,
+                "warn" => LogLevel::Warn,
+                "error" => LogLevel::Error,
+                "debug" => LogLevel::Debug,
+                _ => LogLevel::Log,
+            };
+
+            let mut msg_parts = Vec::new();
+            if let Ok(args_val) = entry_obj.get(boa_engine::js_string!("args"), &mut self.context) {
+                if let Some(args_obj) = args_val.as_object() {
+                    if let Ok(args_len_val) = args_obj.get(boa_engine::js_string!("length"), &mut self.context) {
+                        let args_count = (args_len_val.as_number().unwrap_or(0.0).max(0.0) as u32).min(MAX_FLUSH_ARGS);
+                        for arg_idx in 0..args_count {
+                            if let Ok(arg) = args_obj.get(arg_idx, &mut self.context) {
+                                let s = arg
+                                    .to_string(&mut self.context)
+                                    .map(|js_s| js_s.to_std_string_escaped())
+                                    .unwrap_or_else(|_| "[object]".to_string());
+                                msg_parts.push(s);
+                            }
+                        }
+                    }
+                }
+            }
+
+            entries.push((level, msg_parts.join(" ")));
+        }
+
+        entries
+    }
+
+    /// Flush console logs and call handler.
+    fn flush_console_logs(&mut self) {
+        let Some(handler) = self.console_handler.clone() else {
+            return;
+        };
+
+        #[cfg(feature = "boa")]
+        {
+            let logs = self.drain_console();
+            for (level, msg) in logs {
+                handler(level, &msg);
+            }
+        }
+
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = handler;
+        }
     }
 
     /// Define a global function `name` that calls `function`.
@@ -278,8 +478,30 @@ impl JsRuntime {
             // SAFETY: `HostFunction` only ever sees and returns the
             // crate's own `JsValue`, which holds no GC-managed data, so the
             // closure captures nothing the collector would need to trace.
+            let deadline = self.deadline.clone();
             let native = unsafe {
                 NativeFunction::from_closure(move |_this, args, _context| {
+                    // No deadline (the default): the clock is not read.
+                    let passed = deadline.at.get().and_then(|at| {
+                        let now = std::time::Instant::now();
+                        (now >= at).then(|| now - at)
+                    });
+                    if let Some(late) = passed {
+                        // Logged here, at the first refusal, and not only
+                        // by whoever started the script: if the stack then
+                        // takes long to unwind, the log still says when.
+                        if !deadline.hit.replace(true) {
+                            deadline.late.set(Some(late));
+                            tracing::warn!(
+                                late_ms = late.as_millis() as u64,
+                                "Script budget spent: host calls are refused until the script has unwound"
+                            );
+                        }
+                        // Boa's runtime-limit errors are the ones script
+                        // cannot catch, and it has none for time; `hit`
+                        // says which limit this was.
+                        return Err(boa_engine::error::RuntimeLimitError::LoopIteration.into());
+                    }
                     let args: Vec<JsValue> = args.iter().map(from_boa_value).collect();
                     Ok(to_boa_value(function(&args)))
                 })
@@ -410,25 +632,26 @@ fn to_boa_value(value: JsValue) -> boa_engine::JsValue {
 
 #[cfg(feature = "boa")]
 fn from_boa_value(value: &boa_engine::JsValue) -> JsValue {
-    use boa_engine::JsValue as BoaValue;
-
-    match value {
-        BoaValue::Undefined => JsValue::Undefined,
-        BoaValue::Null => JsValue::Null,
-        BoaValue::Boolean(b) => JsValue::Boolean(*b),
-        BoaValue::Integer(n) => JsValue::Number(*n as f64),
-        BoaValue::Rational(n) => JsValue::Number(*n),
-        BoaValue::String(s) => JsValue::String(s.to_std_string_escaped()),
-        BoaValue::Object(obj) => {
-            if obj.is_array() {
-                JsValue::Array
-            } else if obj.is_callable() {
-                JsValue::Function
-            } else {
-                JsValue::Object
-            }
+    if value.is_undefined() {
+        JsValue::Undefined
+    } else if value.is_null() {
+        JsValue::Null
+    } else if let Some(b) = value.as_boolean() {
+        JsValue::Boolean(b)
+    } else if let Some(n) = value.as_number() {
+        JsValue::Number(n)
+    } else if let Some(s) = value.as_string() {
+        JsValue::String(s.to_std_string_escaped())
+    } else if let Some(obj) = value.as_object() {
+        if obj.is_array() {
+            JsValue::Array
+        } else if obj.is_callable() {
+            JsValue::Function
+        } else {
+            JsValue::Object
         }
-        _ => JsValue::Undefined,
+    } else {
+        JsValue::Undefined
     }
 }
 
@@ -509,6 +732,61 @@ mod tests {
     }
 
     #[test]
+    fn past_the_execution_deadline_a_host_call_unwinds_script_that_cannot_catch_it() {
+        let mut runtime = JsRuntime::new().unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let seen = calls.clone();
+        runtime
+            .register_host_function(
+                "host",
+                0,
+                Box::new(move |_| {
+                    seen.set(seen.get() + 1);
+                    JsValue::Undefined
+                }),
+            )
+            .unwrap();
+        runtime
+            .evaluate_script("var reached = [], caught = false;")
+            .unwrap();
+        let spin = "[1, 2, 3].forEach(function (n) { try { host(); } catch (e) { caught = true; } reached.push(n); });";
+
+        // No deadline, and one that has not come: the host answers.
+        runtime.evaluate_script(spin).unwrap();
+        runtime.set_execution_deadline(Some(std::time::Instant::now() + Duration::from_secs(60)));
+        runtime.evaluate_script(spin).unwrap();
+        assert_eq!(calls.get(), 6);
+        assert!(!runtime.take_deadline_hit());
+
+        // Past it: the first host call ends the script, through the
+        // `forEach` and the `try`, before the host function runs.
+        runtime.set_execution_deadline(Some(std::time::Instant::now()));
+        assert!(runtime.evaluate_script(spin).is_err());
+        assert_eq!(calls.get(), 6);
+        assert!(runtime.take_deadline_hit());
+        assert!(!runtime.take_deadline_hit());
+
+        // The stop comes where script next calls the host, and says how
+        // late that was: this script computes for a while first.
+        runtime.set_execution_deadline(Some(std::time::Instant::now()));
+        assert_eq!(runtime.take_deadline_overrun(), None);
+        let busy = "var t = Date.now(); [1].forEach(function () { while (Date.now() - t < 30) {} host(); });";
+        assert!(runtime.evaluate_script(busy).is_err());
+        let late = runtime.take_deadline_overrun().expect("the stop reports how late it came");
+        // `Date.now()` counts whole milliseconds, so the 30 ms loop is a
+        // little under 30 ms of wall clock.
+        assert!(late >= Duration::from_millis(20), "{late:?}");
+        assert_eq!(runtime.take_deadline_overrun(), None);
+        assert!(runtime.take_deadline_hit());
+
+        // Lifted: the runtime runs script again, and nothing was caught.
+        runtime.set_execution_deadline(None);
+        let result = runtime.evaluate_script("host(); caught === false && reached.length === 6").unwrap();
+        assert!(matches!(result, JsValue::Boolean(true)), "{result:?}");
+        assert_eq!(calls.get(), 7);
+    }
+
+    #[test]
     fn test_function_execution() {
         let mut runtime = JsRuntime::new().unwrap();
 
@@ -557,6 +835,53 @@ mod tests {
     }
 
     #[test]
+    fn a_runaway_microtask_chain_throws_instead_of_hanging() {
+        let mut runtime = JsRuntime::new().unwrap();
+        runtime.set_max_job_iterations(500);
+        let result = runtime.evaluate_script("function again() { Promise.resolve().then(again); } again();");
+        assert!(result.is_err(), "runaway microtask chain must error instead of hanging: {result:?}");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Job queue") || err_msg.contains("limit"), "error must mention limit: {err_msg}");
+        // The runtime is still usable afterwards.
+        let after = runtime.evaluate_script("1 + 1").unwrap();
+        assert!(matches!(after, JsValue::Number(n) if n == 2.0));
+    }
+
+    #[test]
+    fn strict_mode_in_config_is_respected() {
+        let mut strict_rt = JsRuntime::with_config(JsRuntimeConfig {
+            strict_mode: true,
+            ..Default::default()
+        }).unwrap();
+        let result = strict_rt.evaluate_script("undeclaredVar = 42;");
+        assert!(result.is_err(), "assignment to undeclared variable must fail in strict mode");
+
+        let mut non_strict_rt = JsRuntime::with_config(JsRuntimeConfig {
+            strict_mode: false,
+            ..Default::default()
+        }).unwrap();
+        let result2 = non_strict_rt.evaluate_script("undeclaredVar = 42;");
+        assert!(result2.is_ok(), "assignment to undeclared variable succeeds in non-strict mode");
+    }
+
+    #[test]
+    fn job_timeout_in_config_is_respected() {
+        let mut runtime = JsRuntime::with_config(JsRuntimeConfig {
+            timeout: Some(Duration::from_millis(20)),
+            max_job_iterations: 1_000_000,
+            ..Default::default()
+        }).unwrap();
+        // Infinite recursion with timeout
+        let result = runtime.evaluate_script("function loop() { Promise.resolve().then(loop); } loop();");
+        assert!(result.is_err(), "must timeout rather than hanging");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("timeout") || err.contains("limit"), "must report timeout or limit: {err}");
+        // Runtime remains usable
+        let after = runtime.evaluate_script("40 + 2").unwrap();
+        assert!(matches!(after, JsValue::Number(n) if n == 42.0));
+    }
+
+    #[test]
     fn host_functions_take_and_return_primitives() {
         let mut runtime = JsRuntime::new().unwrap();
         runtime
@@ -587,5 +912,65 @@ mod tests {
 
         let result = runtime.evaluate_script("nonexistent.property");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn console_handler_receives_flushed_logs_without_recursion() {
+        let mut runtime = JsRuntime::new().unwrap();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let recv_clone = received.clone();
+        runtime.set_console_handler(Box::new(move |level, msg| {
+            recv_clone.lock().unwrap().push((format!("{level:?}"), msg.to_string()));
+        }));
+
+        runtime.evaluate_script("console.log('hello', 'world'); console.warn('caution');").unwrap();
+
+        let logs = received.lock().unwrap().clone();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0], ("Log".to_string(), "hello world".to_string()));
+        assert_eq!(logs[1], ("Warn".to_string(), "caution".to_string()));
+
+        // Subsequent script evaluation only delivers new logs (buffer was flushed)
+        runtime.evaluate_script("console.error('oops');").unwrap();
+        let logs2 = received.lock().unwrap().clone();
+        assert_eq!(logs2.len(), 3);
+        assert_eq!(logs2[2], ("Error".to_string(), "oops".to_string()));
+    }
+
+    #[test]
+    fn console_flush_handles_throwing_tostring_gracefully() {
+        let mut runtime = JsRuntime::new().unwrap();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let recv_clone = received.clone();
+        runtime.set_console_handler(Box::new(move |_level, msg| {
+            recv_clone.lock().unwrap().push(msg.to_string());
+        }));
+
+        runtime
+            .evaluate_script("console.log('val:', { toString() { throw new Error('boom'); } });")
+            .unwrap();
+
+        let logs = received.lock().unwrap().clone();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0], "val: [object]");
+    }
+
+    #[test]
+    fn console_flush_bounded_against_hostile_length() {
+        let mut runtime = JsRuntime::new().unwrap();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let recv_clone = received.clone();
+        runtime.set_console_handler(Box::new(move |_level, msg| {
+            recv_clone.lock().unwrap().push(msg.to_string());
+        }));
+
+        // Hostile script overwriting console._flush with huge length
+        runtime
+            .evaluate_script("console._flush = () => ({ length: 4294967295 });")
+            .unwrap();
+
+        // Evaluation completes without hanging or OOM
+        let result = runtime.evaluate_script("1 + 1");
+        assert!(result.is_ok());
     }
 }

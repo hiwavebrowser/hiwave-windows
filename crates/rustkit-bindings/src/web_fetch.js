@@ -199,6 +199,7 @@
     function consume(obj, how) {
         var b = obj[B], who = obj instanceof Request ? 'Request' : 'Response';
         if (b.used) return Promise.reject(typeError("Failed to execute '" + how + "' on '" + who + "': body stream already read"));
+        if (b.stream && b.stream.locked) return Promise.reject(typeError("Failed to execute '" + how + "' on '" + who + "': body stream is locked"));
         b.used = true;
         return Promise.resolve(b.ready).then(function () {
             var bytes = b.bytes || new Uint8Array(0);
@@ -237,11 +238,18 @@
                     pull: function (controller) {
                         if (done) return;
                         done = true;
+                        if (b.used) {
+                            controller.close();
+                            return;
+                        }
                         b.used = true;
                         return Promise.resolve(b.ready).then(function () {
                             if (b.bytes && b.bytes.length) controller.enqueue(new Uint8Array(b.bytes));
                             controller.close();
                         });
+                    },
+                    cancel: function () {
+                        b.used = true;
                     }
                 }, { highWaterMark: 0 });
             }
@@ -280,6 +288,7 @@
             Object.keys(s).forEach(function (k) { s[k] = o[k]; });
             inputHeaders = input.headers;
             if (input[B].used) throw typeError("Failed to construct 'Request': Cannot construct a Request with a Request object that has already been used.");
+            if (input[B].stream && input[B].stream.locked) throw typeError("Failed to construct 'Request': Cannot construct a Request with a Request object that is locked.");
             inputBody = input[B];
         } else {
             s.url = resolveUrl(input);
@@ -346,6 +355,7 @@
     mixin(Request.prototype);
     method(Request.prototype, 'clone', function () {
         if (this[B].used) throw typeError("Failed to execute 'clone' on 'Request': Request body is already used");
+        if (this[B].stream && this[B].stream.locked) throw typeError("Failed to execute 'clone' on 'Request': body stream is locked");
         var copy = new Request(this);
         this[B].used = false; // a clone shares the bytes; the original stays readable
         return copy;
@@ -388,6 +398,7 @@
     mixin(Response.prototype);
     method(Response.prototype, 'clone', function () {
         if (this[B].used) throw typeError("Failed to execute 'clone' on 'Response': Response body is already used");
+        if (this[B].stream && this[B].stream.locked) throw typeError("Failed to execute 'clone' on 'Response': body stream is locked");
         var c = makeResponse(this[B].bytes ? new Uint8Array(this[B].bytes) : null, this[P].type, this[P].status, this[P].statusText, cloneHeaders(this[H]), this[P].url, this[P].redirected);
         var source = this[B];
         if (source.ready) { c[B].ready = source.ready.then(function () { c[B].bytes = source.bytes ? new Uint8Array(source.bytes) : null; c[B].ready = null; }); }
@@ -435,6 +446,7 @@
             var signal = req[R].signal;
             if (signal && signal.aborted) { reject(abortReason(signal)); return; }
             var s = req[R], body = req[B];
+            if (body.stream && body.stream.locked) { reject(typeError("Failed to execute 'fetch': body stream is locked")); return; }
             body.used = true;
             var settled = false, id = 0, onAbort = null;
             function done() {

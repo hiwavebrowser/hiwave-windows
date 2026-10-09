@@ -29,7 +29,10 @@ impl Analytics {
 
     /// Check if analytics tracking is enabled
     pub fn is_enabled(&self) -> bool {
-        self.settings.lock().unwrap().enabled
+        self.settings
+            .lock()
+            .unwrap()
+            .enabled
     }
 
     /// Track an analytics event
@@ -85,11 +88,7 @@ impl Analytics {
     }
 
     /// Track a tracker being blocked
-    pub fn track_tracker_blocked(
-        &self,
-        domain: &str,
-        workspace_id: Option<&str>,
-    ) -> HiWaveResult<()> {
+    pub fn track_tracker_blocked(&self, domain: &str, workspace_id: Option<&str>) -> HiWaveResult<()> {
         let conn = self.conn.lock().unwrap();
         database::increment_domain_trackers(&conn, domain)?;
         drop(conn);
@@ -113,11 +112,7 @@ impl Analytics {
     }
 
     /// Track a popup being blocked
-    pub fn track_popup_blocked(
-        &self,
-        domain: &str,
-        workspace_id: Option<&str>,
-    ) -> HiWaveResult<()> {
+    pub fn track_popup_blocked(&self, domain: &str, workspace_id: Option<&str>) -> HiWaveResult<()> {
         self.track(
             AnalyticsEvent::PopupBlocked {
                 domain: domain.to_string(),
@@ -154,11 +149,7 @@ impl Analytics {
     }
 
     /// Track a tab being closed
-    pub fn track_tab_closed(
-        &self,
-        duration_secs: i64,
-        workspace_id: Option<&str>,
-    ) -> HiWaveResult<()> {
+    pub fn track_tab_closed(&self, duration_secs: i64, workspace_id: Option<&str>) -> HiWaveResult<()> {
         self.track(AnalyticsEvent::TabClosed { duration_secs }, workspace_id)
     }
 
@@ -173,11 +164,7 @@ impl Analytics {
     }
 
     /// Track tab restored from shelf
-    pub fn track_tab_from_shelf(
-        &self,
-        domain: &str,
-        workspace_id: Option<&str>,
-    ) -> HiWaveResult<()> {
+    pub fn track_tab_from_shelf(&self, domain: &str, workspace_id: Option<&str>) -> HiWaveResult<()> {
         self.track(
             AnalyticsEvent::TabFromShelf {
                 domain: domain.to_string(),
@@ -208,12 +195,7 @@ impl Analytics {
     }
 
     /// Track focus mode end
-    pub fn track_focus_end(
-        &self,
-        domain: &str,
-        duration_secs: i64,
-        workspace_id: Option<&str>,
-    ) -> HiWaveResult<()> {
+    pub fn track_focus_end(&self, domain: &str, duration_secs: i64, workspace_id: Option<&str>) -> HiWaveResult<()> {
         self.track(
             AnalyticsEvent::FocusEnd {
                 domain: domain.to_string(),
@@ -367,11 +349,7 @@ impl Analytics {
     }
 
     /// Get event type breakdown for a date range
-    pub fn get_event_breakdown(
-        &self,
-        start_date: &str,
-        end_date: &str,
-    ) -> HiWaveResult<Vec<(String, i64)>> {
+    pub fn get_event_breakdown(&self, start_date: &str, end_date: &str) -> HiWaveResult<Vec<(String, i64)>> {
         let conn = self.conn.lock().unwrap();
         database::get_event_counts_by_type(&conn, start_date, end_date)
     }
@@ -396,9 +374,7 @@ mod tests {
         let db_path = dir.path().join("analytics.db");
         let analytics = Analytics::new(db_path).unwrap();
 
-        analytics
-            .track_tracker_blocked("example.com", Some("default"))
-            .unwrap();
+        analytics.track_tracker_blocked("example.com", Some("default")).unwrap();
 
         let stats = analytics.get_today_stats().unwrap();
         assert_eq!(stats.trackers_blocked, 1);
@@ -425,12 +401,8 @@ mod tests {
         let analytics = Analytics::new(db_path).unwrap();
 
         // Track some events
-        analytics
-            .track_tracker_blocked("example.com", Some("1"))
-            .unwrap();
-        analytics
-            .track_page_visit("example.com", Some("1"))
-            .unwrap();
+        analytics.track_tracker_blocked("example.com", Some("1")).unwrap();
+        analytics.track_page_visit("example.com", Some("1")).unwrap();
         analytics.track_tab_opened(Some("1")).unwrap();
 
         // Generate a weekly report
@@ -451,15 +423,9 @@ mod tests {
         let analytics = Analytics::new(db_path).unwrap();
 
         // Track events with domain and workspace
-        analytics
-            .track_page_visit("github.com", Some("workspace-1"))
-            .unwrap();
-        analytics
-            .track_page_visit("github.com", Some("workspace-1"))
-            .unwrap();
-        analytics
-            .track_tracker_blocked("github.com", Some("workspace-1"))
-            .unwrap();
+        analytics.track_page_visit("github.com", Some("workspace-1")).unwrap();
+        analytics.track_page_visit("github.com", Some("workspace-1")).unwrap();
+        analytics.track_tracker_blocked("github.com", Some("workspace-1")).unwrap();
         analytics.track_tab_opened(Some("workspace-1")).unwrap();
 
         // Get domain stats
@@ -488,12 +454,8 @@ mod tests {
         let analytics = Analytics::new(db_path).unwrap();
 
         // Track some events
-        analytics
-            .track_page_visit("example.com", Some("1"))
-            .unwrap();
-        analytics
-            .track_tracker_blocked("tracker.com", Some("1"))
-            .unwrap();
+        analytics.track_page_visit("example.com", Some("1")).unwrap();
+        analytics.track_tracker_blocked("tracker.com", Some("1")).unwrap();
 
         // Get last 7 days stats
         let stats = analytics.get_last_n_days_total(7).unwrap();

@@ -1152,8 +1152,7 @@ fn parse_canvas_color(s: &str) -> Option<Color> {
     let s = s.trim().to_lowercase();
 
     // Hex colors
-    if s.starts_with('#') {
-        let hex = &s[1..];
+    if let Some(hex) = s.strip_prefix('#') {
         return match hex.len() {
             3 => {
                 let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
@@ -1183,7 +1182,7 @@ fn parse_canvas_color(s: &str) -> Option<Color> {
         let inner = s.trim_start_matches("rgba(")
             .trim_start_matches("rgb(")
             .trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(|c| c == ',' || c == '/').collect();
+        let parts: Vec<&str> = inner.split([',', '/']).collect();
         
         if parts.len() >= 3 {
             let r: u8 = parts[0].trim().parse().ok()?;

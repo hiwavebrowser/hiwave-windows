@@ -247,6 +247,7 @@ mod tests {
             referrer: None,
             referrer_policy: Default::default(),
             destination: crate::RequestDestination::Other,
+            is_replay_proxied: false,
         }
     }
 

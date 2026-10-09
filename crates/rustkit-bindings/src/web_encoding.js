@@ -118,6 +118,7 @@
         }
         return { read: read, written: written };
     };
+    Object.defineProperty(TextEncoder.prototype, Symbol.toStringTag, { value: 'TextEncoder', configurable: true });
     def('TextEncoder', TextEncoder);
 
     // ---- TextDecoder (Encoding Standard §8.2): utf-8, utf-16le, latin1.
@@ -202,5 +203,6 @@
         if (!stream) this._bomSeen = false;
         return text;
     };
+    Object.defineProperty(TextDecoder.prototype, Symbol.toStringTag, { value: 'TextDecoder', configurable: true });
     def('TextDecoder', TextDecoder);
 })(globalThis);

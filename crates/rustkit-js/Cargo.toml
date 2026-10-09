@@ -15,7 +15,7 @@ boa = ["boa_engine"]
 
 [dependencies]
 # Pure Rust JS engine (default)
-boa_engine = { version = "0.20", optional = true }
+boa_engine = { version = "0.22", optional = true }
 
 # Module specifier resolution (module.rs)
 url = "2.5"
@@ -34,7 +34,7 @@ tokio = { version = "1.42", features = ["sync", "time"] }
 
 [dev-dependencies]
 # Only to force a collection in tests/gc_weak_cycle.rs.
-boa_gc = "0.20"
+boa_gc = "0.22"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
 

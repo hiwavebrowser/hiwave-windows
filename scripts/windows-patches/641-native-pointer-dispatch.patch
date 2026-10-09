@@ -1,0 +1,232 @@
+Windows adapter: hiwave-macos #641. Return default navigation to the native shell.
+
+--- a/crates/rustkit-engine/src/lib.rs
++++ b/crates/rustkit-engine/src/lib.rs
+@@ -13904,8 +13904,9 @@
+     }
+ 
+     /// Handle a view event from the viewhost.
++    /// Returns a default navigation for the embedder to load asynchronously.
+     #[cfg(windows)]
+-    pub fn handle_view_event(&mut self, event: rustkit_viewhost::ViewEvent) {
++    pub fn handle_view_event(&mut self, event: rustkit_viewhost::ViewEvent) -> Option<(EngineViewId, String)> {
+         use rustkit_viewhost::ViewEvent;
+ 
+         match event {
+@@ -13921,7 +13922,7 @@
+                     .find(|(_, v)| v.viewhost_id == viewhost_id)
+                 {
+                     let id = *id;
+-                    let _ = self.resize_view(
++                    let _ = self.set_view_bounds(
+                         id,
+                         rustkit_viewhost::Bounds::new(
+                             bounds.x,
+@@ -13961,15 +13962,16 @@
+                 view_id: viewhost_id,
+                 event: input_event,
+             } => {
+-                self.handle_input_event(viewhost_id, input_event);
++                return self.handle_input_event(viewhost_id, input_event);
+             }
+             _ => {}
+         }
++        None
+     }
+ 
+     /// Handle an input event.
+     #[cfg(windows)]
+-    fn handle_input_event(&mut self, viewhost_id: ViewId, event: rustkit_core::InputEvent) {
++    fn handle_input_event(&mut self, viewhost_id: ViewId, event: rustkit_core::InputEvent) -> Option<(EngineViewId, String)> {
+         use rustkit_core::InputEvent;
+ 
+         // Find the view
+@@ -13980,12 +13982,12 @@
+             .map(|(id, _)| *id);
+ 
+         let Some(engine_id) = engine_id else {
+-            return;
++            return None;
+         };
+ 
+         match event {
+             InputEvent::Mouse(mouse_event) => {
+-                self.handle_mouse_event(engine_id, mouse_event);
++                return self.handle_mouse_event(engine_id, mouse_event).map(|url| (engine_id, url));
+             }
+             InputEvent::Key(key_event) => {
+                 self.handle_key_event(engine_id, key_event);
+@@ -13995,83 +13997,36 @@
+                 let _ = focus_event;
+             }
+         }
+-    }
+-
+-    /// Handle a mouse event.
++        None
++    }
++
++    /// Route native pointer input through the same page APIs as the macOS
++    /// embedder. Return default navigation to the shell; never load while
++    /// dispatching an input event (the shell owns the async runtime).
+     #[cfg(windows)]
+-    fn handle_mouse_event(&mut self, view_id: EngineViewId, event: rustkit_core::MouseEvent) {
+-        use rustkit_core::MouseEventType;
+-        use rustkit_dom::MouseEventData;
+-
+-        let view = match self.views.get_mut(&view_id) {
+-            Some(v) => v,
+-            None => return,
+-        };
+-
+-        // Perform hit testing if we have layout
+-        let hit_result = view
+-            .layout
+-            .as_ref()
+-            .and_then(|layout| layout.hit_test(event.position.x as f32, event.position.y as f32));
+-
+-        // Convert to DOM event
+-        let dom_event_type = match event.event_type {
+-            MouseEventType::MouseDown => "mousedown",
+-            MouseEventType::MouseUp => "mouseup",
+-            MouseEventType::MouseMove => "mousemove",
+-            MouseEventType::MouseEnter => "mouseenter",
+-            MouseEventType::MouseLeave => "mouseleave",
+-            MouseEventType::Wheel => "wheel",
+-            MouseEventType::ContextMenu => "contextmenu",
+-        };
+-
+-        let _mouse_data = MouseEventData {
+-            client_x: event.position.x,
+-            client_y: event.position.y,
+-            screen_x: event.screen_position.x,
+-            screen_y: event.screen_position.y,
+-            offset_x: hit_result.as_ref().map(|r| r.local_x as f64).unwrap_or(0.0),
+-            offset_y: hit_result.as_ref().map(|r| r.local_y as f64).unwrap_or(0.0),
+-            button: event.button.button_index(),
+-            buttons: event.buttons,
+-            ctrl_key: event.modifiers.ctrl,
+-            alt_key: event.modifiers.alt,
+-            shift_key: event.modifiers.shift,
+-            meta_key: event.modifiers.meta,
+-            related_target: None,
+-        };
+-
+-        // If we have a hit and a document, dispatch the event
+-        if let (Some(hit), Some(document)) = (&hit_result, &view.document) {
+-            // NOTE: Full mouse event dispatch requires node_id tracking in layout tree.
+-            // The layout tree (HitTestResult) currently doesn't track which DOM node
+-            // each layout box corresponds to (LayoutBox.element_id is always None).
+-            // To fully implement mouse event dispatch:
+-            // 1. Add node_id: NodeId field to LayoutBox
+-            // 2. Set it during layout tree construction
+-            // 3. Include it in HitTestResult
+-            // 4. Use it here to dispatch MouseEvent to the correct DOM node
+-            //
+-            // For now, we log the hit but cannot dispatch to the specific element.
+-            trace!(
+-                ?view_id,
+-                event_type = dom_event_type,
+-                depth = hit.depth,
+-                "Mouse event (node dispatch pending layout node_id tracking)"
+-            );
+-        }
+-
+-        // Handle click focus change
+-        if event.event_type == MouseEventType::MouseDown && hit_result.is_some() {
+-            // TODO: Focus the clicked element if focusable
+-            // This also requires node_id tracking in HitTestResult to know which
+-            // element was clicked. Once that's available, check if the element is
+-            // focusable (form controls, elements with tabindex) and call focus_element().
+-            trace!(
+-                ?view_id,
+-                "Click focus change pending layout node_id tracking"
+-            );
+-        }
++    fn handle_mouse_event(&mut self, view_id: EngineViewId, event: rustkit_core::MouseEvent) -> Option<String> {
++        use rustkit_core::{MouseButton, MouseEventType};
++        let x = event.position.x as f32;
++        let y = event.position.y as f32;
++        match event.event_type {
++            MouseEventType::MouseDown if event.button == MouseButton::Primary => {
++                self.mouse_down_at_point(view_id, x, y);
++            }
++            MouseEventType::MouseUp if event.button == MouseButton::Primary => {
++                return self.click_at_point(view_id, x, y).navigate;
++            }
++            MouseEventType::MouseMove | MouseEventType::MouseEnter => {
++                self.mouse_move_at_point(view_id, x, y);
++            }
++            MouseEventType::MouseLeave => self.mouse_leave(view_id),
++            MouseEventType::Wheel => {
++                // ViewHost reports wheel notches (120 native units), whereas
++                // scroll_view takes pixels. Three 40px lines per notch.
++                let _ = self.scroll_view(view_id, event.delta.x as f32 * 120.0, event.delta.y as f32 * 120.0);
++            }
++            _ => {}
++        }
++        None
+     }
+ 
+     /// Handle a keyboard event.
+@@ -36087,3 +36042,6 @@
+         );
+     }
+ }
++
++#[cfg(all(test, windows))]
++mod windows_live_input_tests;
+--- /dev/null
++++ b/crates/rustkit-engine/src/windows_live_input_tests.rs
+@@ -0,0 +1,51 @@
++use super::*;
++use rustkit_core::{InputEvent, MouseButton, MouseEvent, MouseEventType, Point};
++
++fn page(html: &str) -> (Engine, EngineViewId) {
++    let mut engine = Engine::new(EngineConfig::default()).unwrap();
++    let id = engine.create_headless_view(Bounds::new(0, 0, 400, 200)).unwrap();
++    engine.load_html(id, html).unwrap();
++    (engine, id)
++}
++
++fn pointer(engine: &mut Engine, id: EngineViewId, kind: MouseEventType, button: MouseButton) -> Option<(EngineViewId, String)> {
++    let view_id = engine.views[&id].viewhost_id;
++    engine.handle_view_event(rustkit_viewhost::ViewEvent::Input {
++        view_id,
++        event: InputEvent::Mouse(MouseEvent::new(kind, Point::new(20.0, 20.0)).with_button(button)),
++    })
++}
++
++#[test]
++fn native_click_dispatches_script_and_honors_cancelled_navigation() {
++    let (mut engine, id) = page(r#"<style>body{margin:0}a{display:block;width:200px;height:60px}</style>
++        <a id="link" href="https://example.com/next">link</a>"#);
++    engine.execute_script(id, "globalThis.clicks=0; document.getElementById('link').addEventListener('click',e=>{clicks++;e.preventDefault()})").unwrap();
++    pointer(&mut engine, id, MouseEventType::MouseDown, MouseButton::Primary);
++    assert!(pointer(&mut engine, id, MouseEventType::MouseUp, MouseButton::Primary).is_none());
++    assert_eq!(engine.execute_script(id, "String(clicks)").unwrap(), "String(\"1\")");
++}
++
++#[test]
++fn native_primary_click_returns_default_navigation_but_secondary_does_not() {
++    let (mut engine, id) = page(r#"<style>body{margin:0}a{display:block;width:200px;height:60px}</style>
++        <a href="https://example.com/next">link</a>"#);
++    pointer(&mut engine, id, MouseEventType::MouseDown, MouseButton::Secondary);
++    assert!(pointer(&mut engine, id, MouseEventType::MouseUp, MouseButton::Secondary).is_none());
++    pointer(&mut engine, id, MouseEventType::MouseDown, MouseButton::Primary);
++    assert_eq!(pointer(&mut engine, id, MouseEventType::MouseUp, MouseButton::Primary),
++        Some((id, "https://example.com/next".into())));
++}
++
++#[test]
++fn native_wheel_moves_the_document_and_notifies_script() {
++    let (mut engine, id) = page("<style>body{margin:0;height:2000px}</style><p>scroll me</p>");
++    let view_id = engine.views[&id].viewhost_id;
++    engine.handle_view_event(rustkit_viewhost::ViewEvent::Input {
++        view_id,
++        event: InputEvent::Mouse(MouseEvent::new(MouseEventType::Wheel, Point::new(20.0, 20.0))
++            .with_delta(Point::new(0.0, -1.0))),
++    });
++    assert_eq!(engine.views[&id].scroll_offset.1, 120.0);
++    assert_eq!(engine.execute_script(id, "String(scrollY)").unwrap(), "String(\"120\")");
++}

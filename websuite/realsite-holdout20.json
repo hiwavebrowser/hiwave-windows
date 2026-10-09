@@ -1,0 +1,29 @@
+{
+  "description": "Real-site board, holdout set 2: 20 unseen US consumer sites (Package Z2-N1), logged-out, 1280x800 first viewport. Pinned list — change it only with a dated note in trench/BASELINE-realsite.md, never to make the number move.",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "sites": [
+    { "id": "amazon",      "url": "https://www.amazon.com/" },
+    { "id": "chatgpt",     "url": "https://chatgpt.com/" },
+    { "id": "ebay",        "url": "https://www.ebay.com/" },
+    { "id": "nytimes",     "url": "https://www.nytimes.com/" },
+    { "id": "espn",        "url": "https://www.espn.com/" },
+    { "id": "hulu",        "url": "https://www.hulu.com/" },
+    { "id": "hbo",         "url": "https://www.hbo.com/" },
+    { "id": "disney",      "url": "https://www.disney.com/" },
+    { "id": "nbc",         "url": "https://www.nbc.com/" },
+    { "id": "foxnews",     "url": "https://www.foxnews.com/" },
+    { "id": "paypal",      "url": "https://www.paypal.com/" },
+    { "id": "abc",         "url": "https://www.abc.com/" },
+    { "id": "edmunds",     "url": "https://www.edmunds.com/" },
+    { "id": "kbb",         "url": "https://www.kbb.com/" },
+    { "id": "carmax",      "url": "https://www.carmax.com/" },
+    { "id": "carvana",     "url": "https://www.carvana.com/" },
+    { "id": "carfax",      "url": "https://www.carfax.com/" },
+    { "id": "topps",       "url": "https://www.topps.com/" },
+    { "id": "craigslist",  "url": "https://www.craigslist.org/" },
+    { "id": "indeed",      "url": "https://www.indeed.com/" }
+  ]
+}

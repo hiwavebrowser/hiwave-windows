@@ -1,0 +1,160 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "lone-text-with-an-overlay-in-a-px-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}</style></head><body><div class=g id=g><div id=a class=r>Card title <div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:100 o:0:0:288:100 after:0:100:1280:20"
+  },
+  {
+   "name": "text-and-an-inline-box-with-an-overlay-in-a-px-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}</style></head><body><div class=g id=g><div id=a class=r>Label: <b>value</b> tail<div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:100 o:0:0:288:100 after:0:100:1280:20"
+  },
+  {
+   "name": "text-and-a-button-with-a-badge-in-a-px-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}</style></head><body><div class=g id=g><div id=a class=r>Go: <button>Press</button> now<div id=o class=badge></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:100 o:258:90:30:10 after:0:100:1280:20"
+  },
+  {
+   "name": "lone-text-with-a-badge-in-a-px-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}</style></head><body><div class=g id=g><div id=a class=r>Card title<div id=o class=badge></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:100 o:258:90:30:10 after:0:100:1280:20"
+  },
+  {
+   "name": "lone-text-with-an-overlay-beside-a-taller-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}</style></head><body><div class=g id=g><div id=a class=r>Card title <div id=o class=o></div></div><div id=b><div style=height:120px></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:120 a:0:0:288:120 o:0:0:288:120 b:288:0:288:120 after:0:120:1280:20"
+  },
+  {
+   "name": "wrapped-text-with-an-overlay",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}</style></head><body><div class=g id=g><div id=a class=r>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp<div id=o class=o></div></div><div id=b>x</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:60 a:0:0:288:60 o:0:0:288:60 b:288:0:288:60 after:0:60:1280:20"
+  },
+  {
+   "name": "wrapped-text-with-a-badge-and-padding",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}#a{padding:10px}</style></head><body><div class=g id=g><div id=a class=r>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp<div id=o class=badge></div></div><div id=b>x</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:100 o:258:90:30:10 b:288:0:288:100 after:0:100:1280:20"
+  },
+  {
+   "name": "lone-text-with-an-overlay-in-a-px-height-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}#a{height:60px}</style></head><body><div class=g id=g><div id=a class=r>Card title <div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:60 a:0:0:288:60 o:0:0:288:60 after:0:60:1280:20"
+  },
+  {
+   "name": "lone-text-with-a-percent-height-overlay-in-a-px-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}#o{position:absolute;left:0;top:0;width:100%;height:50%}</style></head><body><div class=g id=g><div id=a class=r>Card title <div id=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:100 o:0:0:288:50 after:0:100:1280:20"
+  },
+  {
+   "name": "the-overlay-before-the-text",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}</style></head><body><div class=g id=g><div id=a class=r><div id=o class=o></div>Card title</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:100 o:0:0:288:100 after:0:100:1280:20"
+  },
+  {
+   "name": "a-centred-block-item-with-an-overlay",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}.g{place-items:center}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px;width:50px></div><div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:119:40:50:20 o:119:40:50:20 after:0:100:1280:20"
+  },
+  {
+   "name": "an-end-aligned-block-item-with-an-overlay",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}.g{align-items:end}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:80:288:20 o:0:80:288:20 after:0:100:1280:20"
+  },
+  {
+   "name": "a-start-aligned-block-item-with-a-badge",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}.g{align-items:start}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=badge></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:20 o:258:10:30:10 after:0:100:1280:20"
+  },
+  {
+   "name": "a-centred-text-item-with-an-overlay",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}.g{align-items:center}</style></head><body><div class=g id=g><div id=a class=r>Card title <div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:40:288:20 o:0:40:288:20 after:0:100:1280:20"
+  },
+  {
+   "name": "a-centred-item-with-a-badge-beside-a-taller-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{align-items:center}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=badge></div></div><div id=b><div style=height:120px></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:120 a:0:50:288:20 o:258:60:30:10 b:288:0:288:120 after:0:120:1280:20"
+  },
+  {
+   "name": "align-self-end-with-an-overlay",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}#a{align-self:end}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:80:288:20 o:0:80:288:20 after:0:100:1280:20"
+  },
+  {
+   "name": "a-block-item-with-an-overlay-in-a-px-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:100 o:0:0:288:100 after:0:100:1280:20"
+  },
+  {
+   "name": "a-block-item-with-an-overlay-beside-a-taller-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=o></div></div><div id=b><div style=height:120px></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:120 a:0:0:288:120 o:0:0:288:120 b:288:0:288:120 after:0:120:1280:20"
+  },
+  {
+   "name": "a-block-item-with-a-badge-whose-text-wraps",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}</style></head><body><div class=g id=g><div id=a class=r><p style=margin:0>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp</p><div id=o class=badge></div></div><div id=b>x</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:60 a:0:0:288:60 o:258:50:30:10 b:288:0:288:60 after:0:60:1280:20"
+  },
+  {
+   "name": "a-block-item-with-an-overlay-in-a-min-height-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{min-height:200px}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:200 a:0:0:288:200 o:0:0:288:200 after:0:200:1280:20"
+  },
+  {
+   "name": "a-block-item-with-an-overlay-in-a-px-height-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{height:200px}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:200 a:0:0:288:200 o:0:0:288:200 after:0:200:1280:20"
+  },
+  {
+   "name": "an-aspect-ratio-item-with-an-overlay",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}#a{aspect-ratio:2/1}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:144 a:0:0:288:144 o:0:0:288:144 after:0:144:1280:20"
+  },
+  {
+   "name": "a-flex-item-with-an-overlay-beside-a-taller-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}#a{display:flex}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px;width:40px></div><div id=o class=o></div></div><div id=b><div style=height:120px></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:120 a:0:0:288:120 o:0:0:288:120 b:288:0:288:120 after:0:120:1280:20"
+  },
+  {
+   "name": "a-centred-flex-item-with-a-badge",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}.g{align-items:center}#a{display:flex}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px;width:40px></div><div id=o class=badge></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:40:288:20 o:258:50:30:10 after:0:100:1280:20"
+  },
+  {
+   "name": "a-grid-item-that-is-a-grid-with-an-overlay-beside-a-taller-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}#a{display:grid}</style></head><body><div class=g id=g><div id=a class=r><div style=height:20px></div><div id=o class=o></div></div><div id=b><div style=height:120px></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:120 a:0:0:288:120 o:0:0:288:120 b:288:0:288:120 after:0:120:1280:20"
+  },
+  {
+   "name": "a-static-item-in-a-relative-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}.g{position:relative}</style></head><body><div class=g id=g><div id=a>Card title <div id=o class=o></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:288:100 o:0:0:600:100 after:0:100:1280:20"
+  },
+  {
+   "name": "a-static-centred-item-in-a-relative-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:288px 288px}.r{position:relative}.o{position:absolute;inset:0}.badge{position:absolute;right:0;bottom:0;width:30px;height:10px}.g{grid-template-rows:100px}.g{position:relative;align-items:center}</style></head><body><div class=g id=g><div id=a><div style=height:20px></div><div id=o class=badge></div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:40:288:20 o:570:90:30:10 after:0:100:1280:20"
+  },
+  {
+   "name": "issue-560-a-whole-card-link-over-text",
+   "html": "<!doctype html><body style=margin:0><div id=g style=\"display:grid;grid-template-columns:288px;grid-template-rows:100px\"><div id=a style=\"position:relative\">Card title <a id=o href=\"#\" style=\"position:absolute;inset:0\"></a></div></div>",
+   "chrome_boxes": "g:0:0:1280:100 a:0:0:288:100 o:0:0:288:100"
+  },
+  {
+   "name": "issue-560-a-centred-card-with-a-whole-card-link",
+   "html": "<!doctype html><body style=margin:0><div id=g style=\"display:grid;grid-template-rows:100px;place-items:center\"><div id=a style=\"position:relative\"><div style=\"height:20px\"></div><a id=o href=\"#\" style=\"position:absolute;inset:0\"></a></div></div>",
+   "chrome_boxes": "g:0:0:1280:100 a:640:40:0:20 o:640:40:0:20"
+  },
+  {
+   "name": "issue-560-a-badge-in-a-mixed-item",
+   "html": "<!doctype html><body style=margin:0><div id=g style=\"display:grid;grid-template-columns:288px;grid-template-rows:100px\"><div id=a style=\"position:relative\">Go: <button>Press</button> now<span id=o style=\"position:absolute;right:0;bottom:0\">badge</span></div></div>",
+   "chrome_boxes": "g:0:0:1280:100 a:0:0:288:100 o:250:82:38:18"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

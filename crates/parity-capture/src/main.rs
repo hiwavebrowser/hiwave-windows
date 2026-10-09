@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use tracing::{error, warn};
 use url::Url;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "parity-capture")]
 #[command(about = "Headless frame capture for parity testing")]
 #[command(group(clap::ArgGroup::new("source").required(true).args(["html_file", "url"])))]
@@ -68,6 +68,42 @@ struct Args {
     #[arg(long)]
     dump_layout: Option<String>,
 
+    /// JSON string or path to JSON file defining interaction sequence (wait/click/key/resize/capture)
+    #[arg(long)]
+    actions: Option<String>,
+
+    /// Directory for action capture frames
+    #[arg(long)]
+    actions_out_dir: Option<String>,
+
+    /// Optional HTTP replay proxy URL (e.g. http://127.0.0.1:8989) for deterministic HAR replay.
+    /// Test-only; routes outbound requests to the local replay server while preserving document origin.
+    #[arg(long)]
+    replay_proxy: Option<String>,
+
+    /// Virtual timer clock horizon in milliseconds (default: 5000).
+    #[arg(long)]
+    timer_horizon_ms: Option<u64>,
+
+    /// Wall-clock budget for the page's scripts in milliseconds (default: 5000, the
+    /// engine's and the board's). The live app runs pages at 60000; a capture taken
+    /// with another budget is not comparable with the board and must be labelled.
+    #[arg(long)]
+    script_budget_ms: Option<u64>,
+
+    /// Stop a script that is still running when the script budget is spent, as the
+    /// live app does (off by default: the board lets a running script finish). A
+    /// capture taken with it is not comparable with the board and must be labelled.
+    #[arg(long)]
+    interrupt_scripts: bool,
+
+    /// After a URL load, turn the live loop as the app does for this many
+    /// milliseconds of real time (timers, script requests, relayouts) and
+    /// report what the turns did as `live_stats`. Off by default; a frame
+    /// taken with it is not comparable with the board.
+    #[arg(long)]
+    live_ms: Option<u64>,
+
     /// Enable verbose output
     #[arg(long, short)]
     verbose: bool,
@@ -89,8 +125,76 @@ struct CaptureResult {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     script_stats: Option<ScriptStats>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    live_stats: Option<LiveStats>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     elapsed_ms: Option<u64>,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    captures: Option<Vec<StepCapture>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    action_results: Option<Vec<ActionResult>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ActionItem {
+    #[serde(default)]
+    step: Option<usize>,
+    #[serde(rename = "type")]
+    action_type: String,
+    #[serde(default)]
+    ms: Option<u64>,
+    #[serde(default)]
+    selector: Option<String>,
+    #[serde(default)]
+    x: Option<f32>,
+    #[serde(default)]
+    y: Option<f32>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    key: Option<String>,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+    #[serde(default)]
+    frame: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ActionsPayload {
+    #[serde(default)]
+    actions: Vec<ActionItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct StepCapture {
+    step: usize,
+    label: String,
+    frame: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ActionResult {
+    step: usize,
+    #[serde(rename = "type")]
+    action_type: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selector_used: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    method: Option<String>,
+    elapsed_ms: u64,
 }
 
 impl CaptureResult {
@@ -106,8 +210,11 @@ impl CaptureResult {
             display_list_path: None,
             layout_stats: None,
             script_stats: None,
+            live_stats: None,
             elapsed_ms: None,
             error: None,
+            captures: None,
+            action_results: None,
         }
     }
 
@@ -128,6 +235,65 @@ struct ScriptStats {
     over_budget: u32,
     bytes: u64,
     elapsed_ms: u64,
+}
+
+/// What the live loop did after the load (`--live-ms`).
+#[derive(Serialize, Deserialize, Default)]
+struct LiveStats {
+    /// Real time the loop was given.
+    wall_ms: u64,
+    /// Of it, time spent inside turns: the window thread's time in the app.
+    busy_ms: u64,
+    turns: u32,
+    timer_callbacks: u64,
+    requests: u64,
+    relayouts: u32,
+    /// The page had no timer set and nothing in flight when the loop ended.
+    idle_at_end: bool,
+}
+
+/// The app's pacing (`hiwave-app` `process_events`): a turn when the next
+/// timer is due or a request is out, never sooner than the last turn took.
+fn run_live(
+    rt: &tokio::runtime::Runtime,
+    engine: &mut rustkit_engine::Engine,
+    view_id: rustkit_engine::EngineViewId,
+    live_ms: u64,
+) -> LiveStats {
+    const MIN_LIVE_TURN: Duration = Duration::from_millis(4);
+    const LIVE_REQUEST_POLL: Duration = Duration::from_millis(10);
+    let limit = Duration::from_millis(live_ms);
+    let began = Instant::now();
+    let mut clock = began;
+    let mut stats = LiveStats::default();
+    tracing::info!(live_ms, "Live loop started");
+    loop {
+        let started = Instant::now();
+        let elapsed_ms = started.duration_since(clock).as_millis() as u64;
+        clock += Duration::from_millis(elapsed_ms);
+        let turn = rt.block_on(engine.pump_live(view_id, elapsed_ms));
+        stats.turns += 1;
+        stats.timer_callbacks += turn.timers_ran as u64;
+        stats.requests += turn.requests as u64;
+        stats.relayouts += turn.relaid_out as u32;
+        stats.busy_ms += started.elapsed().as_millis() as u64;
+        let timer = turn.next_timer_ms.map(Duration::from_millis);
+        let next = if turn.in_flight > 0 {
+            Some(timer.map_or(LIVE_REQUEST_POLL, |t| t.min(LIVE_REQUEST_POLL)))
+        } else {
+            timer
+        };
+        stats.idle_at_end = next.is_none();
+        let left = limit.saturating_sub(began.elapsed());
+        if left.is_zero() {
+            break;
+        }
+        // An idle page still gets its time: in the app only input wakes it.
+        let wait = next.map_or(left, |wait| wait.max(started.elapsed()).max(MIN_LIVE_TURN));
+        std::thread::sleep(wait.min(left));
+    }
+    stats.wall_ms = began.elapsed().as_millis() as u64;
+    stats
 }
 
 #[derive(Serialize, Deserialize)]
@@ -169,7 +335,16 @@ fn main() {
     }
 
     let started = Instant::now();
-    let mut result = run_capture(&args);
+    let args_clone = args.clone();
+    let handler = std::thread::Builder::new()
+        .name("capture-worker".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || run_capture(&args_clone))
+        .expect("failed to spawn capture worker thread");
+    let mut result = match handler.join() {
+        Ok(r) => r,
+        Err(_) => CaptureResult::new(&args).failed("error", "worker thread panicked".to_string()),
+    };
     result.elapsed_ms = Some(started.elapsed().as_millis() as u64);
 
     // Output JSON result
@@ -218,10 +393,19 @@ fn run_capture(args: &Args) -> CaptureResult {
     } else {
         "ParityCapture/1.0"
     };
+
+    let replay_proxy = match &args.replay_proxy {
+        Some(raw) => match Url::parse(raw) {
+            Ok(u) => Some(u),
+            Err(e) => return result.failed("error", format!("Invalid replay proxy URL: {}", e)),
+        },
+        None => None,
+    };
+
     let engine_result = EngineBuilder::new()
-        .with_config(EngineConfig::for_parity_testing())
+        .with_config(capture_config(&args, replay_proxy))
         .user_agent(user_agent)
-        .javascript_enabled(url.is_some())
+        .javascript_enabled(url.is_some() || args.actions.is_some())
         .build();
 
     let mut engine = match engine_result {
@@ -258,6 +442,20 @@ fn run_capture(args: &Args) -> CaptureResult {
         if let Err(e) = rt.block_on(engine.load_url(view_id, url)) {
             return result.failed("error", format!("Failed to load URL: {:?}", e));
         }
+        // The engine shows a server's error page as the page, which is what
+        // the app's user should see. A capture is of the site, not of its
+        // error page: it fails as it did when the engine refused the
+        // response, with the same message first, so no board counts a 403
+        // as a load.
+        if let Some(status) = engine
+            .http_status(view_id)
+            .filter(|s| !(200..300).contains(s))
+        {
+            return result.failed(
+                "error",
+                format!("Failed to load URL: NavigationError(\"HTTP error\") (HTTP {status}; the engine rendered its body)"),
+            );
+        }
         if let Some(log) = engine.script_log(view_id) {
             result.script_stats = Some(script_stats(log));
             if let Some(ref path) = args.dump_scripts {
@@ -265,6 +463,9 @@ fn run_capture(args: &Args) -> CaptureResult {
                     error!("Failed to write script log: {:?}", e);
                 }
             }
+        }
+        if let Some(live_ms) = args.live_ms {
+            result.live_stats = Some(run_live(&rt, &mut engine, view_id, live_ms));
         }
     } else if let Some(html) = html_content {
         if let Err(e) = engine.load_html(view_id, &html) {
@@ -286,7 +487,24 @@ fn run_capture(args: &Args) -> CaptureResult {
         result.height = height;
     }
 
-    // Render
+    if let Some(ref actions_raw) = args.actions {
+        let actions = match parse_actions(actions_raw) {
+            Ok(acts) => acts,
+            Err(e) => {
+                let _ = engine.destroy_view(view_id);
+                return result.failed("error", e);
+            }
+        };
+        execute_actions(
+            &mut engine,
+            view_id,
+            &actions,
+            args.actions_out_dir.as_deref(),
+            &mut result,
+        );
+    }
+
+    // Render final view
     if let Err(e) = engine.render_view(view_id) {
         return result.failed("error", format!("Failed to render: {:?}", e));
     }
@@ -327,6 +545,278 @@ fn run_capture(args: &Args) -> CaptureResult {
     let _ = engine.destroy_view(view_id);
 
     result
+}
+
+fn parse_actions(raw: &str) -> Result<Vec<ActionItem>, String> {
+    let trimmed = raw.trim();
+    let content = if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        trimmed.to_string()
+    } else {
+        fs::read_to_string(trimmed).map_err(|e| format!("failed to read actions file: {e}"))?
+    };
+    let content = content.trim();
+    if content.starts_with('[') {
+        serde_json::from_str::<Vec<ActionItem>>(content)
+            .map_err(|e| format!("failed to parse actions JSON array: {e}"))
+    } else {
+        serde_json::from_str::<ActionsPayload>(content)
+            .map(|p| p.actions)
+            .map_err(|e| format!("failed to parse actions JSON object: {e}"))
+    }
+}
+
+fn parse_point(eval_res: &str) -> Option<(f32, f32)> {
+    let idx = eval_res.find("point:")?;
+    let rest = &eval_res[idx + 6..];
+    let parts: Vec<&str> = rest.split(':').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let x_part = parts[0].trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
+    let y_part = parts[1].trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
+    let x = x_part.parse::<f32>().ok()?;
+    let y = y_part.parse::<f32>().ok()?;
+    Some((x, y))
+}
+
+fn execute_actions(
+    engine: &mut rustkit_engine::Engine,
+    view_id: rustkit_engine::EngineViewId,
+    actions: &[ActionItem],
+    actions_out_dir: Option<&str>,
+    result: &mut CaptureResult,
+) {
+    let mut captures = Vec::new();
+    let mut action_results = Vec::new();
+
+    for (i, a) in actions.iter().enumerate() {
+        let step = a.step.unwrap_or(i);
+        let start = Instant::now();
+        let mut a_res = ActionResult {
+            step,
+            action_type: a.action_type.clone(),
+            status: "ok".to_string(),
+            error: None,
+            frame: None,
+            label: a.label.clone(),
+            selector_used: None,
+            method: None,
+            elapsed_ms: 0,
+        };
+
+        match a.action_type.as_str() {
+            "wait" => {
+                if let Some(ref sel) = a.selector {
+                    let timeout = Duration::from_millis(a.timeout_ms.or(a.ms).unwrap_or(2000));
+                    let wait_start = Instant::now();
+                    let sel_json = serde_json::to_string(sel).unwrap_or_default();
+                    let check_js = format!(
+                        "Boolean(document.querySelector({})) ? 'found' : 'missing'",
+                        sel_json
+                    );
+                    let mut found = false;
+                    while wait_start.elapsed() < timeout {
+                        if let Ok(eval_res) = engine.execute_script(view_id, &check_js) {
+                            if eval_res.contains("found") && !eval_res.contains("missing") {
+                                found = true;
+                                break;
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    if !found {
+                        a_res.status = "timeout".to_string();
+                        a_res.error = Some(format!("timed out waiting for selector {}", sel));
+                    }
+                } else {
+                    let ms = a.ms.unwrap_or(500);
+                    std::thread::sleep(Duration::from_millis(ms));
+                }
+            }
+            "click" => {
+                if let Some(ref sel) = a.selector {
+                    let selectors: Vec<&str> = sel.split(',').map(|s| s.trim()).collect();
+                    let mut clicked = false;
+                    for s in selectors {
+                        let s_json = serde_json::to_string(s).unwrap_or_default();
+                        let query_js = format!(
+                            r#"(function() {{
+                                try {{
+                                    var el = document.querySelector({0});
+                                    if (!el) return 'missing';
+                                    if (typeof el.getBoundingClientRect === 'function') {{
+                                        var r = el.getBoundingClientRect();
+                                        if (r && r.width > 0 && r.height > 0) {{
+                                            var cx = r.left + r.width / 2.0;
+                                            var cy = r.top + r.height / 2.0;
+                                            return 'point:' + cx + ':' + cy;
+                                        }}
+                                    }}
+                                    if (typeof el.focus === 'function') {{
+                                        try {{ el.focus(); }} catch (e) {{}}
+                                    }}
+                                    if (typeof el.click === 'function') {{
+                                        try {{ el.click(); }} catch (e) {{}}
+                                    }} else {{
+                                        try {{ el.dispatchEvent(new Event('click', {{ bubbles: true, cancelable: true }})); }} catch (e) {{}}
+                                    }}
+                                    return 'fallback_clicked';
+                                }} catch (e) {{
+                                    return 'error:' + e;
+                                }}
+                            }})()"#,
+                            s_json
+                        );
+                        if let Ok(eval_res) = engine.execute_script(view_id, &query_js) {
+                            if let Some((cx, cy)) = parse_point(&eval_res) {
+                                engine.mouse_move_at_point(view_id, cx, cy);
+                                let _ = engine.mouse_down_at_point(view_id, cx, cy);
+                                let _ = engine.click_at_point(view_id, cx, cy);
+                                let _ = engine.relayout(view_id);
+                                clicked = true;
+                                a_res.selector_used = Some(s.to_string());
+                                a_res.method = Some(format!("engine_point({:.1}, {:.1})", cx, cy));
+                                break;
+                            }
+                            if eval_res.contains("fallback_clicked") {
+                                let _ = engine.relayout(view_id);
+                                clicked = true;
+                                a_res.selector_used = Some(s.to_string());
+                                a_res.method = Some("synthetic_fallback".to_string());
+                                if a_res.label.is_none() {
+                                    a_res.label = Some("fallback".to_string());
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if !clicked {
+                        a_res.status = "selector_not_found".to_string();
+                        a_res.error =
+                            Some(format!("no matching element found for selector {}", sel));
+                    }
+                } else if let (Some(x), Some(y)) = (a.x, a.y) {
+                    engine.mouse_move_at_point(view_id, x, y);
+                    let _ = engine.mouse_down_at_point(view_id, x, y);
+                    let _ = engine.click_at_point(view_id, x, y);
+                    let _ = engine.relayout(view_id);
+                    a_res.method = Some(format!("engine_point({:.1}, {:.1})", x, y));
+                } else {
+                    a_res.status = "error".to_string();
+                    a_res.error = Some("click action requires selector or (x, y)".to_string());
+                }
+            }
+            "key" => {
+                if let Some(ref sel) = a.selector {
+                    let sel_json = serde_json::to_string(sel).unwrap_or_default();
+                    let focus_js = format!(
+                        "var el = document.querySelector({}); if (el && typeof el.focus === 'function') el.focus();",
+                        sel_json
+                    );
+                    let _ = engine.execute_script(view_id, &focus_js);
+                }
+                if let Some(ref text) = a.text {
+                    let text_json = serde_json::to_string(text).unwrap_or_default();
+                    let key_js = format!(
+                        r#"(function() {{
+                            var el = document.activeElement;
+                            if (el && 'value' in el) {{
+                                el.value = (el.value || '') + {0};
+                                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            }}
+                        }})()"#,
+                        text_json
+                    );
+                    let _ = engine.execute_script(view_id, &key_js);
+                    let _ = engine.relayout(view_id);
+                } else if let Some(ref key) = a.key {
+                    let key_code = match key.as_str() {
+                        "Enter" => 13,
+                        "Escape" => 27,
+                        "Backspace" => 8,
+                        "Tab" => 9,
+                        _ => 0,
+                    };
+                    let _ = engine.handle_text_key(view_id, key_code, key, false, false, false);
+                    let key_json = serde_json::to_string(key).unwrap_or_default();
+                    let event_js = format!(
+                        r#"(function() {{
+                            var el = document.activeElement || document.body;
+                            if (el) {{
+                                el.dispatchEvent(new KeyboardEvent('keydown', {{ key: {0}, bubbles: true }}));
+                                el.dispatchEvent(new KeyboardEvent('keyup', {{ key: {0}, bubbles: true }}));
+                            }}
+                        }})()"#,
+                        key_json
+                    );
+                    let _ = engine.execute_script(view_id, &event_js);
+                    let _ = engine.relayout(view_id);
+                }
+            }
+            "resize" => {
+                if let (Some(w), Some(h)) = (a.width, a.height) {
+                    let bounds = Bounds {
+                        x: 0,
+                        y: 0,
+                        width: w,
+                        height: h,
+                    };
+                    if let Err(e) = engine.resize_view(view_id, bounds) {
+                        a_res.status = "error".to_string();
+                        a_res.error = Some(format!("resize failed: {:?}", e));
+                    } else {
+                        result.width = w;
+                        result.height = h;
+                        let _ = engine.relayout(view_id);
+                    }
+                } else {
+                    a_res.status = "error".to_string();
+                    a_res.error = Some("resize requires width and height".to_string());
+                }
+            }
+            "capture" => {
+                if let Some(ref frame) = a.frame {
+                    let frame_path = match actions_out_dir {
+                        Some(out_dir) => {
+                            Path::new(out_dir).join(frame).to_string_lossy().to_string()
+                        }
+                        None => frame.clone(),
+                    };
+                    if let Some(parent) = Path::new(&frame_path).parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = engine.render_view(view_id);
+                    if let Err(e) = engine.capture_frame(view_id, &frame_path) {
+                        a_res.status = "error".to_string();
+                        a_res.error = Some(format!("capture_frame failed: {:?}", e));
+                    } else {
+                        let label = a.label.clone().unwrap_or_else(|| format!("step_{}", step));
+                        captures.push(StepCapture {
+                            step,
+                            label: label.clone(),
+                            frame: frame_path.clone(),
+                        });
+                        a_res.frame = Some(frame_path);
+                        a_res.label = Some(label);
+                    }
+                } else {
+                    a_res.status = "error".to_string();
+                    a_res.error = Some("capture requires frame path".to_string());
+                }
+            }
+            other => {
+                a_res.status = "error".to_string();
+                a_res.error = Some(format!("unknown action type: {}", other));
+            }
+        }
+
+        a_res.elapsed_ms = start.elapsed().as_millis() as u64;
+        action_results.push(a_res);
+    }
+
+    result.captures = Some(captures);
+    result.action_results = Some(action_results);
 }
 
 /// `WxH`, e.g. `1024x768`.
@@ -549,9 +1039,9 @@ fn inject_style_first_in_head(html: &str, attrs: &str, css: &str) -> String {
     let lower = html.to_ascii_lowercase();
 
     let insert_at = ["<head", "<html"].iter().find_map(|open| {
-        lower.find(open).and_then(|start| {
-            lower[start..].find('>').map(|end| start + end + 1)
-        })
+        lower
+            .find(open)
+            .and_then(|start| lower[start..].find('>').map(|end| start + end + 1))
     });
 
     match insert_at {
@@ -562,7 +1052,7 @@ fn inject_style_first_in_head(html: &str, attrs: &str, css: &str) -> String {
 
 fn analyze_layout_json(json_str: &str) -> Option<LayoutStats> {
     let data: serde_json::Value = serde_json::from_str(json_str).ok()?;
-    
+
     let mut stats = LayoutStats {
         total_boxes: 0,
         sized: 0,
@@ -613,10 +1103,75 @@ fn analyze_layout_json(json_str: &str) -> Option<LayoutStats> {
     Some(stats)
 }
 
+/// The engine configuration a capture runs with: the parity defaults, plus
+/// whatever the command line overrides.
+fn capture_config(args: &Args, replay_proxy: Option<Url>) -> EngineConfig {
+    let mut config = EngineConfig::for_parity_testing();
+    if let Some(horizon) = args.timer_horizon_ms {
+        config.timer_horizon_ms = horizon;
+    }
+    if let Some(budget) = args.script_budget_ms {
+        config.script_budget_ms = budget;
+    }
+    config.interrupt_scripts_at_budget = args.interrupt_scripts;
+    config.replay_proxy = replay_proxy;
+    config
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn parsed(extra: &[&str]) -> Args {
+        let mut argv = vec!["parity-capture", "--url", "https://example.test/"];
+        argv.extend_from_slice(extra);
+        Args::try_parse_from(argv).expect("the command line parses")
+    }
+
+    // The live loop is the app's, not the board's: a capture turns it only
+    // when asked.
+    #[test]
+    fn the_live_loop_is_turned_only_when_asked() {
+        assert_eq!(parsed(&[]).live_ms, None);
+        assert_eq!(parsed(&["--live-ms", "20000"]).live_ms, Some(20_000));
+    }
+
+    // The board is measured at the engine's 5 s script budget, and the live
+    // app runs pages at 60 s (#573). `--script-budget-ms` lets one labelled
+    // run be taken at the app's budget; without the flag nothing changes.
+    #[test]
+    fn the_script_budget_is_the_engines_default_without_the_flag() {
+        let config = capture_config(&parsed(&[]), None);
+        assert_eq!(config.script_budget_ms, 5_000);
+        assert_eq!(
+            config.script_budget_ms,
+            EngineConfig::for_parity_testing().script_budget_ms
+        );
+        assert_eq!(
+            config.timer_horizon_ms,
+            EngineConfig::for_parity_testing().timer_horizon_ms
+        );
+    }
+
+    #[test]
+    fn a_running_script_is_stopped_at_the_budget_only_with_the_flag() {
+        assert!(!capture_config(&parsed(&[]), None).interrupt_scripts_at_budget);
+        assert!(!capture_config(&parsed(&["--script-budget-ms", "60000"]), None).interrupt_scripts_at_budget);
+        let config = capture_config(&parsed(&["--interrupt-scripts"]), None);
+        assert!(config.interrupt_scripts_at_budget);
+        assert_eq!(config.script_budget_ms, 5_000);
+    }
+
+    #[test]
+    fn the_script_budget_flag_sets_the_engines_script_budget_and_nothing_else() {
+        let config = capture_config(&parsed(&["--script-budget-ms", "60000"]), None);
+        assert_eq!(config.script_budget_ms, 60_000);
+        assert_eq!(
+            config.timer_horizon_ms,
+            EngineConfig::for_parity_testing().timer_horizon_ms
+        );
+    }
 
     fn write_file(dir: &Path, rel: &str, content: &str) {
         let path = dir.join(rel);
@@ -686,10 +1241,14 @@ mod tests {
         // Canonicalization needs a real file, so use one from the tree.
         let real = Path::new("websuite/micro/gradients/index.html");
         if real.exists() {
-            assert!(is_micro_suite_path(real),
-                "relative micro path must be detected");
+            assert!(
+                is_micro_suite_path(real),
+                "relative micro path must be detected"
+            );
         }
-        assert!(!is_micro_suite_path(Path::new("websuite/cases/x/index.html")));
+        assert!(!is_micro_suite_path(Path::new(
+            "websuite/cases/x/index.html"
+        )));
     }
 
     #[test]
@@ -701,5 +1260,16 @@ mod tests {
             "/repo/websuite/pages/blog/index.html"
         )));
     }
-}
 
+    #[test]
+    fn parse_point_extracts_coordinates_from_js_string() {
+        assert_eq!(
+            parse_point("String(\"point:100:200\")"),
+            Some((100.0, 200.0))
+        );
+        assert_eq!(parse_point("point:12.5:30.25"), Some((12.5, 30.25)));
+        assert_eq!(parse_point("point:-10.0:40.5"), Some((-10.0, 40.5)));
+        assert_eq!(parse_point("String(\"fallback_clicked\")"), None);
+        assert_eq!(parse_point("missing"), None);
+    }
+}

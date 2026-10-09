@@ -134,7 +134,10 @@ def collect(commit: str, branch: str) -> dict:
     build_code, build_out = run(["cargo", "build", "--workspace"])
     build_warnings = len(re.findall(r"^warning:", build_out, re.M))
 
-    test_code, test_out = run(["cargo", "test", "--workspace"])
+    # Engine tests share a GPU guard. Hundreds of parallel tests can spend
+    # its entire 120-second timeout waiting behind other valid tests; the
+    # sync gate therefore runs serially on Windows, including hosted runners.
+    test_code, test_out = run(["cargo", "test", "--workspace", "--", "--test-threads=1"])
 
     # Attribute each "test result:" block to the binary that produced it.
     current = None

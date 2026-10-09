@@ -8,7 +8,7 @@ is one command and a reviewer can re-run it to check a sync PR byte for byte:
     python scripts/sync_parity_tooling.py <path-to-hiwave-macos-checkout>
 
 What it copies VERBATIM from macOS (tracked files only):
-  scripts/*.py, scripts/tests/**, tools/parity_oracle/*.mjs + package.json,
+  scripts/*.py, scripts/tests/**, tools/parity_oracle/*.{mjs,py,html,json},
   cases/*.json, websuite/*.json, docs/VISUAL_DIFF_POLICY.md (the gates parse it),
   baselines/common/* (the freeze script and reset stylesheet every Chrome
   capture injects: tooling, not captures)
@@ -21,13 +21,13 @@ What it does NOT copy:
     animation:none style was never attached and animated fixtures were
     captured mid-animation).
   - *.sh: Windows has .ps1 equivalents; those stay as they are.
-  - the two tests of the macOS parity CI lanes (MACOS_CI_TESTS below).
+  - tests of the macOS parity CI lanes (MACOS_CI_TESTS below).
   - tools/parity_oracle/node_modules (gitignored here; `npm ci` locally),
     scripts/cargo-run.mjs (a macOS seat PATH shim), parity-baseline/ (the macOS
     board's own state).
 Windows-only files already in this repo are never deleted.
 
-Then it applies three Windows fixes to the copied Python, and nothing else:
+Then it applies these Windows fixes to the copied Python:
   1. encoding="utf-8" on every text-mode open()/io.open(), Path.read_text()/
      write_text(), and text=True subprocess call that lacks one. A bare text
      open on Windows is cp1252 and crashes on the corpus (Aleph #35 class).
@@ -44,6 +44,8 @@ Then it applies three Windows fixes to the copied Python, and nothing else:
      json.dumps. macOS writes '{path}' into a JS string literal; a Windows
      path's backslashes then read as escape sequences, which node rejects as a
      SyntaxError, so every compare failed and every case was NOT-MEASURED.
+  6. parity_swarm's stdout uses UTF-8 on Windows, including when redirected,
+     so Unicode progress marks do not abort the board under cp1252.
 """
 from __future__ import annotations
 
@@ -60,7 +62,8 @@ THIS = "scripts/sync_parity_tooling.py"
 # runners). Windows has no parity CI lane (GitHub's Windows runners have no GPU;
 # see scripts/collect_metrics.py), so these would fail forever here.
 MACOS_CI_TESTS = {"scripts/tests/test_stability_actually_gates.py",
-                  "scripts/tests/test_unit_suites_actually_run.py"}
+                  "scripts/tests/test_unit_suites_actually_run.py",
+                  "scripts/tests/test_js_suites_actually_run.py"}
 
 
 def tracked(src: Path, *patterns: str) -> list[str]:
@@ -71,8 +74,10 @@ def tracked(src: Path, *patterns: str) -> list[str]:
 
 def copy_set(src: Path) -> list[str]:
     files = tracked(src, "scripts/*.py", "scripts/tests", "tools/parity_oracle/*.mjs",
-                    "tools/parity_oracle/package.json", "cases/*.json", "websuite/*.json",
-                    "docs/VISUAL_DIFF_POLICY.md", "baselines/common/*")
+                    "tools/parity_oracle/*.py", "tools/parity_oracle/*.html",
+                    "tools/parity_oracle/*.json", "cases/*.json", "websuite/*.json",
+                    "docs/VISUAL_DIFF_POLICY.md", "docs/REAL_SITE_*_DESIGN_*.md",
+                    "baselines/common/*")
     return [f for f in files if "/node_modules/" not in f and f != THIS and f not in MACOS_CI_TESTS]
 
 
@@ -212,6 +217,10 @@ def ensure_import_os(text: str) -> str:
 
 
 def windows_fixes(rel: str, text: str, report: list[str]) -> str:
+    if rel == "scripts/parity_swarm.py":
+        # Redirected Windows stdout defaults to cp1252; the progress check
+        # marks otherwise crash the board after its first completed case.
+        text = text.replace("import sys\n", "import sys\nif sys.platform == 'win32':\n    sys.stdout.reconfigure(encoding='utf-8')\n", 1)
     for old, new in BIN_REPLACEMENTS:
         if old in text:
             text = ensure_import_os(text.replace(old, new))

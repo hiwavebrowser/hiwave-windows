@@ -1,4 +1,4 @@
-"""Apply the Windows-local engine patches to a freshly copied rustkit-layout.
+"""Apply the Windows-local patches to freshly copied RustKit engine crates.
 
 An engine refresh copies crates/rustkit-* verbatim from hiwave-macos. A small
 number of differences are Windows-specific and live only in this repo (rule
@@ -227,6 +227,14 @@ def patch_files(check: bool, state: list) -> bool:
     changed = False
     for patch in sorted(PATCH_DIR.glob("*.patch")):
         name = patch.name
+        # Test-only fixes can edit existing tests without adding a function
+        # marker. Recognize their exact reverse as an already-applied patch.
+        reverse = subprocess.run(
+            ["git", "-C", str(REPO), "apply", "-C1", "--ignore-whitespace",
+             "--reverse", "--check", str(patch)], capture_output=True, text=True)
+        if reverse.returncode == 0:
+            state.append((name, "already applied (or landed upstream)"))
+            continue
         # The marker is the first test the patch adds: present means applied
         # (by this script, or because upstream landed the change).
         text = patch.read_text(encoding="utf-8")

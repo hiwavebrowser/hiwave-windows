@@ -26,7 +26,10 @@ pub use traits::{ViewHostTrait, WindowHandle};
 #[cfg(target_os = "macos")]
 pub use macos::MacOSViewHost;
 #[cfg(target_os = "macos")]
-pub use macos::{drain_pending_clicks, drain_pending_keys, PendingClick, PendingKey};
+pub use macos::{
+    drain_pending_clicks, drain_pending_keys, drain_pending_scrolls, PendingClick, PendingKey,
+    PendingScroll, PointerInput,
+};
 
 // Screenshot capture (Windows: GPU readback of a hosted view)
 #[cfg(windows)]
@@ -845,6 +848,34 @@ impl ViewHost {
 
                 // Force repaint
                 let _ = InvalidateRect(hwnd, None, false);
+            }
+        }
+
+        // Until 2026-10-03 this function had no macOS arm: the bounds were
+        // recorded, the engine resized its drawable and laid out at the new
+        // size, and the NSView kept its first frame. The new drawable was
+        // stretched into the old rectangle, so a bigger window drew a
+        // smaller page, and clicks landed on the wrong elements. The
+        // `setFrame:` lived only in `MacOSViewHost::set_bounds`, the twin
+        // with no callers.
+        #[cfg(target_os = "macos")]
+        if hwnd_raw != 0 {
+            let view = hwnd_raw as id;
+            unsafe {
+                let superview: id = msg_send![view, superview];
+                if superview != nil {
+                    // Top-left origin (HiWave/Wry) to Cocoa's bottom-left,
+                    // as `create_view` does.
+                    let parent: cocoa::foundation::NSRect = msg_send![superview, frame];
+                    let frame = cocoa::foundation::NSRect::new(
+                        cocoa::foundation::NSPoint::new(
+                            bounds.x as f64,
+                            parent.size.height - bounds.y as f64 - bounds.height as f64,
+                        ),
+                        cocoa::foundation::NSSize::new(bounds.width as f64, bounds.height as f64),
+                    );
+                    let _: () = msg_send![view, setFrame: frame];
+                }
             }
         }
 
@@ -1885,7 +1916,7 @@ mod tests {
     #[test]
     fn test_bounds_clone() {
         let b1 = Bounds::new(10, 20, 800, 600);
-        let b2 = b1.clone();
+        let b2 = b1;
 
         assert_eq!(b1, b2);
         assert_eq!(b1.x, b2.x);
@@ -1897,7 +1928,7 @@ mod tests {
     #[test]
     fn test_view_id_clone() {
         let id1 = ViewId::new();
-        let id2 = id1.clone();
+        let id2 = id1;
 
         // Cloned IDs should be equal
         assert_eq!(id1, id2);

@@ -168,6 +168,10 @@ pub struct GlyphCache {
     color_next_x: u32,
     color_next_y: u32,
     color_row_height: u32,
+    /// Times either atlas has been full and started over at its first row.
+    /// The entries handed out before that point at places the glyphs
+    /// rasterized after it are written over (see [`resets`](Self::resets)).
+    resets: u64,
 }
 
 impl GlyphCache {
@@ -316,12 +320,20 @@ impl GlyphCache {
             color_next_x: 1,
             color_next_y: 1,
             color_row_height: 0,
+            resets: 0,
         })
     }
 
     /// Get the atlas size.
     pub fn atlas_size(&self) -> u32 {
         self.atlas_size
+    }
+
+    /// How often an atlas has started over. A frame during which this
+    /// moves has batched quads whose places in the atlas now hold other
+    /// glyphs: it has to be built again.
+    pub fn resets(&self) -> u64 {
+        self.resets
     }
 
     /// Get the bind group for the atlas texture.
@@ -373,7 +385,7 @@ impl GlyphCache {
         let gw = gw.max(1).min(256);
         let gh = gh.max(1).min(256);
 
-        let (ax, ay) = self.allocate_color_space(gw + 2, gh + 2)?;
+        let (ax, ay) = self.allocate_color_space(queue, gw + 2, gh + 2)?;
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -414,7 +426,7 @@ impl GlyphCache {
     }
 
     /// Allocate space in the COLOR atlas (separate cursor from the grayscale one).
-    fn allocate_color_space(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+    fn allocate_color_space(&mut self, queue: &wgpu::Queue, width: u32, height: u32) -> Option<(u32, u32)> {
         if self.color_next_x + width > self.atlas_size {
             self.color_next_x = 1;
             self.color_next_y += self.color_row_height + 1;
@@ -422,6 +434,8 @@ impl GlyphCache {
         }
         if self.color_next_y + height > self.atlas_size {
             tracing::warn!("Color glyph atlas full, clearing cache");
+            self.resets += 1;
+            Self::zero_texture(queue, &self.color_atlas, self.atlas_size, 4);
             self.color_entries.clear();
             self.color_next_x = 1;
             self.color_next_y = 1;
@@ -565,7 +579,7 @@ impl GlyphCache {
         }
 
         // Allocate space in the atlas
-        let (atlas_x, atlas_y) = self.allocate_space(glyph_width + 2, glyph_height + 2)?;
+        let (atlas_x, atlas_y) = self.allocate_space(queue, glyph_width + 2, glyph_height + 2)?;
 
         // Upload to atlas
         queue.write_texture(
@@ -638,7 +652,7 @@ impl GlyphCache {
         let glyph_width = glyph_width.max(1).min(256);
         let glyph_height = glyph_height.max(1).min(256);
 
-        let (atlas_x, atlas_y) = self.allocate_space(glyph_width + 2, glyph_height + 2)?;
+        let (atlas_x, atlas_y) = self.allocate_space(queue, glyph_width + 2, glyph_height + 2)?;
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.atlas,
@@ -678,8 +692,35 @@ impl GlyphCache {
         Some(entry)
     }
 
+    /// Empties an atlas that starts over. Glyphs are sampled with a linear
+    /// filter, one texel past their own edge: with the last round's pixels
+    /// left in the gaps between the new glyphs, every glyph drawn after a
+    /// reset carried specks of whatever lay there before.
+    fn zero_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, size: u32, bytes_per_texel: u32) {
+        let empty = vec![0u8; (size * size * bytes_per_texel) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &empty,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * bytes_per_texel),
+                rows_per_image: Some(size),
+            },
+            wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
     /// Allocate space in the atlas.
-    fn allocate_space(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+    fn allocate_space(&mut self, queue: &wgpu::Queue, width: u32, height: u32) -> Option<(u32, u32)> {
         // Check if we need a new row
         if self.next_x + width > self.atlas_size {
             self.next_x = 1;
@@ -690,6 +731,8 @@ impl GlyphCache {
         // Check if we've run out of space
         if self.next_y + height > self.atlas_size {
             tracing::warn!("Glyph atlas full, clearing cache");
+            self.resets += 1;
+            Self::zero_texture(queue, &self.atlas, self.atlas_size, 1);
             self.entries.clear();
             self.run_entries.clear();
             self.next_x = 1;

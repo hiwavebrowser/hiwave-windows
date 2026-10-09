@@ -118,10 +118,6 @@ impl ImportMap {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.imports.is_empty() && self.scopes.is_empty()
-    }
-
     /// "Resolve a module specifier" (HTML §8.1.5.5): `referrer` is the URL of
     /// the importing module (or the document), `base` what a relative
     /// specifier resolves against.
@@ -165,7 +161,7 @@ fn match_in(map: &SpecifierMap, normalized: &str, original: &str) -> Result<Opti
     }
     let mut best: Option<(&String, &Option<Url>)> = None;
     for (key, address) in map {
-        if key.ends_with('/') && normalized.starts_with(key.as_str()) && best.map_or(true, |(b, _)| key.len() > b.len()) {
+        if key.ends_with('/') && normalized.starts_with(key.as_str()) && best.is_none_or(|(b, _)| key.len() > b.len()) {
             best = Some((key, address));
         }
     }

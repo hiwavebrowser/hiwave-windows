@@ -11,5 +11,5 @@ hiwave-core = { workspace = true }
 adblock = { workspace = true }
 log = { workspace = true }
 url = { workspace = true }
-rustkit-http = { path = "../rustkit-http" }
+reqwest = { workspace = true }
 dirs = { workspace = true }

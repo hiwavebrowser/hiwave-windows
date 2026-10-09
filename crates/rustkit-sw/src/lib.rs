@@ -79,9 +79,10 @@ impl ServiceWorkerId {
 }
 
 /// Service worker state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ServiceWorkerState {
     /// Initial state, script being parsed.
+    #[default]
     Parsed,
     /// Installing (install event).
     Installing,
@@ -93,12 +94,6 @@ pub enum ServiceWorkerState {
     Activated,
     /// Redundant (replaced or install failed).
     Redundant,
-}
-
-impl Default for ServiceWorkerState {
-    fn default() -> Self {
-        Self::Parsed
-    }
 }
 
 /// Service worker update via cache type.
@@ -476,8 +471,9 @@ pub struct Client {
 }
 
 /// Client type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ClientType {
+    #[default]
     Window,
     Worker,
     SharedWorker,
@@ -622,12 +618,6 @@ impl Clients {
 pub struct ClientMatchOptions {
     pub include_uncontrolled: bool,
     pub client_type: ClientType,
-}
-
-impl Default for ClientType {
-    fn default() -> Self {
-        Self::Window
-    }
 }
 
 // ==================== Fetch Event ====================

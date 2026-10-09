@@ -98,9 +98,49 @@ MIN_PLAUSIBLE_ARMS = 50
 # `custom_property_pass_exists`.
 CUSTOM_PROPERTY_PREFIX = "--"
 
+# ---------------------------------------------------------------------------
+# Bucket taxonomy and ownership (Package Z2-M2)
+# ---------------------------------------------------------------------------
+
+BUCKETS: Dict[str, Dict[str, Any]] = {
+    "interactive": {
+        "title": "Interactive & Behavioral (Static No-Op)",
+        "owner": "engine",
+        "description": "User interaction, cursor, and selection affordances with 0 static render effect",
+        "properties": {"cursor", "pointer-events", "user-select"},
+    },
+    "paint": {
+        "title": "Visual Paint & Compositing (Non-Flow Paint)",
+        "owner": "renderer",
+        "description": "Visual decoration, shadows, filters, and outlines that do not affect layout flow",
+        "properties": {"outline", "outline-offset", "text-shadow", "backdrop-filter", "accent-color", "resize"},
+    },
+    "structure": {
+        "title": "Structure, Markers & Shaping",
+        "owner": "layout",
+        "description": "List markers, font variant glyph shaping, multi-column and scrollbars",
+        "properties": {"list-style", "font-variant", "scrollbar-width", "scrollbar-color", "column-count", "float"},
+    },
+}
+
+
+def bucket_for_property(name: str) -> Tuple[str, Dict[str, Any]]:
+    """Determine the semantic bucket and owner for a CSS property name."""
+    name_clean = name.strip().lower()
+    for b_id, b_meta in BUCKETS.items():
+        if name_clean in b_meta["properties"]:
+            return b_id, b_meta
+    # Heuristic classifications for newly authored properties
+    if any(k in name_clean for k in ("hover", "focus", "pointer", "cursor", "touch", "user-")):
+        return "interactive", BUCKETS["interactive"]
+    if any(k in name_clean for k in ("shadow", "filter", "outline", "color", "paint", "mask", "clip")):
+        return "paint", BUCKETS["paint"]
+    return "structure", BUCKETS["structure"]
+
 
 class CensusRefusal(Exception):
     """The run could not honestly measure. Never reported as a clean board."""
+
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +335,47 @@ def run_census(
         name for name in ledger if name in handled or name not in used_names
     )
 
+    # Bucket grouping and ranking (Package Z2-M2)
+    bucket_map: Dict[str, Dict[str, Any]] = {
+        b_id: {
+            "key": b_id,
+            "title": b_meta["title"],
+            "owner": b_meta["owner"],
+            "description": b_meta["description"],
+            "declarations": 0,
+            "cases": set(),
+            "properties": [],
+        }
+        for b_id, b_meta in BUCKETS.items()
+    }
+
+    for gap in gaps:
+        b_id, b_meta = bucket_for_property(gap["property"])
+        b_entry = bucket_map.setdefault(
+            b_id,
+            {
+                "key": b_id,
+                "title": b_meta["title"],
+                "owner": b_meta["owner"],
+                "description": b_meta["description"],
+                "declarations": 0,
+                "cases": set(),
+                "properties": [],
+            },
+        )
+        b_entry["declarations"] += gap["declarations"]
+        b_entry["cases"].update(gap["cases"])
+        gap_with_bucket = dict(gap, bucket=b_id, owner=b_meta["owner"])
+        b_entry["properties"].append(gap_with_bucket)
+
+    ranked_buckets = sorted(bucket_map.values(), key=lambda b: (-b["declarations"], b["key"]))
+    for b in ranked_buckets:
+        b["case_count"] = len(b["cases"])
+        b["cases"] = sorted(b["cases"])
+        b["property_count"] = len(b["properties"])
+
+    top_three_buckets = ranked_buckets[:3]
+
     return {
         "engine_arms": len(handled),
         "cases_measured": measured_cases,
@@ -303,6 +384,8 @@ def run_census(
         "gaps": gaps,
         "unledgered_gaps": [gap["property"] for gap in gaps if not gap["ledgered"]],
         "tighten_eligible": tighten_eligible,
+        "buckets": ranked_buckets,
+        "top_three_buckets": top_three_buckets,
         "limits": [
             "property-level only: an arm existing does not mean the value parses "
             "(calc() lived inside `height`, which has an arm)",
@@ -321,7 +404,7 @@ def census_passes(report: Dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def print_report(report: Dict[str, Any]) -> None:
+def print_report(report: Dict[str, Any], bounded: bool = False) -> None:
     print(
         f"Declaration census — {report['engine_arms']} engine arms, "
         f"{report['properties_used']} properties authored across "
@@ -330,23 +413,40 @@ def print_report(report: Dict[str, Any]) -> None:
     if report["cases_unreadable"]:
         print("  UNREADABLE: " + ", ".join(report["cases_unreadable"]))
     print()
-    if not report["gaps"]:
-        print("  no dropped declarations in the corpus")
-    for gap in report["gaps"]:
-        mark = "ledgered" if gap["ledgered"] else "NEW GAP"
-        print(
-            f"  {mark:8s} {gap['property']:20s} "
-            f"decls={gap['declarations']:4d} cases={len(gap['cases']):2d} "
-            f"{', '.join(gap['cases'][:4])}"
-        )
-        if gap["note"]:
-            print(f"           {gap['note']}")
-    if report["tighten_eligible"]:
+
+    # Top Three Buckets with Owners (Package Z2-M2)
+    top_buckets = report.get("top_three_buckets", [])
+    if top_buckets:
+        print("  TOP THREE BUCKETS WITH OWNERS (Package Z2-M2):")
+        for i, b in enumerate(top_buckets, 1):
+            props_summary = ", ".join(
+                f"{p['property']} ({p['declarations']})" for p in b["properties"]
+            )
+            print(
+                f"    {i}. {b['title']} — owner: {b['owner']}\n"
+                f"       decls={b['declarations']:2d}, cases={b['case_count']:2d}, properties={b['property_count']}: {props_summary}"
+            )
         print()
-        print("  TIGHTEN-ELIGIBLE (ledger entries this tree no longer needs):")
-        for name in report["tighten_eligible"]:
-            print(f"    {name}")
-    print()
+
+    if not bounded:
+        if not report["gaps"]:
+            print("  no dropped declarations in the corpus")
+        for gap in report["gaps"]:
+            mark = "ledgered" if gap["ledgered"] else "NEW GAP"
+            _, b_meta = bucket_for_property(gap["property"])
+            print(
+                f"  {mark:8s} {gap['property']:20s} [{b_meta['owner']:8s}] "
+                f"decls={gap['declarations']:4d} cases={len(gap['cases']):2d} "
+                f"{', '.join(gap['cases'][:4])}"
+            )
+            if gap["note"]:
+                print(f"           {gap['note']}")
+        if report["tighten_eligible"]:
+            print()
+            print("  TIGHTEN-ELIGIBLE (ledger entries this tree no longer needs):")
+            for name in report["tighten_eligible"]:
+                print(f"    {name}")
+        print()
     for limit in report["limits"]:
         print(f"  limit: {limit}")
 
@@ -358,6 +458,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--include-holdout",
         action="store_true",
         help="also census the non-gating holdout cases",
+    )
+    parser.add_argument(
+        "--bounded",
+        action="store_true",
+        help="bound output strictly to the top three buckets with owners (Z2-M2)",
     )
     args = parser.parse_args(argv)
 
@@ -372,7 +477,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("This is not a pass. Nothing was measured.", file=sys.stderr)
         return 1
 
-    print_report(report)
+    print_report(report, bounded=args.bounded)
 
     if args.json:
         serialisable = dict(report)

@@ -41,7 +41,7 @@ fn without_the_bridge_there_is_no_network_entry_point() {
     assert!(!b.net_bridge_enabled());
     assert_eq!(ev(&b, "typeof window.__rustkit_net"), "undefined");
     assert!(b.take_net_requests().is_empty());
-    assert_eq!(b.deliver_net_response(1, ok("http://x/", 200, "")).unwrap(), false);
+    assert!(!b.deliver_net_response(1, ok("http://x/", 200, "")).unwrap());
     assert_eq!(b.pending_net_requests(), 0);
 }
 

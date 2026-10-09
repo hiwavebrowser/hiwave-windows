@@ -335,7 +335,7 @@ impl<'a> LineSegment<'a> {
     /// Get the text without trailing break characters.
     pub fn text_without_break(&self) -> &'a str {
         if self.ends_with_break {
-            let trimmed = self.text.trim_end_matches(|c| is_mandatory_break(c));
+            let trimmed = self.text.trim_end_matches(is_mandatory_break);
             trimmed
         } else {
             self.text

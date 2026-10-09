@@ -456,3 +456,128 @@ fn a_dynamic_import_inside_a_module_resolves_against_it() {
     assert_eq!(site.asked, vec!["https://site.test/app/lazy.js"]);
     assert_eq!(log(&mut rt), "lazy:L");
 }
+
+/// A dynamic import that stays pending across multiple intermediate turns / run_jobs calls
+/// resumes cleanly and resolves once the host supplies the module.
+#[test]
+fn dynamic_import_pending_across_multiple_run_jobs_resolves() {
+    let mut rt = runtime();
+    // 1. Initiate dynamic import - enters pending state waiting for network fetch
+    rt.evaluate_script(
+        "import('./delayed.js').then(function (m) { log.push('resolved:' + m.val); });",
+    )
+    .unwrap();
+    assert_eq!(
+        rt.take_module_requests(),
+        vec!["https://site.test/page/delayed.js"]
+    );
+    assert_eq!(log(&mut rt), ""); // Not resolved yet
+
+    // 2. Multiple intermediate script evaluations and run_jobs calls while fetch is in-flight
+    rt.evaluate_script("log.push('intermediate turn 1');").unwrap();
+    rt.evaluate_script("log.push('intermediate turn 2');").unwrap();
+    assert_eq!(log(&mut rt), "intermediate turn 1,intermediate turn 2");
+
+    // 3. Now supply the fetched module and let jobs run to resolve
+    rt.supply_module(
+        "https://site.test/page/delayed.js",
+        Ok(FetchedModule {
+            final_url: "https://site.test/page/delayed.js".into(),
+            source: "export const val = 42;".into(),
+        }),
+    );
+    assert_eq!(
+        log(&mut rt),
+        "intermediate turn 1,intermediate turn 2,resolved:42"
+    );
+}
+
+/// Two runtimes running simultaneously must own distinct executor contexts without
+/// global placeholder aliasing or cross-talk, even with concurrent pending imports.
+#[test]
+fn two_runtimes_execute_concurrently_without_aliasing() {
+    let mut rt1 = runtime();
+    let mut rt2 = runtime();
+
+    // 1. Both runtimes evaluate code and initiate separate pending dynamic imports
+    rt1.evaluate_script(
+        "import('./mod1.js').then(function (m) { log.push('rt1:' + m.val); });",
+    )
+    .unwrap();
+    rt2.evaluate_script(
+        "import('./mod2.js').then(function (m) { log.push('rt2:' + m.val); });",
+    )
+    .unwrap();
+
+    assert_eq!(rt1.take_module_requests(), vec!["https://site.test/page/mod1.js"]);
+    assert_eq!(rt2.take_module_requests(), vec!["https://site.test/page/mod2.js"]);
+
+    // 2. Interleaved evaluation across both runtimes
+    rt1.evaluate_script("log.push('turn1');").unwrap();
+    rt2.evaluate_script("log.push('turn2');").unwrap();
+
+    // 3. Resolve rt2 first
+    rt2.supply_module(
+        "https://site.test/page/mod2.js",
+        Ok(FetchedModule {
+            final_url: "https://site.test/page/mod2.js".into(),
+            source: "export const val = 'B';".into(),
+        }),
+    );
+    assert_eq!(log(&mut rt2), "turn2,rt2:B");
+    assert_eq!(log(&mut rt1), "turn1"); // rt1 still pending, unaffected
+
+    // 4. Resolve rt1
+    rt1.supply_module(
+        "https://site.test/page/mod1.js",
+        Ok(FetchedModule {
+            final_url: "https://site.test/page/mod1.js".into(),
+            source: "export const val = 'A';".into(),
+        }),
+    );
+    assert_eq!(log(&mut rt1), "turn1,rt1:A");
+
+    // 5. Dropping rt1 leaves rt2 functioning normally
+    drop(rt1);
+    let val = rt2.evaluate_script("10 + 20").unwrap();
+    assert!(matches!(val, JsValue::Number(n) if n == 30.0));
+}
+
+/// A runtime dropped or cancelled while a dynamic import is pending must cleanly
+/// unwind its executor state, cancel pending futures, and release resources
+/// without panicking, leaking memory, or triggering use-after-free.
+#[test]
+fn cancellation_and_teardown_during_pending_import_cleans_up_safely() {
+    // Case A: Dynamic import is cancelled via error supply, runtime recovers and stays usable
+    {
+        let mut rt = runtime();
+        rt.evaluate_script(
+            "import('./cancel.js').then(function () { log.push('RESOLVED'); }, function (e) { log.push('cancelled:' + e.name); });",
+        )
+        .unwrap();
+        assert_eq!(rt.take_module_requests(), vec!["https://site.test/page/cancel.js"]);
+
+        // Supply error to reject the pending fetch
+        rt.supply_module(
+            "https://site.test/page/cancel.js",
+            Err("Module fetch cancelled".to_string()),
+        );
+        assert_eq!(log(&mut rt), "cancelled:TypeError");
+
+        // Runtime remains completely usable
+        let res = rt.evaluate_script("'alive'").unwrap();
+        assert!(matches!(res, JsValue::String(s) if s == "alive"));
+    }
+
+    // Case B: Runtime is dropped directly while dynamic import is in-flight
+    {
+        let mut rt = runtime();
+        rt.evaluate_script(
+            "import('./never_supplied.js').then(function (m) { log.push(m); });",
+        )
+        .unwrap();
+        assert_eq!(rt.take_module_requests(), vec!["https://site.test/page/never_supplied.js"]);
+        // Dropping the runtime with a pending import must not panic or trigger undefined behavior
+        drop(rt);
+    }
+}

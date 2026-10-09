@@ -221,7 +221,7 @@ mod tests {
         for y in 0..8 {
             for x in 0..8 {
                 let d = DitherMatrix::Bayer8x8.dither_value(x, y);
-                assert!(d >= 0.0078125 && d <= 0.9921875, "d = {}", d);
+                assert!((0.0078125..=0.9921875).contains(&d), "d = {}", d);
             }
         }
     }

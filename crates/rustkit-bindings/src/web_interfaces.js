@@ -64,7 +64,9 @@
         ['ClipboardEvent', 'Event', [['clipboardData', null, 'any']]],
         ['PageTransitionEvent', 'Event', [['persisted', false, 'bool']]],
         ['BeforeUnloadEvent', 'Event', [['returnValue', '', 'str']]],
-        ['MediaQueryListEvent', 'Event', [['media', '', 'str'], ['matches', false, 'bool']]]
+        ['MediaQueryListEvent', 'Event', [['media', '', 'str'], ['matches', false, 'bool']]],
+        ['PromiseRejectionEvent', 'Event', [['promise', null, 'any'], ['reason', undefined, 'any']]],
+        ['SubmitEvent', 'Event', [['submitter', null, 'any']]]
     ];
     EVENTS.forEach(function (spec) {
         var name = spec[0], Parent = g[spec[1]], fields = spec[2];
@@ -93,6 +95,7 @@
         ME.prototype.getModifierState = function (key) {
             return { Control: this.ctrlKey, Shift: this.shiftKey, Alt: this.altKey, Meta: this.metaKey }[key] === true;
         };
+        Object.defineProperty(ME.prototype, 'which', { get: function () { return this.button + 1; }, configurable: true, enumerable: true });
         ['x', 'pageX', 'offsetX'].forEach(function (k) {
             Object.defineProperty(ME.prototype, k, { get: function () { return this.clientX; }, configurable: true, enumerable: true });
         });
@@ -161,9 +164,7 @@
     if (Window === undefined) {
         Window = function Window() { illegal(); };
         if (EventTarget) Object.setPrototypeOf(Window.prototype, EventTarget.prototype);
-        // `window` is the global object, not an instance of a constructor we
-        // could build, so `instanceof Window` is answered by identity.
-        Object.defineProperty(Window, Symbol.hasInstance, { value: function (v) { return v === g; } });
+        Object.setPrototypeOf(g, Window.prototype);
         def('Window', Window);
     }
     function tag(obj, Iface) {
@@ -198,6 +199,11 @@
     // and `typeof ShadowRoot` guards must have a right-hand side.
     iface('ShadowRoot', g.DocumentFragment || Node);
     iface('Attr', Node);
+    iface('CDATASection', g.Text || g.CharacterData || Node);
+    var PI = iface('ProcessingInstruction', g.CharacterData || Node);
+    if (PI && PI.prototype) {
+        Object.defineProperty(PI.prototype, 'target', { get: function () { return ''; }, configurable: true, enumerable: true });
+    }
     iface('NamedNodeMap');
     iface('DOMStringMap');
     var StyleSheet = iface('StyleSheet');

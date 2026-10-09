@@ -33,16 +33,23 @@ pub fn render_image(
     natural_height: f32,
     object_fit: ObjectFit,
     object_position: (f32, f32),
+    object_position_offset: (f32, f32),
     opacity: f32,
     current_color: Color,
 ) -> DisplayCommand {
-    let draw_rect = object_fit.compute_rect(container, natural_width, natural_height, object_position);
+    let mut draw_rect =
+        object_fit.compute_rect(container, natural_width, natural_height, object_position);
+    draw_rect.dest.x += object_position_offset.0;
+    draw_rect.dest.y += object_position_offset.1;
 
     DisplayCommand::Image {
         url: url.to_string(),
         src_rect: draw_rect.src,
         dest_rect: draw_rect.dest,
         object_fit,
+        content_box: container,
+        object_position,
+        object_position_offset,
         opacity,
         current_color,
     }
@@ -139,6 +146,7 @@ pub fn render_background_image(
             },
             size: size.clone(),
             position,
+            offset: (0.0, 0.0),
             repeat,
         });
     } else {
@@ -181,6 +189,7 @@ pub fn render_background_image(
                         rect: tile_rect,
                         size: size.clone(),
                         position,
+                        offset: (0.0, 0.0),
                         repeat,
                     });
                 }
@@ -356,6 +365,7 @@ mod tests {
             200.0,
             ObjectFit::Contain,
             (0.5, 0.5),
+            (0.0, 0.0),
             1.0,
             Color::BLACK,
         );
@@ -390,6 +400,7 @@ mod tests {
             14.0,
             ObjectFit::Fill,
             (0.5, 0.5),
+            (0.0, 0.0),
             1.0,
             css,
         );

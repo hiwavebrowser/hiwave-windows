@@ -84,22 +84,18 @@ impl PortId {
 }
 
 /// Worker type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkerType {
+    #[default]
     Classic,
     Module,
 }
 
-impl Default for WorkerType {
-    fn default() -> Self {
-        Self::Classic
-    }
-}
-
 /// Worker state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkerState {
     /// Worker is being created.
+    #[default]
     Pending,
     /// Worker is running.
     Running,
@@ -107,12 +103,6 @@ pub enum WorkerState {
     Terminated,
     /// Worker encountered an error.
     Errored,
-}
-
-impl Default for WorkerState {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 // ==================== Structured Clone ====================

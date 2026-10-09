@@ -1,0 +1,94 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "place-items-center",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{place-items:center}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{align-items:center;justify-items:center}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:145:40:10:20 b:440:40:19:20 after:0:100:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:100 a:145:40:10:20 b:440:40:19:20 after:0:100:1280:20"
+  },
+  {
+   "name": "place-items-start",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{place-items:start}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{align-items:start;justify-items:start}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:10:20 b:300:0:19:20 after:0:100:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:100 a:0:0:10:20 b:300:0:19:20 after:0:100:1280:20"
+  },
+  {
+   "name": "place-items-end",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{place-items:end}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{align-items:end;justify-items:end}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:290:80:10:20 b:581:80:19:20 after:0:100:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:100 a:290:80:10:20 b:581:80:19:20 after:0:100:1280:20"
+  },
+  {
+   "name": "place-items-start-end",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{place-items:start end}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{align-items:start;justify-items:end}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:290:0:10:20 b:581:0:19:20 after:0:100:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:100 a:290:0:10:20 b:581:0:19:20 after:0:100:1280:20"
+  },
+  {
+   "name": "place-items-center-stretch",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{place-items:center stretch}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{align-items:center;justify-items:stretch}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:40:300:20 b:300:40:300:20 after:0:100:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:100 a:0:40:300:20 b:300:40:300:20 after:0:100:1280:20"
+  },
+  {
+   "name": "place-items-safe-center",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{place-items:stretch safe center}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.g{align-items:stretch;justify-items:safe center}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:145:0:10:100 b:440:0:19:100 after:0:100:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:100 a:145:0:10:100 b:440:0:19:100 after:0:100:1280:20"
+  },
+  {
+   "name": "place-self-center",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}#a{place-self:center}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}#a{align-self:center;justify-self:center}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:145:40:10:20 b:300:0:300:100 after:0:100:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:100 a:145:40:10:20 b:300:0:300:100 after:0:100:1280:20"
+  },
+  {
+   "name": "place-self-end-start",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}#a{place-self:end start}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}#a{align-self:end;justify-self:start}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:80:10:20 b:300:0:300:100 after:0:100:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:100 a:0:80:10:20 b:300:0:300:100 after:0:100:1280:20"
+  },
+  {
+   "name": "place-content-center",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.c{place-content:center}</style></head><body><div class=c id=g><div id=a>x</div><div id=b>yy</div><div id=d>z</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.c{align-content:center;justify-content:center}</style></head><body><div class=c id=g><div id=a>x</div><div id=b>yy</div><div id=d>z</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:300 a:200:100:100:50 b:300:100:100:50 d:200:150:100:50 after:0:300:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:300 a:200:100:100:50 b:300:100:100:50 d:200:150:100:50 after:0:300:1280:20"
+  },
+  {
+   "name": "place-content-end-space-between",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.c{place-content:end space-between}</style></head><body><div class=c id=g><div id=a>x</div><div id=b>yy</div><div id=d>z</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.c{align-content:end;justify-content:space-between}</style></head><body><div class=c id=g><div id=a>x</div><div id=b>yy</div><div id=d>z</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:300 a:0:200:100:50 b:500:200:100:50 d:0:250:100:50 after:0:300:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:300 a:0:200:100:50 b:500:200:100:50 d:0:250:100:50 after:0:300:1280:20"
+  },
+  {
+   "name": "place-content-center-on-a-wrapping-flex-box",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.f{place-content:center}</style></head><body><div class=f id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.f{align-content:center;justify-content:center}</style></head><body><div class=f id=g><div id=a>x</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:300 a:100:100:400:50 b:100:150:400:50 after:0:300:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:300 a:100:100:400:50 b:100:150:400:50 after:0:300:1280:20"
+  },
+  {
+   "name": "place-items-center-on-a-flex-box",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.f{place-items:center}</style></head><body><div class=f id=g style='flex-wrap:nowrap'><div id=a style='width:100px'>x</div></div><div id=after>x</div></body></html>",
+   "html_longhand": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:300px 300px;grid-template-rows:100px}.c{display:grid;width:600px;height:300px;grid-template-columns:100px 100px;grid-template-rows:50px 50px}.f{display:flex;flex-wrap:wrap;width:600px;height:300px}.f>div{width:400px;height:50px}.f{align-items:center}</style></head><body><div class=f id=g style='flex-wrap:nowrap'><div id=a style='width:100px'>x</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:300 a:0:125:100:50 after:0:300:1280:20",
+   "chrome_boxes_longhand": "g:0:0:600:300 a:0:125:100:50 after:0:300:1280:20"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

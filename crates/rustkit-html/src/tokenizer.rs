@@ -588,7 +588,7 @@ impl Tokenizer {
     fn matches_case_insensitive(&self, s: &str) -> bool {
         for (i, expected_ch) in s.chars().enumerate() {
             if let Some(ch) = self.peek_char(i) {
-                if ch.to_ascii_uppercase() != expected_ch.to_ascii_uppercase() {
+                if !ch.eq_ignore_ascii_case(&expected_ch) {
                     return false;
                 }
             } else {

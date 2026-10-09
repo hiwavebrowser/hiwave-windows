@@ -58,3 +58,15 @@ windows = { version = "0.58", features = ["Win32_Foundation"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
 
+# tests/macos_live_click.rs makes a real NSWindow and sends it NSEvents.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+cocoa = "0.25"
+objc = "0.2"
+raw-window-handle = "0.6"
+
+# Makes an NSWindow, which AppKit only allows on the main thread, so it runs
+# without the test harness.
+[[test]]
+name = "macos_live_click"
+harness = false
+

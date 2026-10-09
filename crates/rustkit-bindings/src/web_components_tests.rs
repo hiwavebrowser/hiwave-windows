@@ -6,7 +6,7 @@ use super::*;
 fn bound(html: &str) -> DomBindings {
     let b = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
     b.set_document(Rc::new(Document::parse_html(html).unwrap())).unwrap();
-    b.set_selector_matcher(Rc::new(|node, selector| {
+    b.set_selector_matcher(Rc::new(|node, selector, _| {
         Some(selector.split(',').any(|s| node.tag_name() == Some(s.trim())))
     }));
     b.evaluate("var log = [];").unwrap();
