@@ -18,6 +18,8 @@ struct Gpu {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     adapter: String,
+    /// A CPU rasteriser (WARP on a hosted Windows runner), not a GPU.
+    software: bool,
 }
 
 /// One device per test (the renderer's tests share no GPU state).
@@ -31,7 +33,9 @@ fn gpu() -> Option<Gpu> {
         compatible_surface: None,
         force_fallback_adapter: false,
     }))?;
-    let name = adapter.get_info().name;
+    let info = adapter.get_info();
+    let software = info.device_type == wgpu::DeviceType::Cpu;
+    let name = info.name;
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("scroll cost test device"),
@@ -46,6 +50,7 @@ fn gpu() -> Option<Gpu> {
         device: Arc::new(device),
         queue: Arc::new(queue),
         adapter: name,
+        software,
     })
 }
 
@@ -691,6 +696,13 @@ fn a_batch_past_the_buffer_limit_is_flushed_instead_of_panicking() {
         eprintln!("SKIP: no GPU adapter");
         return;
     };
+    if gpu.software {
+        // 3.4M glyph quads in one frame is a stress test for a real GPU. A CPU
+        // rasteriser never finishes it: wgpu times out waiting on the submission
+        // and panics inside the Queue's Drop, which aborts the whole test binary.
+        eprintln!("SKIP: software adapter {}", gpu.adapter);
+        return;
+    }
     // 80,000 rows of text drawn without culling: about 3.4M glyph quads,
     // past wgpu's 256 MB buffer limit in one batch. This panicked in
     // `flush_to` (Texture Vertex Buffer).

@@ -1,0 +1,51 @@
+Windows CI: scroll_cost_tests::a_batch_past_the_buffer_limit_is_flushed_instead_of_panicking
+(CH2 batch limit, 80,000 rows) aborts the test binary on the hosted windows-latest runner, whose
+only adapter is a CPU rasteriser: wgpu-core panics in Queue::drop ("timed out waiting on the last
+successful submission"), exit 2173, and every later test and crate never runs. The test's own
+gpu() helper skips only when there is NO adapter. Skip it on a software adapter too.
+Remove after upstream does (hiwave-macos issue linked in the PR).
+
+--- a/crates/rustkit-renderer/src/scroll_cost_tests.rs
++++ b/crates/rustkit-renderer/src/scroll_cost_tests.rs
+@@ -18,6 +18,8 @@
+     device: Arc<wgpu::Device>,
+     queue: Arc<wgpu::Queue>,
+     adapter: String,
++    /// A CPU rasteriser (WARP on a hosted Windows runner), not a GPU.
++    software: bool,
+ }
+ 
+ /// One device per test (the renderer's tests share no GPU state).
+@@ -31,7 +33,9 @@
+         compatible_surface: None,
+         force_fallback_adapter: false,
+     }))?;
+-    let name = adapter.get_info().name;
++    let info = adapter.get_info();
++    let software = info.device_type == wgpu::DeviceType::Cpu;
++    let name = info.name;
+     let (device, queue) = pollster::block_on(adapter.request_device(
+         &wgpu::DeviceDescriptor {
+             label: Some("scroll cost test device"),
+@@ -46,6 +50,7 @@
+         device: Arc::new(device),
+         queue: Arc::new(queue),
+         adapter: name,
++        software,
+     })
+ }
+ 
+@@ -691,6 +696,13 @@
+         eprintln!("SKIP: no GPU adapter");
+         return;
+     };
++    if gpu.software {
++        // 3.4M glyph quads in one frame is a stress test for a real GPU. A CPU
++        // rasteriser never finishes it: wgpu times out waiting on the submission
++        // and panics inside the Queue's Drop, which aborts the whole test binary.
++        eprintln!("SKIP: software adapter {}", gpu.adapter);
++        return;
++    }
+     // 80,000 rows of text drawn without culling: about 3.4M glyph quads,
+     // past wgpu's 256 MB buffer limit in one batch. This panicked in
+     // `flush_to` (Texture Vertex Buffer).
