@@ -9,6 +9,8 @@
 //! - **Linux**: X11/Wayland + RustKit (via `linux.rs`) - STUB
 
 #[cfg(target_os = "windows")]
+mod address;
+#[cfg(target_os = "windows")]
 mod layout;
 #[cfg(target_os = "windows")]
 mod shortcuts;

@@ -25,7 +25,7 @@
 //! cargo build --features native-win32
 //! ```
 
-use rustkit_core::input::{InputEvent, KeyCode, KeyEventType, Modifiers};
+use rustkit_core::input::{InputEvent, KeyCode, KeyEvent, KeyEventType, Modifiers, MouseEventType};
 use super::shortcuts::{self, Shortcut};
 use super::layout::{self, Layout, LayoutInput};
 use super::tabs::{TabModel, TabSwitch};
@@ -96,6 +96,10 @@ pub struct NativeBrowser {
     /// Width of the left sidebar; 0 while it is closed (chrome.html starts closed).
     sidebar_width: u32,
     right_panel_open: bool,
+    /// The view that last had the keyboard focus. Win32 can leave focus on the
+    /// bare main window (activation, a click on the frame); the main window
+    /// ignores keys, so the shell hands focus back to this view.
+    last_focus: std::cell::Cell<Option<EngineViewId>>,
 }
 
 impl NativeBrowser {
@@ -147,6 +151,7 @@ impl NativeBrowser {
             shelf_height: SHELF_HEIGHT_DEFAULT,
             sidebar_width: 0,
             right_panel_open: false,
+            last_focus: std::cell::Cell::new(None),
         })
     }
 
@@ -179,8 +184,9 @@ impl NativeBrowser {
         // to a window that dropped it. Found by pressing Ctrl+T at a running
         // browser and reading the log — the unit tests were all green.
         if let Some(&content) = self.views.get(&ViewType::Content) {
-            if let Err(e) = self.engine.borrow().focus_view(content) {
-                warn!(error = %e, "Failed to focus the content view");
+            match self.engine.borrow().focus_view(content) {
+                Ok(()) => self.last_focus.set(Some(content)),
+                Err(e) => warn!(error = %e, "Failed to focus the content view"),
             }
         }
 
@@ -456,8 +462,9 @@ impl NativeBrowser {
             .insert(switch.current, ViewType::Content);
         // Focus follows the active tab, or the next shortcut goes to a window
         // that is no longer showing.
-        if let Err(e) = self.engine.borrow().focus_view(switch.current) {
-            warn!(error = %e, "Failed to focus the incoming tab");
+        match self.engine.borrow().focus_view(switch.current) {
+            Ok(()) => self.last_focus.set(Some(switch.current)),
+            Err(e) => warn!(error = %e, "Failed to focus the incoming tab"),
         }
     }
 
@@ -589,11 +596,169 @@ impl NativeBrowser {
                     }
                 }
             }
+            // A click gives the view it landed on the keyboard focus. Win32 sends
+            // key messages only to the focused window, and nothing moved focus off
+            // the page at startup, so typing in the chrome (the address bar) went
+            // to the page.
+            if let ViewEvent::Input {
+                event: InputEvent::Mouse(mouse),
+                ..
+            } = &event
+            {
+                if mouse.event_type == MouseEventType::MouseDown {
+                    self.focus_clicked_view();
+                }
+            }
+            // Text goes to the engine's editor. handle_view_event only fires DOM
+            // key events; it never types into a field.
+            if let ViewEvent::Input {
+                event: InputEvent::Key(key),
+                ..
+            } = &event
+            {
+                if self.route_text_key(key) {
+                    continue;
+                }
+            }
             let navigation = self.engine.borrow_mut().handle_view_event(event);
             if let Some((id, url)) = navigation {
                 self.navigate_view(id, &url);
             }
         }
+    }
+
+    /// The engine view whose window is `hwnd`, if it is one of ours. Child
+    /// windows are identified by handle: the engine owns its own ViewHost, so
+    /// the viewhost view ids on input events do not resolve in this shell's.
+    fn engine_view_for_hwnd(&self, hwnd: HWND) -> Option<EngineViewId> {
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let engine = self.engine.borrow();
+        self.engine_view_types
+            .keys()
+            .copied()
+            .find(|&id| engine.get_view_hwnd(id).map(|h| h == hwnd).unwrap_or(false))
+    }
+
+    /// The view that has the keyboard focus (key messages go only to it).
+    fn focused_view(&self) -> Option<EngineViewId> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        // SAFETY: GetFocus has no preconditions; this runs on the window's own thread.
+        self.engine_view_for_hwnd(unsafe { GetFocus() })
+    }
+
+    /// Remember which view has the focus, and give it back if it landed on the
+    /// bare main window. Only acts when the main window itself is the focus
+    /// window, so it never takes focus from another application.
+    fn restore_focus(&self) {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        // SAFETY: GetFocus has no preconditions; this runs on the window's own thread.
+        let focus = unsafe { GetFocus() };
+        if let Some(id) = self.engine_view_for_hwnd(focus) {
+            self.last_focus.set(Some(id));
+            return;
+        }
+        let Some(main) = self.viewhost.get_main_hwnd() else {
+            return;
+        };
+        if focus != main {
+            return;
+        }
+        if let Some(id) = self.last_focus.get() {
+            if self.engine_view_types.contains_key(&id) {
+                let _ = self.engine.borrow().focus_view(id);
+            }
+        }
+    }
+
+    /// Give the keyboard focus to the view under the mouse (the one just
+    /// clicked). Win32 does not move focus to a child window on a click.
+    fn focus_clicked_view(&self) {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, WindowFromPoint};
+
+        let mut pt = POINT::default();
+        // SAFETY: `pt` is a valid out-pointer.
+        if unsafe { GetCursorPos(&mut pt) }.is_err() {
+            return;
+        }
+        // SAFETY: plain query by screen point.
+        let Some(id) = self.engine_view_for_hwnd(unsafe { WindowFromPoint(pt) }) else {
+            return;
+        };
+        match self.engine.borrow().focus_view(id) {
+            Ok(()) => self.last_focus.set(Some(id)),
+            Err(e) => warn!(error = %e, "Failed to focus the clicked view"),
+        }
+    }
+
+    /// Deliver a key to the engine's text editor. Returns true when the event
+    /// was handled here and must not also go to `handle_view_event` (which
+    /// would fire the same DOM key event a second time); false for key-up.
+    ///
+    /// Same split as the macOS app: editing and navigation keys go as a virtual
+    /// key with no text, typed characters as text with no key, and Ctrl+A/C/V/X/Z
+    /// as the letter with Ctrl set. Printable keys arrive twice on Win32 (WM_KEYDOWN
+    /// and then WM_CHAR); only the WM_CHAR half types.
+    fn route_text_key(&mut self, key: &KeyEvent) -> bool {
+        let (vk, text): (u32, String) = match key.event_type {
+            KeyEventType::KeyUp => return false,
+            KeyEventType::KeyDown => {
+                let vk = key.key_code as u32;
+                let m = key.modifiers;
+                match vk {
+                    // Backspace, Tab, Enter, Escape, PgUp..Down, End, Home, arrows, Delete
+                    0x08 | 0x09 | 0x0D | 0x1B | 0x21..=0x28 | 0x2E => (vk, String::new()),
+                    // Ctrl+A, C, V, X, Z
+                    0x41 | 0x43 | 0x56 | 0x58 | 0x5A if m.ctrl && !m.alt => {
+                        (0, ((vk as u8 + 32) as char).to_string())
+                    }
+                    // A printable key: its WM_CHAR types it.
+                    _ => return true,
+                }
+            }
+            KeyEventType::Input => {
+                // Tab and Enter also come as WM_CHAR; their key-down already acted.
+                if key.key.is_empty() || key.key == "\r" || key.key == "\t" {
+                    return true;
+                }
+                (0, key.key.clone())
+            }
+        };
+
+        let Some(id) = self.focused_view().or_else(|| self.last_focus.get()) else {
+            return false;
+        };
+        let m = key.modifiers;
+
+        // Enter goes through the engine's form submission first, in every view:
+        // that is what fires Enter's keydown, which is how the chrome's address
+        // bar hears it (handle_text_key fires none for Enter). A page's form
+        // that submits to a URL navigates, as on macOS; if nothing took the
+        // key, Enter's default (a newline in a textarea, a pick in a select)
+        // falls through to handle_text_key.
+        if vk == 0x0D {
+            let submitted = self.engine.borrow_mut().submit_focused_form(id);
+            if let Some(url) = submitted {
+                if self.engine_view_types.get(&id) == Some(&ViewType::Content) {
+                    info!(%url, "Form submitted");
+                    self.navigate_view(id, &url);
+                }
+                return true;
+            }
+        }
+
+        let changed = self
+            .engine
+            .borrow_mut()
+            .handle_text_key(id, vk, &text, m.ctrl, m.shift, m.alt);
+        if changed {
+            if let Err(e) = self.engine.borrow_mut().relayout(id) {
+                warn!(error = %e, "Relayout after a key failed");
+            }
+        }
+        true
     }
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
@@ -637,8 +802,14 @@ impl NativeBrowser {
     }
 
     pub fn navigate(&self, url: &str) {
+        // The address bar sends what was typed; turn it into a URL (a host gets
+        // https://, other text is a search) the way the WebView2 shell does.
+        let Some(url) = super::address::resolve(url) else {
+            debug!(input = url, "Nothing to navigate to");
+            return;
+        };
         if let Some(&content_id) = self.views.get(&ViewType::Content) {
-            self.navigate_view(content_id, url);
+            self.navigate_view(content_id, &url);
         }
     }
 
@@ -713,6 +884,9 @@ impl NativeBrowser {
 
             // Follow the window if it was resized or maximised
             self.sync_window_size();
+
+            // Keep keyboard focus on a view
+            self.restore_focus();
 
             self.pump_live_views();
 
