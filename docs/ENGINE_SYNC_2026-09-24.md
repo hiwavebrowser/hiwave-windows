@@ -156,7 +156,11 @@ with the cfg(windows) `rustkit_core::InputEvent` import, E0252, so
 pin, an integer offset compared with a fractional rect, a sentence that
 soft-wraps after a hyphen; the click test now measures the stack the page
 renders), **646** (the `windows_capture_metadata_pins` test from #114, which a
-verbatim copy drops). Residual vs the tip: 8 files, plus the one 641 creates.
+verbatim copy drops), **647** (`scroll_cost_tests::a_batch_past_the_buffer_limit_is_flushed_instead_of_panicking`
+draws 3.4M glyph quads in one frame; on the hosted runner's CPU adapter wgpu
+times out and panics inside `Queue::drop`, which aborts the whole test binary
+(exit 2173) and drops every later test; skipped on a software adapter, still run on a
+GPU). Residual vs the tip: 9 files, plus the one 641 creates.
 
 Gates (Windows): `cargo build --workspace` exit 0; `cargo test --workspace --
 --test-threads=1` exit 0, 4433 passed / 0 failed / 50 ignored; release
