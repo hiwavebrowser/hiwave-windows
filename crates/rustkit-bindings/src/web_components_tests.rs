@@ -232,3 +232,40 @@ fn upgrade_converts_a_detached_subtree_on_demand() {
     .unwrap();
     assert_eq!(ev(&b, "log.join()"), "defined,ctor,true");
 }
+
+/// `:defined` is answered from the DOM: each define records its name there,
+/// and only names that were defined.
+#[test]
+fn define_tells_the_dom_which_names_are_defined() {
+    let doc = Rc::new(Document::parse_html(PAGE).unwrap());
+    let b = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+    b.set_document(doc.clone()).unwrap();
+    assert!(doc.defined_custom_elements().is_empty());
+    b.evaluate("customElements.define('x-a', class extends HTMLElement {});").unwrap();
+    assert_eq!(thrown(&b, "customElements.define('Bad', class extends HTMLElement {});"), "SyntaxError");
+    let names = doc.defined_custom_elements();
+    assert!(names.contains("x-a"), "{names:?}");
+    assert_eq!(names.len(), 1, "{names:?}");
+}
+
+/// HTML §4.13.4 define: the upgrade candidates are the document's
+/// shadow-including descendants, so an element of the name inside an open
+/// or a closed shadow root upgrades too, in shadow-including tree order
+/// (a host's shadow tree before its children). Chromium 141 logs
+/// `d1,s1,s2,d2,s3,d3` for this script.
+#[test]
+fn define_upgrades_elements_inside_shadow_trees() {
+    let b = bound("<html><body><x-in id=d1></x-in><div id=open><x-in id=d2></x-in></div><div id=closed></div><x-in id=d3></x-in></body></html>");
+    b.evaluate(
+        "document.getElementById('open').attachShadow({ mode: 'open' }).innerHTML = '<x-in id=s1></x-in><p><x-in id=s2></x-in></p>'; \
+         var shut = document.getElementById('closed').attachShadow({ mode: 'closed' }); \
+         shut.innerHTML = '<x-in id=s3></x-in>'; \
+         customElements.define('x-in', class extends HTMLElement { constructor() { super(); log.push(this.id); } });",
+    )
+    .unwrap();
+    assert_eq!(ev(&b, "log.join()"), "d1,s1,s2,d2,s3,d3");
+    assert_eq!(
+        ev(&b, "String(document.getElementById('open').shadowRoot.firstChild instanceof customElements.get('x-in'))"),
+        "true"
+    );
+}

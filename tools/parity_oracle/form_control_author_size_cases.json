@@ -1,0 +1,70 @@
+{
+ "viewport": [
+  400,
+  600
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "an-input-with-author-size",
+   "html": "<!doctype html><body style=\"margin:0\"><input id=a style=\"display:block;width:40px;height:20px\">",
+   "chrome_boxes": "a:0:0:48:26"
+  },
+  {
+   "name": "a-textarea-with-author-size",
+   "html": "<!doctype html><body style=\"margin:0\"><textarea id=a style=\"display:block;width:40px;height:20px\"></textarea>",
+   "chrome_boxes": "a:0:0:46:26"
+  },
+  {
+   "name": "an-input-with-author-padding-and-border",
+   "html": "<!doctype html><body style=\"margin:0\"><input id=a style=\"display:block;width:40px;height:20px;padding:5px;border:1px solid #000\">",
+   "chrome_boxes": "a:0:0:52:32"
+  },
+  {
+   "name": "a-textarea-with-author-padding-and-border",
+   "html": "<!doctype html><body style=\"margin:0\"><textarea id=a style=\"display:block;width:40px;height:20px;padding:5px;border:1px solid #000\"></textarea>",
+   "chrome_boxes": "a:0:0:52:32"
+  },
+  {
+   "name": "an-input-with-zero-padding-and-border",
+   "html": "<!doctype html><body style=\"margin:0\"><input id=a style=\"display:block;width:40px;height:20px;padding:0px;border:0px solid\">",
+   "chrome_boxes": "a:0:0:40:20"
+  },
+  {
+   "name": "an-input-with-bare-zero-padding-and-border",
+   "html": "<!doctype html><body style=\"margin:0\"><input id=a style=\"display:block;width:40px;height:20px;padding:0;border:0 solid\">",
+   "chrome_boxes": "a:0:0:40:20"
+  },
+  {
+   "name": "an-input-with-a-viewport-width",
+   "html": "<!doctype html><body style=\"margin:0\"><input id=a style=\"display:block;width:10vw;height:5vh\">",
+   "chrome_boxes": "a:0:0:48:36"
+  },
+  {
+   "name": "an-input-with-border-none",
+   "html": "<!doctype html><body style=\"margin:0\"><input id=a style=\"display:block;width:40px;height:20px;border:none\">",
+   "chrome_boxes": "a:0:0:44:22"
+  },
+  {
+   "name": "a-border-box-input",
+   "html": "<!doctype html><body style=\"margin:0\"><input id=a style=\"display:block;width:40px;height:20px;box-sizing:border-box\">",
+   "chrome_boxes": "a:0:0:40:20"
+  },
+  {
+   "name": "a-border-box-textarea",
+   "html": "<!doctype html><body style=\"margin:0\"><textarea id=a style=\"display:block;width:40px;height:20px;box-sizing:border-box\"></textarea>",
+   "chrome_boxes": "a:0:0:40:20"
+  },
+  {
+   "name": "typed-inputs-with-author-size",
+   "html": "<!doctype html><body style=\"margin:0\"><input id=text type=text style=\"display:block;width:40px;height:20px\"><input id=password type=password style=\"display:block;width:40px;height:20px\"><input id=email type=email style=\"display:block;width:40px;height:20px\"><input id=url type=url style=\"display:block;width:40px;height:20px\"><input id=tel type=tel style=\"display:block;width:40px;height:20px\"><input id=number type=number style=\"display:block;width:40px;height:20px\"><input id=search type=search style=\"display:block;width:40px;height:20px\">",
+   "chrome_boxes": "text:0:0:48:26 password:0:26:48:26 email:0:52:48:26 url:0:78:48:26 tel:0:104:48:26 number:0:130:48:26 search:0:156:40:20"
+  },
+  {
+   "name": "a-flex-row-input-and-its-neighbour",
+   "html": "<!doctype html><body style=\"margin:0\"><div style=\"display:flex;align-items:flex-start\"><input id=a style=\"width:40px;height:20px\"><textarea id=t style=\"width:40px;height:20px\"></textarea><span id=b style=\"width:8px;height:10px\"></span></div>",
+   "chrome_boxes": "a:0:0:48:26 t:48:0:46:26 b:94:0:8:10"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

@@ -152,7 +152,7 @@ fn a_short_value_list_is_repeated_over_the_layers() {
     .expect("sheet");
     let mut attributes = HashMap::new();
     attributes.insert("class".to_string(), "sprite wordmark".to_string());
-    let style = engine.compute_style_for_element(
+    let style = engine.lctx.compute_style_for_element(
         "span",
         &attributes,
         std::slice::from_ref(&sheet),

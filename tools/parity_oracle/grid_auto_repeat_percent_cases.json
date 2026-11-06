@@ -1,0 +1,190 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "cnn-story-grid-auto-fit-minmax-percent",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;gap:32px 24px;grid-template-columns:repeat(auto-fit,minmax(25%,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:20 i1:0:0:173:20 i2:197:0:173:20 i3:395:0:173:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fill-minmax-percent",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;gap:32px 24px;grid-template-columns:repeat(auto-fill,minmax(25%,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:20 i1:0:0:173:20 i2:197:0:173:20 i3:395:0:173:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-plain-percent",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;gap:32px 24px;grid-template-columns:repeat(auto-fit,25%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:20 i1:0:0:142:20 i2:166:0:142:20 i3:332:0:142:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-minmax-percent-two-rows",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;gap:32px 24px;grid-template-columns:repeat(auto-fit,minmax(25%,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li><li id=i6></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:72 i1:0:0:173:20 i2:197:0:173:20 i3:395:0:173:20 i4:0:52:173:20 i5:197:52:173:20 i6:395:52:173:20 after:0:72:1280:18"
+  },
+  {
+   "name": "auto-fit-minmax-40-percent",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;gap:32px 24px;grid-template-columns:repeat(auto-fit,minmax(40%,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:72 i1:0:0:272:20 i2:296:0:272:20 i3:0:52:272:20 after:0:72:1280:18"
+  },
+  {
+   "name": "auto-fill-20-percent-no-gap",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;grid-template-columns:repeat(auto-fill,20%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li><li id=i6></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:40 i1:0:0:114:20 i2:114:0:114:20 i3:227:0:114:20 i4:341:0:114:20 i5:454:0:114:20 i6:0:20:114:20 after:0:40:1280:18"
+  },
+  {
+   "name": "auto-fit-minmax-px-control",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;gap:32px 24px;grid-template-columns:repeat(auto-fit,minmax(142px,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:20 i1:0:0:173:20 i2:197:0:173:20 i3:395:0:173:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-minmax-percent-of-an-auto-width",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{gap:20px;grid-template-columns:repeat(auto-fit,minmax(30%,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:60 i1:0:0:413:20 i2:433:0:413:20 i3:867:0:413:20 i4:0:40:413:20 after:0:60:1280:18"
+  },
+  {
+   "name": "a-fixed-track-then-auto-fill-percent",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;grid-template-columns:100px repeat(auto-fill,25%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:40 i1:0:0:100:20 i2:100:0:142:20 i3:242:0:142:20 i4:384:0:142:20 i5:0:20:100:20 after:0:40:1280:18"
+  },
+  {
+   "name": "auto-fill-percent-max-of-minmax",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;gap:10px;grid-template-columns:repeat(auto-fill,minmax(50px,30%))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:50 i1:0:0:180:20 i2:190:0:180:20 i3:380:0:180:20 i4:0:30:180:20 after:0:50:1280:18"
+  },
+  {
+   "name": "auto-fill-percent-rows-of-an-auto-height",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}li{width:20px}#g{grid-auto-flow:column;grid-template-rows:repeat(auto-fill,25%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:20 i1:0:0:20:20 i2:256:0:20:20 i3:512:0:20:20 i4:768:0:20:20 i5:1024:0:20:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fill-minmax-percent-auto-rows-of-an-auto-height",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}li{width:20px}#g{grid-auto-flow:column;grid-template-rows:repeat(auto-fill,minmax(25%,auto))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:20 i1:0:0:20:20 i2:256:0:20:20 i3:512:0:20:20 i4:768:0:20:20 i5:1024:0:20:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-minmax-percent-rows-of-an-auto-height",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{grid-auto-flow:column;grid-template-rows:repeat(auto-fit,minmax(25%,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:20 i1:0:0:427:20 i2:427:0:427:20 i3:853:0:427:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fill-percent-rows-of-a-px-height",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}li{width:20px;height:auto}#g{height:400px;grid-auto-flow:column;grid-template-rows:repeat(auto-fill,25%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:400 i1:0:0:20:100 i2:0:100:20:100 i3:0:200:20:100 i4:0:300:20:100 i5:640:0:20:100 after:0:400:1280:18"
+  },
+  {
+   "name": "auto-fill-20-percent-at-203",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:203px;grid-template-columns:repeat(auto-fill,20%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li><li id=i6></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:203:40 i1:0:0:41:20 i2:41:0:41:20 i3:81:0:41:20 i4:122:0:41:20 i5:162:0:41:20 i6:0:20:41:20 after:0:40:1280:18"
+  },
+  {
+   "name": "auto-fit-minmax-20-percent-at-203",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:203px;grid-template-columns:repeat(auto-fit,minmax(20%,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li><li id=i6></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:203:40 i1:0:0:41:20 i2:41:0:41:20 i3:81:0:41:20 i4:122:0:41:20 i5:162:0:41:20 i6:0:20:41:20 after:0:40:1280:18"
+  },
+  {
+   "name": "auto-fill-10-percent-at-201",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:201px;grid-template-columns:repeat(auto-fill,10%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li><li id=i6></li><li id=i7></li><li id=i8></li><li id=i9></li><li id=i10></li><li id=i11></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:201:40 i1:0:0:20:20 i2:20:0:20:20 i3:40:0:20:20 i4:60:0:20:20 i5:80:0:20:20 i6:100:0:20:20 i7:121:0:20:20 i8:141:0:20:20 i9:161:0:20:20 i10:181:0:20:20 i11:0:20:20:20 after:0:40:1280:18"
+  },
+  {
+   "name": "auto-fill-5-percent-at-206",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:206px;grid-template-columns:repeat(auto-fill,5%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li><li id=i5></li><li id=i6></li><li id=i7></li><li id=i8></li><li id=i9></li><li id=i10></li><li id=i11></li><li id=i12></li><li id=i13></li><li id=i14></li><li id=i15></li><li id=i16></li><li id=i17></li><li id=i18></li><li id=i19></li><li id=i20></li><li id=i21></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:206:40 i1:0:0:10:20 i2:10:0:10:20 i3:21:0:10:20 i4:31:0:10:20 i5:41:0:10:20 i6:51:0:10:20 i7:62:0:10:20 i8:72:0:10:20 i9:82:0:10:20 i10:93:0:10:20 i11:103:0:10:20 i12:113:0:10:20 i13:124:0:10:20 i14:134:0:10:20 i15:144:0:10:20 i16:154:0:10:20 i17:165:0:10:20 i18:175:0:10:20 i19:185:0:10:20 i20:196:0:10:20 i21:0:20:10:20 after:0:40:1280:18"
+  },
+  {
+   "name": "auto-fill-33.34-percent-at-100",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:100px;grid-template-columns:repeat(auto-fill,33.34%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:100:40 i1:0:0:33:20 i2:33:0:33:20 i3:67:0:33:20 i4:0:20:33:20 after:0:40:1280:18"
+  },
+  {
+   "name": "auto-fill-33.4-percent-at-100",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:100px;grid-template-columns:repeat(auto-fill,33.4%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li><li id=i4></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:100:40 i1:0:0:33:20 i2:33:0:33:20 i3:0:20:33:20 i4:33:20:33:20 after:0:40:1280:18"
+  },
+  {
+   "name": "auto-fit-minmax-percent-fewer-items-than-tracks",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;grid-template-columns:repeat(auto-fit,minmax(25%,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:20 i1:0:0:284:20 i2:284:0:284:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-percent-fewer-items-centred",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;justify-content:center;grid-template-columns:repeat(auto-fit,25%)}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:20 i1:142:0:142:20 i2:284:0:142:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-percent-fewer-items-with-a-gap",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:568px;gap:24px;grid-template-columns:repeat(auto-fit,minmax(20%,1fr))}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:568:20 i1:0:0:272:20 i2:296:0:272:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-percent-then-a-fixed-track-item-in-the-last",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;column-gap:20px;grid-template-columns:repeat(auto-fit,20%) 60px}#i2{grid-column:-2}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 i1:0:0:120:20 i2:140:0:60:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-percent-item-in-the-fourth-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;column-gap:20px;grid-template-columns:repeat(auto-fit,20%)}#i2{grid-column:4}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 i1:0:0:120:20 i2:140:0:120:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-px-item-in-the-fourth-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;column-gap:20px;grid-template-columns:repeat(auto-fit,120px)}#i2{grid-column:4}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 i1:0:0:120:20 i2:140:0:120:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-minmax-percent-cards-beside-a-sidebar",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:1000px;gap:24px;grid-template-columns:repeat(auto-fit,minmax(20%,1fr)) 240px}#i2{grid-column:-2}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:20 i1:0:0:736:20 i2:760:0:240:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-percent-rows-item-in-the-fourth-row",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}li{height:auto;width:20px}#g{height:400px;row-gap:20px;grid-template-rows:repeat(auto-fit,20%)}#i2{grid-row:4}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:400 i1:0:0:20:80 i2:0:100:20:80 after:0:400:1280:18"
+  },
+  {
+   "name": "auto-fit-px-collapsed-tracks-first",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;column-gap:20px;grid-template-columns:repeat(auto-fit,100px)}#i1{grid-column:3}</style></head><body><ul id=g><li id=i1></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 i1:0:0:100:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-px-collapsed-tracks-first-between-and-last",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;column-gap:20px;grid-template-columns:repeat(auto-fit,100px)}#i1{grid-column:2}#i2{grid-column:4}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 i1:0:0:100:20 i2:120:0:100:20 after:0:20:1280:18"
+  },
+  {
+   "name": "auto-fit-px-collapsed-between-space-between",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;column-gap:20px;justify-content:space-between;grid-template-columns:repeat(auto-fit,100px)}#i2{grid-column:4}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 i1:0:0:100:20 i2:500:0:100:20 after:0:20:1280:18"
+  },
+  {
+   "name": "a-zero-px-track-keeps-its-gutters",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;column-gap:20px;grid-template-columns:100px 0px 100px}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 i1:0:0:100:20 i2:120:0:0:20 i3:140:0:100:20 after:0:20:1280:18"
+  },
+  {
+   "name": "a-zero-px-track-space-between",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;column-gap:20px;justify-content:space-between;grid-template-columns:100px 0px 100px}</style></head><body><ul id=g><li id=i1></li><li id=i2></li><li id=i3></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 i1:0:0:100:20 i2:300:0:0:20 i3:500:0:100:20 after:0:20:1280:18"
+  },
+  {
+   "name": "an-empty-auto-column-keeps-its-gutters",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:600px;column-gap:20px;justify-content:start;grid-template-columns:100px auto 100px}#i2{grid-column:3}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 i1:0:0:100:20 i2:140:0:100:20 after:0:20:1280:18"
+  },
+  {
+   "name": "an-empty-auto-row-keeps-its-gutters",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}#g{width:200px;row-gap:20px}#i2{grid-row:3}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:200:80 i1:0:0:200:20 i2:0:60:200:20 after:0:80:1280:18"
+  },
+  {
+   "name": "an-empty-auto-row-under-a-min-height",
+   "html": "<!doctype html><html><head><style>body{margin:0}ul{margin:0;padding:0;list-style:none;display:grid}li{height:20px}li{height:auto}#g{width:200px;min-height:200px;row-gap:20px}#i2{grid-row:3}</style></head><body><ul id=g><li id=i1></li><li id=i2></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:200:200 i1:0:0:200:53 i2:0:147:200:53 after:0:200:1280:18"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

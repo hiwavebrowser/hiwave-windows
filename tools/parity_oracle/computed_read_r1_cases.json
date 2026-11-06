@@ -1,0 +1,1037 @@
+{
+ "oracle": "143.0.7499.4",
+ "base": "8c72ac80",
+ "source": "#866 R1 (comment 6594727700): synthetic pages; chrome from Playwright, base from the engine at 8c72ac80",
+ "expect": "chrome: reads Chromium. base: reads what develop read (or Chromium). gap: neither, listed in the PR. any: not asserted yet.",
+ "cases": [
+  {
+   "name": "transform rotate(0.25turn)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:rotate(0.25turn);font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(0, 1, -1, 0, 0, 0)",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "transform rotate(1rad)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:rotate(1rad);font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(0.540302, 0.841471, -0.841471, 0.540302, 0, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform rotate(100grad)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:rotate(100grad);font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(0, 1, -1, 0, 0, 0)",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "transform translate(50%, 10%)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:translate(50%, 10%);font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(1, 0, 0, 1, 50, 5)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform matrix(1, 2, 3, 4, 5, 6)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:matrix(1, 2, 3, 4, 5, 6);font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(1, 2, 3, 4, 5, 6)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform translate3d(10px, 0, 0)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:translate3d(10px, 0, 0);font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(1, 0, 0, 1, 10, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform translateX(2em)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:translateX(2em);font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(1, 0, 0, 1, 40, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform scale(1.5) rotate(30deg)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:scale(1.5) rotate(30deg);font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(1.29904, 0.75, -0.75, 1.29904, 0, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform perspective(100px)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:perspective(100px);font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -0.01, 0, 0, 0, 1)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform none",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:none;font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "none",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform rem root10",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}html{font-size:10px}#a{transform:translateX(2rem)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(1, 0, 0, 1, 20, 0)",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "min-width rem root10",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}html{font-size:10px}#a{min-width:2rem}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).minWidth",
+   "chrome": "20px",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "radius rem root10",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}html{font-size:10px}#a{border-radius:2rem}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).borderStartStartRadius",
+   "chrome": "20px",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "letter-spacing rem root10",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}html{font-size:10px}#a{letter-spacing:1rem}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).letterSpacing",
+   "chrome": "10px",
+   "base": "normal",
+   "expect": "chrome"
+  },
+  {
+   "name": "translate prop",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{translate:50% 10px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).translate",
+   "chrome": "50% 10px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "rotate prop turn",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{rotate:0.5turn}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).rotate",
+   "chrome": "180deg",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "scale prop",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{scale:2}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).scale",
+   "chrome": "2",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform inline span",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><span id=a style='transform:rotate(10deg)'>x</span></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(0.984808, 0.173648, -0.173648, 0.984808, 0, 0)",
+   "base": "rotate(10deg)",
+   "expect": "any"
+  },
+  {
+   "name": "transform-origin inline span",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><span id=a>x</span></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transformOrigin",
+   "chrome": "0px 0px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "transform-origin block",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform-origin:10% 20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transformOrigin",
+   "chrome": "10px 20px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "filter blur(2px) brightness(150%) drop-shadow(red 1px 2px)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{filter:blur(2px) brightness(150%) drop-shadow(red 1px 2px);font-size:20px;color:blue}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).filter",
+   "chrome": "blur(2px) brightness(1.5) drop-shadow(rgb(255, 0, 0) 1px 2px 0px)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "filter drop-shadow(1px 2px 3px rgba(0,0,0,.5))",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{filter:drop-shadow(1px 2px 3px rgba(0,0,0,.5));font-size:20px;color:blue}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).filter",
+   "chrome": "drop-shadow(rgba(0, 0, 0, 0.5) 1px 2px 3px)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "filter hue-rotate(0.5turn)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{filter:hue-rotate(0.5turn);font-size:20px;color:blue}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).filter",
+   "chrome": "hue-rotate(180deg)",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "filter blur(1em)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{filter:blur(1em);font-size:20px;color:blue}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).filter",
+   "chrome": "blur(20px)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "filter grayscale()",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{filter:grayscale();font-size:20px;color:blue}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).filter",
+   "chrome": "grayscale(1)",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "box-shadow 2px 2px red",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{box-shadow:2px 2px red;color:blue;font-size:10px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).boxShadow",
+   "chrome": "rgb(255, 0, 0) 2px 2px 0px 0px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "box-shadow 1px 1px",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{box-shadow:1px 1px;color:blue;font-size:10px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).boxShadow",
+   "chrome": "rgb(0, 0, 255) 1px 1px 0px 0px",
+   "base": "",
+   "expect": "gap",
+   "why": "a shadow with no colour is stored rgba(0, 0, 0, 0.5), not currentcolor"
+  },
+  {
+   "name": "box-shadow 0 0 0 1px red, inset 2px 2px 4px rgba(0,0,0,.3)",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{box-shadow:0 0 0 1px red, inset 2px 2px 4px rgba(0,0,0,.3);color:blue;font-size:10px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).boxShadow",
+   "chrome": "rgb(255, 0, 0) 0px 0px 0px 1px, rgba(0, 0, 0, 0.3) 2px 2px 4px 0px inset",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "box-shadow 1em 0 blue",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{box-shadow:1em 0 blue;color:blue;font-size:10px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).boxShadow",
+   "chrome": "rgb(0, 0, 255) 10px 0px 0px 0px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "tdc currentcolor",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{color:red}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).textDecorationColor",
+   "chrome": "rgb(255, 0, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "tdc alpha",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{color:rgba(255,0,0,.5)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).textDecorationColor",
+   "chrome": "rgba(255, 0, 0, 0.5)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "fill color red",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{color:red}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).webkitTextFillColor",
+   "chrome": "rgb(255, 0, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "fill color WebkitX",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{color:red}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).WebkitTextFillColor",
+   "chrome": "rgb(255, 0, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "border-top-color currentcolor",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{color:red}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).borderTopColor",
+   "chrome": "rgb(255, 0, 0)",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "border shorthand color",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{color:red}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).border",
+   "chrome": "0px none rgb(255, 0, 0)",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "border currentcolor set",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{border:1px solid currentcolor;color:red}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).borderTopColor",
+   "chrome": "rgb(255, 0, 0)",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "border currentcolor then class",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{border:1px solid;color:red}.g{color:green}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.className='box g';getComputedStyle(document.getElementById('a')).borderTopColor",
+   "chrome": "rgb(255, 0, 0)",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "bg alpha",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{background:rgba(0,0,255,.25)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).background",
+   "chrome": "rgba(0, 0, 255, 0.25) none repeat scroll 0% 0% / auto padding-box border-box",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "bg color url",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{background:url(x.png) no-repeat 10px 20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).backgroundImage",
+   "chrome": "url(\"x.png\")",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "margin 2v",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{margin:10px 20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).margin+'|'+getComputedStyle(document.getElementById('a')).marginInlineStart",
+   "chrome": "10px 20px|20px",
+   "base": "|",
+   "expect": "any"
+  },
+  {
+   "name": "margin auto",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{margin:0 auto}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).margin+'|'+getComputedStyle(document.getElementById('a')).marginLeft",
+   "chrome": "0px 150px|150px",
+   "base": "|150px",
+   "expect": "any"
+  },
+  {
+   "name": "padding pct",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{padding:10%}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).padding+'|'+getComputedStyle(document.getElementById('a')).paddingTop",
+   "chrome": "40px|40px",
+   "base": "|40px",
+   "expect": "any"
+  },
+  {
+   "name": "inset abs pct",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{position:absolute;top:10%;left:10%}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).inset+'|'+getComputedStyle(document.getElementById('a')).top+'|'+getComputedStyle(document.getElementById('a')).left",
+   "chrome": "30px 260px 220px 40px|30px|40px",
+   "base": "|5px|10px",
+   "expect": "any"
+  },
+  {
+   "name": "inset rel pct",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{position:relative;left:50%}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).inset+'|'+getComputedStyle(document.getElementById('a')).left",
+   "chrome": "0px -200px 0px 200px|200px",
+   "base": "|50px",
+   "expect": "any"
+  },
+  {
+   "name": "inset static",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{top:10px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).inset+'|'+getComputedStyle(document.getElementById('a')).top",
+   "chrome": "10px auto auto|10px",
+   "base": "|10px",
+   "expect": "any"
+  },
+  {
+   "name": "inset abs right",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{position:absolute;right:0;bottom:0}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).inset",
+   "chrome": "250px 0px 0px 300px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "flex shorthand",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{flex:1}</style><body><div style=display:flex><div id=a class=box>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).flex",
+   "chrome": "1 1 0%",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "font shorthand",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{font:italic bold 20px/30px Arial, sans-serif}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).font",
+   "chrome": "italic 700 20px / 30px Arial, sans-serif",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "font shorthand plain",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).font",
+   "chrome": "20px Times",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "border-width shorthand",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{border:2px solid red}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).borderWidth+'|'+getComputedStyle(document.getElementById('a')).borderStyle",
+   "chrome": "2px|solid",
+   "base": "|",
+   "expect": "any"
+  },
+  {
+   "name": "text-decoration",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{text-decoration:underline}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).textDecoration",
+   "chrome": "underline",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "gap",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{gap:10px 2em}</style><body><div id=a class=box style=display:grid>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).gap",
+   "chrome": "10px 32px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "overflow",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{overflow:hidden}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).overflow",
+   "chrome": "hidden",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "ls em",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{letter-spacing:.1em;font-size:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).letterSpacing",
+   "chrome": "2px",
+   "base": "normal",
+   "expect": "any"
+  },
+  {
+   "name": "ls em inherited smaller child",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=p style='letter-spacing:.1em;font-size:20px'><div id=a style=font-size:10px>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).letterSpacing",
+   "chrome": "2px",
+   "base": "normal",
+   "expect": "any"
+  },
+  {
+   "name": "ws em inherited smaller child",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=p style='word-spacing:1em;font-size:20px'><div id=a style=font-size:10px>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).wordSpacing",
+   "chrome": "20px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "ws pct",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{word-spacing:50%}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).wordSpacing",
+   "chrome": "0px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "max-width em",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{max-width:10em}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).maxWidth",
+   "chrome": "160px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "min-width pct",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{min-width:50%}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).minWidth",
+   "chrome": "50%",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "min-height calc",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{min-height:calc(10px + 1em)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).minHeight",
+   "chrome": "26px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "child of transformed",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div class=box style='transform:rotate(10deg)'><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "none",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "child of text-decoration",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style='text-decoration:underline'><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).textDecorationLine",
+   "chrome": "none",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "child of text-overflow",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style='text-overflow:ellipsis'><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).textOverflow",
+   "chrome": "clip",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "child of word-break",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style='word-break:break-all'><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).wordBreak",
+   "chrome": "break-all",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "child of clamp",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style='display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2'><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).webkitLineClamp+'|'+getComputedStyle(document.getElementById('a')).webkitBoxOrient",
+   "chrome": "none|horizontal",
+   "base": "|",
+   "expect": "any"
+  },
+  {
+   "name": "child of filter",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style='filter:blur(2px)'><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).filter",
+   "chrome": "none",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "child of bg",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style='background:red'><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).backgroundColor+'|'+getComputedStyle(document.getElementById('a')).background",
+   "chrome": "rgba(0, 0, 0, 0)|rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+   "base": "rgba(0, 0, 0, 0)|",
+   "expect": "any"
+  },
+  {
+   "name": "child of color tdc",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style='color:blue'><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).textDecorationColor+'|'+getComputedStyle(document.getElementById('a')).borderTopColor",
+   "chrome": "rgb(0, 0, 255)|rgb(0, 0, 255)",
+   "base": "|",
+   "expect": "chrome"
+  },
+  {
+   "name": "child of transition",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style='transition:opacity 1s'><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transition",
+   "chrome": "all",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "dn rule transform",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{display:none;transform:rotate(10deg)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "none",
+   "base": "",
+   "expect": "chrome"
+  },
+  {
+   "name": "dn inline transform",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style='display:none;transform:rotate(10deg)'>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "none",
+   "base": "rotate(10deg)",
+   "expect": "chrome"
+  },
+  {
+   "name": "dn inline width pct",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style='display:none;width:50%'>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).width",
+   "chrome": "50%",
+   "base": "50%",
+   "expect": "chrome"
+  },
+  {
+   "name": "dn rule filter",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{display:none;filter:blur(2px)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).filter",
+   "chrome": "blur(2px)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "dn plain filter",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style=display:none>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).filter+'|'+getComputedStyle(document.getElementById('a')).minWidth",
+   "chrome": "none|0px",
+   "base": "|",
+   "expect": "any"
+  },
+  {
+   "name": "dn ancestor child filter",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style=display:none><div id=a>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).filter+'|'+getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "none|none",
+   "base": "|",
+   "expect": "any"
+  },
+  {
+   "name": "dn ancestor child inline",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div style=display:none><div id=a style='transform:rotate(10deg);width:50%'>x</div></div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform+'|'+getComputedStyle(document.getElementById('a')).width",
+   "chrome": "none|50%",
+   "base": "rotate(10deg)|50%",
+   "expect": "any"
+  },
+  {
+   "name": "before transform",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a::before{content:'y';display:block;transform:rotate(10deg)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a'),'::before').transform",
+   "chrome": "matrix(0.984808, 0.173648, -0.173648, 0.984808, 0, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "before translate pct",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a::before{content:'';display:block;width:100px;height:20px;transform:translateX(50%)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a'),'::before').transform",
+   "chrome": "matrix(1, 0, 0, 1, 50, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "before origin",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a::before{content:'';display:block;width:100px;height:20px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a'),'::before').transformOrigin",
+   "chrome": "50px 10px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "before margin",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a::before{content:'';display:block;margin:5px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a'),'::before').margin",
+   "chrome": "5px",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "before filter none",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a::before{content:''}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a'),'::before').filter",
+   "chrome": "none",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "after textdeco",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{color:red}#a::after{content:'z'}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a'),'::after').textDecorationColor",
+   "chrome": "rgb(255, 0, 0)",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "before no content",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{filter:blur(1px)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a'),'::before').filter",
+   "chrome": "none",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "write width pct",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.width='50%';getComputedStyle(document.getElementById('a')).width",
+   "chrome": "200px",
+   "base": "50%",
+   "expect": "any"
+  },
+  {
+   "name": "write transform",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.transform='rotate(10deg)';getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(0.984808, 0.173648, -0.173648, 0.984808, 0, 0)",
+   "base": "rotate(10deg)",
+   "expect": "any"
+  },
+  {
+   "name": "write translate3d",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.transform='translate3d(-300px, 0px, 0px)';getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(1, 0, 0, 1, -300, 0)",
+   "base": "translate3d(-300px, 0px, 0px)",
+   "expect": "any"
+  },
+  {
+   "name": "attr translate3d",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style='transform:translate3d(-300px,0,0)'>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(1, 0, 0, 1, -300, 0)",
+   "base": "translate3d(-300px,0,0)",
+   "expect": "any"
+  },
+  {
+   "name": "write transition list",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.transition='opacity 1s, transform 2s';getComputedStyle(document.getElementById('a')).transition+'|'+getComputedStyle(document.getElementById('a')).transitionDuration",
+   "chrome": "opacity 1s, transform 2s|1s, 2s",
+   "base": "opacity 1s, transform 2s|",
+   "expect": "base"
+  },
+  {
+   "name": "write box-shadow list",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.boxShadow='0 0 0 1px red, 0 1px 2px blue';getComputedStyle(document.getElementById('a')).boxShadow",
+   "chrome": "rgb(255, 0, 0) 0px 0px 0px 1px, rgb(0, 0, 255) 0px 1px 2px 0px",
+   "base": "0 0 0 1px red, 0 1px 2px blue",
+   "expect": "base"
+  },
+  {
+   "name": "write justify flex-start",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style=display:flex>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.justifyContent='flex-start';getComputedStyle(document.getElementById('a')).justifyContent",
+   "chrome": "flex-start",
+   "base": "flex-start",
+   "expect": "chrome"
+  },
+  {
+   "name": "write align stretch",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style=display:flex>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.alignItems='stretch';getComputedStyle(document.getElementById('a')).alignItems",
+   "chrome": "stretch",
+   "base": "stretch",
+   "expect": "chrome"
+  },
+  {
+   "name": "write bgposx",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.backgroundPositionX='10px';getComputedStyle(document.getElementById('a')).backgroundPositionX",
+   "chrome": "10px",
+   "base": "10px",
+   "expect": "chrome"
+  },
+  {
+   "name": "write flexflow",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style=display:flex>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.flexFlow='column wrap';getComputedStyle(document.getElementById('a')).flexFlow+'|'+getComputedStyle(document.getElementById('a')).flexDirection",
+   "chrome": "column wrap|column",
+   "base": "column wrap|row",
+   "expect": "base"
+  },
+  {
+   "name": "write overflow 2",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.overflow='hidden auto';getComputedStyle(document.getElementById('a')).overflow+'|'+getComputedStyle(document.getElementById('a')).overflowY",
+   "chrome": "hidden auto|auto",
+   "base": "hidden auto|visible",
+   "expect": "base"
+  },
+  {
+   "name": "write gap 0",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style=display:flex>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.gap='0px';getComputedStyle(document.getElementById('a')).gap",
+   "chrome": "0px",
+   "base": "0px",
+   "expect": "any"
+  },
+  {
+   "name": "write vertical-align len",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><span id=a>x</span></body>",
+   "expr": "var a=document.getElementById('a');a.style.verticalAlign='-2px';getComputedStyle(document.getElementById('a')).verticalAlign",
+   "chrome": "-2px",
+   "base": "-2px",
+   "expect": "chrome"
+  },
+  {
+   "name": "write vertical-align pct",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><span id=a>x</span></body>",
+   "expr": "var a=document.getElementById('a');a.style.verticalAlign='10%';getComputedStyle(document.getElementById('a')).verticalAlign",
+   "chrome": "10%",
+   "base": "10%",
+   "expect": "chrome"
+  },
+  {
+   "name": "write aspect 1.5",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.aspectRatio='1.5';getComputedStyle(document.getElementById('a')).aspectRatio",
+   "chrome": "1.5 / 1",
+   "base": "1.5",
+   "expect": "base"
+  },
+  {
+   "name": "write grid cols fr",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style=display:grid>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.gridTemplateColumns='1fr 1fr';getComputedStyle(document.getElementById('a')).gridTemplateColumns",
+   "chrome": "50px 50px",
+   "base": "1fr 1fr",
+   "expect": "base"
+  },
+  {
+   "name": "write border-color 2",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style='border:1px solid'>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.borderColor='red blue';getComputedStyle(document.getElementById('a')).borderColor+'|'+getComputedStyle(document.getElementById('a')).borderRightColor",
+   "chrome": "rgb(255, 0, 0) rgb(0, 0, 255)|rgb(0, 0, 255)",
+   "base": "red blue|",
+   "expect": "base"
+  },
+  {
+   "name": "write tdeco wavy",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.textDecoration='underline wavy red';getComputedStyle(document.getElementById('a')).textDecoration",
+   "chrome": "underline wavy rgb(255, 0, 0)",
+   "base": "underline wavy red",
+   "expect": "base"
+  },
+  {
+   "name": "write transform 3d rotate",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.transform='rotateY(30deg)';getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix3d(0.866025, 0, -0.5, 0, 0, 1, 0, 0, 0.5, 0, 0.866025, 0, 0, 0, 0, 1)",
+   "base": "rotateY(30deg)",
+   "expect": "base"
+  },
+  {
+   "name": "write clip-path",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.clipPath='circle(50% at 50% 50%)';getComputedStyle(document.getElementById('a')).clipPath",
+   "chrome": "circle(50% at 50% 50%)",
+   "base": "circle(50% at 50% 50%)",
+   "expect": "any"
+  },
+  {
+   "name": "write filter",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.filter='blur(3px) saturate(2)';getComputedStyle(document.getElementById('a')).filter",
+   "chrome": "blur(3px) saturate(2)",
+   "base": "blur(3px) saturate(2)",
+   "expect": "any"
+  },
+  {
+   "name": "write letterSpacing em",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style=font-size:20px>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.letterSpacing='0.1em';getComputedStyle(document.getElementById('a')).letterSpacing",
+   "chrome": "2px",
+   "base": "0.1em",
+   "expect": "any"
+  },
+  {
+   "name": "write minWidth vw",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.minWidth='10vw';getComputedStyle(document.getElementById('a')).minWidth",
+   "chrome": "40px",
+   "base": "10vw",
+   "expect": "base"
+  },
+  {
+   "name": "write translate vw",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.transform='translateX(10vw)';getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "matrix(1, 0, 0, 1, 40, 0)",
+   "base": "translateX(10vw)",
+   "expect": "base"
+  },
+  {
+   "name": "write mask-image",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.webkitMaskImage='linear-gradient(red, blue)';getComputedStyle(document.getElementById('a')).webkitMaskImage",
+   "chrome": "linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "write bg multi",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.background='url(a.png), linear-gradient(red, blue)';getComputedStyle(document.getElementById('a')).backgroundImage",
+   "chrome": "url(\"a.png\"), linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))",
+   "base": "",
+   "expect": "any"
+  },
+  {
+   "name": "write anim list",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.animation='a 1s, b 2s';getComputedStyle(document.getElementById('a')).animationName+'|'+getComputedStyle(document.getElementById('a')).animationDuration",
+   "chrome": "a, b|1s, 2s",
+   "base": "|",
+   "expect": "base"
+  },
+  {
+   "name": "write transition-duration list",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.style.transitionDuration='0.15s, 0.3s';getComputedStyle(document.getElementById('a')).transitionDuration",
+   "chrome": "0.15s, 0.3s",
+   "base": "0.15s, 0.3s",
+   "expect": "chrome"
+  },
+  {
+   "name": "new node write",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=r></div></body>",
+   "expr": "var a=document.createElement('div');a.style.width='50%';a.style.transform='rotate(10deg)';document.getElementById('r').appendChild(a);var c=getComputedStyle(a);c.width+'|'+c.transform",
+   "chrome": "200px|matrix(0.984808, 0.173648, -0.173648, 0.984808, 0, 0)",
+   "base": "50%|rotate(10deg)",
+   "expect": "any"
+  },
+  {
+   "name": "new node many",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=r></div></body>",
+   "expr": "var r=document.getElementById('r'),o=[];for(var i=0;i<300;i++){var a=document.createElement('div');a.style.width='50%';a.style.transform='translateX(10px)';r.appendChild(a);var c=getComputedStyle(a);o.push(c.width+'/'+c.transform)} var u={};o.forEach(function(x){u[x]=(u[x]||0)+1});JSON.stringify(u)",
+   "chrome": "{\"200px/matrix(1, 0, 0, 1, 10, 0)\":300}",
+   "base": "{\"50%/translateX(10px)\":300}",
+   "expect": "any"
+  },
+  {
+   "name": "write many existing",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div class=box id=b0>x</div><div class=box id=b1>x</div><div class=box id=b2>x</div><div class=box id=b3>x</div><div class=box id=b4>x</div><div class=box id=b5>x</div><div class=box id=b6>x</div><div class=box id=b7>x</div><div class=box id=b8>x</div><div class=box id=b9>x</div><div class=box id=b10>x</div><div class=box id=b11>x</div><div class=box id=b12>x</div><div class=box id=b13>x</div><div class=box id=b14>x</div><div class=box id=b15>x</div><div class=box id=b16>x</div><div class=box id=b17>x</div><div class=box id=b18>x</div><div class=box id=b19>x</div><div class=box id=b20>x</div><div class=box id=b21>x</div><div class=box id=b22>x</div><div class=box id=b23>x</div><div class=box id=b24>x</div><div class=box id=b25>x</div><div class=box id=b26>x</div><div class=box id=b27>x</div><div class=box id=b28>x</div><div class=box id=b29>x</div><div class=box id=b30>x</div><div class=box id=b31>x</div><div class=box id=b32>x</div><div class=box id=b33>x</div><div class=box id=b34>x</div><div class=box id=b35>x</div><div class=box id=b36>x</div><div class=box id=b37>x</div><div class=box id=b38>x</div><div class=box id=b39>x</div><div class=box id=b40>x</div><div class=box id=b41>x</div><div class=box id=b42>x</div><div class=box id=b43>x</div><div class=box id=b44>x</div><div class=box id=b45>x</div><div class=box id=b46>x</div><div class=box id=b47>x</div><div class=box id=b48>x</div><div class=box id=b49>x</div><div class=box id=b50>x</div><div class=box id=b51>x</div><div class=box id=b52>x</div><div class=box id=b53>x</div><div class=box id=b54>x</div><div class=box id=b55>x</div><div class=box id=b56>x</div><div class=box id=b57>x</div><div class=box id=b58>x</div><div class=box id=b59>x</div><div class=box id=b60>x</div><div class=box id=b61>x</div><div class=box id=b62>x</div><div class=box id=b63>x</div><div class=box id=b64>x</div><div class=box id=b65>x</div><div class=box id=b66>x</div><div class=box id=b67>x</div><div class=box id=b68>x</div><div class=box id=b69>x</div><div class=box id=b70>x</div><div class=box id=b71>x</div><div class=box id=b72>x</div><div class=box id=b73>x</div><div class=box id=b74>x</div><div class=box id=b75>x</div><div class=box id=b76>x</div><div class=box id=b77>x</div><div class=box id=b78>x</div><div class=box id=b79>x</div><div class=box id=b80>x</div><div class=box id=b81>x</div><div class=box id=b82>x</div><div class=box id=b83>x</div><div class=box id=b84>x</div><div class=box id=b85>x</div><div class=box id=b86>x</div><div class=box id=b87>x</div><div class=box id=b88>x</div><div class=box id=b89>x</div><div class=box id=b90>x</div><div class=box id=b91>x</div><div class=box id=b92>x</div><div class=box id=b93>x</div><div class=box id=b94>x</div><div class=box id=b95>x</div><div class=box id=b96>x</div><div class=box id=b97>x</div><div class=box id=b98>x</div><div class=box id=b99>x</div><div class=box id=b100>x</div><div class=box id=b101>x</div><div class=box id=b102>x</div><div class=box id=b103>x</div><div class=box id=b104>x</div><div class=box id=b105>x</div><div class=box id=b106>x</div><div class=box id=b107>x</div><div class=box id=b108>x</div><div class=box id=b109>x</div><div class=box id=b110>x</div><div class=box id=b111>x</div><div class=box id=b112>x</div><div class=box id=b113>x</div><div class=box id=b114>x</div><div class=box id=b115>x</div><div class=box id=b116>x</div><div class=box id=b117>x</div><div class=box id=b118>x</div><div class=box id=b119>x</div><div class=box id=b120>x</div><div class=box id=b121>x</div><div class=box id=b122>x</div><div class=box id=b123>x</div><div class=box id=b124>x</div><div class=box id=b125>x</div><div class=box id=b126>x</div><div class=box id=b127>x</div><div class=box id=b128>x</div><div class=box id=b129>x</div><div class=box id=b130>x</div><div class=box id=b131>x</div><div class=box id=b132>x</div><div class=box id=b133>x</div><div class=box id=b134>x</div><div class=box id=b135>x</div><div class=box id=b136>x</div><div class=box id=b137>x</div><div class=box id=b138>x</div><div class=box id=b139>x</div><div class=box id=b140>x</div><div class=box id=b141>x</div><div class=box id=b142>x</div><div class=box id=b143>x</div><div class=box id=b144>x</div><div class=box id=b145>x</div><div class=box id=b146>x</div><div class=box id=b147>x</div><div class=box id=b148>x</div><div class=box id=b149>x</div><div class=box id=b150>x</div><div class=box id=b151>x</div><div class=box id=b152>x</div><div class=box id=b153>x</div><div class=box id=b154>x</div><div class=box id=b155>x</div><div class=box id=b156>x</div><div class=box id=b157>x</div><div class=box id=b158>x</div><div class=box id=b159>x</div><div class=box id=b160>x</div><div class=box id=b161>x</div><div class=box id=b162>x</div><div class=box id=b163>x</div><div class=box id=b164>x</div><div class=box id=b165>x</div><div class=box id=b166>x</div><div class=box id=b167>x</div><div class=box id=b168>x</div><div class=box id=b169>x</div><div class=box id=b170>x</div><div class=box id=b171>x</div><div class=box id=b172>x</div><div class=box id=b173>x</div><div class=box id=b174>x</div><div class=box id=b175>x</div><div class=box id=b176>x</div><div class=box id=b177>x</div><div class=box id=b178>x</div><div class=box id=b179>x</div><div class=box id=b180>x</div><div class=box id=b181>x</div><div class=box id=b182>x</div><div class=box id=b183>x</div><div class=box id=b184>x</div><div class=box id=b185>x</div><div class=box id=b186>x</div><div class=box id=b187>x</div><div class=box id=b188>x</div><div class=box id=b189>x</div><div class=box id=b190>x</div><div class=box id=b191>x</div><div class=box id=b192>x</div><div class=box id=b193>x</div><div class=box id=b194>x</div><div class=box id=b195>x</div><div class=box id=b196>x</div><div class=box id=b197>x</div><div class=box id=b198>x</div><div class=box id=b199>x</div><div class=box id=b200>x</div><div class=box id=b201>x</div><div class=box id=b202>x</div><div class=box id=b203>x</div><div class=box id=b204>x</div><div class=box id=b205>x</div><div class=box id=b206>x</div><div class=box id=b207>x</div><div class=box id=b208>x</div><div class=box id=b209>x</div><div class=box id=b210>x</div><div class=box id=b211>x</div><div class=box id=b212>x</div><div class=box id=b213>x</div><div class=box id=b214>x</div><div class=box id=b215>x</div><div class=box id=b216>x</div><div class=box id=b217>x</div><div class=box id=b218>x</div><div class=box id=b219>x</div><div class=box id=b220>x</div><div class=box id=b221>x</div><div class=box id=b222>x</div><div class=box id=b223>x</div><div class=box id=b224>x</div><div class=box id=b225>x</div><div class=box id=b226>x</div><div class=box id=b227>x</div><div class=box id=b228>x</div><div class=box id=b229>x</div><div class=box id=b230>x</div><div class=box id=b231>x</div><div class=box id=b232>x</div><div class=box id=b233>x</div><div class=box id=b234>x</div><div class=box id=b235>x</div><div class=box id=b236>x</div><div class=box id=b237>x</div><div class=box id=b238>x</div><div class=box id=b239>x</div><div class=box id=b240>x</div><div class=box id=b241>x</div><div class=box id=b242>x</div><div class=box id=b243>x</div><div class=box id=b244>x</div><div class=box id=b245>x</div><div class=box id=b246>x</div><div class=box id=b247>x</div><div class=box id=b248>x</div><div class=box id=b249>x</div><div class=box id=b250>x</div><div class=box id=b251>x</div><div class=box id=b252>x</div><div class=box id=b253>x</div><div class=box id=b254>x</div><div class=box id=b255>x</div><div class=box id=b256>x</div><div class=box id=b257>x</div><div class=box id=b258>x</div><div class=box id=b259>x</div><div class=box id=b260>x</div><div class=box id=b261>x</div><div class=box id=b262>x</div><div class=box id=b263>x</div><div class=box id=b264>x</div><div class=box id=b265>x</div><div class=box id=b266>x</div><div class=box id=b267>x</div><div class=box id=b268>x</div><div class=box id=b269>x</div><div class=box id=b270>x</div><div class=box id=b271>x</div><div class=box id=b272>x</div><div class=box id=b273>x</div><div class=box id=b274>x</div><div class=box id=b275>x</div><div class=box id=b276>x</div><div class=box id=b277>x</div><div class=box id=b278>x</div><div class=box id=b279>x</div><div class=box id=b280>x</div><div class=box id=b281>x</div><div class=box id=b282>x</div><div class=box id=b283>x</div><div class=box id=b284>x</div><div class=box id=b285>x</div><div class=box id=b286>x</div><div class=box id=b287>x</div><div class=box id=b288>x</div><div class=box id=b289>x</div><div class=box id=b290>x</div><div class=box id=b291>x</div><div class=box id=b292>x</div><div class=box id=b293>x</div><div class=box id=b294>x</div><div class=box id=b295>x</div><div class=box id=b296>x</div><div class=box id=b297>x</div><div class=box id=b298>x</div><div class=box id=b299>x</div></body>",
+   "expr": "var o={};for(var i=0;i<300;i++){var a=document.getElementById('b'+i);a.style.width='50%';a.style.transform='translateX(10px)';var c=getComputedStyle(a);var k=c.width+'/'+c.transform;o[k]=(o[k]||0)+1}JSON.stringify(o)",
+   "chrome": "{\"200px/matrix(1, 0, 0, 1, 10, 0)\":300}",
+   "base": "{\"50%/translateX(10px)\":300}",
+   "expect": "any"
+  },
+  {
+   "name": "class many existing",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}.t{width:50%;transform:translateX(10px)}</style><body><div class=box id=b0>x</div><div class=box id=b1>x</div><div class=box id=b2>x</div><div class=box id=b3>x</div><div class=box id=b4>x</div><div class=box id=b5>x</div><div class=box id=b6>x</div><div class=box id=b7>x</div><div class=box id=b8>x</div><div class=box id=b9>x</div><div class=box id=b10>x</div><div class=box id=b11>x</div><div class=box id=b12>x</div><div class=box id=b13>x</div><div class=box id=b14>x</div><div class=box id=b15>x</div><div class=box id=b16>x</div><div class=box id=b17>x</div><div class=box id=b18>x</div><div class=box id=b19>x</div><div class=box id=b20>x</div><div class=box id=b21>x</div><div class=box id=b22>x</div><div class=box id=b23>x</div><div class=box id=b24>x</div><div class=box id=b25>x</div><div class=box id=b26>x</div><div class=box id=b27>x</div><div class=box id=b28>x</div><div class=box id=b29>x</div><div class=box id=b30>x</div><div class=box id=b31>x</div><div class=box id=b32>x</div><div class=box id=b33>x</div><div class=box id=b34>x</div><div class=box id=b35>x</div><div class=box id=b36>x</div><div class=box id=b37>x</div><div class=box id=b38>x</div><div class=box id=b39>x</div><div class=box id=b40>x</div><div class=box id=b41>x</div><div class=box id=b42>x</div><div class=box id=b43>x</div><div class=box id=b44>x</div><div class=box id=b45>x</div><div class=box id=b46>x</div><div class=box id=b47>x</div><div class=box id=b48>x</div><div class=box id=b49>x</div><div class=box id=b50>x</div><div class=box id=b51>x</div><div class=box id=b52>x</div><div class=box id=b53>x</div><div class=box id=b54>x</div><div class=box id=b55>x</div><div class=box id=b56>x</div><div class=box id=b57>x</div><div class=box id=b58>x</div><div class=box id=b59>x</div><div class=box id=b60>x</div><div class=box id=b61>x</div><div class=box id=b62>x</div><div class=box id=b63>x</div><div class=box id=b64>x</div><div class=box id=b65>x</div><div class=box id=b66>x</div><div class=box id=b67>x</div><div class=box id=b68>x</div><div class=box id=b69>x</div><div class=box id=b70>x</div><div class=box id=b71>x</div><div class=box id=b72>x</div><div class=box id=b73>x</div><div class=box id=b74>x</div><div class=box id=b75>x</div><div class=box id=b76>x</div><div class=box id=b77>x</div><div class=box id=b78>x</div><div class=box id=b79>x</div><div class=box id=b80>x</div><div class=box id=b81>x</div><div class=box id=b82>x</div><div class=box id=b83>x</div><div class=box id=b84>x</div><div class=box id=b85>x</div><div class=box id=b86>x</div><div class=box id=b87>x</div><div class=box id=b88>x</div><div class=box id=b89>x</div><div class=box id=b90>x</div><div class=box id=b91>x</div><div class=box id=b92>x</div><div class=box id=b93>x</div><div class=box id=b94>x</div><div class=box id=b95>x</div><div class=box id=b96>x</div><div class=box id=b97>x</div><div class=box id=b98>x</div><div class=box id=b99>x</div><div class=box id=b100>x</div><div class=box id=b101>x</div><div class=box id=b102>x</div><div class=box id=b103>x</div><div class=box id=b104>x</div><div class=box id=b105>x</div><div class=box id=b106>x</div><div class=box id=b107>x</div><div class=box id=b108>x</div><div class=box id=b109>x</div><div class=box id=b110>x</div><div class=box id=b111>x</div><div class=box id=b112>x</div><div class=box id=b113>x</div><div class=box id=b114>x</div><div class=box id=b115>x</div><div class=box id=b116>x</div><div class=box id=b117>x</div><div class=box id=b118>x</div><div class=box id=b119>x</div><div class=box id=b120>x</div><div class=box id=b121>x</div><div class=box id=b122>x</div><div class=box id=b123>x</div><div class=box id=b124>x</div><div class=box id=b125>x</div><div class=box id=b126>x</div><div class=box id=b127>x</div><div class=box id=b128>x</div><div class=box id=b129>x</div><div class=box id=b130>x</div><div class=box id=b131>x</div><div class=box id=b132>x</div><div class=box id=b133>x</div><div class=box id=b134>x</div><div class=box id=b135>x</div><div class=box id=b136>x</div><div class=box id=b137>x</div><div class=box id=b138>x</div><div class=box id=b139>x</div><div class=box id=b140>x</div><div class=box id=b141>x</div><div class=box id=b142>x</div><div class=box id=b143>x</div><div class=box id=b144>x</div><div class=box id=b145>x</div><div class=box id=b146>x</div><div class=box id=b147>x</div><div class=box id=b148>x</div><div class=box id=b149>x</div><div class=box id=b150>x</div><div class=box id=b151>x</div><div class=box id=b152>x</div><div class=box id=b153>x</div><div class=box id=b154>x</div><div class=box id=b155>x</div><div class=box id=b156>x</div><div class=box id=b157>x</div><div class=box id=b158>x</div><div class=box id=b159>x</div><div class=box id=b160>x</div><div class=box id=b161>x</div><div class=box id=b162>x</div><div class=box id=b163>x</div><div class=box id=b164>x</div><div class=box id=b165>x</div><div class=box id=b166>x</div><div class=box id=b167>x</div><div class=box id=b168>x</div><div class=box id=b169>x</div><div class=box id=b170>x</div><div class=box id=b171>x</div><div class=box id=b172>x</div><div class=box id=b173>x</div><div class=box id=b174>x</div><div class=box id=b175>x</div><div class=box id=b176>x</div><div class=box id=b177>x</div><div class=box id=b178>x</div><div class=box id=b179>x</div><div class=box id=b180>x</div><div class=box id=b181>x</div><div class=box id=b182>x</div><div class=box id=b183>x</div><div class=box id=b184>x</div><div class=box id=b185>x</div><div class=box id=b186>x</div><div class=box id=b187>x</div><div class=box id=b188>x</div><div class=box id=b189>x</div><div class=box id=b190>x</div><div class=box id=b191>x</div><div class=box id=b192>x</div><div class=box id=b193>x</div><div class=box id=b194>x</div><div class=box id=b195>x</div><div class=box id=b196>x</div><div class=box id=b197>x</div><div class=box id=b198>x</div><div class=box id=b199>x</div><div class=box id=b200>x</div><div class=box id=b201>x</div><div class=box id=b202>x</div><div class=box id=b203>x</div><div class=box id=b204>x</div><div class=box id=b205>x</div><div class=box id=b206>x</div><div class=box id=b207>x</div><div class=box id=b208>x</div><div class=box id=b209>x</div><div class=box id=b210>x</div><div class=box id=b211>x</div><div class=box id=b212>x</div><div class=box id=b213>x</div><div class=box id=b214>x</div><div class=box id=b215>x</div><div class=box id=b216>x</div><div class=box id=b217>x</div><div class=box id=b218>x</div><div class=box id=b219>x</div><div class=box id=b220>x</div><div class=box id=b221>x</div><div class=box id=b222>x</div><div class=box id=b223>x</div><div class=box id=b224>x</div><div class=box id=b225>x</div><div class=box id=b226>x</div><div class=box id=b227>x</div><div class=box id=b228>x</div><div class=box id=b229>x</div><div class=box id=b230>x</div><div class=box id=b231>x</div><div class=box id=b232>x</div><div class=box id=b233>x</div><div class=box id=b234>x</div><div class=box id=b235>x</div><div class=box id=b236>x</div><div class=box id=b237>x</div><div class=box id=b238>x</div><div class=box id=b239>x</div><div class=box id=b240>x</div><div class=box id=b241>x</div><div class=box id=b242>x</div><div class=box id=b243>x</div><div class=box id=b244>x</div><div class=box id=b245>x</div><div class=box id=b246>x</div><div class=box id=b247>x</div><div class=box id=b248>x</div><div class=box id=b249>x</div><div class=box id=b250>x</div><div class=box id=b251>x</div><div class=box id=b252>x</div><div class=box id=b253>x</div><div class=box id=b254>x</div><div class=box id=b255>x</div><div class=box id=b256>x</div><div class=box id=b257>x</div><div class=box id=b258>x</div><div class=box id=b259>x</div><div class=box id=b260>x</div><div class=box id=b261>x</div><div class=box id=b262>x</div><div class=box id=b263>x</div><div class=box id=b264>x</div><div class=box id=b265>x</div><div class=box id=b266>x</div><div class=box id=b267>x</div><div class=box id=b268>x</div><div class=box id=b269>x</div><div class=box id=b270>x</div><div class=box id=b271>x</div><div class=box id=b272>x</div><div class=box id=b273>x</div><div class=box id=b274>x</div><div class=box id=b275>x</div><div class=box id=b276>x</div><div class=box id=b277>x</div><div class=box id=b278>x</div><div class=box id=b279>x</div><div class=box id=b280>x</div><div class=box id=b281>x</div><div class=box id=b282>x</div><div class=box id=b283>x</div><div class=box id=b284>x</div><div class=box id=b285>x</div><div class=box id=b286>x</div><div class=box id=b287>x</div><div class=box id=b288>x</div><div class=box id=b289>x</div><div class=box id=b290>x</div><div class=box id=b291>x</div><div class=box id=b292>x</div><div class=box id=b293>x</div><div class=box id=b294>x</div><div class=box id=b295>x</div><div class=box id=b296>x</div><div class=box id=b297>x</div><div class=box id=b298>x</div><div class=box id=b299>x</div></body>",
+   "expr": "var o={};for(var i=0;i<300;i++){var a=document.getElementById('b'+i);a.className='box t';var c=getComputedStyle(a);var k=c.width+'/'+c.transform;o[k]=(o[k]||0)+1}JSON.stringify(o)",
+   "chrome": "{\"200px/matrix(1, 0, 0, 1, 10, 0)\":300}",
+   "base": "{\"200px/\":256,\"100px/\":44}",
+   "expect": "any"
+  },
+  {
+   "name": "class change",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}.t{width:50%;transform:rotate(45deg);filter:blur(1px)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.className='box t';var c=getComputedStyle(a);c.transform+'|'+c.filter+'|'+c.width",
+   "chrome": "matrix(0.707107, 0.707107, -0.707107, 0.707107, 0, 0)|blur(1px)|200px",
+   "base": "||200px",
+   "expect": "any"
+  },
+  {
+   "name": "class change remove",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}.t{transform:rotate(45deg);filter:blur(1px)}</style><body><div id=a class='box t'>x</div></body>",
+   "expr": "var a=document.getElementById('a');a.className='box';var c=getComputedStyle(a);c.transform+'|'+c.filter",
+   "chrome": "none|none",
+   "base": "|",
+   "expect": "any"
+  },
+  {
+   "name": "inline vs important rule",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{width:30px !important}</style><body><div id=a class=box style='width:10px'>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).width",
+   "chrome": "30px",
+   "base": "10px",
+   "expect": "any"
+  },
+  {
+   "name": "span inline width",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><span id=a style='width:50%'>x</span></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).width",
+   "chrome": "50%",
+   "base": "50%",
+   "expect": "chrome"
+  },
+  {
+   "name": "enum",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var c=getComputedStyle(document.getElementById('a'));[c.length,c[0],c.item(0),c[c.length-1],c.cssText.length>0,Array.from(c).indexOf('margin')>=0,Array.from(c).indexOf('-webkit-text-fill-color')].join(',')",
+   "chrome": "409,accent-color,accent-color,-webkit-writing-mode,false,false,401",
+   "base": "46,background-color,background-color,z-index,true,false,-1",
+   "expect": "any"
+  },
+  {
+   "name": "enum order webkit",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var c=getComputedStyle(document.getElementById('a'));var n=Array.from(c);[n.indexOf('-webkit-text-fill-color')>n.indexOf('z-index'), n.indexOf('background')>=0, n.indexOf('flex')>=0, n.indexOf('font')>=0, n.indexOf('transform')>=0].join(',')",
+   "chrome": "true,false,false,false,true",
+   "base": "false,false,false,false,false",
+   "expect": "any"
+  },
+  {
+   "name": "webkit names",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}#a{transform:scale(2);filter:blur(1px)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var c=getComputedStyle(document.getElementById('a'));[c.webkitTransform,c.WebkitTransform,c.webkitFilter,c.webkitClipPath,c.webkitAppearance===undefined,c.webkitMaskImage,c['-webkit-filter'], typeof c.webkitTransform].join('|')",
+   "chrome": "matrix(2, 0, 0, 2, 0, 0)|matrix(2, 0, 0, 2, 0, 0)|blur(1px)|none|false|none|blur(1px)|string",
+   "base": "||||false|||string",
+   "expect": "chrome"
+  },
+  {
+   "name": "in operator",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var c=getComputedStyle(document.getElementById('a'));['transform' in c,'webkitTransform' in c,'filter' in c].join()",
+   "chrome": "true,true,true",
+   "base": "false,false,false",
+   "expect": "any"
+  },
+  {
+   "name": "enum zero-width",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box>x</div></body>",
+   "expr": "var c=getComputedStyle(document.getElementById('a'));var n=Array.from(c);[n.indexOf('grid-template'), n.indexOf('mask')].join()",
+   "chrome": "-1,-1",
+   "base": "-1,-1",
+   "expect": "chrome"
+  },
+  {
+   "name": "rem 62.5% root, body 1.6rem",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}html{font-size:62.5%}body{font-size:1.6rem}#a{min-width:2rem;transform:translateX(2rem)}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).minWidth+'|'+getComputedStyle(document.getElementById('a')).transform",
+   "chrome": "20px|matrix(1, 0, 0, 1, 20, 0)",
+   "base": "",
+   "expect": "chrome",
+   "source": "#866 R1 delta (comment 6604419875) nits 1 and 5"
+  },
+  {
+   "name": "rem root 10px, body 20px",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}html{font-size:10px}body{font-size:20px}#a{min-width:2rem}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).minWidth",
+   "chrome": "20px",
+   "base": "",
+   "expect": "chrome",
+   "source": "#866 R1 delta (comment 6604419875) nits 1 and 5"
+  },
+  {
+   "name": "outline-offset rem root 10px",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}html{font-size:10px}#a{outline:1px solid;outline-offset:1rem}</style><body><div id=a class=box>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).outlineOffset",
+   "chrome": "10px",
+   "base": "",
+   "expect": "chrome",
+   "source": "#866 R1 delta (comment 6604419875) nits 1 and 5"
+  },
+  {
+   "name": "inline text-decoration colour longhand",
+   "html": "<!doctype html><style>body{margin:0}.box{width:100px;height:50px}</style><body><div id=a class=box style='text-decoration:underline red'>x</div></body>",
+   "expr": "getComputedStyle(document.getElementById('a')).textDecorationColor",
+   "chrome": "rgb(255, 0, 0)",
+   "base": "",
+   "expect": "base",
+   "source": "#866 R1 delta (comment 6604419875) nits 1 and 5"
+  }
+ ]
+}

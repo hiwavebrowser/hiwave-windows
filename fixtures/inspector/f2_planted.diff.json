@@ -1,0 +1,98 @@
+{
+  "first": {
+    "affected_area": 11500.0,
+    "fields": [
+      {
+        "chrome": "1",
+        "ours": "2",
+        "property": "flex-grow"
+      }
+    ],
+    "formatting_context": "flex item of html > body:nth-child(2) > div:nth-child(2)",
+    "match_key": "id",
+    "oracle_key": "#f2",
+    "order": 7,
+    "root": true,
+    "selector": "html > body:nth-child(2) > div:nth-child(2) > div:nth-child(2)",
+    "stage": "STYLE",
+    "tag": "div"
+  },
+  "first_innermost": {
+    "affected_area": 11500.0,
+    "fields": [
+      {
+        "chrome": "1",
+        "ours": "2",
+        "property": "flex-grow"
+      }
+    ],
+    "formatting_context": "flex item of html > body:nth-child(2) > div:nth-child(2)",
+    "match_key": "id",
+    "oracle_key": "#f2",
+    "order": 7,
+    "root": true,
+    "selector": "html > body:nth-child(2) > div:nth-child(2) > div:nth-child(2)",
+    "stage": "STYLE",
+    "tag": "div"
+  },
+  "matching": {
+    "ambiguous": [],
+    "chrome_elements": 21,
+    "chrome_only": 0,
+    "matched": 21,
+    "ours_elements": 21,
+    "ours_only": 0,
+    "truncated": false,
+    "unverified": 0
+  },
+  "page": {
+    "chrome_engine": "chromium 141.0.7390.37",
+    "chrome_url": "target.html",
+    "ours_engine": "0.1.0",
+    "ours_url": "about:blank",
+    "text_metrics_font_derived": false,
+    "viewport": [
+      800,
+      600
+    ]
+  },
+  "roots": [
+    {
+      "affected_area": 11500.0,
+      "fields": [
+        {
+          "chrome": "1",
+          "ours": "2",
+          "property": "flex-grow"
+        }
+      ],
+      "formatting_context": "flex item of html > body:nth-child(2) > div:nth-child(2)",
+      "match_key": "id",
+      "oracle_key": "#f2",
+      "order": 7,
+      "root": true,
+      "selector": "html > body:nth-child(2) > div:nth-child(2) > div:nth-child(2)",
+      "stage": "STYLE",
+      "tag": "div"
+    }
+  ],
+  "schema": "hiwave-inspector-diff/1",
+  "settings": {
+    "include_head": false,
+    "text_tolerance": 2,
+    "threshold_px": 2.0
+  },
+  "summary": {
+    "divergent_elements": 1,
+    "geometry_contexts": {},
+    "roots": 1,
+    "stage_counts": {
+      "DOM": 0,
+      "GEOMETRY": 0,
+      "STYLE": 1
+    },
+    "style_properties": {
+      "flex-grow": 1
+    }
+  }
+}

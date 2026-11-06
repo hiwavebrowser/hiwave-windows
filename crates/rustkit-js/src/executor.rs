@@ -60,6 +60,22 @@ pub(crate) struct HostJobExecutor {
     running_futures: RefCell<Vec<Pin<Box<dyn Future<Output = JsResult<JsValue>>>>>>,
     max_job_iterations: Cell<u64>,
     timeout: Cell<Option<Duration>>,
+    /// True while the outermost `run_jobs` is draining. A nested call
+    /// returns without running jobs: a microtask checkpoint must not nest.
+    draining: Cell<bool>,
+}
+
+/// Clears `draining` when the outermost `run_jobs` leaves, including by
+/// panic. A nested call returns before this exists, so it must not clear
+/// the flag the outer call still owns.
+struct DrainGuard<'a> {
+    draining: &'a Cell<bool>,
+}
+
+impl Drop for DrainGuard<'_> {
+    fn drop(&mut self) {
+        self.draining.set(false);
+    }
 }
 
 impl Drop for HostJobExecutor {
@@ -99,6 +115,7 @@ impl HostJobExecutor {
             running_futures: RefCell::default(),
             max_job_iterations: Cell::new(max_job_iterations),
             timeout: Cell::new(timeout),
+            draining: Cell::new(false),
         }
     }
 
@@ -157,6 +174,19 @@ impl JobExecutor for HostJobExecutor {
     }
 
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
+        // HTML: while a checkpoint is already running, a nested one returns.
+        // The outer loop runs the jobs it queued, after the current job
+        // returns. Draining them here would run them on top of that job's
+        // frames, and would borrow the context cell the outer job still
+        // holds. `replace` leaves the flag set; only the outer guard
+        // clears it.
+        if self.draining.replace(true) {
+            return Ok(());
+        }
+        let _drain = DrainGuard {
+            draining: &self.draining,
+        };
+
         let context_cell = self.context_cell;
         let placeholder = self.placeholder_context;
 

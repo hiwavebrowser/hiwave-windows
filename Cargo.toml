@@ -1,8 +1,7 @@
 [workspace]
 resolver = "2"
-# Vendored with a patch, not a workspace member (see third_party/boa_gc/HIWAVE_PATCH.md and
-# third_party/boa_parser/HIWAVE_PATCH.md).
-exclude = ["third_party/boa_gc", "third_party/boa_parser"]
+# Vendored with a patch, not a workspace member (see third_party/boa_engine/PATCHES.md).
+exclude = ["third_party/boa_engine"]
 members = [
     "crates/hiwave-core",
     "crates/hiwave-shield",
@@ -134,8 +133,6 @@ lto = false
 codegen-units = 16
 strip = false
 
-# boa_gc 0.20.0 with the weak-phase mark fix backported from 0.22.
-# Drop when Boa is upgraded to >= 0.22. See third_party/boa_gc/HIWAVE_PATCH.md.
+# boa_engine 0.22.0 with a cross-thread interrupt word. See third_party/boa_engine/PATCHES.md.
 [patch.crates-io]
-boa_gc = { path = "third_party/boa_gc" }
-boa_parser = { path = "third_party/boa_parser" }
+boa_engine = { path = "third_party/boa_engine" }

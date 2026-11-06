@@ -41,6 +41,8 @@ fn boxed(x: f32, y: f32, w: f32, h: f32, scroll_w: f32, scroll_h: f32) -> BoxGeo
         scroll_width: scroll_w,
         scroll_height: scroll_h,
         position: 0,
+        scrolls: true,
+        ..Default::default()
     }
 }
 

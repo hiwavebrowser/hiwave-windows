@@ -5,6 +5,8 @@
 //! last position script asked for when it settles
 //! (`DomBindings::take_scroll_request`).
 
+use crate::dom::{DomHost, SharedDomHost};
+use crate::DirtyMark;
 use rustkit_js::{JsError, JsRuntime, JsValue};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,24 +30,33 @@ fn number(args: &[JsValue], index: usize) -> Option<f32> {
     }
 }
 
-pub(crate) fn install(runtime: &mut JsRuntime, state: &SharedScroll) -> Result<(), JsError> {
-    // `__rustkit_scroll_state()`: "x y maxX maxY".
-    let s = state.clone();
+pub(crate) fn install(
+    runtime: &mut JsRuntime,
+    state: &SharedScroll,
+    host: &SharedDomHost,
+    dirty: &Rc<DirtyMark>,
+) -> Result<(), JsError> {
+    // `__rustkit_scroll_state()`: "x y maxX maxY". Like a geometry read, it
+    // lays the page out first if script wrote to it (forced layout), so the
+    // maximum is the document's as it is now.
+    let (s, h, d) = (state.clone(), host.clone(), dirty.clone());
     runtime.register_host_function(
         "__rustkit_scroll_state",
         0,
         Box::new(move |_| {
+            DomHost::force_layout_if_written(&h, &d);
             let s = s.borrow();
             JsValue::String(format!("{} {} {} {}", s.x, s.y, s.max_x, s.max_y))
         }),
     )?;
     // `__rustkit_scroll_to(x, y)`: scroll there (clamped to the document;
     // a non-number keeps that axis) and answer the position reached, "x y".
-    let s = state.clone();
+    let (s, h, d) = (state.clone(), host.clone(), dirty.clone());
     runtime.register_host_function(
         "__rustkit_scroll_to",
         2,
         Box::new(move |args| {
+            DomHost::force_layout_if_written(&h, &d);
             let mut s = s.borrow_mut();
             let x = number(args, 0).unwrap_or(s.x).clamp(0.0, s.max_x.max(0.0));
             let y = number(args, 1).unwrap_or(s.y).clamp(0.0, s.max_y.max(0.0));

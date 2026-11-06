@@ -17,7 +17,7 @@ fn before_content(value: &str) -> Option<String> {
     let mut attributes = HashMap::new();
     attributes.insert("class".to_string(), "k".to_string());
     engine
-        .pseudo_element_style(
+        .lctx.pseudo_element_style(
             "i",
             &attributes,
             std::slice::from_ref(&sheet),

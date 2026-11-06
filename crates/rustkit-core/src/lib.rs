@@ -227,6 +227,18 @@ impl NavigationStateMachine {
         Ok(nav_id)
     }
 
+    /// The provisional navigation was redirected: the document it commits,
+    /// its history entry and its commit event all take the last hop's URL.
+    pub fn redirected_to(&mut self, url: Url) {
+        if self.state != NavigationState::Provisional {
+            return;
+        }
+        if let Some(nav) = self.current_navigation.as_mut() {
+            debug!(navigation_id = ?nav.id, %url, "Navigation redirected");
+            nav.url = url;
+        }
+    }
+
     /// Mark navigation as committed (first bytes received).
     pub fn commit_navigation(&mut self) -> Result<(), CoreError> {
         if self.state != NavigationState::Provisional {

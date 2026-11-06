@@ -121,31 +121,54 @@ pub fn calculate_caret_position(
     }
 }
 
-/// Calculate selection rectangles.
+/// The rectangles that paint the selected characters `[start, end)` (in
+/// characters, not bytes) of a text control's value: one per line the
+/// selection touches, lines split at `\n` (a textarea). `origin_x` is where
+/// each line's text starts, `top` the first line's top, `line_height` the
+/// line pitch; `measure` is the advance width of a piece of text in the
+/// control's font, the same measure the caret is placed with, so the
+/// highlight ends exactly at the caret.
 pub fn calculate_selection_rects(
     text: &str,
     start: usize,
     end: usize,
-    content_box: &Rect,
-    font_size: f32,
+    origin_x: f32,
+    top: f32,
+    line_height: f32,
+    measure: &dyn Fn(&str) -> f32,
 ) -> Vec<Rect> {
-    if start >= end || start >= text.len() {
+    let total = text.chars().count();
+    let (start, end) = (start.min(total), end.min(total));
+    if start >= end {
         return Vec::new();
     }
-
-    let (start, end) = (start.min(text.len()), end.min(text.len()));
-    let text_before = &text[..start];
-    let selected_text = &text[start..end];
-
-    let start_x = estimate_text_width(text_before, font_size);
-    let selection_width = estimate_text_width(selected_text, font_size);
-
-    vec![Rect::new(
-        content_box.x + start_x,
-        content_box.y,
-        selection_width,
-        font_size * 1.2,
-    )]
+    let mut rects = Vec::new();
+    let mut line_start = 0usize;
+    for (index, line) in text.split('\n').enumerate() {
+        let len = line.chars().count();
+        let line_end = line_start + len;
+        // The selection covers part of this line, or runs through its
+        // newline (an empty line inside a selection still shows a sliver).
+        if start <= line_end && end > line_start {
+            let from = start.saturating_sub(line_start).min(len);
+            let to = end.saturating_sub(line_start).min(len);
+            let before: String = line.chars().take(from).collect();
+            let picked: String = line.chars().skip(from).take(to - from).collect();
+            let x = origin_x + measure(&before);
+            let mut width = measure(&picked);
+            if end > line_end && width == 0.0 {
+                width = (line_height / 4.0).max(1.0);
+            }
+            if width > 0.0 {
+                rects.push(Rect::new(x, top + index as f32 * line_height, width, line_height));
+            }
+        }
+        line_start = line_end + 1;
+        if line_start > end {
+            break;
+        }
+    }
+    rects
 }
 
 /// Estimate text width without proper shaping.
@@ -470,13 +493,33 @@ mod tests {
         assert!(caret.height > 0.0);
     }
 
+    fn tuples(rects: &[Rect]) -> Vec<(f32, f32, f32, f32)> {
+        rects.iter().map(|r| (r.x, r.y, r.width, r.height)).collect()
+    }
+
     #[test]
     fn test_selection_rects() {
         let content_box = Rect::new(10.0, 10.0, 200.0, 20.0);
-        let rects = calculate_selection_rects("Hello World", 0, 5, &content_box, 14.0);
+        let measure = |t: &str| estimate_text_width(t, 14.0);
+        let rects = calculate_selection_rects("Hello World", 0, 5, content_box.x, content_box.y, 16.0, &measure);
 
         assert_eq!(rects.len(), 1);
-        assert!(rects[0].width > 0.0);
+        assert_eq!(tuples(&rects), vec![(10.0, 10.0, 35.0, 16.0)]);
+        // Characters, not bytes; and nothing for a collapsed selection.
+        let rects = calculate_selection_rects("héllo", 1, 3, 0.0, 0.0, 16.0, &measure);
+        assert_eq!(tuples(&rects), vec![(7.0, 0.0, 14.0, 16.0)]);
+        assert!(calculate_selection_rects("abc", 2, 2, 0.0, 0.0, 16.0, &measure).is_empty());
+    }
+
+    #[test]
+    fn selection_rects_follow_textarea_lines() {
+        let measure = |t: &str| t.chars().count() as f32 * 10.0;
+        // "ab|c\nde\nf|g": the end of line 0, all of line 1, the start of line 2.
+        let rects = calculate_selection_rects("abc\nde\nfg", 2, 8, 5.0, 100.0, 20.0, &measure);
+        assert_eq!(
+            tuples(&rects),
+            vec![(25.0, 100.0, 10.0, 20.0), (5.0, 120.0, 20.0, 20.0), (5.0, 140.0, 10.0, 20.0)]
+        );
     }
 
     #[test]

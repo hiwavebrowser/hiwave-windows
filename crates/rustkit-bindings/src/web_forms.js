@@ -171,6 +171,13 @@
         return p && p.localName === 'select' ? p : null;
     }
     function rawSelected(o) { return picked.has(o) ? picked.get(o) : o.hasAttribute('selected'); }
+    // The engine styles (`:checked`) and paints a select from what it is
+    // told here, through the same note as an input's checkedness.
+    function setPicked(o, v) {
+        if (picked.has(o) && picked.get(o) === v) return;
+        picked.set(o, v);
+        noteChecked(o, v);
+    }
     // The selectedness setting algorithm: in a single select, the last
     // selected option wins and, with none selected, the first enabled one is.
     // Untouched selects get it on every read; `settle` makes it stick.
@@ -184,7 +191,7 @@
                 if (first >= 0) v[first] = true;
             }
         }
-        if (settle) opts.forEach(function (o, i) { picked.set(o, v[i]); });
+        if (settle) opts.forEach(function (o, i) { setPicked(o, v[i]); });
         return { opts: opts, v: v };
     }
     function selectedOf(sel) {
@@ -192,8 +199,26 @@
         return s.opts.filter(function (o, i) { return s.v[i]; });
     }
     function pick(sel, match) {
-        optionsOf(sel).forEach(function (o, i) { picked.set(o, match(o, i)); });
+        optionsOf(sel).forEach(function (o, i) { setPicked(o, match(o, i)); });
     }
+    // The user picked option `index` of a single select in its drop-down
+    // or with a key (HTML §4.10.7: `input` then `change`, both trusted and
+    // bubbling). Nothing fires when it was already the selected one.
+    // Returns whether the selection changed.
+    if (internals.setPickOption) internals.setPickOption(function (sel, index) {
+        var opts = optionsOf(sel), o = opts[index];
+        var group = o && o.parentNode && o.parentNode.localName === 'optgroup' ? o.parentNode : null;
+        if (!o || o.disabled || (group && group.hasAttribute('disabled'))) return false;
+        if (sel.multiple || sel.selectedIndex === index) return false;
+        pick(sel, function (x) { return x === o; });
+        var input = new g.Event('input', { bubbles: true, composed: true });
+        input.isTrusted = true;
+        sel.dispatchEvent(input);
+        var change = new g.Event('change', { bubbles: true });
+        change.isTrusted = true;
+        sel.dispatchEvent(change);
+        return true;
+    });
     getter(Select, 'options', function () { return collection(optionsOf(this)); });
     getter(Select, 'length', function () { return optionsOf(this).length; });
     getter(Select, 'selectedOptions', function () { return collection(selectedOf(this)); });
@@ -235,7 +260,7 @@
         return s.v[s.opts.indexOf(this)];
     }, function (v) {
         var sel = selectOf(this), self = this;
-        picked.set(this, !!v);
+        setPicked(this, !!v);
         if (!sel) return;
         if (v && !sel.multiple) pick(sel, function (o) { return o === self; });
         states(sel, true);
@@ -381,7 +406,7 @@
                 if (checks.delete(el)) noteChecked(el, null);
                 return;
             }
-            optionsOf(el).forEach(function (o) { picked.delete(o); });
+            optionsOf(el).forEach(function (o) { if (picked.delete(o)) noteChecked(o, null); });
         });
     };
 

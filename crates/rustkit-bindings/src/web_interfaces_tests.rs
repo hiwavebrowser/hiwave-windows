@@ -53,6 +53,84 @@ fn elements_are_instances_of_their_tags_interface() {
     assert_eq!(ev(&b, "var t1; try { new HTMLAnchorElement(); t1 = 'no throw'; } catch (e) { t1 = e.name + ':' + e.message; } t1"), "TypeError:Illegal constructor");
 }
 
+/// github.com's landing page asks `canvas.getContext("webgl")` to see whether
+/// it may show its 3D scene and calls `video.load()` on its hero video, both
+/// in effects. Each threw "not a callable function", an error boundary caught
+/// it and mounted the whole page again, on every turn of the live loop.
+///
+/// Chromium 143: `getContext('webgl')` is null and `getContext('2d')` a
+/// CanvasRenderingContext2D (web_canvas.js); on a `<video>` with no source
+/// `load()` and `pause()` return undefined, `paused` is true, `readyState` 0,
+/// `canPlayType('x/y')` "", `currentTime` 0, `duration` NaN, `ended` false,
+/// and `play()` returns a promise that rejects with a DOMException.
+#[test]
+fn a_canvas_has_no_webgl_context_and_a_media_element_plays_nothing_without_throwing() {
+    let b = bound();
+    b.evaluate("document.body.innerHTML = '<canvas id=\"c\"></canvas><video id=\"v\"></video><audio id=\"au2\"></audio>';").unwrap();
+    assert_eq!(
+        ev(&b, "var c = document.getElementById('c'); String([typeof c.getContext, c.getContext('webgl'), Object.prototype.toString.call(c.getContext('2d')), document.createElement('canvas').getContext('experimental-webgl')].join())"),
+        "function,,[object CanvasRenderingContext2D],"
+    );
+    // The page's own check, as written.
+    assert_eq!(
+        ev(&b, "var e = document.createElement('canvas'), t = e.getContext('webgl') || e.getContext('experimental-webgl'); String(!!(t && t instanceof WebGLRenderingContext))"),
+        "false"
+    );
+    assert_eq!(
+        ev(&b, "var v = document.getElementById('v'); String([typeof v.load, v.load(), typeof v.pause, v.pause(), v.paused, v.readyState, JSON.stringify(v.canPlayType('video/mp4')), v.currentTime, v.duration, v.ended].join())"),
+        "function,,function,,true,0,\"\",0,NaN,false"
+    );
+    assert_eq!(
+        ev(&b, "String([HTMLMediaElement.HAVE_NOTHING, HTMLMediaElement.HAVE_METADATA, HTMLMediaElement.HAVE_CURRENT_DATA, HTMLMediaElement.HAVE_FUTURE_DATA, HTMLMediaElement.HAVE_ENOUGH_DATA, v.HAVE_CURRENT_DATA].join())"),
+        "0,1,2,3,4,2"
+    );
+    // An <audio> and a created element answer the same; a <div> has none of it.
+    assert_eq!(
+        ev(&b, "String([typeof document.getElementById('au2').play, document.createElement('video').paused, typeof document.createElement('div').play, typeof document.createElement('div').getContext].join())"),
+        "function,true,undefined,undefined"
+    );
+    b.evaluate("var played = 'pending', p = v.play(); p.then(function () { played = 'resolved'; }, function (e) { played = e.name + ':' + (e instanceof DOMException); });").unwrap();
+    assert_eq!(ev(&b, "Object.prototype.toString.call(p) + ' ' + played"), "[object Promise] NotSupportedError:true");
+}
+
+/// `MediaError` is the interface a media element's `error` would be. Pages
+/// read the code constants; there is no playback, so nothing constructs one
+/// and `error` stays null.
+#[test]
+fn media_error_exists_with_its_code_constants() {
+    let b = bound();
+    assert_eq!(
+        ev(&b, "[typeof MediaError, MediaError.MEDIA_ERR_ABORTED, MediaError.MEDIA_ERR_NETWORK, MediaError.MEDIA_ERR_DECODE, MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED, MediaError.prototype.MEDIA_ERR_ABORTED].join()"),
+        "function,1,2,3,4,1"
+    );
+    assert_eq!(
+        ev(&b, "var t; try { new MediaError(); t = 'no throw'; } catch (e) { t = e.name + ':' + e.message; } t"),
+        "TypeError:Illegal constructor"
+    );
+    assert_eq!(ev(&b, "String(document.getElementById('vi').error)"), "null");
+    assert_eq!(ev(&b, "String(document.createElement('audio').error)"), "null");
+}
+
+/// A timestamp with more than three fractional digits, or an offset written
+/// `+HHMM`, used to be Invalid Date. `toISOString` then throws RangeError
+/// Invalid time value.
+#[test]
+fn iso_dates_with_a_long_fraction_or_a_basic_offset_parse() {
+    let b = bound();
+    assert_eq!(
+        ev(&b, "new Date('2024-10-16T18:22:11.123000+0000').toISOString()"),
+        "2024-10-16T18:22:11.123Z"
+    );
+    assert_eq!(ev(&b, "String(new Date('2024-10-16T18:22:11.1Z').getUTCMilliseconds())"), "100");
+    assert_eq!(ev(&b, "new Date('2024-10-16T18:22:11.1234Z').toISOString()"), "2024-10-16T18:22:11.123Z");
+    assert_eq!(ev(&b, "new Date('2024-10-16 18:22:11Z').toISOString()"), "2024-10-16T18:22:11.000Z");
+    assert_eq!(ev(&b, "String(isNaN(Date.parse('not-a-date')))"), "true");
+    assert_eq!(
+        ev(&b, "new Date('2020-06-08T09:16:15.779-07:30').toISOString()"),
+        "2020-06-08T16:46:15.779Z"
+    );
+}
+
 #[test]
 fn event_subclasses_extend_event_with_their_init_members() {
     let b = bound();

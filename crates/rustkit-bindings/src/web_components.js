@@ -7,8 +7,10 @@
 // methods of the node wrappers and does nothing (one length check) until
 // a page defines its first element. Stated limits: autonomous custom
 // elements only (`define(name, ctor, { extends })` throws NotSupportedError,
-// as in Safari); adoptedCallback never fires (one document); `:defined` is not
-// a selector; ElementInternals / form-associated elements are not provided.
+// as in Safari); adoptedCallback never fires (one document); ElementInternals /
+// form-associated elements are not provided. `:defined` follows the names
+// defined here: each define tells the DOM (`__rkShadowInternals`, 'define'),
+// and the style engine reads that set.
 // Shadow DOM is not here (see the shadow root work).
 (function (g) {
     if (g.customElements) return;
@@ -24,12 +26,13 @@
     var stack = [];                 // upgrade/construct in progress
     var rawCreateElement = null;    // the DOM's own createElement, below
     var selector = '';              // joined defined names, for subtree scans
+    var shadowHost = g.__rkShadowInternals || null;  // tells the DOM a name is defined
 
     function domError(message, name) {
         return typeof g.DOMException === 'function' ? new g.DOMException(message, name) : (function () { var e = new Error(message); e.name = name; return e; })();
     }
     function report(e) {
-        try { if (g.__rustkit_errors) g.__rustkit_errors.push(String(e)); } catch (_) {}
+        try { __rk.reportError(e); } catch (_) {}
     }
     function call(fn, thisArg, args) {
         try { fn.apply(thisArg, args); } catch (e) { report(e); }
@@ -175,6 +178,26 @@
         return el;
     };
 
+    // The connected elements named `name`, in shadow-including tree order
+    // (HTML §4.13.4 define, step "upgrade candidates"): a host's shadow
+    // tree, closed ones too, comes before the host's children.
+    function upgradeCandidates(name) {
+        var light = Array.prototype.slice.call(document.getElementsByTagName(name));
+        if (!shadowHost || !shadowHost.call('any', document)) return light;
+        var out = [];
+        (function walk(node) {
+            var kids = node.children;
+            for (var i = 0; i < kids.length; i++) {
+                var el = kids[i];
+                if (String(el.localName).toLowerCase() === name) out.push(el);
+                var root = shadowHost.node('root', el);
+                if (root) walk(root);
+                walk(el);
+            }
+        })(document);
+        return out;
+    }
+
     // ---- the registry
     function CustomElementRegistry() { throw new TypeError('Illegal constructor'); }
     CustomElementRegistry.prototype.define = function (name, ctor, options) {
@@ -184,6 +207,7 @@
         if (byName[name]) throw domError("Failed to execute 'define' on 'CustomElementRegistry': the name \"" + name + '" has already been used with this registry', 'NotSupportedError');
         if (byCtor && byCtor.has(ctor)) throw domError("Failed to execute 'define' on 'CustomElementRegistry': this constructor has already been used with this registry", 'NotSupportedError');
         if (options && options.extends !== undefined && options.extends !== null) {
+            __rk.unsupported('CustomElementRegistry', 'define(extends)');
             throw domError("Failed to execute 'define' on 'CustomElementRegistry': customized built-in elements are not supported", 'NotSupportedError');
         }
         var proto = ctor.prototype;
@@ -210,9 +234,10 @@
         if (byCtor) byCtor.set(ctor, def);
         names.push(name);
         selector = names.join(',');
-        // Every connected element of that name that already exists upgrades.
-        var found = document.getElementsByTagName(name);
-        Array.prototype.slice.call(found).forEach(function (el) { upgrade(el, def); });
+        if (shadowHost) shadowHost.call('define', document, name);
+        // Every connected element of that name that already exists upgrades,
+        // shadow trees included.
+        upgradeCandidates(name).forEach(function (el) { upgrade(el, def); });
         if (pending[name]) {
             pending[name].forEach(function (resolve) { resolve(ctor); });
             delete pending[name];

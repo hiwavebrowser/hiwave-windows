@@ -138,10 +138,10 @@ pub(crate) async fn connect_vetted(
         Err(_) => resolver
             .resolve(host, port)
             .await
-            .map_err(|e| HttpError::ConnectionFailed(e.to_string()))?,
+            .map_err(|e| HttpError::LookupFailed(e.to_string()))?,
     };
     if addrs.is_empty() {
-        return Err(HttpError::ConnectionFailed(format!("{host}: no addresses")));
+        return Err(HttpError::LookupFailed(format!("{host}: no addresses")));
     }
     for addr in &addrs {
         if !policy.permits(addr) {
@@ -234,6 +234,17 @@ mod tests {
             assert!(matches!(r, Err(HttpError::AddressDenied(_))), "{host}: {r:?}");
         }
         assert!(nobody_connected(&l).await);
+    }
+
+    #[tokio::test]
+    async fn a_name_with_no_address_is_a_failed_lookup_not_a_failed_connect() {
+        let (_l, port) = listener().await;
+        let r = connect_vetted(&Stub(HashMap::new()), &AddressPolicy::Any, "nowhere.test", port).await;
+        assert!(matches!(r, Err(HttpError::LookupFailed(_))), "{r:?}");
+        let (l, port) = listener().await;
+        drop(l);
+        let r = connect_vetted(&Stub(HashMap::new()), &AddressPolicy::Any, "127.0.0.1", port).await;
+        assert!(matches!(r, Err(HttpError::ConnectionFailed(_))), "{r:?}");
     }
 
     #[tokio::test]

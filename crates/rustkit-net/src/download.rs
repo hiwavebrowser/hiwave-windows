@@ -167,7 +167,8 @@ impl DownloadManager {
         let id = DownloadId::new();
         let url = request.url.to_string();
 
-        info!(id = id.raw(), url = %url, "Starting download");
+        info!(id = id.raw(), url = %crate::url_for_log(&request.url), "Starting download");
+        debug!(id = id.raw(), url = %url, "Starting download (whole)");
 
         // Create download entry
         let mut download = Download::new(id, url.clone(), destination.clone());

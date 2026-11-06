@@ -1,0 +1,65 @@
+{
+ "viewport": [
+  400,
+  600
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "fixed-input-height-50pct-is-half-the-viewport",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{width:100px;position:fixed;top:0;left:0;height:50%;box-sizing:border-box}</style></head><body><input id=t></body></html>",
+   "chrome_boxes": "t:0:0:100:300"
+  },
+  {
+   "name": "fixed-textarea-height-50pct-is-half-the-viewport",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{width:100px;position:fixed;top:0;left:0;height:50%;box-sizing:border-box}</style></head><body><textarea id=t></textarea></body></html>",
+   "chrome_boxes": "t:0:0:100:300"
+  },
+  {
+   "name": "fixed-button-height-50pct-is-half-the-viewport",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{width:100px;position:fixed;top:0;left:0;height:50%}</style></head><body><button id=t>b</button></body></html>",
+   "chrome_boxes": "t:0:0:100:300"
+  },
+  {
+   "name": "fixed-select-height-50pct-is-half-the-viewport",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{width:100px;position:fixed;top:0;left:0;height:50%}</style></head><body><select id=t><option>a</option></select></body></html>",
+   "chrome_boxes": "t:0:0:100:300"
+  },
+  {
+   "name": "fixed-button-width-50pct-is-half-the-viewport-not-the-parent",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{height:20px;box-sizing:border-box;position:fixed;top:0;left:0;width:50%}</style></head><body><div style=width:100px><button id=t>b</button></div></body></html>",
+   "chrome_boxes": "t:0:0:200:20"
+  },
+  {
+   "name": "input-height-50vh",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{width:100px;display:block;height:50vh;box-sizing:border-box}</style></head><body><input id=t></body></html>",
+   "chrome_boxes": "t:0:0:100:300"
+  },
+  {
+   "name": "input-height-2rem",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{width:100px;display:block;height:2rem;box-sizing:border-box}</style></head><body><input id=t></body></html>",
+   "chrome_boxes": "t:0:0:100:32"
+  },
+  {
+   "name": "input-height-calc",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{width:100px;display:block;height:calc(10px + 20px);box-sizing:border-box}</style></head><body><input id=t></body></html>",
+   "chrome_boxes": "t:0:0:100:30"
+  },
+  {
+   "name": "button-width-calc-and-vw",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{height:20px;box-sizing:border-box;display:block;width:calc(25vw + 10px)}</style></head><body><button id=t>b</button></body></html>",
+   "chrome_boxes": "t:0:0:110:20"
+  },
+  {
+   "name": "static-input-height-50pct-of-definite-parent-control",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{width:100px;display:block;height:50%;box-sizing:border-box}</style></head><body><div id=p style=height:200px><input id=t></div></body></html>",
+   "chrome_boxes": "p:0:0:400:200 t:0:0:100:100"
+  },
+  {
+   "name": "absolute-input-height-50pct-of-positioned-parent",
+   "html": "<!doctype html><html><head><style>body{margin:0}#t{width:100px;position:absolute;top:0;left:0;height:50%;box-sizing:border-box}</style></head><body><div id=p style=position:relative;height:200px><input id=t></div></body></html>",
+   "chrome_boxes": "p:0:0:400:200 t:0:0:100:100"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

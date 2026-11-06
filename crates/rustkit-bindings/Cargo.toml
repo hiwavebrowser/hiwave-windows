@@ -11,6 +11,10 @@ license = "MIT"
 rustkit-dom = { path = "../rustkit-dom" }
 rustkit-js = { path = "../rustkit-js" }
 rustkit-core = { path = "../rustkit-core" }
+# Media query evaluation (window.matchMedia shares @media's evaluator)
+rustkit-css = { path = "../rustkit-css" }
+# Canvas 2D recording (getContext('2d'), web_canvas.rs)
+rustkit-canvas = { path = "../rustkit-canvas" }
 
 # Error handling
 thiserror = "1.0"

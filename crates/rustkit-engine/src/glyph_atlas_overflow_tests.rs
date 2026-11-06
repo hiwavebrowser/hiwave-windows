@@ -38,11 +38,11 @@ fn page(sizes: &[f32]) -> Vec<DisplayCommand> {
 fn frame(engine: &mut Engine, view: EngineViewId, commands: &[DisplayCommand], tag: &str) -> Vec<u8> {
     let viewhost_id = engine.views[&view].viewhost_id;
     let path = std::env::temp_dir().join(format!("rustkit-atlas-{tag}-{}.ppm", std::process::id()));
-    let renderer = engine.renderer.as_mut().expect("renderer");
-    renderer.set_viewport_size(400, 100);
     engine
-        .compositor
-        .capture_frame_with_renderer(viewhost_id, path.to_str().unwrap(), renderer, commands)
+        .presenter
+        .as_mut()
+        .expect("window presenter")
+        .capture_commands(viewhost_id, (400, 100), path.to_str().unwrap(), commands)
         .expect("capture");
     let ppm = std::fs::read(&path).expect("frame");
     let _ = std::fs::remove_file(&path);
@@ -60,7 +60,7 @@ fn a_frame_that_fills_the_atlas_draws_its_earlier_text_right() {
         .create_headless_view(Bounds { x: 0, y: 0, width: 400, height: 100 })
         .expect("view");
 
-    let resets = |engine: &mut Engine| engine.renderer.as_mut().expect("renderer").glyph_cache().resets();
+    let resets = |engine: &mut Engine| engine.renderer_mut().expect("renderer").glyph_cache().resets();
     let first = frame(&mut engine, view, &page(&[200.0, 196.0, 192.0, 188.0, 184.0]), "first");
     assert_eq!(resets(&mut engine), 0, "the first page fits");
     let second = frame(&mut engine, view, &page(&[198.0, 194.0, 190.0, 186.0, 182.0]), "second");

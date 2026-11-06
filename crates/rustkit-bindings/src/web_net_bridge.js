@@ -19,6 +19,10 @@
 
     var queue = [];
     var pending = {};
+    // Callbacks set aside because the JavaScript budget was spent before
+    // their answer could be delivered. fail_all does not settle them; the
+    // engine puts them back when a later turn can run them.
+    var shelved = {};
     var nextId = 1;
 
     function pairs(source) {
@@ -36,7 +40,7 @@
         try {
             done(result);
         } catch (e) {
-            window.__rustkit_errors.push(String(e));
+            try { __rk.reportError(e); } catch (_) {}
         }
         return true;
     }
@@ -83,6 +87,24 @@
         deliver: function (json) {
             var result = JSON.parse(json);
             return settle(result.id, result);
+        },
+        // Move one waiting callback out of fail_all's reach. The answer is
+        // kept by the engine and delivered on a later turn.
+        shelve: function (id) {
+            var done = pending[id];
+            if (!done) return false;
+            delete pending[id];
+            shelved[id] = done;
+            return true;
+        },
+        unshelve: function () {
+            var n = 0;
+            for (var id in shelved) {
+                pending[id] = shelved[id];
+                n++;
+            }
+            shelved = {};
+            return n;
         },
         // Whatever is still waiting completes with an error (the engine's
         // round or budget ran out). A failure handler that asks again (a

@@ -1,0 +1,60 @@
+{
+ "viewport": [
+  800,
+  600
+ ],
+ "boxes": "xy",
+ "chrome": "143.0.7499.4",
+ "cases": [
+  {
+   "name": "an-absolute-text-input",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><input id=i style=\"position:absolute;top:40px;left:20px\"><div id=after>x</div></body></html>",
+   "chrome_boxes": "i:20:40 after:0:0"
+  },
+  {
+   "name": "a-fixed-text-input",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><div id=before>x</div><input id=i style=\"position:fixed;top:100px;left:30px\"><div id=after>y</div></body></html>",
+   "chrome_boxes": "before:0:0 i:30:100 after:0:20"
+  },
+  {
+   "name": "an-absolute-input-inside-a-line-of-text",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><p id=p style=\"margin:0\">Name <input id=i style=\"position:absolute;top:60px;left:200px\"> end</p><div id=after>z</div></body></html>",
+   "chrome_boxes": "p:0:0 i:200:60 after:0:20"
+  },
+  {
+   "name": "an-absolute-input-in-a-relative-box",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><div id=c style=\"position:relative;margin:50px;height:40px\"><input id=i style=\"position:absolute;top:10px;left:15px\"></div></body></html>",
+   "chrome_boxes": "c:50:50 i:65:60"
+  },
+  {
+   "name": "an-absolute-textarea",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><textarea id=t style=\"position:absolute;top:120px;left:40px\"></textarea><div id=after>x</div></body></html>",
+   "chrome_boxes": "t:40:120 after:0:0"
+  },
+  {
+   "name": "an-absolute-select",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><select id=s style=\"position:absolute;top:80px;left:300px\"><option>one</option></select><div id=after>x</div></body></html>",
+   "chrome_boxes": "s:300:80 after:0:0"
+  },
+  {
+   "name": "an-absolute-text-button",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><button id=b style=\"position:absolute;top:30px;left:400px\">Go</button><div id=after>x</div></body></html>",
+   "chrome_boxes": "b:400:30 after:0:0"
+  },
+  {
+   "name": "an-absolute-checkbox",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><input id=k type=checkbox style=\"position:absolute;top:70px;left:90px\"><div id=after>x</div></body></html>",
+   "chrome_boxes": "k:94:73 after:0:0"
+  },
+  {
+   "name": "an-absolute-checkbox-with-no-margin",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><input id=k type=checkbox style=\"position:absolute;top:70px;left:90px;margin:0\"><div id=after>x</div></body></html>",
+   "chrome_boxes": "k:90:70 after:0:0"
+  },
+  {
+   "name": "an-absolute-input-in-rem",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}</style></head><body><input id=i style=\"position:absolute;top:2rem;left:3rem\"><div id=after>x</div></body></html>",
+   "chrome_boxes": "i:48:32 after:0:0"
+  }
+ ]
+}

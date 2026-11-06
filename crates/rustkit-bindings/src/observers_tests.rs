@@ -39,6 +39,7 @@ fn boxed(x: f32, y: f32, w: f32, h: f32) -> BoxGeometry {
         scroll_width: w,
         scroll_height: h,
         position: 0,
+        ..Default::default()
     }
 }
 
@@ -201,4 +202,45 @@ fn a_user_scroll_fires_the_scroll_event_at_once() {
     b.evaluate("document.addEventListener('scroll', function () { log.push('scroll'); });").unwrap();
     b.notify_scrolled();
     assert_eq!(ev(&b, "log.join()"), "scroll");
+}
+
+/// github.com's landing page (2026-10-09): React inserts a section and
+/// observes it in the same task. The first entry was computed by a 0 ms
+/// timer, before the engine had laid the insert out: the element had no box,
+/// read as an empty rectangle at the origin, and was reported as fully in
+/// view wherever it would land. Every section mounted its "in view" content,
+/// which inserted and observed more, once per turn of the live loop, forever.
+/// The first entry waits for the layout the write is owed.
+#[test]
+fn an_element_observed_before_it_is_laid_out_gets_its_first_entry_after_the_layout() {
+    let (b, doc) = bound();
+    b.evaluate(
+        "var n = document.createElement('div'); n.id = 'n'; document.body.appendChild(n);\
+         var io = new IntersectionObserver(function (es) { es.forEach(function (e) { log.push(e.target.id + ':' + e.isIntersecting + ':' + e.intersectionRatio + ':' + e.boundingClientRect.top); }); });\
+         io.observe(n);",
+    )
+    .unwrap();
+    b.run_timers(100, 10).unwrap();
+    assert_eq!(ev(&b, "log.join()"), "", "no entry from geometry the insert made stale");
+    // The engine's flush: take the dirty mark, lay out, publish, report.
+    assert_ne!(b.take_dirty(), DomDirty::Clean);
+    place(&b, &doc, &[("n", boxed(0.0, 1500.0, 200.0, 100.0))]);
+    assert_eq!(b.tick_observers(), 1);
+    assert_eq!(ev(&b, "log.join()"), "n:false:0:1500", "below the 800px window: not in view");
+}
+
+/// With nothing written since the last layout the timer still delivers the
+/// first entry: no layout is owed, so nothing else would.
+#[test]
+fn a_first_entry_on_a_clean_page_still_comes_from_the_timer() {
+    let (b, doc) = bound();
+    place(&b, &doc, &[("a", boxed(0.0, 100.0, 200.0, 100.0))]);
+    b.take_dirty();
+    b.evaluate(
+        "new IntersectionObserver(function (es) { es.forEach(function (e) { log.push(e.target.id + ':' + e.isIntersecting); }); }).observe(document.getElementById('a'));",
+    )
+    .unwrap();
+    assert_eq!(b.take_dirty(), DomDirty::Clean, "observing writes nothing");
+    b.run_timers(100, 10).unwrap();
+    assert_eq!(ev(&b, "log.join()"), "a:true");
 }

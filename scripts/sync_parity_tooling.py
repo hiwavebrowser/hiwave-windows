@@ -182,6 +182,12 @@ def quote_inline_js_paths(rel: str, text: str) -> str:
         i = text.find(NODE_E, pos)
         if i == -1:
             break
+        # `node -e script` with the script in a variable (macOS #inspector-console
+        # tests) has no inline f-string to rewrite: nothing is spliced, skip it.
+        if not text[i + len(NODE_E):].lstrip(", \t\r\n").startswith('f"""'):
+            out.append(text[pos:i + len(NODE_E)])
+            pos = i + len(NODE_E)
+            continue
         start = text.find('f"""', i)
         end = text.find('"""', start + 4)
         assert start != -1 and end != -1, f"{rel}: unterminated node -e block"

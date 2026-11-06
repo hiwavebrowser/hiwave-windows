@@ -23,12 +23,15 @@ rustkit-layout = { path = "../rustkit-layout" }
 rustkit-js = { path = "../rustkit-js" }
 rustkit-bindings = { path = "../rustkit-bindings" }
 rustkit-net = { path = "../rustkit-net" }
+rustkit-http = { path = "../rustkit-http" }
 rustkit-image = { path = "../rustkit-image" }
 rustkit-svg = { path = "../rustkit-svg" }
 rustkit-renderer = { path = "../rustkit-renderer" }
+# The presenter names the texture a frame is drawn into
+wgpu = "24"
 
 # Async runtime
-tokio = { version = "1.42", features = ["sync", "time", "rt"] }
+tokio = { version = "1.42", features = ["sync", "time", "rt", "rt-multi-thread"] }
 futures = "0.3"
 
 # URL handling
@@ -48,11 +51,17 @@ thiserror = "1.0"
 tracing = "0.1"
 
 # JSON serialization
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Windows (conditional)
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation"] }
+
+# The system clipboard (NSPasteboard, CH2.E3).
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+objc = "0.2"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

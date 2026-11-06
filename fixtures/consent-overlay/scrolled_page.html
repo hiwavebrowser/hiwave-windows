@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html><head><style>
+body { margin: 0; font: 16px sans-serif; }
+article { height: 3000px; }
+.overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2147483647;
+  background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; }
+.dialog { background: #fff; width: 400px; padding: 24px; }
+.dialog button { width: 120px; height: 40px; }
+</style></head>
+<body>
+<article><h1>Headline</h1><p>A long article; the reader has scrolled down.</p></article>
+<div class="overlay" id="overlay"><div class="dialog" role="dialog">
+  <p>We use cookies.</p><button id="agree" type="button">Agree</button>
+</div></div>
+<script>
+window.__heard = [];
+window.__agree = document.getElementById('agree');
+__agree.addEventListener('click', function () {
+  __heard.push('click');
+  document.getElementById('overlay').remove();
+});
+window.scrollTo(0, 700);
+</script>
+</body></html>

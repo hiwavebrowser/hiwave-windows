@@ -212,6 +212,23 @@ fn a_module_named_twice_runs_once() {
     assert_eq!(log(&mut engine, view), "once,load:a,load:b,importer");
 }
 
+/// S12 (a store page names one component module from every instance:
+/// 220 module tags, 48 URLs). The module map keys the fetch, not just the
+/// evaluation: Chromium 143 sends one request for five tags naming one URL.
+/// Fetching each tag's copy queued 189 duplicate fetches behind the
+/// 8-wide script fetch window, holding the first script back by 11-17 s.
+#[test]
+fn a_module_named_by_many_tags_is_fetched_once() {
+    let tags = r#"<script type="module" src="/once.js"></script>"#.repeat(5);
+    let (mut engine, view, server) = load(vec![
+        ("/", "text/html", page(&tags)),
+        ("/once.js", JS, "log.push('once');".into()),
+    ]);
+    assert_eq!(log(&mut engine, view), "once");
+    // The document, then the module once.
+    assert_eq!(server.hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
 #[test]
 fn import_meta_url_is_the_served_from_url() {
     let (mut engine, view, server) = load(vec![
@@ -305,7 +322,7 @@ fn a_broken_import_map_is_reported_and_the_page_carries_on() {
     assert!(
         records
             .iter()
-            .any(|(src, o)| src == "importmap" && matches!(o, ScriptOutcome::Threw(m) if m.starts_with("import map:"))),
+            .any(|(src, o)| src == "importmap" && matches!(o, ScriptOutcome::EngineFailed(EngineFailure::ImportMap(_)))),
         "{records:#?}"
     );
 }

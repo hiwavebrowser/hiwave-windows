@@ -29,6 +29,9 @@ use crate::JsRuntime;
 
 struct Waiter {
     url: String,
+    specifier: String,
+    /// This wait came from a dynamic `import()`, not a static dependency.
+    dynamic: bool,
     sender: tokio::sync::oneshot::Sender<JsResult<Module>>,
 }
 
@@ -87,9 +90,13 @@ impl ModuleLoader for HostModuleLoader {
     ) -> JsResult<Module> {
         let specifier = request.specifier().to_std_string_escaped();
         let referrer_url = path_string(referrer.path());
+        let dynamic = boa_engine::module::in_dynamic_import();
         let url = match self.resolve(&specifier, referrer_url.as_deref()) {
             Ok(url) => url.to_string(),
             Err(message) => {
+                if dynamic {
+                    boa_engine::module::record_dynamic_import_failure(&specifier, "", &message);
+                }
                 return Err(JsNativeError::typ().with_message(message).into());
             }
         };
@@ -101,16 +108,23 @@ impl ModuleLoader for HostModuleLoader {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.waiting.borrow_mut().push(Waiter {
             url: url.clone(),
+            specifier: specifier.clone(),
+            dynamic,
             sender: tx,
         });
         if self.asked.borrow_mut().insert(url.clone()) {
-            self.requested.borrow_mut().push(url);
+            self.requested.borrow_mut().push(url.clone());
         }
         match rx.await {
             Ok(res) => res,
-            Err(_) => Err(JsNativeError::typ()
-                .with_message("Module fetch cancelled")
-                .into()),
+            Err(_) => {
+                if dynamic {
+                    boa_engine::module::record_dynamic_import_failure(&specifier, &url, "Module fetch cancelled");
+                }
+                Err(JsNativeError::typ()
+                    .with_message("Module fetch cancelled")
+                    .into())
+            }
         }
     }
 
@@ -119,6 +133,15 @@ impl ModuleLoader for HostModuleLoader {
             let _ = import_meta.set(js_string!("url"), js_string!(url.as_str()), false, context);
         }
     }
+}
+
+/// A dynamic `import()` that rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicImportFailure {
+    pub specifier: String,
+    /// Resolved URL. Empty when the specifier itself could not be resolved.
+    pub url: String,
+    pub reason: String,
 }
 
 /// A module the embedder started (`JsRuntime::begin_module`).
@@ -154,6 +177,11 @@ pub(crate) struct ModuleEntry {
     load: JsPromise,
     evaluation: Option<JsPromise>,
     failed: Option<String>,
+    /// A poll answered `Evaluating` (a top-level `await`) and the outcome
+    /// has not been taken since (see [`JsRuntime::take_error_reports`]).
+    awaiting: bool,
+    /// Its evaluation's outcome has been reported.
+    settled: bool,
 }
 
 #[derive(Default)]
@@ -171,7 +199,7 @@ impl ModuleHost {
 fn describe(error: &boa_engine::JsError, context: &mut Context) -> String {
     match error.try_native(context) {
         Ok(native) => native.to_string(),
-        Err(_) => error.to_string(),
+        Err(_) => crate::describe::error_text(error, context),
     }
 }
 
@@ -215,11 +243,16 @@ impl JsRuntime {
         let module = match existing {
             Some(module) => module,
             None => {
+                self.diag.know_path(url);
+                self.sources.remember(url, source);
                 let path = Path::new(url);
                 let parsed = Module::parse(Source::from_bytes(source).with_path(path), None, &mut self.context);
                 match parsed {
                     Ok(module) => module,
-                    Err(e) => return Err(describe(&e, &mut self.context)),
+                    Err(e) => {
+                        self.report_error(&e);
+                        return Err(describe(&e, &mut self.context));
+                    }
                 }
             }
         };
@@ -229,7 +262,11 @@ impl JsRuntime {
             .borrow_mut()
             .insert(url.to_string(), module.clone());
         let load = module.load(&mut self.context);
+        // The engine's promise, not the page's: a failure is the module's
+        // error, never an unhandled rejection.
+        self.rejections.forget(&JsObject::from(load.clone()));
         let _ = self.context.run_jobs();
+        self.consume_interrupt();
         self.modules.entries.insert(
             url.to_string(),
             ModuleEntry {
@@ -237,9 +274,24 @@ impl JsRuntime {
                 load,
                 evaluation: None,
                 failed: None,
+                awaiting: false,
+                settled: false,
             },
         );
         Ok(ModuleHandle(url.to_string()))
+    }
+
+    /// Dynamic `import()` calls that rejected since the last call: the
+    /// specifier, the resolved URL (empty when it did not resolve), and why.
+    pub fn take_dynamic_import_failures(&mut self) -> Vec<DynamicImportFailure> {
+        boa_engine::module::take_dynamic_import_failures()
+            .into_iter()
+            .map(|failure| DynamicImportFailure {
+                specifier: failure.specifier,
+                url: failure.url,
+                reason: failure.reason,
+            })
+            .collect()
     }
 
     /// The URLs the graph has asked for since the last call, each at most
@@ -259,6 +311,11 @@ impl JsRuntime {
                 match known {
                     Some(module) => Ok(module),
                     None => {
+                        self.diag.know_path(&fetched.final_url);
+                        self.sources.remember(&fetched.final_url, &fetched.source);
+                        if fetched.final_url != requested {
+                            self.sources.remember(requested, &fetched.source);
+                        }
                         let path = Path::new(fetched.final_url.as_str());
                         match Module::parse(
                             Source::from_bytes(fetched.source.as_str()).with_path(path),
@@ -298,6 +355,9 @@ impl JsRuntime {
                     let _ = waiter.sender.send(Ok(module.clone()));
                 }
                 Err(message) => {
+                    if waiter.dynamic {
+                        boa_engine::module::record_dynamic_import_failure(&waiter.specifier, &waiter.url, message);
+                    }
                     let _ = waiter.sender.send(Err(JsNativeError::typ()
                         .with_message(format!("Failed to fetch dynamically imported module: {message}"))
                         .into()));
@@ -311,6 +371,7 @@ impl JsRuntime {
     /// once its graph is loaded it is linked and evaluated.
     pub fn poll_module(&mut self, handle: &ModuleHandle) -> ModuleState {
         let _ = self.context.run_jobs();
+        self.consume_interrupt();
         let Some(entry) = self.modules.entries.get_mut(&handle.0) else {
             return ModuleState::Failed("unknown module".into());
         };
@@ -321,6 +382,7 @@ impl JsRuntime {
             match entry.load.state() {
                 PromiseState::Pending => return ModuleState::Loading,
                 PromiseState::Rejected(reason) => {
+                    self.report_value(&reason);
                     let message = describe_value(&reason, &mut self.context);
                     if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
                         entry.failed = Some(message.clone());
@@ -331,15 +393,21 @@ impl JsRuntime {
             }
             let module = entry.module.clone();
             if let Err(e) = module.link(&mut self.context) {
+                self.report_error(&e);
                 let message = describe(&e, &mut self.context);
                 if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
                     entry.failed = Some(message.clone());
                 }
                 return ModuleState::Failed(message);
             }
+            self.context.reset_recursion_max();
             let evaluation = match module.evaluate(&mut self.context) {
-                Ok(p) => p,
+                Ok(p) => {
+                    self.rejections.forget(&JsObject::from(p.clone()));
+                    p
+                }
                 Err(e) => {
+                    self.report_error(&e);
                     let message = describe(&e, &mut self.context);
                     if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
                         entry.failed = Some(message.clone());
@@ -348,6 +416,7 @@ impl JsRuntime {
                 }
             };
             let _ = self.context.run_jobs();
+            self.consume_interrupt();
             if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
                 entry.evaluation = Some(evaluation);
             }
@@ -356,10 +425,80 @@ impl JsRuntime {
             Some(p) => p,
             None => return ModuleState::Loading,
         };
-        match evaluation.state() {
+        let state = evaluation.state();
+        // The outcome is reported once, here or as a late module error.
+        let pending = matches!(state, PromiseState::Pending);
+        let mut first_outcome = false;
+        if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
+            entry.awaiting = pending;
+            first_outcome = !pending && !entry.settled;
+            entry.settled |= !pending;
+        }
+        match state {
             PromiseState::Pending => ModuleState::Evaluating,
             PromiseState::Fulfilled(_) => ModuleState::Done,
-            PromiseState::Rejected(reason) => ModuleState::Threw(describe_value(&reason, &mut self.context)),
+            PromiseState::Rejected(reason) => {
+                if first_outcome {
+                    self.report_value(&reason);
+                }
+                ModuleState::Threw(self.thrown_text(&reason))
+            }
         }
+    }
+
+    /// A module's error, reported once (with reports on).
+    fn report_error(&mut self, error: &boa_engine::JsError) {
+        if self.diag.on.get() {
+            let report = self.diag.describe_error(error, &mut self.context);
+            self.diag.push(report);
+        }
+    }
+
+    fn report_value(&mut self, value: &JsValue) {
+        if self.diag.on.get() {
+            let report = self.diag.describe(value, None, false, &mut self.context);
+            self.diag.push(report);
+        }
+    }
+
+    /// A module evaluation's rejection as the module's error text, the
+    /// engine's own record of the stack after the message, as Boa's text
+    /// for a classic script's error has it (read through the realm's
+    /// getter: no page code runs).
+    fn thrown_text(&mut self, reason: &JsValue) -> String {
+        let mut message = describe_value(reason, &mut self.context);
+        let getter = self.diag.stack_getter.borrow().clone();
+        if let (_, Some(stack)) = crate::describe::error_report(reason, getter.as_ref(), &mut self.context) {
+            message.push('\n');
+            message.push_str(stack.trim_end());
+        }
+        message
+    }
+
+    /// The modules a poll left `Evaluating` (a top-level `await` still
+    /// waiting) whose evaluation has since thrown: `(module URL, reason)`,
+    /// each once, by URL. A browser reports such an error as the module's
+    /// uncaught error. Modules that finished cleanly stop being watched.
+    pub(crate) fn take_late_module_rejections(&mut self) -> Vec<(String, JsValue)> {
+        let mut settled = Vec::new();
+        for (url, entry) in self.modules.entries.iter_mut() {
+            if !entry.awaiting {
+                continue;
+            }
+            match entry.evaluation.as_ref().map(JsPromise::state) {
+                Some(PromiseState::Pending) => {}
+                Some(PromiseState::Rejected(reason)) => {
+                    entry.awaiting = false;
+                    entry.settled = true;
+                    settled.push((url.clone(), reason));
+                }
+                _ => {
+                    entry.awaiting = false;
+                    entry.settled = true;
+                }
+            }
+        }
+        settled.sort_by(|a, b| a.0.cmp(&b.0));
+        settled
     }
 }

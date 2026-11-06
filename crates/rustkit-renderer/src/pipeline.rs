@@ -104,44 +104,27 @@ pub struct GradientPipeline {
     pub max_stops: usize,
 }
 
-/// Filter parameters uniform structure (must match WGSL).
-/// Uses explicit padding to avoid vec3 alignment issues.
-/// Total size: 32 bytes (8 f32 values)
+/// One `backdrop_filter.wgsl` pass's parameters (its `Params`): read
+/// `size` pixels of the input from `origin`, blur by `sigma` out to
+/// `radius`, or run the matrix (rows of the first four columns, then the
+/// offsets). 112 bytes.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct FilterParams {
-    pub blur_radius: f32,
-    pub filter_type: u32,
-    pub filter_amount: f32,
-    pub texture_width: f32,
-    pub texture_height: f32,
-    pub _padding0: f32,
-    pub _padding1: f32,
-    pub _padding2: f32,
-}
-
-impl Default for FilterParams {
-    fn default() -> Self {
-        Self {
-            blur_radius: 0.0,
-            filter_type: 0,
-            filter_amount: 1.0,
-            texture_width: 0.0,
-            texture_height: 0.0,
-            _padding0: 0.0,
-            _padding1: 0.0,
-            _padding2: 0.0,
-        }
-    }
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct BackdropParams {
+    pub origin: [i32; 2],
+    pub size: [i32; 2],
+    pub sigma: f32,
+    pub radius: i32,
+    pub _pad: [f32; 2],
+    pub rows: [[f32; 4]; 5],
 }
 
 /// Backdrop filter pipelines and resources.
 pub struct BackdropFilterPipelines {
     pub blur_h_pipeline: wgpu::ComputePipeline,
     pub blur_v_pipeline: wgpu::ComputePipeline,
-    pub color_filter_pipeline: wgpu::ComputePipeline,
+    pub color_matrix_pipeline: wgpu::ComputePipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
-    pub uniform_buffer: wgpu::Buffer,
 }
 
 /// Create the backdrop filter compute pipelines.
@@ -217,29 +200,20 @@ pub fn create_backdrop_filter_pipelines(device: &wgpu::Device) -> BackdropFilter
         cache: None,
     });
 
-    let color_filter_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("Color Filter Pipeline"),
+    let color_matrix_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Backdrop Color Matrix Pipeline"),
         layout: Some(&pipeline_layout),
         module: &shader,
-        entry_point: Some("apply_color_filter"),
+        entry_point: Some("color_matrix"),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: None,
-    });
-
-    // Create uniform buffer for filter parameters
-    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Filter Params Buffer"),
-        size: std::mem::size_of::<FilterParams>() as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
     });
 
     BackdropFilterPipelines {
         blur_h_pipeline,
         blur_v_pipeline,
-        color_filter_pipeline,
+        color_matrix_pipeline,
         bind_group_layout,
-        uniform_buffer,
     }
 }
 
@@ -521,6 +495,82 @@ fn create_blended_blit_pipeline(
         multiview: None,
         cache: None,
     })
+}
+
+/// The CSS `filter` colour-matrix composite: a layer (premultiplied
+/// colour) laid premultiplied-over its target through a 4x5 matrix held in
+/// a uniform at group 2 (`shaders/filter_matrix.wgsl`).
+pub struct FilterMatrixPipeline {
+    pub pipeline: wgpu::RenderPipeline,
+    pub matrix_layout: wgpu::BindGroupLayout,
+}
+
+pub fn create_filter_matrix_pipeline(
+    device: &wgpu::Device,
+    surface_format: wgpu::TextureFormat,
+    uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    texture_bind_group_layout: &wgpu::BindGroupLayout,
+) -> FilterMatrixPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Filter Matrix Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/filter_matrix.wgsl").into()),
+    });
+    let matrix_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("filter_matrix_bind_group_layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Filter Matrix Pipeline Layout"),
+        bind_group_layouts: &[uniform_bind_group_layout, texture_bind_group_layout, &matrix_layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Filter Matrix Pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[TextureVertex::LAYOUT],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview: None,
+        cache: None,
+    });
+    FilterMatrixPipeline { pipeline, matrix_layout }
 }
 
 /// Create the gradient rendering pipeline with uniform and storage buffers.

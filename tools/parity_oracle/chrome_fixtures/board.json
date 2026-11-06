@@ -1,0 +1,73 @@
+{
+  "_comment": [
+    "Chrome board (CH3.A1): HiWave's own UI pages rendered by RustKit (parity-capture)",
+    "and by the oracle Chromium (Playwright), diffed per page x state x size.",
+    "Every page gets `ipc_stub.js` before its own script (window.ipc + a host stub) and",
+    "its `fixture` after it (realistic state through the page's host entry points).",
+    "A state is a list of actions executed IDENTICALLY by parity-capture --actions and",
+    "by chrome_board.mjs: wait / click / hover / key (text | key + modifiers) / resize.",
+    "Pages name the states that apply to them; every state runs at every size."
+  ],
+  "sizes": [[1280, 800], [1024, 700], [1600, 1000]],
+  "prelude": "ipc_stub.js",
+  "states": {
+    "default": [],
+    "hover_tab2": [
+      {"type": "hover", "selector": "#tabs .tab:nth-child(2)"}
+    ],
+    "address_focused": [
+      {"type": "click", "selector": "#urlInput"},
+      {"type": "key", "selector": "#urlInput", "text": "hiwave.dev/docs"}
+    ],
+    "sidebar_collapsed": [
+      {"type": "click", "selector": "#sidebarLogoToggle"}
+    ],
+    "find_open": [
+      {"type": "key", "key": "F3"}
+    ],
+    "downloads_open": [
+      {"type": "click", "selector": "#toolbarMenuBtn"}
+    ],
+    "focus_mode": [
+      {"type": "key", "key": "F", "modifiers": ["Control", "Shift"]}
+    ],
+    "shelf_search": [
+      {"type": "click", "selector": "#commandInput"},
+      {"type": "key", "selector": "#commandInput", "text": "sh"}
+    ],
+    "console_tab": [
+      {"type": "click", "selector": ".toolbar-tab[data-tab=\"console\"]"}
+    ],
+    "weekly": [
+      {"type": "click", "selector": ".period-btn[data-period=\"weekly\"]"}
+    ]
+  },
+  "pages": {
+    "chrome": {
+      "html": "crates/hiwave-app/src/ui/chrome.html",
+      "fixture": "chrome.js",
+      "states": ["default", "hover_tab2", "address_focused", "sidebar_collapsed", "find_open", "downloads_open", "focus_mode"]
+    },
+    "shelf": {
+      "html": "crates/hiwave-app/src/ui/shelf.html",
+      "fixture": "shelf.js",
+      "states": ["default", "shelf_search"]
+    },
+    "inspector": {
+      "html": "crates/hiwave-app/src/ui/inspector.html",
+      "fixture": "inspector.js",
+      "states": ["default", "console_tab"]
+    },
+    "settings": {
+      "html": "crates/hiwave-app/src/ui/settings.html",
+      "fixture": "settings.js",
+      "states": ["default"]
+    },
+    "report": {
+      "html": "crates/hiwave-app/src/ui/report.html",
+      "fixture": "report.js",
+      "inject": {"<!-- Chart.js is injected by Rust before page load -->": "crates/hiwave-app/src/ui/chart.umd.min.js"},
+      "states": ["default", "weekly"]
+    }
+  }
+}

@@ -1,0 +1,29 @@
+<!DOCTYPE html><html><head>
+<!-- #782 follow-up nits. Chromium 148.0.7778.216 at 800x600, offsetHeight:
+     k1=0 k2=12 k3=13 k4=14 k5=14 k6=14 k7=0 k8=14 k9=14 (all four rules kept in cssRules).
+     k1: `foo(` is a function token, so `foo(width > 1px)` is a general-enclosed
+     condition with no container name. k3: Chromium answers style queries; RustKit
+     keeps them unknown (false). k4-k9: a float after a box with `overflow` narrows
+     the auto-width `.q` (300px, the rule fails) only when the float leaves that box:
+     it does from a non-atomic inline (k7), not from ruby or ruby-text (the float is
+     inlinified there), a table row (an anonymous cell holds it), a block or a cell. -->
+<style>
+body { margin: 0 }
+.c { container-type: inline-size; width: 300px }
+#foo { container-name: foo }
+@container foo(width > 1px) { #k1 { height: 11px } }
+@container foo (width > 1px) { #k2 { height: 12px } }
+@container (width > 1px) or style(--x: ")") { #k3 { height: 13px } }
+section { width: 400px; overflow: hidden }
+.f { float: left; width: 100px; height: 50px; background: gray }
+.q { container-type: inline-size; overflow: hidden }
+@container (width > 350px) { .q > div { height: 14px } }
+</style></head><body>
+<div class="c" id="foo"><div id="k1"></div><div id="k2"></div><div id="k3"></div></div>
+<section><div style="display: ruby; overflow: hidden"><span class="f"></span></div><div class="q"><div id="k4"></div></div></section>
+<section><div style="display: table-row; overflow: hidden"><span class="f"></span></div><div class="q"><div id="k5"></div></div></section>
+<section><div style="overflow: hidden"><span class="f"></span></div><div class="q"><div id="k6"></div></div></section>
+<section><span style="overflow: hidden"><span class="f"></span></span><div class="q"><div id="k7"></div></div></section>
+<section><div style="display: ruby-text; overflow: hidden"><span class="f"></span></div><div class="q"><div id="k8"></div></div></section>
+<section><div style="display: table-cell; overflow: hidden"><span class="f"></span></div><div class="q"><div id="k9"></div></div></section>
+</body></html>

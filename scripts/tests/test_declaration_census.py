@@ -367,7 +367,7 @@ def test_top_three_buckets_with_owners():
         load_ledger(),
     )
     gaps = report["gaps"]
-    check("census measured gaps", len(gaps) == 13)
+    check("census measured gaps", len(gaps) == 12, str(len(gaps)))
 
     gap_props = {g["property"] for g in gaps}
     unmapped = [p for p in gap_props if bucket_for_property(p)[0] not in BUCKETS]
@@ -385,11 +385,15 @@ def test_top_three_buckets_with_owners():
         f"{top_decls} vs {total_gap_decls}",
     )
 
-    # 4. Check bucket ranking: interactive (29) > paint (12) > structure (4)
+    # 4. Check bucket ranking: interactive (26) > paint (12) > structure (4).
+    # `pointer-events` left the interactive bucket (3 declarations) when the
+    # engine began to parse it: 13 gaps to 12, 29 declarations to 26.
+    # `backdrop-filter` stays in paint: its arm only tells a stacking context
+    # (`STACKING_ONLY_ARMS`), and the effect is still not painted.
     b_order = [b["key"] for b in top_buckets]
     check("bucket ranking order is interactive, paint, structure", b_order == ["interactive", "paint", "structure"], str(b_order))
-    check("bucket interactive has 29 declarations", top_buckets[0]["declarations"] == 29)
-    check("bucket paint has 12 declarations", top_buckets[1]["declarations"] == 12)
+    check("bucket interactive has 26 declarations", top_buckets[0]["declarations"] == 26)
+    check("bucket paint has 12 declarations", top_buckets[1]["declarations"] == 12, str(top_buckets[1]["declarations"]))
     check("bucket structure has 4 declarations", top_buckets[2]["declarations"] == 4)
 
 

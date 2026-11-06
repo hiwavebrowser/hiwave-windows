@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>HiWave Inspector</title>
+    <!--
+        HiWave Inspector, drawn by RustKit.
+
+        Input is one element diagnostics dump (hiwave-element-diagnostics/1,
+        rustkit-engine's diagnostics.rs) and, optionally, one inspector_diff
+        result (hiwave-inspector-diff/1, tools/inspector), written in by
+        rustkit_engine::inspector_page_html (escaped so that it stays inside
+        its element):
+          #hiwave-inspector-dump   the dump
+          #hiwave-inspector-input  {schema, page, total_elements, truncated,
+                                    rows, diff, diff_record, select}
+        A row is [start, end, node_id, depth, has_box, tag, id, classes];
+        start..end is the element's record in the dump's text, which is
+        parsed only when the element is shown. Everything read from either
+        is untrusted text: it reaches the DOM through textContent only, and
+        is never evaluated.
+
+        The page makes no requests and keeps no state outside this document.
+        Element scroll is not applied by RustKit, so the tree is virtualised:
+        a fixed pool of row elements shows a window of the visible rows.
+    -->
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --bg-selected: #155e75;
+            --border: #1f2937;
+            --accent: #06b6d4;
+            --text-primary: #f1f5f9;
+            --text-secondary: #cbd5e1;
+            --text-muted: #94a3b8;
+            --text-dim: #64748b;
+            --tag: #7dd3fc;
+            --id: #fbbf24;
+            --class: #a5b4fc;
+            --diff: #f87171;
+            --margin-bg: #713f12;
+            --border-bg: #854d0e;
+            --padding-bg: #3f6212;
+            --content-bg: #1e3a8a;
+        }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 12px;
+            line-height: 16px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+
+        /* 100vh, not 100%: RustKit does not grow a flex: 1 child of a
+           column flex container whose height is a percentage. */
+        .inspector {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        /* Toolbar: title, panel tabs, page facts */
+        .toolbar {
+            display: flex;
+            align-items: center;
+            height: 32px;
+            padding: 0 8px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .title {
+            font-weight: 600;
+            color: var(--accent);
+            margin-right: 16px;
+        }
+
+        .tab {
+            height: 24px;
+            line-height: 24px;
+            padding: 0 12px;
+            margin-right: 4px;
+            border-radius: 4px;
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+
+        .tab.active {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+
+        .page-facts {
+            flex: 1;
+            margin-left: 16px;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .banner {
+            padding: 4px 8px;
+            background: #422006;
+            color: #fde68a;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .panel {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+        }
+
+        .unavailable {
+            padding: 24px;
+            color: var(--text-muted);
+        }
+
+        /* Elements panel: tree | selected element | computed values */
+        .tree-pane {
+            display: flex;
+            flex-direction: column;
+            width: 420px;
+            border-right: 1px solid var(--border);
+        }
+
+        .pane-head {
+            display: flex;
+            align-items: center;
+            height: 28px;
+            padding: 0 8px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        .pane-head .grow {
+            flex: 1;
+        }
+
+        .button {
+            height: 20px;
+            line-height: 18px;
+            padding: 0 8px;
+            margin-left: 4px;
+            border: 1px solid var(--bg-tertiary);
+            border-radius: 4px;
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+
+        .rows {
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .row {
+            height: 20px;
+            line-height: 20px;
+            padding-right: 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            cursor: pointer;
+        }
+
+        .row.selected {
+            background: var(--bg-selected);
+        }
+
+        .row.nobox {
+            opacity: 0.45;
+        }
+
+        .row.empty {
+            cursor: default;
+        }
+
+        .twisty {
+            display: inline-block;
+            width: 14px;
+            color: var(--text-muted);
+        }
+
+        .tag {
+            color: var(--tag);
+        }
+
+        .id {
+            color: var(--id);
+        }
+
+        .cls {
+            color: var(--class);
+        }
+
+        .mark {
+            margin-left: 8px;
+            padding: 0 4px;
+            border-radius: 3px;
+            background: var(--diff);
+            color: #1f2937;
+            font-weight: 600;
+        }
+
+        .detail-pane {
+            width: 400px;
+            border-right: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .section {
+            padding: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .section-title {
+            color: var(--text-muted);
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .selected-label {
+            font-size: 14px;
+            line-height: 20px;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .muted {
+            color: var(--text-muted);
+        }
+
+        .line {
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .sentence {
+            margin-bottom: 2px;
+        }
+
+        /* Box model: four nested layers, each with its four numbers */
+        .bm-layer {
+            padding: 0 4px;
+            border: 1px dashed var(--text-dim);
+            text-align: center;
+        }
+
+        .bm-margin { background: var(--margin-bg); }
+        .bm-border { background: var(--border-bg); }
+        .bm-padding { background: var(--padding-bg); }
+
+        .bm-content {
+            height: 24px;
+            line-height: 22px;
+            border: 1px solid var(--text-dim);
+            background: var(--content-bg);
+            text-align: center;
+        }
+
+        .bm-label {
+            height: 16px;
+            text-align: left;
+            color: var(--text-secondary);
+        }
+
+        .bm-mid {
+            display: flex;
+            align-items: center;
+        }
+
+        .bm-side {
+            width: 36px;
+            text-align: center;
+        }
+
+        .bm-inner {
+            flex: 1;
+        }
+
+        .bm-edge {
+            height: 16px;
+        }
+
+        /* Difference table */
+        .diff-row {
+            display: flex;
+            white-space: nowrap;
+        }
+
+        .diff-name {
+            width: 120px;
+            overflow: hidden;
+            color: var(--text-secondary);
+        }
+
+        .diff-ours {
+            width: 128px;
+            overflow: hidden;
+            color: var(--diff);
+        }
+
+        .diff-chrome {
+            width: 128px;
+            overflow: hidden;
+            color: #86efac;
+        }
+
+        .computed-pane {
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .computed {
+            display: flex;
+            padding: 4px 0;
+        }
+
+        .computed-col {
+            width: 50%;
+        }
+
+        .prop {
+            display: flex;
+            height: 20px;
+            line-height: 20px;
+            padding: 0 8px;
+            white-space: nowrap;
+        }
+
+        .prop-name {
+            width: 136px;
+            overflow: hidden;
+            color: var(--text-secondary);
+        }
+
+        .prop-value {
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .prop-value.unknown {
+            color: var(--text-dim);
+        }
+
+        .empty-state {
+            padding: 24px;
+            color: var(--text-muted);
+        }
+
+        .banner.hidden,
+        .panel.hidden,
+        .button.hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="inspector">
+        <div class="toolbar">
+            <div class="title">HiWave Inspector</div>
+            <div class="tab active" id="tab-elements">Elements</div>
+            <div class="tab" id="tab-console">Console</div>
+            <div class="tab" id="tab-network">Network</div>
+            <div class="page-facts" id="page-facts">No diagnostics dump loaded</div>
+        </div>
+        <div class="banner hidden" id="banner"></div>
+
+        <div class="panel" id="panel-elements">
+            <div class="tree-pane">
+                <div class="pane-head">
+                    <div class="grow" id="tree-range">Elements</div>
+                    <div class="button hidden" id="jump-diff">Jump to first difference</div>
+                    <div class="button" id="page-up">&#9650;</div>
+                    <div class="button" id="page-down">&#9660;</div>
+                </div>
+                <div class="rows" id="tree-rows"></div>
+            </div>
+            <div class="detail-pane" id="detail"></div>
+            <div class="computed-pane">
+                <div class="pane-head"><div class="grow">Computed</div></div>
+                <div class="computed" id="computed"></div>
+            </div>
+        </div>
+
+        <!-- PLACEHOLDER: the event-log halves (#676, #679) are still changing
+             format; these panels show nothing from the page until they land. -->
+        <div class="panel hidden" id="panel-console">
+            <div class="unavailable">Console is not available in this build.</div>
+        </div>
+        <div class="panel hidden" id="panel-network">
+            <div class="unavailable">Network is not available in this build.</div>
+        </div>
+    </div>
+
+    <script type="application/json" id="hiwave-inspector-input">null</script>
+    <script type="application/json" id="hiwave-inspector-dump">null</script>
+    <script>
+    (function () {
+        'use strict';
+
+        var SCHEMA = 'hiwave-element-diagnostics/1';
+        var DIFF_SCHEMA = 'hiwave-inspector-diff/1';
+        var ROW_HEIGHT = 20;
+        var HEAD_HEIGHT = 28 + 32 + 1;
+        var BANNER_HEIGHT = 24;
+
+        function $(id) { return document.getElementById(id); }
+
+        // Every string from the input reaches the page through this.
+        function el(tag, cls, text) {
+            var e = document.createElement(tag);
+            if (cls) e.className = cls;
+            if (text !== undefined && text !== null) e.textContent = String(text);
+            return e;
+        }
+
+        function clear(node) {
+            while (node.firstChild) node.removeChild(node.firstChild);
+        }
+
+        function num(v) {
+            if (typeof v !== 'number' || !isFinite(v)) return '?';
+            var r = Math.round(v * 100) / 100;
+            return String(r);
+        }
+
+        function px(v) {
+            if (typeof v !== 'string') return null;
+            var m = /^(-?[0-9.]+)px$/.exec(v);
+            return m ? num(parseFloat(m[1])) : null;
+        }
+
+        function rectText(r) {
+            if (!r || typeof r !== 'object') return 'none';
+            return num(r.x) + ', ' + num(r.y) + '  ' + num(r.w) + ' × ' + num(r.h);
+        }
+
+        function valueText(v) {
+            if (v === null || v === undefined) return 'unknown';
+            if (typeof v === 'object' && 'w' in v && 'h' in v) return rectText(v);
+            if (typeof v === 'object') return JSON.stringify(v);
+            return String(v);
+        }
+
+        function sentence(s) {
+            s = String(s);
+            if (!s) return s;
+            s = s.charAt(0).toUpperCase() + s.slice(1);
+            return /[.!?]$/.test(s) ? s : s + '.';
+        }
+
+        // ---------------------------------------------------------------
+        // Input
+        // ---------------------------------------------------------------
+
+        var input = null;
+        var problem = null;
+        try {
+            input = JSON.parse($('hiwave-inspector-input').textContent);
+        } catch (e) {
+            problem = 'The injected data is not JSON.';
+        }
+        var dump = null;
+        var rows = [];
+        var diff = null;
+        if (input !== null && !problem) {
+            if (typeof input !== 'object' || input.schema !== SCHEMA) {
+                problem = 'This dump is not ' + SCHEMA + '; the Inspector cannot read it.';
+            } else if (!Array.isArray(input.rows)) {
+                problem = 'This dump has no element list.';
+            } else {
+                dump = input;
+                rows = input.rows.filter(function (row) {
+                    return Array.isArray(row) && row.length >= 8 &&
+                        typeof row[0] === 'number' && typeof row[1] === 'number' && typeof row[3] === 'number';
+                });
+                if (input.diff && typeof input.diff === 'object' && input.diff.schema === DIFF_SCHEMA) {
+                    diff = input.diff;
+                } else if (input.diff) {
+                    problem = 'The difference file is not ' + DIFF_SCHEMA + ' and is ignored.';
+                }
+            }
+        }
+
+        var n = rows.length;
+        var dumpText = null;
+        var cache = {};
+        var BROKEN = { identity: {}, box: {}, notes: ['this record could not be read'] };
+
+        // One element's full record, parsed on first use.
+        function record(i) {
+            if (cache[i]) return cache[i];
+            if (dumpText === null) dumpText = $('hiwave-inspector-dump').textContent;
+            var r;
+            try {
+                r = JSON.parse(dumpText.substring(rows[i][0], rows[i][1]));
+            } catch (e) {
+                r = null;
+            }
+            if (!r || typeof r !== 'object') r = BROKEN;
+            cache[i] = r;
+            return r;
+        }
+
+        // Per-row tree facts, in dump (tree) order.
+        var depth = new Array(n);
+        var hasKids = new Array(n);
+        var collapsed = new Array(n);
+        for (var i = 0; i < n; i++) {
+            depth[i] = rows[i][3];
+            collapsed[i] = rows[i][5] === 'head';
+        }
+        for (var i = 0; i < n; i++) hasKids[i] = i + 1 < n && depth[i + 1] > depth[i];
+
+        // The first divergence the diff names (its first_innermost root,
+        // else first), matched to a row by the injector.
+        var diffRoot = diff ? (diff.first_innermost || diff.first || null) : null;
+        var diffIndex = diff && typeof input.diff_record === 'number' &&
+            input.diff_record >= 0 && input.diff_record < n ? input.diff_record : -1;
+
+        // ---------------------------------------------------------------
+        // Tree: visible rows and the window onto them
+        // ---------------------------------------------------------------
+
+        var visible = [];
+        var selected = -1;
+        var top = 0;
+        var poolSize = 8;
+        var pool = [];
+
+        function rebuildVisible() {
+            visible = [];
+            var skipBelow = -1;
+            for (var i = 0; i < n; i++) {
+                if (skipBelow >= 0) {
+                    if (depth[i] > skipBelow) continue;
+                    skipBelow = -1;
+                }
+                visible.push(i);
+                if (collapsed[i] && hasKids[i]) skipBelow = depth[i];
+            }
+        }
+
+        function visibleIndexOf(rec) {
+            for (var v = 0; v < visible.length; v++) if (visible[v] === rec) return v;
+            return -1;
+        }
+
+        // As many rows as fit under the toolbar, pane head and banner.
+        function makePool() {
+            var head = HEAD_HEIGHT + ($('banner').className === 'banner' ? BANNER_HEIGHT : 0);
+            poolSize = Math.max(8, Math.floor(((window.innerHeight || 800) - head) / ROW_HEIGHT));
+            var rows = $('tree-rows');
+            for (var s = 0; s < poolSize; s++) {
+                var row = el('div', 'row empty');
+                row.setAttribute('data-slot', String(s));
+                (function (slot) {
+                    row.addEventListener('click', function () { onRowClick(slot); });
+                })(s);
+                rows.appendChild(row);
+                pool.push(row);
+            }
+        }
+
+        function drawRow(row, rec) {
+            clear(row);
+            if (rec < 0) {
+                row.className = 'row empty';
+                return;
+            }
+            var r = rows[rec];
+            var cls = 'row';
+            if (rec === selected) cls += ' selected';
+            if (r[4] !== true) cls += ' nobox';
+            row.className = cls;
+            row.setAttribute('data-node', String(r[2]));
+            row.style.paddingLeft = (4 + depth[rec] * 12) + 'px';
+            row.appendChild(el('span', 'twisty', hasKids[rec] ? (collapsed[rec] ? '▸' : '▾') : ''));
+            row.appendChild(el('span', 'tag', r[5]));
+            if (r[6]) row.appendChild(el('span', 'id', '#' + r[6]));
+            if (Array.isArray(r[7]) && r[7].length) {
+                row.appendChild(el('span', 'cls', '.' + r[7].join('.')));
+            }
+            if (rec === diffIndex) row.appendChild(el('span', 'mark', 'first difference'));
+        }
+
+        function drawTree() {
+            if (top > visible.length - poolSize) top = visible.length - poolSize;
+            if (top < 0) top = 0;
+            for (var s = 0; s < poolSize; s++) {
+                var v = top + s;
+                drawRow(pool[s], v < visible.length ? visible[v] : -1);
+            }
+            var shown = Math.min(poolSize, visible.length - top);
+            $('tree-range').textContent = visible.length
+                ? 'Rows ' + (top + 1) + '–' + (top + shown) + ' of ' + visible.length
+                : 'No elements';
+        }
+
+        function reveal(rec) {
+            // Expand every collapsed ancestor so the record has a row.
+            for (var i = rec - 1, d = depth[rec]; i >= 0 && d > 0; i--) {
+                if (depth[i] < d) {
+                    collapsed[i] = false;
+                    d = depth[i];
+                }
+            }
+            rebuildVisible();
+            var v = visibleIndexOf(rec);
+            if (v < top) top = v;
+            else if (v >= top + poolSize) top = v - poolSize + 1;
+        }
+
+        function select(rec) {
+            if (rec < 0 || rec >= n) return;
+            selected = rec;
+            reveal(rec);
+            drawTree();
+            drawDetail();
+        }
+
+        function onRowClick(slot) {
+            var v = top + slot;
+            if (v >= visible.length) return;
+            var rec = visible[v];
+            if (rec === selected && hasKids[rec]) {
+                collapsed[rec] = !collapsed[rec];
+                rebuildVisible();
+                drawTree();
+                return;
+            }
+            select(rec);
+        }
+
+        function moveBy(delta) {
+            var v = visibleIndexOf(selected);
+            if (v < 0) v = 0;
+            v = Math.max(0, Math.min(visible.length - 1, v + delta));
+            if (visible.length) select(visible[v]);
+        }
+
+        function setCollapsed(rec, value) {
+            if (rec < 0 || !hasKids[rec]) return false;
+            if (collapsed[rec] === value) return false;
+            collapsed[rec] = value;
+            rebuildVisible();
+            drawTree();
+            return true;
+        }
+
+        function parentOf(rec) {
+            for (var i = rec - 1; i >= 0; i--) if (depth[i] < depth[rec]) return i;
+            return -1;
+        }
+
+        // ---------------------------------------------------------------
+        // Selected element
+        // ---------------------------------------------------------------
+
+        function section(title) {
+            var s = el('div', 'section');
+            if (title) s.appendChild(el('div', 'section-title', title));
+            return s;
+        }
+
+        function line(parent, text, cls) {
+            parent.appendChild(el('div', cls ? 'line ' + cls : 'line', text));
+        }
+
+        function boxModel(r) {
+            var st = r.style || {};
+            function four(prefix, suffix) {
+                return ['top', 'right', 'bottom', 'left'].map(function (side) {
+                    var v = px(st[prefix + side + suffix]);
+                    return v === null ? '?' : v;
+                });
+            }
+            var content = r.box && r.box.content_box;
+            var layers = [
+                ['margin', four('margin-', '')],
+                ['border', four('border-', '-width')],
+                ['padding', four('padding-', '')],
+            ];
+            var inner = el('div', 'bm-content',
+                content ? num(content.w) + ' × ' + num(content.h) : '?');
+            inner.id = 'bm-content';
+            for (var l = layers.length - 1; l >= 0; l--) {
+                var name = layers[l][0], v = layers[l][1];
+                var layer = el('div', 'bm-layer bm-' + name);
+                layer.id = 'bm-' + name;
+                var head = el('div', 'bm-label');
+                head.appendChild(el('span', '', name));
+                layer.appendChild(head);
+                var topEdge = el('div', 'bm-edge', v[0]);
+                topEdge.id = 'bm-' + name + '-top';
+                layer.appendChild(topEdge);
+                var mid = el('div', 'bm-mid');
+                var left = el('div', 'bm-side', v[3]);
+                left.id = 'bm-' + name + '-left';
+                var right = el('div', 'bm-side', v[1]);
+                right.id = 'bm-' + name + '-right';
+                var hold = el('div', 'bm-inner');
+                hold.appendChild(inner);
+                mid.appendChild(left);
+                mid.appendChild(hold);
+                mid.appendChild(right);
+                layer.appendChild(mid);
+                var bottomEdge = el('div', 'bm-edge', v[2]);
+                bottomEdge.id = 'bm-' + name + '-bottom';
+                layer.appendChild(bottomEdge);
+                inner = layer;
+            }
+            return inner;
+        }
+
+        function whySentences(r) {
+            var out = [];
+            var b = r.box || {};
+            var p = r.paint || {};
+            var st = r.style || {};
+            var tree = r.tree || {};
+            if (!b.has_box) {
+                out.push('It has no layout box: ' + (b.no_box_reason || 'no reason recorded') + '.');
+                if (st.display === 'none') out.push('Its display is none, so it is not rendered.');
+            } else {
+                if (b.formatting_context) out.push('It is laid out as ' + b.formatting_context + '.');
+                if (b.border_box && (b.border_box.w === 0 || b.border_box.h === 0)) {
+                    out.push('Its border box is ' + num(b.border_box.w) + ' × ' + num(b.border_box.h) + ', so it covers no area.');
+                }
+                if (p.clipped === true) {
+                    out.push(p.clipped_by
+                        ? 'It is clipped by ' + p.clipped_by + '.'
+                        : 'It is clipped by an ancestor.');
+                }
+                if (p.outside_viewport === true) {
+                    out.push('It is scrolled out of view: its border box lies outside the viewport.');
+                }
+                if (typeof p.effective_opacity === 'number' && p.effective_opacity < 1) {
+                    out.push(p.effective_opacity === 0
+                        ? 'Its effective opacity is 0, so it paints nothing visible.'
+                        : 'It is drawn at effective opacity ' + num(p.effective_opacity) + ' (its own and its ancestors’ multiplied).');
+                }
+                if (p.in_opacity_layer === true) out.push('It is painted inside an opacity layer.');
+                if (p.in_transform_layer === true) out.push('It is painted inside a transform layer.');
+                if (st.visibility === 'hidden' || st.visibility === 'collapse') {
+                    out.push('Its visibility is ' + st.visibility + ': it takes space but paints nothing.');
+                }
+                if (st.position && st.position !== 'static') {
+                    var z = st['z-index'];
+                    out.push('It is positioned (' + st.position + ')' +
+                        (z && z !== 'auto' ? ' with z-index ' + z + ', so it forms a stacking context.' : '; its z-index is ' + (z || 'unknown') + '.'));
+                }
+            }
+            if (typeof tree.text_length === 'number' && tree.text_length > 0) {
+                out.push('It contains ' + tree.text_length + ' characters of text (the text itself is not recorded).');
+            }
+            if (tree.in_dom === false) out.push('It is not in the document.');
+            (Array.isArray(r.notes) ? r.notes : []).forEach(function (note) {
+                out.push(sentence(note));
+            });
+            return out;
+        }
+
+        function diffSection(r) {
+            var s = section('Difference from Chromium (' + (diffRoot.stage || '?') + ')');
+            s.id = 'diff-section';
+            var head = el('div', 'diff-row muted');
+            head.appendChild(el('div', 'diff-name', 'field'));
+            head.appendChild(el('div', 'diff-ours', 'RustKit'));
+            head.appendChild(el('div', 'diff-chrome', 'Chromium'));
+            s.appendChild(head);
+            (Array.isArray(diffRoot.fields) ? diffRoot.fields : []).forEach(function (f) {
+                if (!f || typeof f !== 'object') return;
+                var row = el('div', 'diff-row');
+                row.appendChild(el('div', 'diff-name', f.property || f.field || '?'));
+                row.appendChild(el('div', 'diff-ours', valueText(f.ours)));
+                row.appendChild(el('div', 'diff-chrome', valueText(f.chrome)));
+                s.appendChild(row);
+            });
+            return s;
+        }
+
+        function drawDetail() {
+            var d = $('detail');
+            clear(d);
+            var c = $('computed');
+            clear(c);
+            if (selected < 0) {
+                d.appendChild(el('div', 'empty-state', dump ? 'Select an element.' : (problem || 'No diagnostics dump loaded.')));
+                return;
+            }
+            var r = record(selected);
+            var id = r.identity || {};
+            var b = r.box || {};
+
+            var head = section('');
+            var label = el('div', 'selected-label');
+            label.id = 'selected-label';
+            label.appendChild(el('span', 'tag', id.tag));
+            if (id.id) label.appendChild(el('span', 'id', '#' + id.id));
+            if (Array.isArray(id.classes) && id.classes.length) label.appendChild(el('span', 'cls', '.' + id.classes.join('.')));
+            head.appendChild(label);
+            line(head, id.selector, 'muted');
+            line(head, 'node ' + id.node_id + ' · ' + (r.tree ? r.tree.child_count : '?') + ' element children');
+            d.appendChild(head);
+
+            if (selected === diffIndex) d.appendChild(diffSection(r));
+
+            var bm = section('Box model (px)');
+            if (b.has_box) bm.appendChild(boxModel(r));
+            else line(bm, 'No box.', 'muted');
+            d.appendChild(bm);
+
+            var pos = section('Border box');
+            pos.id = 'border-box';
+            if (b.border_box) {
+                var scroll = dump.page && Array.isArray(dump.page.scroll) ? dump.page.scroll : [0, 0];
+                var bb = b.border_box;
+                line(pos, 'page  x ' + num(bb.x + scroll[0]) + '  y ' + num(bb.y + scroll[1]) + '  w ' + num(bb.w) + '  h ' + num(bb.h));
+                line(pos, 'viewport  x ' + num(bb.x) + '  y ' + num(bb.y), 'muted');
+            } else {
+                line(pos, 'none', 'muted');
+            }
+            if (b.containing_block) line(pos, 'containing block: ' + (b.containing_block.selector || 'the viewport'), 'muted');
+            d.appendChild(pos);
+
+            var why = section('Why');
+            why.id = 'why';
+            whySentences(r).forEach(function (t) { why.appendChild(el('div', 'sentence', t)); });
+            d.appendChild(why);
+
+            var unavailable = r.unavailable && typeof r.unavailable === 'object' ? Object.keys(r.unavailable) : [];
+            if (unavailable.length) {
+                var un = section('Not known (' + unavailable.length + ')');
+                unavailable.forEach(function (k) {
+                    line(un, k + ': ' + r.unavailable[k], 'muted');
+                });
+                d.appendChild(un);
+            }
+
+            var st = r.style && typeof r.style === 'object' ? r.style : {};
+            var names = Object.keys(st).sort();
+            var half = Math.ceil(names.length / 2);
+            var cols = [el('div', 'computed-col'), el('div', 'computed-col')];
+            names.forEach(function (name, k) {
+                var row = el('div', 'prop');
+                row.appendChild(el('div', 'prop-name', name));
+                var v = st[name];
+                row.appendChild(el('div', v === null || v === undefined ? 'prop-value unknown' : 'prop-value', v === null || v === undefined ? 'unknown' : v));
+                cols[k < half ? 0 : 1].appendChild(row);
+            });
+            c.appendChild(cols[0]);
+            c.appendChild(cols[1]);
+        }
+
+        // ---------------------------------------------------------------
+        // Page facts, tabs, keys
+        // ---------------------------------------------------------------
+
+        function drawFacts() {
+            if (!dump) {
+                $('page-facts').textContent = problem || 'No diagnostics dump loaded';
+                if (problem) {
+                    $('banner').textContent = problem;
+                    $('banner').className = 'banner';
+                }
+                return;
+            }
+            var p = dump.page || {};
+            var vp = Array.isArray(p.viewport) ? p.viewport[0] + ' × ' + p.viewport[1] : '?';
+            $('page-facts').textContent = (p.url || 'unknown page') + '  ·  viewport ' + vp +
+                '  ·  ' + n + ' of ' + dump.total_elements + ' elements';
+            var notes = [];
+            if (dump.truncated === true) {
+                notes.push('Truncated: this dump holds the first ' + n + ' of ' + dump.total_elements +
+                    ' elements (the capture’s element cap).');
+            }
+            if (problem) notes.push(problem);
+            if (notes.length) {
+                $('banner').textContent = notes.join('  ');
+                $('banner').className = 'banner';
+            }
+        }
+
+        var panels = ['elements', 'console', 'network'];
+        function showPanel(name) {
+            panels.forEach(function (p) {
+                $('tab-' + p).className = p === name ? 'tab active' : 'tab';
+                $('panel-' + p).className = p === name ? 'panel' : 'panel hidden';
+            });
+        }
+        panels.forEach(function (p) {
+            $('tab-' + p).addEventListener('click', function () { showPanel(p); });
+        });
+
+        function jumpToDiff() {
+            if (diffIndex >= 0) select(diffIndex);
+        }
+
+        $('jump-diff').addEventListener('click', jumpToDiff);
+        $('page-up').addEventListener('click', function () { top -= poolSize; drawTree(); });
+        $('page-down').addEventListener('click', function () { top += poolSize; drawTree(); });
+
+        document.addEventListener('keydown', function (e) {
+            var k = e.key;
+            if (k === 'ArrowDown') moveBy(1);
+            else if (k === 'ArrowUp') moveBy(-1);
+            else if (k === 'PageDown') moveBy(poolSize);
+            else if (k === 'PageUp') moveBy(-poolSize);
+            else if (k === 'Home') moveBy(-visible.length);
+            else if (k === 'End') moveBy(visible.length);
+            else if (k === 'ArrowRight') setCollapsed(selected, false) || moveBy(1);
+            else if (k === 'ArrowLeft') setCollapsed(selected, true) || select(parentOf(selected));
+            else if (k === 'Enter' && hasKids[selected]) setCollapsed(selected, !collapsed[selected]);
+            else if (k === 'd' || k === 'D') jumpToDiff();
+            else return;
+            if (e.preventDefault) e.preventDefault();
+        });
+
+        // Selection from the host: `hiwaveInspector.selectNode(node_id)` is
+        // what click-to-inspect calls once it has the node under the pointer
+        // (rustkit_engine::Engine::inspector_selection_at).
+        function selectNode(nodeId) {
+            for (var i = 0; i < n; i++) {
+                if (rows[i][2] === nodeId) {
+                    select(i);
+                    return true;
+                }
+            }
+            return false;
+        }
+        window.hiwaveInspector = { selectNode: selectNode, jumpToDiff: jumpToDiff };
+
+        // ---------------------------------------------------------------
+        // First paint
+        // ---------------------------------------------------------------
+
+        drawFacts();
+        rebuildVisible();
+        makePool();
+        if (diffIndex >= 0) $('jump-diff').className = 'button';
+        var initial = input && typeof input.select === 'number' ? input.select : null;
+        if (initial === null || !selectNode(initial)) {
+            var body = -1;
+            for (var i = 0; i < n && body < 0; i++) if (rows[i][5] === 'body') body = i;
+            if (diffIndex >= 0) select(diffIndex);
+            else if (body >= 0) select(body);
+            else if (n) select(0);
+            else { drawTree(); drawDetail(); }
+        }
+    })();
+    </script>
+</body>
+</html>

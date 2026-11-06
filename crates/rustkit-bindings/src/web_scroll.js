@@ -5,15 +5,17 @@
 // The window's scroll offset is the engine's (view.scroll_offset): reads
 // answer from the position it last published, and a scroll writes through to
 // the host, which clamps it to the document and hands it to the engine when
-// script settles. Element scroll offsets are not rendered (the engine has no
-// per-element scrolling): they are stored and clamped to the element's
-// scroll size, so code that sets then reads them sees consistent numbers.
-// `behavior` is ignored (always instant). A scroll fires one `scroll` event
-// on the document (it bubbles to the window), from a timer, not synchronously.
+// script settles. An element's offset lives in the view's table, clamped to
+// its scroll size, in whole pixels: rects read it at once, and the engine
+// paints it when script settles. `behavior` is ignored (always instant). A
+// window scroll fires one `scroll` event on the document (it bubbles to the
+// window), an element's fires one at the element (it does not bubble); both
+// from a timer, not synchronously.
 (function (g) {
-    var read = g.__rustkit_scroll_state, to = g.__rustkit_scroll_to;
+    var read = g.__rustkit_scroll_state, to = g.__rustkit_scroll_to, table = g.__rustkit_element_scroll;
     delete g.__rustkit_scroll_state;
     delete g.__rustkit_scroll_to;
+    delete g.__rustkit_element_scroll;
     if (typeof read !== 'function' || typeof to !== 'function') return;
     var document = g.document;
     if (!document || !g.Element) return;
@@ -77,18 +79,26 @@
 
     // ---- elements
     var E = g.Element.prototype;
-    var offsets = new WeakMap();
     function isRoot(el) { return el === document.documentElement; }
-    function own(el) {
-        var o = offsets.get(el);
-        if (!o) { o = { x: 0, y: 0 }; offsets.set(el, o); }
-        return o;
+    function own(el) { return table.read(el) || { x: 0, y: 0 }; }
+    function clamp(v, max) { return Math.min(Math.max(0, Math.round(v)), Math.max(0, max)); }
+    var eventsDue = new WeakSet();
+    function elementScrolled(el) {
+        if (eventsDue.has(el) || typeof g.setTimeout !== 'function' || typeof g.Event !== 'function') return;
+        eventsDue.add(el);
+        g.setTimeout(function () {
+            eventsDue.delete(el);
+            try { el.dispatchEvent(new g.Event('scroll', { bubbles: false })); } catch (_) {}
+        }, 0);
     }
-    function clamp(v, max) { return Math.min(Math.max(0, v), Math.max(0, max)); }
     function setOwn(el, x, y) {
-        var o = own(el);
-        if (!isNaN(x)) o.x = clamp(x, el.scrollWidth - el.clientWidth);
-        if (!isNaN(y)) o.y = clamp(y, el.scrollHeight - el.clientHeight);
+        var o = table.read(el);
+        if (!o) return;
+        var nx = isNaN(x) ? o.x : clamp(x, el.scrollWidth - el.clientWidth);
+        var ny = isNaN(y) ? o.y : clamp(y, el.scrollHeight - el.clientHeight);
+        if (nx === o.x && ny === o.y) return;
+        table.write(el, nx, ny);
+        elementScrolled(el);
     }
     function accessor(name, axis) {
         Object.defineProperty(E, name, {
@@ -138,10 +148,29 @@
             case 'end': return cur + start + size - view;
             case 'center': return cur + start + size / 2 - view / 2;
             default:
-                if (start >= 0 && start + size <= view) return cur;
-                if (size > view || start < 0) return cur + start;
+                var end = start + size;
+                if ((start >= 0 && end <= view) || (start <= 0 && end >= view)) return cur;
+                if ((start < 0 && size < view) || (end > view && size > view)) return cur + start;
                 return cur + start + size - view;
         }
+    }
+    // Each scroller around the element in turn, innermost first, then the
+    // window. An absolute box skips a scroller its containing block is above,
+    // and nothing moves a fixed box but the scrollers inside it. An element
+    // with no box scrolls nothing.
+    function intoView(el, block, inline) {
+        var chain = table.chain(el);
+        if (!chain) return;
+        chain.scrollers.forEach(function (s) {
+            var r = el.getBoundingClientRect(), b = s.getBoundingClientRect(), o = own(s);
+            setOwn(s,
+                align(r.left - b.left - s.clientLeft, r.width, s.clientWidth, o.x, inline),
+                align(r.top - b.top - s.clientTop, r.height, s.clientHeight, o.y, block));
+        });
+        if (!chain.window) return;
+        var r = el.getBoundingClientRect(), p = pos();
+        to(align(r.left, r.width, g.innerWidth, p.x, inline), align(r.top, r.height, g.innerHeight, p.y, block));
+        scrolled(p);
     }
     method(E, 'scrollIntoView', function (arg) {
         var block = 'start', inline = 'nearest';
@@ -150,9 +179,37 @@
             if (arg.block) block = arg.block;
             if (arg.inline) inline = arg.inline;
         }
-        var r = this.getBoundingClientRect(), p = pos();
-        to(align(r.left, r.width, g.innerWidth, p.x, inline), align(r.top, r.height, g.innerHeight, p.y, block));
-        scrolled(p);
+        intoView(this, block, inline);
+    });
+
+    // The indicated part of the document (HTML §7.4.6.4): an id, then a link's
+    // name, as written and then percent-decoded. The empty fragment and `top`
+    // are the top of the page; anything else stays where it is.
+    function indicated(fragment) {
+        function find(name) {
+            var el = document.getElementById(name);
+            if (el) return el;
+            var links = document.getElementsByTagName('a');
+            for (var i = 0; i < links.length; i++) {
+                if (links[i].getAttribute('name') === name) return links[i];
+            }
+            return null;
+        }
+        var el = fragment ? find(fragment) : null;
+        if (el) return el;
+        try { fragment = decodeURIComponent(fragment); } catch (_) {}
+        return fragment ? find(fragment) : null;
+    }
+    Object.defineProperty(g, '__rkScrollToFragment', {
+        value: function (fragment) {
+            var el = indicated(fragment);
+            if (el) { intoView(el, 'start', 'nearest'); return; }
+            if (fragment !== '' && fragment.toLowerCase() !== 'top') return;
+            var p = pos();
+            to(0, 0);
+            scrolled(p);
+        },
+        configurable: true, writable: true, enumerable: false
     });
 
     // The engine calls this when the USER scrolled (wheel, keys, scrollbar):
@@ -160,6 +217,15 @@
     Object.defineProperty(g, '__rkUserScrolled', {
         value: function () {
             try { document.dispatchEvent(new g.Event('scroll', { bubbles: true })); } catch (_) {}
+        },
+        configurable: true, writable: true, enumerable: false
+    });
+
+    // The same when the user scrolled an element: at once, at the element.
+    Object.defineProperty(g, '__rkUserScrolledElement', {
+        value: function (id) {
+            var el = table.byId(id);
+            try { if (el) el.dispatchEvent(new g.Event('scroll', { bubbles: false })); } catch (_) {}
         },
         configurable: true, writable: true, enumerable: false
     });

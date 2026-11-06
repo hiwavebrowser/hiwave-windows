@@ -8,11 +8,12 @@
 //! resource caps. A denied request returns [`Denial`]; script only ever sees
 //! an error, never the denied response.
 //!
-//! Deliberate limits (stated, not half-built): script requests carry no
-//! cookies (there is no cookie jar to partition; `credentials` degrades to
-//! `omit` on the wire, though CORS is still checked as if the page had asked
-//! for credentials), responses arrive whole (no streaming bodies), and
-//! `WebSocket`/`EventSource`/`sendBeacon` are out of scope.
+//! Deliberate limits (stated, not half-built): only a request to the page's
+//! own origin sends and keeps cookies (unless it asked for `omit`); a
+//! cross-origin one carries none, whatever its `credentials`, though CORS is
+//! still checked as if the page had asked for credentials. Responses arrive
+//! whole (no streaming bodies), and `WebSocket`/`EventSource`/`sendBeacon`
+//! are out of scope.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -107,6 +108,11 @@ pub struct ScriptResponse {
 pub struct ModuleSource {
     pub final_url: Url,
     pub source: String,
+    /// The response's status (2xx) and `Content-Type`, for diagnostics.
+    pub status: u16,
+    pub content_type: Option<http::HeaderValue>,
+    /// Body bytes as received.
+    pub body_len: usize,
 }
 
 /// Why a request was refused. Script sees an error event / `TypeError`.
@@ -127,8 +133,9 @@ pub enum Denial {
     ResponseTooLarge,
     Timeout,
     BudgetExhausted,
-    /// The shield (EasyList) blocked it, exactly as it blocks a subresource.
-    Shield,
+    /// The shield (EasyList) blocked it, exactly as it blocks a subresource;
+    /// with its list and rule when the shield gave them.
+    Shield(Option<crate::BlockReason>),
     /// A module script whose response is not a JavaScript MIME type.
     BadMime(String),
     /// A module script whose response is not 2xx.
@@ -198,6 +205,81 @@ impl CancelToken {
 
     pub fn is_cancelled(&self) -> bool {
         *self.tx.borrow()
+    }
+}
+
+type OriginAcquire = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>> + Send>,
+>;
+
+enum OriginSlot {
+    Held(Result<tokio::sync::OwnedSemaphorePermit, tokio::sync::AcquireError>),
+    Queued(OriginAcquire),
+}
+
+/// A request's place in its origin's slot queue, taken by
+/// [`FetchPolicy::reserve`]. `Send`, so the request can run on another
+/// thread; dropping it gives the place up.
+pub struct Reservation {
+    origin: OriginSlot,
+}
+
+impl Reservation {
+    async fn origin_slot(self) -> Result<tokio::sync::OwnedSemaphorePermit, Denial> {
+        match self.origin {
+            OriginSlot::Held(permit) => permit,
+            OriginSlot::Queued(acquire) => acquire.await,
+        }
+        .map_err(|_| Denial::BudgetExhausted)
+    }
+}
+
+/// How long one request waited for its in-flight slots (the per-origin and
+/// per-page caps queue a request; they never refuse it). The policy stamps
+/// when the request starts waiting and when it has both slots; a watcher
+/// (the Inspector) reads it. Clones share the stamps.
+#[derive(Clone, Debug, Default)]
+pub struct SlotWait(Arc<SlotWaitStamps>);
+
+#[derive(Debug, Default)]
+struct SlotWaitStamps {
+    queued: std::sync::OnceLock<Instant>,
+    granted: std::sync::OnceLock<Instant>,
+}
+
+impl SlotWait {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The request starts waiting for a slot (the first call counts).
+    pub fn queued(&self) {
+        let _ = self.0.queued.set(Instant::now());
+    }
+
+    /// The request has its slot (the first call counts).
+    pub fn granted(&self) {
+        let _ = self.0.granted.set(Instant::now());
+    }
+
+    /// True while the request is queued behind a cap: it started waiting
+    /// and has no slot yet.
+    pub fn is_waiting(&self) -> bool {
+        self.0.queued.get().is_some() && self.0.granted.get().is_none()
+    }
+
+    /// True if the request was queued at `t`: it had started waiting and had
+    /// no slot yet. A slot freed by a request that hit the same deadline
+    /// arrives after it, so it does not count.
+    pub fn waiting_at(&self, t: Instant) -> bool {
+        self.0.queued.get().is_some_and(|q| *q <= t) && self.0.granted.get().map_or(true, |g| *g >= t)
+    }
+
+    /// Time spent waiting for slots, up to now if it still is; `None` if the
+    /// request never reached the queue (refused first, or not yet started).
+    pub fn waited(&self) -> Option<Duration> {
+        let queued = *self.0.queued.get()?;
+        Some(self.0.granted.get().copied().unwrap_or_else(Instant::now).saturating_duration_since(queued))
     }
 }
 
@@ -336,7 +418,7 @@ fn split_list(v: Option<&str>) -> Vec<String> {
 
 fn map_net_error(e: NetError) -> Denial {
     match e {
-        NetError::Blocked => Denial::Shield,
+        NetError::Blocked(reason) => Denial::Shield(reason),
         NetError::Timeout(_) | NetError::HttpError(rustkit_http::HttpError::Timeout) => Denial::Timeout,
         NetError::HttpError(rustkit_http::HttpError::AddressDenied(a)) => Denial::PrivateNetwork(a),
         NetError::HttpError(rustkit_http::HttpError::BodyTooLarge(_)) => Denial::ResponseTooLarge,
@@ -442,7 +524,18 @@ impl FetchPolicy {
         loader: &ResourceLoader,
         req: ScriptRequest,
     ) -> Result<ScriptResponse, Denial> {
-        self.execute_raced(loader, req, None).await
+        self.execute_raced(loader, req, None, None).await
+    }
+
+    /// [`execute`](Self::execute) that stamps `wait` (when given) as the
+    /// request queues for, and gets, its in-flight slots.
+    pub async fn execute_waited(
+        &self,
+        loader: &ResourceLoader,
+        req: ScriptRequest,
+        wait: Option<&SlotWait>,
+    ) -> Result<ScriptResponse, Denial> {
+        self.execute_raced(loader, req, None, wait).await
     }
 
     /// [`execute`](Self::execute) that `token` can also end. An aborted
@@ -454,7 +547,7 @@ impl FetchPolicy {
         req: ScriptRequest,
         token: &CancelToken,
     ) -> Result<ScriptResponse, Denial> {
-        self.execute_raced(loader, req, Some(token)).await
+        self.execute_raced(loader, req, Some(token), None).await
     }
 
     async fn execute_raced(
@@ -462,6 +555,7 @@ impl FetchPolicy {
         loader: &ResourceLoader,
         req: ScriptRequest,
         token: Option<&CancelToken>,
+        wait: Option<&SlotWait>,
     ) -> Result<ScriptResponse, Denial> {
         let mut page = self.cancel.subscribe();
         let mut own = token.map(|t| t.tx.subscribe());
@@ -474,7 +568,7 @@ impl FetchPolicy {
                     None => std::future::pending::<()>().await,
                 }
             } => Err(Denial::Cancelled),
-            r = self.execute_governed(loader, req) => r,
+            r = self.execute_governed(loader, req, wait) => r,
         }
     }
 
@@ -482,12 +576,38 @@ impl FetchPolicy {
         &self,
         loader: &ResourceLoader,
         req: ScriptRequest,
+        wait: Option<&SlotWait>,
     ) -> Result<ScriptResponse, Denial> {
+        let reservation = self.reserve(&req, wait)?;
+        self.run_reserved(loader, req, reservation, wait).await
+    }
+
+    /// The part of a request whose outcome depends on the order requests
+    /// start in, done now, synchronously: the total budget, the shape check,
+    /// the `queued` stamp, and a place in the origin's slot queue (T8, the
+    /// slot ticket). A caller that runs the request on another thread calls
+    /// this where the request starts, so per-origin slots go in start order
+    /// whatever the worker count; [`execute_reserved`](Self::execute_reserved)
+    /// runs the rest.
+    ///
+    /// The contract is per origin: same-origin requests get their origin
+    /// slot in `reserve` order. The page slot is not reserved (a request
+    /// queued on a busy origin must not hold one, see below), so across
+    /// origins the page-slot order is the order grants land in, as before.
+    ///
+    /// The place is taken by polling the origin semaphore's acquire once,
+    /// with a no-op waker and outside the task budget: tokio's semaphore
+    /// queues waiters FIFO from their first poll, and the task's first poll
+    /// of the same future installs its own waker (or finds the permit
+    /// already assigned). Dropping the [`Reservation`] (abort, navigation,
+    /// view close) leaves the queue or returns the permit; the budget count
+    /// is not refunded, as when a running request is dropped.
+    pub fn reserve(&self, req: &ScriptRequest, wait: Option<&SlotWait>) -> Result<Reservation, Denial> {
         if self.total.fetch_add(1, Ordering::SeqCst) >= self.limits.max_total_requests {
             self.total.fetch_sub(1, Ordering::SeqCst);
             return Err(Denial::BudgetExhausted);
         }
-        self.validate_shape(&req)?;
+        self.validate_shape(req)?;
 
         // Origin slot first, then page slot: every task takes them in the same
         // order (no deadlock), and a queued request holds only its own
@@ -500,13 +620,52 @@ impl FetchPolicy {
             .entry(origin_key)
             .or_insert_with(|| Arc::new(Semaphore::new(self.limits.max_in_flight_per_origin)))
             .clone();
-        let _origin_slot = origin_sem.acquire_owned().await.map_err(|_| Denial::BudgetExhausted)?;
+        if let Some(w) = wait {
+            w.queued();
+        }
+        let mut acquire: OriginAcquire = Box::pin(tokio::task::unconstrained(origin_sem.acquire_owned()));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let origin = match acquire.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(permit) => OriginSlot::Held(permit),
+            std::task::Poll::Pending => OriginSlot::Queued(acquire),
+        };
+        Ok(Reservation { origin })
+    }
+
+    /// Run a request whose place [`reserve`](Self::reserve) took, raced
+    /// against the page's cancel like [`execute_waited`](Self::execute_waited).
+    pub async fn execute_reserved(
+        &self,
+        loader: &ResourceLoader,
+        req: ScriptRequest,
+        reservation: Reservation,
+        wait: Option<&SlotWait>,
+    ) -> Result<ScriptResponse, Denial> {
+        let mut page = self.cancel.subscribe();
+        tokio::select! {
+            biased;
+            _ = async { let _ = page.wait_for(|c| *c).await; } => Err(Denial::Cancelled),
+            r = self.run_reserved(loader, req, reservation, wait) => r,
+        }
+    }
+
+    async fn run_reserved(
+        &self,
+        loader: &ResourceLoader,
+        req: ScriptRequest,
+        reservation: Reservation,
+        wait: Option<&SlotWait>,
+    ) -> Result<ScriptResponse, Denial> {
+        let _origin_slot = reservation.origin_slot().await?;
         let _page_slot = self
             .page_slots
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| Denial::BudgetExhausted)?;
+        if let Some(w) = wait {
+            w.granted();
+        }
 
         match tokio::time::timeout(self.limits.timeout, self.run(loader, req)).await {
             Ok(r) => r,
@@ -516,8 +675,8 @@ impl FetchPolicy {
 
     /// Fetch one module script (static import, `<script type=module src>`).
     ///
-    /// Module fetches are always CORS-mode with same-origin credentials (and
-    /// cookies are never sent), go through the same budgets, per-hop vet,
+    /// Module fetches are always CORS-mode with same-origin credentials (so
+    /// only a module from the page's own origin carries cookies), go through the same budgets, per-hop vet,
     /// shield and CSP (`script-src`) as every other governed request, and
     /// must answer 2xx with a JavaScript MIME type. `referrer` is the
     /// importing module's URL; it is not sent (Referer is page-scoped).
@@ -525,11 +684,23 @@ impl FetchPolicy {
         &self,
         loader: &ResourceLoader,
         specifier_url: &Url,
+        referrer: &Url,
+    ) -> Result<ModuleSource, Denial> {
+        self.fetch_module_waited(loader, specifier_url, referrer, None).await
+    }
+
+    /// [`fetch_module`](Self::fetch_module) that stamps `wait` (see
+    /// [`execute_waited`](Self::execute_waited)).
+    pub async fn fetch_module_waited(
+        &self,
+        loader: &ResourceLoader,
+        specifier_url: &Url,
         _referrer: &Url,
+        wait: Option<&SlotWait>,
     ) -> Result<ModuleSource, Denial> {
         let mut req = ScriptRequest::get(specifier_url.clone());
         req.destination = RequestDestination::Script;
-        let r = self.execute(loader, req).await?;
+        let r = self.execute_waited(loader, req, wait).await?;
         if !(200..300).contains(&r.status) {
             return Err(Denial::BadStatus(r.status));
         }
@@ -540,7 +711,14 @@ impl FetchPolicy {
         // Modules are always UTF-8, whatever the charset label says.
         let text = String::from_utf8_lossy(&r.body);
         let source = text.strip_prefix('\u{feff}').unwrap_or(&text).to_string();
-        Ok(ModuleSource { final_url: r.url, source })
+        Ok(ModuleSource {
+            final_url: r.url,
+            source,
+            status: r.status,
+            // A header clone shares its bytes: nothing is allocated here.
+            content_type: r.headers.get(http::header::CONTENT_TYPE).cloned(),
+            body_len: r.body.len(),
+        })
     }
 
     fn validate_shape(&self, req: &ScriptRequest) -> Result<(), Denial> {
@@ -763,7 +941,13 @@ impl FetchPolicy {
             RequestDestination::Script => RequestDestination::Script,
             _ => RequestDestination::Fetch,
         };
-        request.credentials = CredentialsMode::Omit;
+        // Cookies go with a request to the page's own origin that asked for
+        // credentials, and nowhere else.
+        request.credentials = match req.credentials {
+            CredentialsMode::Omit => CredentialsMode::Omit,
+            _ if cross || hop.tainted => CredentialsMode::Omit,
+            _ => CredentialsMode::SameOrigin,
+        };
         request.timeout = Some(self.limits.timeout);
         request.referrer = Some(self.page_url.clone());
         // The shared cache is keyed by URL alone, so only a same-origin GET
@@ -837,7 +1021,7 @@ impl FetchPolicy {
             )
             .await
             .map_err(|e| match map_net_error(e) {
-                d @ (Denial::PrivateNetwork(_) | Denial::Shield | Denial::Timeout) => d,
+                d @ (Denial::PrivateNetwork(_) | Denial::Shield(_) | Denial::Timeout) => d,
                 other => Denial::Preflight(other.to_string()),
             })?;
         if !resp.status.is_success() {
@@ -1505,6 +1689,175 @@ mod tests {
         assert!(s.peak.load(Ordering::SeqCst) <= 2, "more than 2 in flight to one origin: {}", s.peak.load(Ordering::SeqCst));
     }
 
+    /// Dev-tools T2 (E): a request queued behind the per-origin cap says how
+    /// long it waited, and says it is still waiting until it has a slot.
+    #[tokio::test]
+    async fn a_request_queued_behind_the_cap_reports_its_wait() {
+        let s = serve_with(Duration::from_millis(300), |_| resp(200, &[("Access-Control-Allow-Origin", "*")], b"ok")).await;
+        let limits = FetchLimits { max_in_flight_per_origin: 1, ..FetchLimits::default() };
+        let p = Arc::new(allow_ports(
+            FetchPolicy::with_limits(Url::parse("http://page.test/").unwrap(), None, limits),
+            &[s.port],
+        ));
+        let l = Arc::new(loader());
+        let (first, second) = (SlotWait::new(), SlotWait::new());
+        assert_eq!(first.waited(), None, "not started");
+        let a = {
+            let (p, l, url, w) = (p.clone(), l.clone(), s.url("/a"), first.clone());
+            tokio::spawn(async move { p.execute_waited(&l, ScriptRequest::get(url), Some(&w)).await })
+        };
+        wait_until(|| s.seen().len() == 1).await;
+        let b = {
+            let (p, l, url, w) = (p.clone(), l.clone(), s.url("/b"), second.clone());
+            tokio::spawn(async move { p.execute_waited(&l, ScriptRequest::get(url), Some(&w)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(second.is_waiting(), "the second request should be queued behind the first");
+        assert!(!first.is_waiting());
+        a.await.unwrap().expect("first");
+        b.await.unwrap().expect("second");
+        assert!(!second.is_waiting());
+        assert!(first.waited().unwrap() < Duration::from_millis(100), "{:?}", first.waited());
+        assert!(second.waited().unwrap() >= Duration::from_millis(150), "{:?}", second.waited());
+    }
+
+    // ---- T8 slot ticket: the origin queue place is taken in `reserve` -------
+
+    /// G2: same-origin requests reserved A..D get the origin slot in that
+    /// order even when their tasks first run in the reverse order, on a
+    /// multi-thread runtime. With the place taken at the task's first poll
+    /// (the T7a behaviour) this reads D, C, B, A.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn same_origin_slots_go_in_reserve_order_not_first_poll_order() {
+        let s = serve_with(Duration::from_millis(60), |_| resp(200, &[("Access-Control-Allow-Origin", "*")], b"ok")).await;
+        let limits = FetchLimits { max_in_flight_per_origin: 1, ..FetchLimits::default() };
+        let p = Arc::new(allow_ports(
+            FetchPolicy::with_limits(Url::parse("http://page.test/").unwrap(), None, limits),
+            &[s.port],
+        ));
+        let l = Arc::new(loader());
+        let paths = ["/a", "/b", "/c", "/d"];
+        let reserved: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                let req = ScriptRequest::get(s.url(path));
+                let r = p.reserve(&req, None).expect("reserved");
+                (req, r)
+            })
+            .collect();
+        let mut tasks = Vec::new();
+        for (req, r) in reserved.into_iter().rev() {
+            let (p, l) = (p.clone(), l.clone());
+            tasks.push(tokio::spawn(async move { p.execute_reserved(&l, req, r, None).await }));
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+        for t in tasks {
+            t.await.unwrap().expect("served");
+        }
+        let order: Vec<String> = s.seen().into_iter().map(|seen| seen.path).collect();
+        assert_eq!(order, paths, "origin slots must follow reserve order");
+    }
+
+    /// L2 (#827 R1): the slot contract is per origin only. Two origins share
+    /// one page slot and their reservations interleave; tasks first run in
+    /// the reverse order on a multi-thread runtime. Each origin is still
+    /// served in its own reserve order and nothing starves. The order across
+    /// origins is the order page-slot grants land in, which this does not
+    /// pin (the `reserve` docs).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_origins_competing_for_the_page_slot_keep_per_origin_order() {
+        let ok = |_: &Seen| resp(200, &[("Access-Control-Allow-Origin", "*")], b"ok");
+        let (s1, s2) = (serve_with(Duration::from_millis(40), ok).await, serve_with(Duration::from_millis(40), ok).await);
+        let limits = FetchLimits { max_in_flight_per_origin: 1, max_in_flight_per_page: 1, ..FetchLimits::default() };
+        let p = Arc::new(allow_ports(
+            FetchPolicy::with_limits(Url::parse("http://page.test/").unwrap(), None, limits),
+            &[s1.port, s2.port],
+        ));
+        let l = Arc::new(loader());
+        let paths = ["/a", "/b", "/c", "/d"];
+        let mut reserved = Vec::new();
+        for path in paths {
+            for s in [&s1, &s2] {
+                let req = ScriptRequest::get(s.url(path));
+                let r = p.reserve(&req, None).expect("reserved");
+                reserved.push((req, r));
+            }
+        }
+        let mut tasks = Vec::new();
+        for (req, r) in reserved.into_iter().rev() {
+            let (p, l) = (p.clone(), l.clone());
+            tasks.push(tokio::spawn(async move { p.execute_reserved(&l, req, r, None).await }));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let all = async {
+            for t in tasks {
+                t.await.unwrap().expect("served");
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), all).await.expect("an origin starved behind the other");
+        for (name, s) in [("first", &s1), ("second", &s2)] {
+            let order: Vec<String> = s.seen().into_iter().map(|seen| seen.path).collect();
+            assert_eq!(order, paths, "{name} origin left its reserve order");
+            assert_eq!(s.peak.load(Ordering::SeqCst), 1, "{name} origin over its slot");
+        }
+    }
+
+    /// G3: a reservation dropped while queued (a navigation) gives its place
+    /// up; the request behind it is served, nothing waits forever.
+    #[tokio::test]
+    async fn a_dropped_reservation_frees_its_place_in_the_origin_queue() {
+        let s = serve_with(Duration::from_millis(50), |_| resp(200, &[("Access-Control-Allow-Origin", "*")], b"ok")).await;
+        let limits = FetchLimits { max_in_flight_per_origin: 1, ..FetchLimits::default() };
+        let p = Arc::new(allow_ports(
+            FetchPolicy::with_limits(Url::parse("http://page.test/").unwrap(), None, limits),
+            &[s.port],
+        ));
+        let l = Arc::new(loader());
+        let (ra, rb, rc) = (ScriptRequest::get(s.url("/a")), ScriptRequest::get(s.url("/b")), ScriptRequest::get(s.url("/c")));
+        let a = p.reserve(&ra, None).unwrap();
+        let b = p.reserve(&rb, None).unwrap();
+        let c = p.reserve(&rc, None).unwrap();
+        drop(b);
+        let ta = tokio::spawn({
+            let (p, l) = (p.clone(), l.clone());
+            async move { p.execute_reserved(&l, ra, a, None).await }
+        });
+        let tc = tokio::spawn({
+            let (p, l) = (p.clone(), l.clone());
+            async move { p.execute_reserved(&l, rc, c, None).await }
+        });
+        let both = async { (ta.await, tc.await) };
+        let (a, c) = tokio::time::timeout(Duration::from_secs(5), both).await.expect("queue stuck behind a dropped place");
+        a.unwrap().expect("a");
+        c.unwrap().expect("c");
+        let order: Vec<String> = s.seen().into_iter().map(|seen| seen.path).collect();
+        assert_eq!(order, ["/a", "/c"]);
+    }
+
+    /// G4: a budget or shape refusal comes from `reserve`, synchronously,
+    /// with the denial the running request gave before.
+    #[test]
+    fn reserve_refuses_over_budget_and_bad_shape_at_once() {
+        let limits = FetchLimits { max_total_requests: 1, ..FetchLimits::default() };
+        let p = FetchPolicy::with_limits(Url::parse("http://page.test/").unwrap(), None, limits.clone());
+        let mut bad = ScriptRequest::get(Url::parse("http://page.test/x").unwrap());
+        bad.method = Method::from_bytes(b"TRACE").unwrap();
+        assert!(matches!(p.reserve(&bad, None), Err(Denial::BadRequest(_))));
+        let p = FetchPolicy::with_limits(Url::parse("http://page.test/").unwrap(), None, limits);
+        let ok = ScriptRequest::get(Url::parse("http://page.test/x").unwrap());
+        let wait = SlotWait::new();
+        let first = p.reserve(&ok, Some(&wait)).expect("first is in budget");
+        assert!(wait.waited().is_some(), "queued is stamped by reserve");
+        assert!(matches!(p.reserve(&ok, None), Err(Denial::BudgetExhausted)));
+        drop(first);
+    }
+
+    #[test]
+    fn a_reservation_is_send() {
+        fn assert_send<T: Send + 'static>() {}
+        assert_send::<Reservation>();
+    }
+
     // ---- cancellation (Z2-C5): navigating away must close the sockets ---------
 
     async fn wait_until(mut f: impl FnMut() -> bool) {
@@ -1722,16 +2075,53 @@ mod tests {
         ic.add_handler(Arc::new(BlockAds));
         let l = ResourceLoader::with_interceptor(LoaderConfig::default(), Some(ic)).unwrap();
         let sub = l.fetch(Request::get(s.url("/ads/x.js"))).await;
-        assert!(matches!(sub, Err(NetError::Blocked)));
+        assert!(matches!(sub, Err(NetError::Blocked(None))));
         let p = allow_ports(page("http://page.test/"), &[s.port]);
         let r = p.execute(&l, ScriptRequest::get(s.url("/ads/x.js"))).await;
-        assert_eq!(r.unwrap_err(), Denial::Shield);
+        assert_eq!(r.unwrap_err(), Denial::Shield(None));
         assert_eq!(s.hits(), 0);
         // And a redirect hop into a blocked URL is blocked too.
         let to = format!("http://127.0.0.1:{}/ads/y.js", s.port);
         let r2 = serve(move |_| resp(302, &[("Location", &to), ("Access-Control-Allow-Origin", "*")], b"")).await;
         let p = allow_ports(page("http://page.test/"), &[s.port, r2.port]);
-        assert_eq!(p.execute(&l, ScriptRequest::get(r2.url("/"))).await.unwrap_err(), Denial::Shield);
+        assert_eq!(p.execute(&l, ScriptRequest::get(r2.url("/"))).await.unwrap_err(), Denial::Shield(None));
+        assert_eq!(s.hits(), 0);
+    }
+
+    /// Dev-tools T2: a shield that names its list and rule has them carried
+    /// to the caller, on a subresource's error and on a script's denial,
+    /// redirect hop included.
+    #[tokio::test]
+    async fn a_shield_block_carries_its_list_and_rule() {
+        struct BlockAdsBy;
+        impl InterceptHandler for BlockAdsBy {
+            fn intercept(&self, request: &Request) -> InterceptAction {
+                if request.url.path().contains("/ads/") {
+                    InterceptAction::BlockedBy(crate::BlockReason {
+                        list: "EasyList".into(),
+                        rule: Some("/ads/*$script".into()),
+                    })
+                } else {
+                    InterceptAction::Allow
+                }
+            }
+        }
+        let want = crate::BlockReason { list: "EasyList".into(), rule: Some("/ads/*$script".into()) };
+        let s = serve(|_| resp(200, &[("Access-Control-Allow-Origin", "*")], b"ad")).await;
+        let mut ic = RequestInterceptor::new();
+        ic.add_handler(Arc::new(BlockAdsBy));
+        let l = ResourceLoader::with_interceptor(LoaderConfig::default(), Some(ic)).unwrap();
+        match l.fetch(Request::get(s.url("/ads/x.js"))).await {
+            Err(NetError::Blocked(Some(reason))) => assert_eq!(reason, want),
+            other => panic!("not blocked with a reason: {other:?}"),
+        }
+        let p = allow_ports(page("http://page.test/"), &[s.port]);
+        let r = p.execute(&l, ScriptRequest::get(s.url("/ads/x.js"))).await;
+        assert_eq!(r.unwrap_err(), Denial::Shield(Some(want.clone())));
+        let to = format!("http://127.0.0.1:{}/ads/y.js", s.port);
+        let r2 = serve(move |_| resp(302, &[("Location", &to), ("Access-Control-Allow-Origin", "*")], b"")).await;
+        let p = allow_ports(page("http://page.test/"), &[s.port, r2.port]);
+        assert_eq!(p.execute(&l, ScriptRequest::get(r2.url("/"))).await.unwrap_err(), Denial::Shield(Some(want)));
         assert_eq!(s.hits(), 0);
     }
 
@@ -2024,7 +2414,7 @@ mod tests {
         ic.add_handler(Arc::new(BlockAds));
         let l = ResourceLoader::with_interceptor(LoaderConfig::default(), Some(ic)).unwrap();
         let p = allow_ports(page("http://page.test/"), &[s.port]);
-        assert_eq!(module(&p, &l, &s.url("/ads/m.js")).await.unwrap_err(), Denial::Shield);
+        assert_eq!(module(&p, &l, &s.url("/ads/m.js")).await.unwrap_err(), Denial::Shield(None));
         assert_eq!(s.hits(), 0);
 
         // script-src, not connect-src, governs modules; 'self' and * work.

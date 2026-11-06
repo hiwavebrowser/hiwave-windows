@@ -29,7 +29,8 @@
     }
 
     // ---- Namespaces (DOM §4.9): an element's namespaceURI is the one it
-    // was created in; parsed and createElement elements are HTML.
+    // was created in; createElement elements are HTML, parsed ones as the
+    // parser placed them.
     getter(Element.prototype, 'namespaceURI', function () {
         var s = I.slotOf(this); return NS(s.gen, 'of', s.id);
     });
@@ -42,10 +43,14 @@
         var p = base(id);
         return p === g.SVGSVGElement.prototype ? p : g.SVGElement.prototype;
     });
+    var HOOKS = g.__rkDomHooks;
     Document.prototype.createElementNS = function (ns, qualified) {
         var r = NS(I.gen(), 'create', ns == null ? '' : String(ns), String(qualified));
         if (typeof r === 'string') fail('createElementNS', 'Document', r);
-        return I.wrap(r);
+        var el = I.wrap(r);
+        // An HTML `script` made this way is a script like createElement's.
+        if (HOOKS && HOOKS.scripts) HOOKS.scripts.created(el);
+        return el;
     };
     function localOf(name) { var i = name.indexOf(':'); return i < 0 ? name : name.slice(i + 1); }
     function nsOf(name) { var i = name.indexOf(':'); return i < 0 ? null : PREFIX_NS[name.slice(0, i)] || null; }
@@ -80,6 +85,8 @@
     var NamedNodeMap = iface('NamedNodeMap'), Attr = iface('Attr', g.Node);
     var OWNER = Symbol('rustkit.owner'), NAME = Symbol('rustkit.name');
     var maps = new WeakMap(), attrs = new WeakMap();
+    // An Attr taken off its element keeps its value and has no owner.
+    var gone = new WeakMap();
     function hidden(o, k, v) { Object.defineProperty(o, k, { value: v }); return o; }
     function attrNode(el, name) {
         var byName = attrs.get(el);
@@ -102,7 +109,7 @@
         return this[NAME] === 'xmlns' ? PREFIX_NS.xmlns : nsOf(this[NAME]);
     });
     getter(Attr.prototype, 'ownerElement', function () {
-        return this[OWNER].hasAttribute(this[NAME]) ? this[OWNER] : null;
+        return !gone.has(this) && this[OWNER].hasAttribute(this[NAME]) ? this[OWNER] : null;
     });
     getter(Attr.prototype, 'nodeType', function () { return 2; });
     getter(Attr.prototype, 'specified', function () { return true; });
@@ -110,8 +117,13 @@
     getter(Attr.prototype, 'ownerDocument', function () { return this[OWNER].ownerDocument; });
     ['value', 'nodeValue', 'textContent'].forEach(function (k) {
         Object.defineProperty(Attr.prototype, k, {
-            get: function () { var v = this[OWNER].getAttribute(this[NAME]); return v === null ? '' : v; },
-            set: function (v) { this[OWNER].setAttribute(this[NAME], v); },
+            get: function () {
+                if (gone.has(this)) return gone.get(this);
+                var v = this[OWNER].getAttribute(this[NAME]); return v === null ? '' : v;
+            },
+            set: function (v) {
+                if (gone.has(this)) gone.set(this, String(v)); else this[OWNER].setAttribute(this[NAME], v);
+            },
             configurable: true, enumerable: true
         });
     });
@@ -127,11 +139,24 @@
     NamedNodeMap.prototype.getNamedItemNS = function (ns, local) {
         var n = nsName(this[OWNER], ns, local); return n === null ? null : attrNode(this[OWNER], n);
     };
+    // Take `a` off its element: it keeps its value, and the name gets a new
+    // Attr if it is set again (DOM §4.9.2 "remove an attribute").
+    function detach(a) {
+        var el = a[OWNER], v = a.value;
+        el.removeAttribute(a[NAME]);
+        delete attrs.get(el)[a[NAME]];
+        gone.set(a, v);
+        return a;
+    }
     NamedNodeMap.prototype.removeNamedItem = function (name) {
         var a = this.getNamedItem(name);
         if (!a) fail('removeNamedItem', 'NamedNodeMap', 'NotFoundError');
-        this[OWNER].removeAttribute(a.name);
-        return a;
+        return detach(a);
+    };
+    NamedNodeMap.prototype.removeNamedItemNS = function (ns, local) {
+        var a = this.getNamedItemNS(ns, local);
+        if (!a) fail('removeNamedItemNS', 'NamedNodeMap', 'NotFoundError');
+        return detach(a);
     };
     NamedNodeMap.prototype[Symbol.iterator] = function () {
         var out = [];
@@ -162,6 +187,14 @@
     Element.prototype.getAttributeNode = function (name) { return this.attributes.getNamedItem(name); };
     Element.prototype.getAttributeNodeNS = function (ns, local) {
         return this.attributes.getNamedItemNS(ns, local);
+    };
+    // React 19 strips a host singleton's attributes with this on a client
+    // render after a hydration error (yahoo).
+    Element.prototype.removeAttributeNode = function (attr) {
+        if (!(attr instanceof Attr) || gone.has(attr) || attr[OWNER] !== this || !this.hasAttribute(attr[NAME])) {
+            fail('removeAttributeNode', 'Element', 'NotFoundError');
+        }
+        return detach(attr);
     };
 
     // ---- document.activeElement with focus()/blur() (HTML §6.6). One
@@ -200,6 +233,11 @@
         el.__rkEdited = false;
         el.dispatchEvent(new g.Event('change', { bubbles: true }));
     }
+    // A composition in the element losing the focus ends first (CH2.E3).
+    function finishComposing(el) {
+        var f = Document.prototype.__rkFinishComposing;
+        if (typeof f === 'function') f.call(document, el);
+    }
     // The focus update steps: change, then blur/focusout on the old
     // element (with nothing focused), then focus/focusin on the new one.
     function focus() {
@@ -207,7 +245,7 @@
         if (old === this || !isFocusable(this)) return;
         focused = null;
         moved = true;
-        if (old) { commit(old); fire(old, 'blur', this); fire(old, 'focusout', this); }
+        if (old) { finishComposing(old); commit(old); fire(old, 'blur', this); fire(old, 'focusout', this); }
         focused = this;
         fire(this, 'focus', old);
         fire(this, 'focusin', old);
@@ -216,6 +254,7 @@
         if (current() !== this) return;
         focused = null;
         moved = true;
+        finishComposing(this);
         commit(this);
         fire(this, 'blur', null);
         fire(this, 'focusout', null);

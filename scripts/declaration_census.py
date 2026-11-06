@@ -98,6 +98,21 @@ MIN_PLAUSIBLE_ARMS = 50
 # `custom_property_pass_exists`.
 CUSTOM_PROPERTY_PREFIX = "--"
 
+# Arms that only set a `ComputedStyle::stacks` bit, read by the hit test to tell
+# a stacking context. Nothing paints or lays out by them, so a declaration of
+# one is still dropped as far as the page's look goes: they count as no arm.
+STACKING_ONLY_ARMS = frozenset(
+    {
+        "isolation",
+        "mix-blend-mode",
+        "perspective",
+        "transform-style",
+        "backdrop-filter",
+        "content-visibility",
+        "view-transition-name",
+    }
+)
+
 # ---------------------------------------------------------------------------
 # Bucket taxonomy and ownership (Package Z2-M2)
 # ---------------------------------------------------------------------------
@@ -185,7 +200,7 @@ def handled_properties(source: str) -> Set[str]:
     props: Set[str] = set()
     for arm in arms:
         props.update(name.lower() for name in re.findall(r'"([A-Za-z-]+)"', arm))
-    return props
+    return props - STACKING_ONLY_ARMS
 
 
 def custom_property_pass_exists(source: str) -> bool:

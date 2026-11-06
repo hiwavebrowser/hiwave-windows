@@ -1,0 +1,209 @@
+{
+ "viewport": [
+  800,
+  600
+ ],
+ "cases": [
+  {
+   "name": "acceptance",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}x-card{display:block;width:400px}.item{height:20px}header{margin-top:50px;color:rgb(255,0,0)}#main{width:10px}#titlebox{height:99px}[slot=title]{margin-left:2px}#d{color:rgb(9,9,9)}</style></head><body><div id=top style=\"height:10px\"></div><x-card id=card><div class=item id=a slot=title>A</div><div class=item id=b>B</div><div class=item id=c slot=missing style=\"height:50px\">C</div><div class=item id=d>D</div></x-card><div id=bottom style=\"height:10px\"></div><script>document.getElementById('card').attachShadow({mode:'open'}).innerHTML = \"<style>:host{display:block;padding:5px;border:1px solid}::slotted(.item){margin-left:7px;color:rgb(0,0,255)}header{color:rgb(0,128,0)}#titlebox{padding-top:3px}<\\/style><header id=hdr style=\\\"display:block;height:30px\\\">H<\\/header><section id=titlebox style=\\\"display:block;background:#eee\\\"><slot name=title id=st><\\/slot><\\/section><div id=main style=\\\"width:300px\\\"><slot id=sd><p id=fb style=\\\"margin:0;height:40px\\\">fallback<\\/p><\\/slot><\\/div><slot name=empty id=se><i id=fb2 style=\\\"display:block;height:15px\\\">none<\\/i><\\/slot>\";</script></body></html>",
+   "probes": [
+    [
+     20,
+     25
+    ],
+    [
+     20,
+     55
+    ],
+    [
+     20,
+     80
+    ],
+    [
+     20,
+     100
+    ],
+    [
+     350,
+     100
+    ]
+   ],
+   "chrome_boxes": "top:0:0:800:10 card:0:10:412:120 a:8:49:398:20 b:13:69:293:20 c:0:0:0:0 d:13:89:293:20 bottom:0:130:800:10 hdr:6:16:400:30 titlebox:6:46:400:23 st:0:0:0:0 main:6:69:300:40 sd:0:0:0:0 fb:0:0:0:0 se:0:0:0:0 fb2:6:109:400:15",
+   "chrome_hits": "hdr a b d card",
+   "colors": true,
+   "chrome_colors": "top:rgb(0,0,0)/rgba(0,0,0,0) card:rgb(0,0,0)/rgba(0,0,0,0) a:rgb(0,0,255)/rgba(0,0,0,0) b:rgb(0,0,255)/rgba(0,0,0,0) c:- d:rgb(9,9,9)/rgba(0,0,0,0) bottom:rgb(0,0,0)/rgba(0,0,0,0) hdr:rgb(0,128,0)/rgba(0,0,0,0) titlebox:rgb(0,0,0)/rgb(238,238,238) st:- main:rgb(0,0,0)/rgba(0,0,0,0) sd:- fb:- se:- fb2:rgb(0,0,0)/rgba(0,0,0,0)"
+  },
+  {
+   "name": "acceptance-mutated",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}x-card{display:block;width:400px}.item{height:20px}header{margin-top:50px;color:rgb(255,0,0)}#main{width:10px}#titlebox{height:99px}[slot=title]{margin-left:2px}#d{color:rgb(9,9,9)}</style></head><body><div id=top style=\"height:10px\"></div><x-card id=card><div class=item id=a slot=title>A</div><div class=item id=b>B</div><div class=item id=c slot=missing style=\"height:50px\">C</div><div class=item id=d>D</div></x-card><div id=bottom style=\"height:10px\"></div><script>document.getElementById('card').attachShadow({mode:'open'}).innerHTML = \"<style>:host{display:block;padding:5px;border:1px solid}::slotted(.item){margin-left:7px;color:rgb(0,0,255)}header{color:rgb(0,128,0)}#titlebox{padding-top:3px}<\\/style><header id=hdr style=\\\"display:block;height:30px\\\">H<\\/header><section id=titlebox style=\\\"display:block;background:#eee\\\"><slot name=title id=st><\\/slot><\\/section><div id=main style=\\\"width:300px\\\"><slot id=sd><p id=fb style=\\\"margin:0;height:40px\\\">fallback<\\/p><\\/slot><\\/div><slot name=empty id=se><i id=fb2 style=\\\"display:block;height:15px\\\">none<\\/i><\\/slot>\";</script></body></html>",
+   "script": "var root = document.getElementById('card').shadowRoot; document.getElementById('b').slot = 'title'; root.getElementById('hdr').style.height = '45px'; root.getElementById('main').insertAdjacentHTML('beforeend', '<div id=added style=\"height:12px\"></div>');",
+   "probes": [
+    [
+     20,
+     25
+    ],
+    [
+     20,
+     70
+    ],
+    [
+     20,
+     100
+    ],
+    [
+     20,
+     130
+    ]
+   ],
+   "chrome_boxes": "top:0:0:800:10 card:0:10:412:147 a:8:64:398:20 b:8:84:398:20 c:0:0:0:0 d:13:104:293:20 bottom:0:157:800:10 hdr:6:16:400:45 titlebox:6:61:400:43 st:0:0:0:0 main:6:104:300:32 sd:0:0:0:0 fb:0:0:0:0 added:6:124:300:12 se:0:0:0:0 fb2:6:136:400:15",
+   "chrome_hits": "hdr a b added",
+   "colors": true,
+   "chrome_colors": "top:rgb(0,0,0)/rgba(0,0,0,0) card:rgb(0,0,0)/rgba(0,0,0,0) a:rgb(0,0,255)/rgba(0,0,0,0) b:rgb(0,0,255)/rgba(0,0,0,0) c:- d:rgb(9,9,9)/rgba(0,0,0,0) bottom:rgb(0,0,0)/rgba(0,0,0,0) hdr:rgb(0,128,0)/rgba(0,0,0,0) titlebox:rgb(0,0,0)/rgb(238,238,238) st:- main:rgb(0,0,0)/rgba(0,0,0,0) sd:- fb:- added:rgb(0,0,0)/rgba(0,0,0,0) se:- fb2:rgb(0,0,0)/rgba(0,0,0,0)"
+  },
+  {
+   "name": "unassigned-child-not-rendered",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><div id=host><div id=in slot=x style=\"height:20px\">in</div><div id=out style=\"height:30px\">out</div><span id=text-out>loose</span></div><div id=after style=\"height:5px\"></div><script>document.getElementById('host').attachShadow({mode:'open'}).innerHTML = \"<slot name=x id=sx><\\/slot>\";</script></body></html>",
+   "chrome_boxes": "host:0:0:800:20 in:0:0:800:20 out:0:0:0:0 text-out:0:0:0:0 after:0:20:800:5 sx:0:0:0:0"
+  },
+  {
+   "name": "fallback-content",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><div id=empty-host></div><div id=full-host><div id=given style=\"height:25px\">given</div></div><script>document.getElementById('empty-host').attachShadow({mode:'open'}).innerHTML = \"<slot id=s1><div id=fb1 style=\\\"height:15px\\\">fallback<\\/div><\\/slot>\";</script><script>document.getElementById('full-host').attachShadow({mode:'open'}).innerHTML = \"<slot id=s2><div id=fb2 style=\\\"height:15px\\\">fallback<\\/div><\\/slot>\";</script></body></html>",
+   "chrome_boxes": "empty-host:0:0:800:15 full-host:0:15:800:25 given:0:15:800:25 s1:0:0:0:0 fb1:0:0:800:15 s2:0:0:0:0 fb2:0:0:0:0"
+  },
+  {
+   "name": "named-and-default-slot-order",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><div id=host><div id=f1 slot=first style=\"height:11px\"></div><div id=d1 style=\"height:12px\"></div><div id=f2 slot=first style=\"height:13px\"></div><div id=d2 style=\"height:14px\"></div></div><script>document.getElementById('host').attachShadow({mode:'open'}).innerHTML = \"<div id=top style=\\\"height:5px\\\"><\\/div><slot><\\/slot><div id=mid style=\\\"height:6px\\\"><\\/div><slot name=first><\\/slot><slot name=first id=second-first><div id=second-fallback style=\\\"height:9px\\\"><\\/div><\\/slot>\";</script></body></html>",
+   "chrome_boxes": "host:0:0:800:70 f1:0:37:800:11 d1:0:5:800:12 f2:0:48:800:13 d2:0:17:800:14 top:0:0:800:5 mid:0:31:800:6 second-first:0:0:0:0 second-fallback:0:61:800:9"
+  },
+  {
+   "name": "nested-shadow-hosts",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><div id=outer><div id=light style=\"height:20px\">light</div></div><script>document.getElementById('outer').attachShadow({mode:'open'}).innerHTML = \"<div id=o-pad style=\\\"height:7px\\\"><\\/div><x-inner id=inner style=\\\"display:block;padding-left:9px\\\"><slot id=o-slot><\\/slot><div id=inner-light slot=side style=\\\"height:4px\\\"><\\/div><\\/x-inner>\";</script><script>var inner = document.getElementById('outer').shadowRoot.getElementById('inner'); inner.attachShadow({mode:'open'}).innerHTML = '<div id=i-pad style=\"height:3px\"></div><slot name=side></slot><div style=\"padding-left:2px\"><slot></slot></div>';</script></body></html>",
+   "chrome_boxes": "outer:0:0:800:34 light:11:14:789:20 o-pad:0:0:800:7 inner:0:7:800:27 o-slot:0:0:0:0 inner-light:9:10:791:4 i-pad:9:7:791:3",
+   "probes": [
+    [
+     20,
+     3
+    ],
+    [
+     20,
+     8
+    ],
+    [
+     20,
+     12
+    ],
+    [
+     20,
+     25
+    ]
+   ],
+   "chrome_hits": "o-pad i-pad inner-light light"
+  },
+  {
+   "name": "slot-in-fallback-of-a-slot",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><div id=host><div id=for-b slot=b style=\"height:20px\">b</div></div><script>document.getElementById('host').attachShadow({mode:'open'}).innerHTML = \"<slot name=a id=sa><div id=fa style=\\\"height:8px\\\"><\\/div><slot name=b id=sb><div id=fbb style=\\\"height:99px\\\"><\\/div><\\/slot><\\/slot>\";</script></body></html>",
+   "chrome_boxes": "host:0:0:800:28 for-b:0:8:800:20 sa:0:0:0:0 fa:0:0:800:8 sb:0:0:0:0 fbb:0:0:0:0"
+  },
+  {
+   "name": "slot-is-display-contents",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><div id=host><div id=i1 style=\"width:30px;height:10px\"></div><div id=i2 style=\"width:40px;height:10px\"></div><div id=i3 slot=b style=\"width:50px;height:10px\">x</div></div><script>document.getElementById('host').attachShadow({mode:'open'}).innerHTML = \"<div id=row style=\\\"display:flex\\\"><slot id=s><\\/slot><div id=tail style=\\\"width:20px;height:10px\\\"><\\/div><\\/div><div id=boxed><slot name=b id=sb style=\\\"display:block;padding:4px\\\"><\\/slot><\\/div>\";</script></body></html>",
+   "chrome_boxes": "host:0:0:800:28 i1:0:0:30:10 i2:30:0:40:10 i3:4:14:50:10 row:0:0:800:10 s:0:0:0:0 tail:70:0:20:10 boxed:0:10:800:18 sb:0:10:800:18",
+   "probes": [
+    [
+     10,
+     5
+    ],
+    [
+     40,
+     5
+    ],
+    [
+     75,
+     5
+    ],
+    [
+     10,
+     20
+    ],
+    [
+     100,
+     5
+    ]
+   ],
+   "chrome_hits": "i1 i2 tail i3 row"
+  },
+  {
+   "name": "declarative-shadow-root",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><div id=host><template shadowrootmode=open><div id=dsd-top style=\"height:9px\"></div><slot></slot></template><div id=dl style=\"height:21px\">light</div></div><div id=plain style=\"height:2px\"><template id=tpl><div id=inert style=\"height:50px\"></div></template></div><div id=end style=\"height:3px\"></div></body></html>",
+   "chrome_boxes": "host:0:0:800:30 dl:0:9:800:21 plain:0:30:800:2 tpl:0:0:0:0 end:0:32:800:3 dsd-top:0:0:800:9"
+  },
+  {
+   "name": "inheritance-across-the-boundary",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><div id=host style=\"line-height:40px\"><div id=lt>y</div></div><script>document.getElementById('host').attachShadow({mode:'open'}).innerHTML = \"<div id=sh>x<\\/div><div id=wrap style=\\\"line-height:10px\\\"><slot><\\/slot><\\/div>\";</script></body></html>",
+   "chrome_boxes": "host:0:0:800:50 lt:0:40:800:10 sh:0:0:800:40 wrap:0:40:800:10"
+  },
+  {
+   "name": "attach-shadow-reuses-a-declarative-root",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><x-el id=h><template shadowrootmode=open><div id=pre style=\"height:7px\"></div></template></x-el><div id=status style=\"height:1px\"></div><script>try { var r = document.getElementById('h').attachShadow({mode:'open'}); r.innerHTML = '<div id=post style=\"height:9px\"><\\/div>'; } catch (e) { document.getElementById('status').id = 'threw'; }</script></body></html>",
+   "chrome_boxes": "h:0:0:800:9 status:0:9:800:1 post:0:0:800:9"
+  },
+  {
+   "name": "the-first-declarative-template-wins",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}</style></head><body><div id=h><template shadowrootmode=open><div id=first style=\"height:7px\"></div></template><template shadowrootmode=open><div id=second style=\"height:9px\"></div></template></div></body></html>",
+   "chrome_boxes": "h:0:0:800:7 first:0:0:800:7"
+  },
+  {
+   "name": "scoped-style-does-not-leak-out",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}p{margin:0;height:10px}</style></head><body><p id=out></p><div id=h></div><div id=after style=\"height:5px\"></div><script>document.getElementById(\"h\").attachShadow({mode:'open'}).innerHTML = \"<style>p{height:33px;width:100px} #out{height:44px} #after{height:55px} div{width:10px}<\\/style><p id=in><\\/p>\";</script></body></html>",
+   "chrome_boxes": "out:0:0:800:10 h:0:26:800:33 after:0:75:800:5 in:0:26:100:33"
+  },
+  {
+   "name": "document-style-does-not-leak-in",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.x{display:none} div{height:50px} slot{display:block;padding:5px} #inner{width:40px} p{margin:0} span{display:block;height:9px}</style></head><body><div id=h style=\"height:auto\"><span id=lt>l</span></div><script>document.getElementById(\"h\").attachShadow({mode:'open'}).innerHTML = \"<div class=x id=sx style=\\\"height:30px\\\"><\\/div><p id=inner style=\\\"height:6px\\\"><\\/p><slot id=s><\\/slot>\";</script></body></html>",
+   "chrome_boxes": "h:0:0:800:77 lt:0:68:800:9 sx:0:0:800:30 inner:0:46:800:6 s:0:0:0:0"
+  },
+  {
+   "name": "document-rule-naming-a-shadow-id",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}#ghost{height:40px;width:40px} #ghost2{display:none}</style></head><body><div id=h></div><script>document.getElementById(\"h\").attachShadow({mode:'open'}).innerHTML = \"<style>div{height:5px}<\\/style><div id=ghost><\\/div><div id=ghost2><\\/div>\";</script></body></html>",
+   "chrome_boxes": "h:0:0:800:10 ghost:0:0:800:5 ghost2:0:5:800:5"
+  },
+  {
+   "name": "inheritance-into-the-shadow-tree",
+   "colors": true,
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}i{display:block;height:1em}</style></head><body><div id=h style=\"font-size:20px;color:rgb(1,2,3)\"><i id=li></i></div><script>document.getElementById(\"h\").attachShadow({mode:'open'}).innerHTML = \"<div id=em style=\\\"height:2em;width:3em\\\"><\\/div><div id=w style=\\\"font-size:10px;color:rgb(4,5,6)\\\"><slot><\\/slot><\\/div>\";</script></body></html>",
+   "chrome_boxes": "h:0:0:800:50 li:0:40:800:10 em:0:0:60:40 w:0:40:800:10",
+   "chrome_colors": "h:rgb(1,2,3)/rgba(0,0,0,0) li:rgb(4,5,6)/rgba(0,0,0,0) em:rgb(1,2,3)/rgba(0,0,0,0) w:rgb(4,5,6)/rgba(0,0,0,0)"
+  },
+  {
+   "name": "host-rules",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}#h3{padding-left:9px} x-h{margin-bottom:2px}</style></head><body><x-h id=h1></x-h><x-h id=h2 class=wide></x-h><x-h id=h3></x-h><script>document.getElementById(\"h1\").attachShadow({mode:'open'}).innerHTML = \"<style>:host{display:block;padding:4px;height:10px} :host(.wide){width:300px;padding:6px} :host(.wide) .lab{height:17px} :host .lab{height:3px;width:50px} :host > .lab{margin-left:1px} div .lab{width:7px}<\\/style><div class=lab id=lab1><\\/div>\";</script><script>document.getElementById(\"h2\").attachShadow({mode:'open'}).innerHTML = \"<style>:host{display:block;padding:4px;height:10px} :host(.wide){width:300px;padding:6px} :host(.wide) .lab{height:17px} :host .lab{height:3px;width:50px} :host > .lab{margin-left:1px} div .lab{width:7px}<\\/style><div class=lab id=lab2><\\/div>\";</script><script>document.getElementById(\"h3\").attachShadow({mode:'open'}).innerHTML = \"<style>:host{display:block;padding:4px;height:10px} :host(.wide){width:300px;padding:6px} :host(.wide) .lab{height:17px} :host .lab{height:3px;width:50px} :host > .lab{margin-left:1px} div .lab{width:7px}<\\/style><div class=lab id=lab3><\\/div>\";</script></body></html>",
+   "chrome_boxes": "h1:0:0:800:18 h2:0:20:312:22 h3:0:44:800:18 lab1:5:4:50:3 lab2:7:26:50:17 lab3:10:48:50:3"
+  },
+  {
+   "name": "slotted-rules",
+   "colors": true,
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}p{margin:0;width:200px}</style></head><body><div id=h><p id=s1>a</p><p id=s2 style=\"color:rgb(7,7,7)\">b</p><div id=s3><p id=deep>d</p></div><span id=s4 slot=n style=\"display:block\"></span></div><script>document.getElementById(\"h\").attachShadow({mode:'open'}).innerHTML = \"<style>::slotted(p){height:31px;width:100px;color:rgb(0,128,0)} ::slotted(*){margin-left:5px} slot[name=n]::slotted(span){height:7px} p{height:99px}<\\/style><slot><\\/slot><slot name=n><\\/slot>\";</script></body></html>",
+   "chrome_boxes": "h:0:0:800:89 s1:0:0:200:31 s2:0:31:200:31 s3:5:62:795:20 deep:5:62:200:20 s4:5:82:795:7",
+   "chrome_colors": "h:rgb(0,0,0)/rgba(0,0,0,0) s1:rgb(0,128,0)/rgba(0,0,0,0) s2:rgb(7,7,7)/rgba(0,0,0,0) s3:rgb(0,0,0)/rgba(0,0,0,0) deep:rgb(0,0,0)/rgba(0,0,0,0) s4:rgb(0,0,0)/rgba(0,0,0,0)"
+  },
+  {
+   "name": "nested-shadow-styles",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}div{width:500px}</style></head><body><div id=oh></div><script>document.getElementById(\"oh\").attachShadow({mode:'open'}).innerHTML = \"<style>div{height:11px} x-in{display:block}<\\/style><div id=o1><\\/div><x-in id=ih><\\/x-in><div id=o2><\\/div>\";</script><script>document.getElementById('oh').shadowRoot.getElementById('ih').attachShadow({mode:'open'}).innerHTML = \"<style>div{height:22px} :host{padding-top:3px}<\\/style><div id=i1><\\/div>\";</script></body></html>",
+   "chrome_boxes": "oh:0:0:500:47 o1:0:0:500:11 ih:0:11:500:25 o2:0:36:500:11 i1:0:14:500:22"
+  },
+  {
+   "name": "defined-pseudo-class",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}x-def,x-undef{display:block;height:10px} x-def:not(:defined){display:none} x-undef:not(:defined){height:7px} #plain:defined{height:3px} x-def:defined{width:100px} x-undef:defined{width:50px}</style></head><body><x-def id=d1></x-def><x-undef id=u1></x-undef><div id=plain></div><script>customElements.define('x-def', class extends HTMLElement {});</script></body></html>",
+   "chrome_boxes": "d1:0:0:100:10 u1:0:10:800:7 plain:0:17:800:3"
+  },
+  {
+   "name": "component-page",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace} c-shell,c-card,c-plain,c-dsd,c-dsd-bare,c-nest,c-cb-throws,c-fade,c-veil,c-after{display:block} c-plain:not(:defined){display:none} c-ghost:not(:defined){display:block;height:30px} c-hold:not(:defined){display:block;visibility:hidden} c-dsd:not(:defined){height:5px} .light{width:200px}</style></head><body><c-shell id=shell style=\"background:rgb(13,111,119)\"><div id=shell-title slot=title style=\"height:8px;background:rgb(26,182,148)\"></div><div id=shell-body style=\"height:10px;background:rgb(39,253,177)\"></div></c-shell><c-card id=card class=wide style=\"background:rgb(52,68,206)\"><p id=card-p style=\"margin:0;background:rgb(65,139,235)\"></p><div id=card-div style=\"height:6px;background:rgb(78,210,8)\"></div></c-card><c-plain id=plain style=\"background:rgb(91,25,37)\"><div id=plain-a style=\"height:7px;background:rgb(104,96,66)\"></div><c-plain-kid id=plain-kid style=\"display:block;height:4px;background:rgb(117,167,95)\"></c-plain-kid></c-plain><c-ghost id=ghost style=\"background:rgb(130,238,124)\"><div id=ghost-a style=\"height:9px;background:rgb(143,53,153)\"></div><div id=ghost-b style=\"height:3px;background:rgb(156,124,182)\"></div></c-ghost><c-hold id=hold style=\"height:12px;background:rgb(169,195,211)\"><div id=hold-a style=\"height:4px;background:rgb(182,10,240)\"></div><div id=hold-show style=\"height:4px;background:rgb(195,81,13);visibility:visible\"></div></c-hold><c-dsd id=dsd style=\"background:rgb(208,152,42)\"><template shadowrootmode=open><style>:host{padding:3px} ::slotted(*){margin:1px}</style><div id=dsd-in style=\"height:4px;background:rgb(221,223,71)\"></div><slot></slot></template><div id=dsd-a style=\"height:6px;background:rgb(234,38,100)\"></div></c-dsd><c-dsd-bare id=bare style=\"background:rgb(247,109,129)\"><template shadowrootmode=open><div id=bare-in style=\"height:5px;background:rgb(4,180,158)\"></div></template><div id=bare-a style=\"height:50px;background:rgb(17,251,187)\"></div></c-dsd-bare><c-nest id=nest style=\"background:rgb(30,66,216)\"><div id=nest-a style=\"height:7px;background:rgb(43,137,245)\"></div></c-nest><c-cb-throws id=cbt style=\"background:rgb(56,208,18)\"><div id=cbt-a style=\"height:5px;background:rgb(69,23,47)\"></div></c-cb-throws><c-fade id=fade style=\"background:rgb(82,94,76)\"><div id=fade-a style=\"height:5px;background:rgb(95,165,105)\"></div></c-fade><c-veil id=veil style=\"background:rgb(108,236,134)\"><div id=veil-a class=x style=\"height:4px;background:rgb(121,51,163)\"></div><div id=veil-show class=show style=\"height:4px;background:rgb(134,122,192)\"></div></c-veil><c-after id=after style=\"background:rgb(147,193,221)\"><div id=after-a style=\"height:6px;background:rgb(160,8,250)\"></div><header id=after-h style=\"height:5px;background:rgb(173,79,23)\"><div id=after-logo style=\"height:3px;background:rgb(186,150,52);width:30px;margin-left:9px\"></div></header></c-after><script>function def(name, init) { customElements.define(name, class extends HTMLElement { constructor() { super(); if (init) init(this); } }); }def('c-shell', function (el) { el.attachShadow({mode:'open'}).innerHTML = '<style>:host{padding:2px} slot[name=title]::slotted(*){width:100px}</style><div id=shell-in style=\"height:3px;background:rgb(199,221,81)\"></div><slot name=title></slot><slot></slot>'; });def('c-card', function (el) { el.attachShadow({mode:'open'}).innerHTML = '<style>:host(.wide){width:300px} :host{width:100px;border:2px solid red} ::slotted(p){height:12px}</style><div id=card-in style=\"height:2px;background:rgb(225,107,139)\"></div><slot></slot>'; });def('c-plain');def('c-dsd');def('c-nest', function (el) { el.attachShadow({mode:'open'}).innerHTML = '<style>:host{padding:1px}</style><c-inner id=inner style=\"display:block;background:rgb(212,36,110)\"><slot></slot></c-inner>'; });def('c-inner', function (el) { el.attachShadow({mode:'open'}).innerHTML = '<style>:host{padding:2px} ::slotted(slot){color:red}</style><slot></slot>'; });customElements.define('c-cb-throws', class extends HTMLElement { connectedCallback() { throw new Error('cb'); } });def('c-fade', function (el) { el.attachShadow({mode:'open'}).innerHTML = '<style>:host{opacity:0}</style><div id=fade-in style=\"height:2px;background:rgb(238,178,168)\"></div><slot></slot>'; });def('c-veil', function (el) { el.attachShadow({mode:'open'}).innerHTML = '<style>:host{visibility:hidden} ::slotted(.show){visibility:visible}</style><div id=veil-in style=\"height:2px;background:rgb(251,249,197)\"></div><slot></slot>'; });</script></body></html>",
+   "painted": true,
+   "chrome_boxes": "shell:0:0:800:25 shell-title:2:5:100:8 shell-body:2:13:796:10 card:0:25:304:24 card-p:2:29:300:12 card-div:2:41:300:6 plain:0:49:800:11 plain-a:0:49:800:7 plain-kid:0:56:800:4 ghost:0:60:800:30 ghost-a:0:60:800:9 ghost-b:0:69:800:3 hold:0:90:800:12 hold-a:0:90:800:4 hold-show:0:94:800:4 dsd:0:102:800:18 dsd-a:4:110:792:6 bare:0:120:800:5 bare-a:0:0:0:0 nest:0:125:800:13 nest-a:3:128:794:7 cbt:0:138:800:5 cbt-a:0:138:800:5 fade:0:143:800:7 fade-a:0:145:800:5 veil:0:150:800:10 veil-a:0:152:800:4 veil-show:0:156:800:4 after:0:160:800:11 after-a:0:160:800:6 after-h:0:166:800:5 after-logo:9:166:30:3 shell-in:2:2:796:3 card-in:2:27:300:2 dsd-in:3:105:794:4 bare-in:0:120:800:5 inner:1:126:798:11 fade-in:0:143:800:2 veil-in:0:150:800:2",
+   "chrome_painted": "shell:P shell-title:P shell-body:P card:P card-p:P card-div:P plain:P plain-a:P plain-kid:P ghost:P ghost-a:P ghost-b:P hold:- hold-a:- hold-show:P dsd:P dsd-a:P bare:P bare-a:- nest:P nest-a:P cbt:P cbt-a:P fade:- fade-a:- veil:- veil-a:- veil-show:P after:P after-a:P after-h:P after-logo:P shell-in:P card-in:P dsd-in:P bare-in:P inner:P fade-in:- veil-in:-"
+  }
+ ],
+ "chrome": "141.0.7390.37"
+}

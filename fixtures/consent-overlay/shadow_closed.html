@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html><head><style>
+body { margin: 0; font: 16px sans-serif; }
+#cmp-host { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 2147483647; }
+</style></head>
+<body>
+<article><h1>Headline</h1><p>Article text under the overlay.</p></article>
+<div id="cmp-host"></div>
+<script>
+window.__heard = [];
+var host = document.getElementById('cmp-host');
+var root = host.attachShadow({ mode: 'closed' });
+root.innerHTML =
+  '<style>' +
+  '.dialog { position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%);' +
+  '  background: #fff; width: 500px; padding: 24px; }' +
+  '.btn { display: inline-block; padding: 10px 24px; background: #06c; color: #fff; }' +
+  '</style>' +
+  '<div class="dialog" role="dialog"><p>We use cookies.</p>' +
+  '<div class="btn" role="button" tabindex="0">Agree</div></div>';
+// A closed root is the page's own: the test reaches the button only
+// through this reference.
+window.__agree = root.querySelector('.btn');
+__agree.addEventListener('click', function () {
+  __heard.push('click');
+  host.remove();
+});
+// What the document sees: the event retargeted to the host.
+document.addEventListener('click', function (e) {
+  __heard.push('document:' + (e.target.id || e.target.nodeName));
+});
+</script>
+</body></html>

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html><head><style>
+body { margin: 0; font: 16px sans-serif; }
+/* A transformed ancestor is the containing block of a fixed descendant. */
+.wrap { transform: translate(30px, 20px); width: 700px; height: 500px; }
+.overlay { position: fixed; top: 0; left: 0; width: 700px; height: 500px; z-index: 2147483647;
+  background: rgba(0, 0, 0, 0.5); }
+.dialog { position: absolute; top: 200px; left: 150px; background: #fff; width: 400px; padding: 24px; }
+.dialog button { width: 120px; height: 40px; }
+</style></head>
+<body>
+<div class="wrap"><article><h1>Headline</h1><p>Article text under the overlay.</p></article>
+<div class="overlay" id="overlay"><div class="dialog" role="dialog">
+  <p>We use cookies.</p><button id="agree" type="button">Agree</button>
+</div></div></div>
+<script>
+window.__heard = [];
+window.__agree = document.getElementById('agree');
+__agree.addEventListener('click', function () {
+  __heard.push('click');
+  document.getElementById('overlay').remove();
+});
+</script>
+</body></html>

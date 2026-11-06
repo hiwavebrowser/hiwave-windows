@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<!-- #782 R1 (review 5654936187 on 9450c00b): @container grammar. k1-k6 and k21 are invalid (not with more than one query, not/and/or before a leg that is not one parenthesized query, and( as a function token, mixed and/or); k5 not(...) is kept by Chromium as an unknown general-enclosed part. k16/k17 are min()/max() with three arguments. Each bar is one query on a 300px inline-size container, 800x600 viewport. Chromium 148.0.7778.216 applies k7-k15, k18-k20, k22-k26 (10px) and nothing else. -->
+<html><head><style>
+body { margin: 0 }
+.c { container-type: inline-size; position: relative; width: 300px; height: 14px; margin-bottom: 2px }
+.c > div { position: absolute; left: 10px; top: 2px; width: 300px; height: 0; background: green }
+@container not (width > 400px) or (width > 500px) { #k1 { height: 10px } }
+@container (width > 100px) and not (width > 400px) { #k2 { height: 10px } }
+@container (width > 100px) or not (width > 400px) { #k3 { height: 10px } }
+@container not not (width > 100px) { #k4 { height: 10px } }
+@container not(width > 400px) { #k5 { height: 10px } }
+@container (width > 100px) and(width < 400px) { #k6 { height: 10px } }
+@container not (width > 400px) { #k7 { height: 10px } }
+@container (width > 100px) and (width < 400px) { #k8 { height: 10px } }
+@container (width > 400px) or (width > 100px) { #k9 { height: 10px } }
+@container ((width > 100px) and (width < 400px)) { #k10 { height: 10px } }
+@container (not (width > 400px)) { #k11 { height: 10px } }
+@container (width > 100px) and ((width < 400px) or (width > 900px)) { #k12 { height: 10px } }
+@container (width > 100px) and (not (width > 400px)) { #k13 { height: 10px } }
+@container (width > 100px)and (width < 400px) { #k14 { height: 10px } }
+@container (width > 100px) and (width < 400px) and (width > 200px) { #k15 { height: 10px } }
+@container (max-width: min(500px, 400px, 100px)) { #k16 { height: 10px } }
+@container (min-width: max(100px, 200px, 400px)) { #k17 { height: 10px } }
+@container (max-width: min(500px, 400px)) { #k18 { height: 10px } }
+@container (min-width: max(100px, 200px)) { #k19 { height: 10px } }
+@container (min-width: clamp(100px, 200px, 400px)) { #k20 { height: 10px } }
+@container (width > 100px) or (width < 400px) and (width > 200px) { #k21 { height: 10px } }
+@container NOT (width > 400px) { #k22 { height: 10px } }
+@container (width > 100px) AND (width < 400px) { #k23 { height: 10px } }
+@container not ((width > 400px) or (width > 500px)) { #k24 { height: 10px } }
+@container  not   (width > 400px)  { #k25 { height: 10px } }
+@container (width>100px) and (width<400px) { #k26 { height: 10px } }
+</style></head><body>
+<div class="c"><div id="k1"></div></div><div class="c"><div id="k2"></div></div><div class="c"><div id="k3"></div></div><div class="c"><div id="k4"></div></div><div class="c"><div id="k5"></div></div><div class="c"><div id="k6"></div></div><div class="c"><div id="k7"></div></div><div class="c"><div id="k8"></div></div><div class="c"><div id="k9"></div></div><div class="c"><div id="k10"></div></div><div class="c"><div id="k11"></div></div><div class="c"><div id="k12"></div></div><div class="c"><div id="k13"></div></div><div class="c"><div id="k14"></div></div><div class="c"><div id="k15"></div></div><div class="c"><div id="k16"></div></div><div class="c"><div id="k17"></div></div><div class="c"><div id="k18"></div></div><div class="c"><div id="k19"></div></div><div class="c"><div id="k20"></div></div><div class="c"><div id="k21"></div></div><div class="c"><div id="k22"></div></div><div class="c"><div id="k23"></div></div><div class="c"><div id="k24"></div></div><div class="c"><div id="k25"></div></div><div class="c"><div id="k26"></div></div>
+</body></html>

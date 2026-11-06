@@ -167,6 +167,12 @@ pub struct TreeBuilder<S: TreeSink> {
     fragment_context: Option<FragmentContext>,
     /// Head element pointer (for implicit head handling)
     head_element: Option<S::NodeId>,
+    /// The html element, target of a later `<html>` start tag's attributes
+    /// (HTML §13.2.6.4.7). Kept here because `</html>` may pop it.
+    html_element: Option<S::NodeId>,
+    /// The body element, target of a later `<body>` start tag's attributes
+    /// (HTML §13.2.6.4.7). Kept here because `</body>` pops it.
+    body_element: Option<S::NodeId>,
     /// Form element pointer (for form owner tracking).
     /// Required for spec-compliant form association (HTML5 § 4.10.18.3).
     /// Currently unused but needed when form control elements track their owner form.
@@ -191,6 +197,8 @@ impl<S: TreeSink> TreeBuilder<S> {
             quirks_mode: QuirksMode::NoQuirks,
             fragment_context: None,
             head_element: None,
+            html_element: None,
+            body_element: None,
             form_element: None,
         }
     }
@@ -239,6 +247,8 @@ impl<S: TreeSink> TreeBuilder<S> {
             quirks_mode: QuirksMode::NoQuirks,
             fragment_context: Some(context),
             head_element: None,
+            html_element: None,
+            body_element: None,
             form_element: None,
         }
     }
@@ -876,6 +886,7 @@ impl<S: TreeSink> TreeBuilder<S> {
                 name, attrs, self_closing: _
             } if name == "html" => {
                 let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
+                self.html_element = Some(node_id.clone());
                 self.open_elements.push((name, node_id));
                 self.mode = InsertionMode::BeforeHead;
             }
@@ -888,6 +899,7 @@ impl<S: TreeSink> TreeBuilder<S> {
             _ => {
                 // Implied html start tag
                 let node_id = self.sink.start_element("html".to_string(), vec![], false);
+                self.html_element = Some(node_id.clone());
                 self.open_elements.push(("html".to_string(), node_id));
                 self.mode = InsertionMode::BeforeHead;
                 self.process_token(token)?;
@@ -898,6 +910,10 @@ impl<S: TreeSink> TreeBuilder<S> {
 
     fn handle_before_head(&mut self, token: Token) -> ParseResult<()> {
         match token {
+            // §13.2.6.4.3: start tag "html" is processed using "in body".
+            Token::StartTag { ref name, .. } if name == "html" => {
+                self.handle_in_body(token)?;
+            }
             Token::StartTag {
                 name, attrs, self_closing: _
             } if name == "head" => {
@@ -924,6 +940,11 @@ impl<S: TreeSink> TreeBuilder<S> {
 
     fn handle_in_head(&mut self, token: Token) -> ParseResult<()> {
         match token {
+            // §13.2.6.4.4: start tag "html" is processed using "in body".
+            Token::StartTag { ref name, .. } if name == "html" => {
+                self.flush_text();
+                self.handle_in_body(token)?;
+            }
             Token::Character(ch) => {
                 // Add all characters to the text buffer (whitespace and non-whitespace)
                 self.text_buffer.push(ch);
@@ -995,12 +1016,28 @@ impl<S: TreeSink> TreeBuilder<S> {
                 name, attrs, self_closing: _
             } if name == "body" => {
                 let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
+                self.body_element = Some(node_id.clone());
                 self.open_elements.push((name, node_id));
                 self.mode = InsertionMode::InBody;
+            }
+            // §13.2.6.4.6: start tag "html" is processed using "in body".
+            Token::StartTag { ref name, .. } if name == "html" => {
+                self.handle_in_body(token)?;
+            }
+            // HTML §13.2.6.4.6, start tag "frameset": insert the element and
+            // switch to "in frameset". No body is implied: the frameset is
+            // the html element's child, the document's body element (§3.1.3).
+            Token::StartTag {
+                name, attrs, self_closing: _
+            } if name == "frameset" => {
+                let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
+                self.open_elements.push((name, node_id));
+                self.mode = InsertionMode::InFrameset;
             }
             _ => {
                 // Implied body start tag
                 let node_id = self.sink.start_element("body".to_string(), vec![], false);
+                self.body_element = Some(node_id.clone());
                 self.open_elements.push(("body".to_string(), node_id));
                 self.mode = InsertionMode::InBody;
                 self.process_token(token)?;
@@ -1043,6 +1080,15 @@ impl<S: TreeSink> TreeBuilder<S> {
             } => {
                 // Flush any pending text before starting a new element
                 self.flush_text();
+
+                // §13.2.6.4.7, start tags "html" and "body" once that
+                // element exists: a parse error. The attributes the element
+                // lacks are added to it and no element is created. Nesting a
+                // second body kept its UA `margin: 8px` (S11, gmail).
+                if name == "html" || name == "body" {
+                    self.merge_into_existing(&name, attrs);
+                    return Ok(());
+                }
 
                 // Handle table specially - switch to InTable mode
                 if name == "table" {
@@ -1170,6 +1216,29 @@ impl<S: TreeSink> TreeBuilder<S> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// The "in body" start tag `html` / `body` steps (HTML §13.2.6.4.7):
+    /// ignored inside a template and in fragment parsing (where the html
+    /// element is the fragment's own root and the stack's second element is
+    /// not a body); otherwise each attribute not already present is added
+    /// to the existing element. A frameset document has no body to add to.
+    fn merge_into_existing(&mut self, name: &str, attrs: impl IntoIterator<Item = (String, String)>) {
+        self.sink.parse_error(&format!("unexpected <{}> start tag in body", name));
+        if self.fragment_context.is_some() || self.open_elements.iter().any(|(n, _)| n == "template") {
+            return;
+        }
+        let target = if name == "html" {
+            self.html_element.clone()
+        } else {
+            self.body_element.clone()
+        };
+        if let Some(target) = target {
+            let attrs: Vec<(String, String)> = attrs.into_iter().collect();
+            if !attrs.is_empty() {
+                self.sink.add_attrs_if_missing(target, attrs);
+            }
+        }
     }
 
     // ==================== TABLE MODE HANDLERS ====================
@@ -1978,7 +2047,12 @@ impl<S: TreeSink> TreeBuilder<S> {
             }
             Token::EndTag { name } => {
                 match name.as_str() {
-                    "template" => {
+                    // `title`/`style`/`script` were opened by the "in head"
+                    // rules, whose raw-text end (the spec's "text" mode)
+                    // closes them; there is no text mode here, so their end
+                    // tag goes back to those rules. Ignored, a template's
+                    // `<style>` swallowed everything after it.
+                    "template" | "title" | "style" | "script" => {
                         self.handle_in_head(token)?;
                     }
                     _ => {
@@ -2195,6 +2269,10 @@ impl<S: TreeSink> TreeBuilder<S> {
 
     fn handle_in_head_noscript(&mut self, token: Token) -> ParseResult<()> {
         match &token {
+            // §13.2.6.4.5: start tag "html" is processed using "in body".
+            Token::StartTag { name, .. } if name == "html" => {
+                self.handle_in_body(token)?;
+            }
             Token::Comment(data) => {
                 self.sink.comment(data.clone());
             }
@@ -2404,6 +2482,26 @@ mod tests {
         assert!(result.events.contains(&"start:body".to_string()));
     }
 
+    /// HTML §13.2.6.4.6 "after head", start tag `frameset`: insert the
+    /// element and switch to "in frameset". No body is implied, so the
+    /// frameset is a child of `html` (the document's body element, §3.1.3),
+    /// not of an implicit `<body>`.
+    #[test]
+    fn frameset_after_head_is_a_child_of_html_without_an_implied_body() {
+        let html = "<html><head></head><frameset cols='*'><frame src='a'></frameset></html>";
+        let tokens = tokenize(html).unwrap();
+        let sink = TestSink::new();
+        let result = build_tree(tokens, sink).unwrap();
+        assert!(
+            !result.events.iter().any(|e| e == "start:body"),
+            "a frameset document has no body: {:?}",
+            result.events
+        );
+        let end_head = result.events.iter().position(|e| e == "end:head").expect("end:head");
+        assert_eq!(result.events.get(end_head + 1).map(String::as_str), Some("start:frameset[cols=*]"));
+        assert_eq!(result.events.get(end_head + 2).map(String::as_str), Some("start:frame[src=a]"));
+    }
+
     #[test]
     fn pre_drops_the_newline_right_after_its_start_tag_only() {
         // HTML §13.2.6.4.7: `<pre>\n` — the first LF is ignored; every later
@@ -2418,6 +2516,74 @@ mod tests {
             .filter(|e| e.starts_with("text:"))
             .collect();
         assert_eq!(texts, ["text:first\n\nthird\n", "text:\nx"]);
+    }
+
+    fn events_of(html: &str) -> Vec<String> {
+        build_tree(tokenize(html).unwrap(), TestSink::new()).unwrap().events
+    }
+
+    fn count(events: &[String], prefix: &str) -> usize {
+        events.iter().filter(|e| e.starts_with(prefix)).count()
+    }
+
+    /// HTML §13.2.6.4.7 "in body", start tag `body`: a parse error; the
+    /// attributes go onto the existing body and NO element is created. A
+    /// nested second body kept the UA `margin: 8px` on gmail's sign-in page
+    /// (S11), pushing the page root to x=8.
+    #[test]
+    fn a_second_body_start_tag_creates_no_element() {
+        let events = events_of("<body class=a><body class=b id=x>hello</body>");
+        assert_eq!(count(&events, "start:body"), 1, "{:?}", events);
+        let body = events.iter().position(|e| e.starts_with("start:body")).unwrap();
+        assert_eq!(events[body], "start:body[class=a]", "{:?}", events);
+        // The text after the second tag lands in the one body.
+        assert_eq!(events.get(body + 1).map(String::as_str), Some("text:hello"), "{:?}", events);
+    }
+
+    /// Same with the second body deep inside content and after `</body>`.
+    #[test]
+    fn a_second_body_start_tag_anywhere_creates_no_element() {
+        for html in [
+            "<html><head></head><body><div><p>a<body id=y>b</p></div></body></html>",
+            "<html><body>a</body><body id=y>b</html>",
+            "<body>a<table><tr><td><body id=y>b</td></tr></table>",
+        ] {
+            let events = events_of(html);
+            assert_eq!(count(&events, "start:body"), 1, "{}: {:?}", html, events);
+        }
+    }
+
+    /// HTML §13.2.6.4.7 "in body", start tag `html`: a parse error; the
+    /// attributes go onto the html element and no element is created. The
+    /// same rule is reached from "before head", "in head", "after head",
+    /// "after body" and "after after body".
+    #[test]
+    fn a_second_html_start_tag_creates_no_element() {
+        for html in [
+            "<html><body><html lang=en>x</body></html>",
+            "<html><head><html lang=en></head><body>x</body></html>",
+            "<html><html lang=en><head></head><body>x</body></html>",
+            "<html><head></head><html lang=en><body>x</body></html>",
+            "<html><body>x</body><html lang=en></html>",
+            "<html><body>x</body></html><html lang=en>",
+        ] {
+            let events = events_of(html);
+            assert_eq!(count(&events, "start:html"), 1, "{}: {:?}", html, events);
+            assert_eq!(count(&events, "start:body"), 1, "{}: {:?}", html, events);
+        }
+    }
+
+    /// "in frameset" and "after frameset" already route a start tag `html`
+    /// to "in body": it merges and creates nothing there either.
+    #[test]
+    fn a_second_html_start_tag_in_a_frameset_document_creates_no_element() {
+        for html in [
+            "<html><frameset><html lang=en><frame></frameset></html>",
+            "<html><frameset></frameset><html lang=en></html>",
+        ] {
+            let events = events_of(html);
+            assert_eq!(count(&events, "start:html"), 1, "{}: {:?}", html, events);
+        }
     }
 
     #[test]

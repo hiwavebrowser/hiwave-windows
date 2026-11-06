@@ -55,6 +55,16 @@ fn input(height: Length) -> LayoutBox {
     s.font_size = Length::Px(13.333);
     s.width = Length::Percent(100.0);
     s.height = height;
+    // The page's `border: none; padding: 0` (an unset side is the UA's,
+    // CH2.B17).
+    s.padding_top = Length::Px(0.0);
+    s.padding_right = Length::Px(0.0);
+    s.padding_bottom = Length::Px(0.0);
+    s.padding_left = Length::Px(0.0);
+    s.border_top_style = rustkit_css::BorderStyle::None;
+    s.border_right_style = rustkit_css::BorderStyle::None;
+    s.border_bottom_style = rustkit_css::BorderStyle::None;
+    s.border_left_style = rustkit_css::BorderStyle::None;
     LayoutBox::new(
         BoxType::FormControl(FormControlType::TextInput {
             value: String::new(),

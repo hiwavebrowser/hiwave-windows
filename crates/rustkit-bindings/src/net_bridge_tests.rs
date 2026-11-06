@@ -201,6 +201,29 @@ fn failing_the_pending_requests_completes_each_with_an_error() {
 }
 
 #[test]
+fn a_shelved_request_survives_fail_all_and_delivers_after_unshelve() {
+    let b = bindings();
+    b.enable_net_bridge().unwrap();
+    b.evaluate(
+        "var log = []; \
+         window.__rustkit_net.request({ url: 'http://a/1' }, function (r) { log.push(r.ok + ':' + (r.error || r.status)); }); \
+         window.__rustkit_net.request({ url: 'http://a/2' }, function (r) { log.push('2:' + r.error); });",
+    )
+    .unwrap();
+    let taken = b.take_net_requests();
+    assert_eq!(taken.len(), 2);
+    assert!(b.shelve_net_request(taken[0].id));
+    assert_eq!(b.pending_net_requests(), 1);
+    assert_eq!(b.fail_pending_net_requests("network error"), 1);
+    assert_eq!(ev(&b, "log.join('|')"), "2:network error");
+    assert_eq!(b.unshelve_net_requests(), 1);
+    b.deliver_net_response(taken[0].id, ok("http://a/1", 200, ""))
+        .unwrap();
+    assert_eq!(ev(&b, "log.join('|')"), "2:network error|true:200");
+    assert_eq!(b.pending_net_requests(), 0);
+}
+
+#[test]
 fn the_queue_is_bounded() {
     let b = bindings();
     b.enable_net_bridge().unwrap();
