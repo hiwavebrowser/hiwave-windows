@@ -27,6 +27,7 @@
 
 use rustkit_core::input::{InputEvent, KeyCode, KeyEventType, Modifiers};
 use super::shortcuts::{self, Shortcut};
+use super::layout::{self, Layout, LayoutInput};
 use super::tabs::{TabModel, TabSwitch};
 use rustkit_engine::{Engine, EngineBuilder, EngineViewId, IpcMessage};
 use rustkit_viewhost::{Bounds, MainWindowConfig, ViewEvent, ViewHost};
@@ -92,8 +93,9 @@ pub struct NativeBrowser {
     /// Layout state
     chrome_height: u32,
     shelf_height: u32,
+    /// Width of the left sidebar; 0 while it is closed (chrome.html starts closed).
     sidebar_width: u32,
-    sidebar_open: bool,
+    right_panel_open: bool,
 }
 
 impl NativeBrowser {
@@ -143,8 +145,8 @@ impl NativeBrowser {
             window_height: 800,
             chrome_height: CHROME_HEIGHT_DEFAULT,
             shelf_height: SHELF_HEIGHT_DEFAULT,
-            sidebar_width: SIDEBAR_WIDTH,
-            sidebar_open: true,
+            sidebar_width: 0,
+            right_panel_open: false,
         })
     }
 
@@ -162,6 +164,10 @@ impl NativeBrowser {
             // Events are handled in the message loop
             debug!(?event, "View event received");
         });
+
+        // Lay out against the window as it really is, not the size asked for:
+        // the client area is smaller than the outer size by the frame.
+        self.sync_window_size();
 
         // Create the three views
         self.create_views(hwnd)?;
@@ -189,12 +195,12 @@ impl NativeBrowser {
     fn create_views(&mut self, parent: HWND) -> Result<(), String> {
         let mut engine = self.engine.borrow_mut();
 
-        // Calculate initial bounds
-        // Chrome view covers the sidebar area (left column, full height)
-        // The chrome.html contains the sidebar UI
-        let chrome_bounds = Bounds::new(0, 0, self.sidebar_width, self.window_height);
-        let content_bounds = self.calculate_content_bounds();
-        let shelf_bounds = self.calculate_shelf_bounds();
+        // The chrome view spans the window; content and shelf are created
+        // after it so they sit on top (see native/layout.rs).
+        let Layout { chrome, content, shelf } = self.layout();
+        let chrome_bounds = to_bounds(chrome);
+        let content_bounds = to_bounds(content);
+        let shelf_bounds = to_bounds(shelf);
 
         // Create Chrome view (tabs, address bar, toolbar)
         let chrome_id = engine
@@ -221,6 +227,11 @@ impl NativeBrowser {
         self.engine_view_types.insert(shelf_id, ViewType::Shelf);
         debug!(?shelf_id, "Shelf view created");
         
+        // The chrome view spans the window, so it must sit UNDER the content view.
+        // Child windows do not stack in creation order here (the chrome view, made
+        // first, ended up on top and hid the page), so say so explicitly.
+        lower_view(&engine, chrome_id);
+
         info!(chrome = ?chrome_id, content = ?content_id, shelf = ?shelf_id, "All views created");
 
         Ok(())
@@ -232,6 +243,11 @@ impl NativeBrowser {
 
         // Load Chrome UI
         if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
+            // The app's own documents are the only ones given window.ipc, and the
+            // engine drops IPC from every other view (CH3.A7). It must be set
+            // BEFORE the load: the bridge is built with the document. Without it
+            // the toolbar, tabs, sidebar and shelf all talk to nobody.
+            engine.set_app_owned(chrome_id, true);
             engine
                 .load_html(chrome_id, CHROME_HTML)
                 .map_err(|e| format!("Failed to load Chrome HTML: {}", e))?;
@@ -240,6 +256,7 @@ impl NativeBrowser {
 
         // Load Shelf UI
         if let Some(&shelf_id) = self.views.get(&ViewType::Shelf) {
+            engine.set_app_owned(shelf_id, true);
             engine
                 .load_html(shelf_id, SHELF_HTML)
                 .map_err(|e| format!("Failed to load Shelf HTML: {}", e))?;
@@ -258,79 +275,83 @@ impl NativeBrowser {
         Ok(())
     }
 
-    /// Calculate bounds for the content view.
-    fn calculate_content_bounds(&self) -> Bounds {
-        let x = if self.sidebar_open {
-            self.sidebar_width as i32
-        } else {
-            0
-        };
-        let y = 0; // Content starts at top (no toolbar in native mode)
-        let width = if self.sidebar_open {
-            self.window_width.saturating_sub(self.sidebar_width)
-        } else {
-            self.window_width
-        };
-        let height = self
-            .window_height
-            .saturating_sub(self.shelf_height);
-
-        Bounds::new(x, y, width, height)
-    }
-
-    /// Calculate bounds for the shelf view.
-    fn calculate_shelf_bounds(&self) -> Bounds {
-        let x = if self.sidebar_open {
-            self.sidebar_width as i32
-        } else {
-            0
-        };
-        let y = (self.window_height - self.shelf_height) as i32;
-        let width = if self.sidebar_open {
-            self.window_width.saturating_sub(self.sidebar_width)
-        } else {
-            self.window_width
-        };
-
-        Bounds::new(x, y, width, self.shelf_height)
+    /// Where each view goes for the current window and panel state.
+    fn layout(&self) -> Layout {
+        layout::compute(LayoutInput {
+            window_width: self.window_width,
+            window_height: self.window_height,
+            chrome_height: self.chrome_height,
+            shelf_height: self.shelf_height,
+            sidebar_width: self.sidebar_width,
+            right_panel_open: self.right_panel_open,
+        })
     }
 
     /// Update layout after window resize or layout change.
     fn update_layout(&self) {
         let mut engine = self.engine.borrow_mut();
+        let Layout { chrome, content, shelf } = self.layout();
 
-        // Update Chrome view (sidebar area - left column, full height)
+        let mut targets = vec![
+            (ViewType::Chrome, chrome, self.views.get(&ViewType::Chrome).copied()),
+            (ViewType::Shelf, shelf, self.views.get(&ViewType::Shelf).copied()),
+        ];
+        // Every tab is its own content view; only the active one is shown, but
+        // a background tab must already have the right size when it is
+        // switched to, or it comes back at whatever the window used to be.
+        match self.tabs.as_ref() {
+            Some(tabs) => targets.extend(tabs.views().iter().map(|&id| (ViewType::Content, content, Some(id)))),
+            None => targets.push((ViewType::Content, content, self.views.get(&ViewType::Content).copied())),
+        }
+
+        for (view_type, rect, id) in targets {
+            let Some(id) = id else { continue };
+            if let Err(e) = engine.resize_view(id, to_bounds(rect)) {
+                warn!(?view_type, error = %e, "Failed to resize view");
+            }
+        }
         if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
-            let width = if self.sidebar_open { self.sidebar_width } else { 0 };
-            let bounds = Bounds::new(0, 0, width, self.window_height);
-            if let Err(e) = engine.resize_view(chrome_id, bounds) {
-                warn!(error = %e, "Failed to resize Chrome view");
-            }
+            lower_view(&engine, chrome_id);
         }
+    }
 
-        // Update Content view
-        if let Some(&content_id) = self.views.get(&ViewType::Content) {
-            let bounds = self.calculate_content_bounds();
-            if let Err(e) = engine.resize_view(content_id, bounds) {
-                warn!(error = %e, "Failed to resize Content view");
-            }
+    /// Follow the window's real client size. Nothing else tells this shell the
+    /// window was resized or maximised, so the run loop calls this every turn;
+    /// it does nothing unless the size changed. A minimised window reports
+    /// 0x0, which is ignored so the views keep their size for the restore.
+    fn sync_window_size(&mut self) {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+        let Some(hwnd) = self.viewhost.get_main_hwnd() else {
+            return;
+        };
+        let mut rect = RECT::default();
+        // SAFETY: `hwnd` is the live main window this browser created, and
+        // `rect` is a valid out-pointer for the duration of the call.
+        if unsafe { GetClientRect(hwnd, &mut rect) }.is_err() {
+            return;
         }
-
-        // Update Shelf view
-        if let Some(&shelf_id) = self.views.get(&ViewType::Shelf) {
-            let bounds = self.calculate_shelf_bounds();
-            if let Err(e) = engine.resize_view(shelf_id, bounds) {
-                warn!(error = %e, "Failed to resize Shelf view");
-            }
+        let (width, height) = (
+            (rect.right - rect.left).max(0) as u32,
+            (rect.bottom - rect.top).max(0) as u32,
+        );
+        if width == 0 || height == 0 {
+            return;
+        }
+        if (width, height) != (self.window_width, self.window_height) {
+            self.on_resize(width, height);
         }
     }
 
     /// Handle window resize event.
-    #[allow(dead_code)]
     pub fn on_resize(&mut self, width: u32, height: u32) {
         self.window_width = width;
         self.window_height = height;
-        self.update_layout();
+        // Before the views exist (first call, from init) there is nothing to move.
+        if !self.views.is_empty() {
+            self.update_layout();
+        }
     }
 
     /// Expand the Chrome UI (for overlays).
@@ -359,7 +380,25 @@ impl NativeBrowser {
 
     /// Toggle sidebar visibility.
     pub fn toggle_sidebar(&mut self) {
-        self.sidebar_open = !self.sidebar_open;
+        let open = self.sidebar_width == 0;
+        self.set_sidebar_open(open);
+    }
+
+    /// Open the sidebar at its default width, or close it.
+    pub fn set_sidebar_open(&mut self, open: bool) {
+        self.sidebar_width = if open { SIDEBAR_WIDTH } else { 0 };
+        self.update_layout();
+    }
+
+    /// Set the sidebar's width (the chrome sends this while it is dragged).
+    pub fn set_sidebar_width(&mut self, width: u32) {
+        self.sidebar_width = width;
+        self.update_layout();
+    }
+
+    /// Open or close the right-hand panel.
+    pub fn set_right_panel_open(&mut self, open: bool) {
+        self.right_panel_open = open;
         self.update_layout();
     }
 
@@ -428,8 +467,11 @@ impl NativeBrowser {
             warn!("No main window — cannot open a tab");
             return;
         };
-        let bounds = self.calculate_content_bounds();
+        let bounds = to_bounds(self.layout().content);
         let created = self.engine.borrow_mut().create_view(parent, bounds);
+        if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
+            lower_view(&self.engine.borrow(), chrome_id);
+        }
         let view = match created {
             Ok(v) => v,
             Err(e) => {
@@ -669,6 +711,9 @@ impl NativeBrowser {
                 break;
             }
 
+            // Follow the window if it was resized or maximised
+            self.sync_window_size();
+
             self.pump_live_views();
 
             // Process any IPC messages from views
@@ -775,8 +820,26 @@ impl NativeBrowser {
                 self.collapse_shelf();
             }
             "toggle_sidebar" => {
-                debug!(open = !self.sidebar_open, "Sidebar toggled");
+                debug!(open = self.sidebar_width == 0, "Sidebar toggled");
                 self.toggle_sidebar();
+            }
+            // chrome.html owns the sidebar's state and tells the shell, so the
+            // content view can make room for it (same messages the WebView2
+            // shell handles).
+            "set_sidebar_open" => {
+                if let Some(open) = json.get("open").and_then(|v| v.as_bool()) {
+                    self.set_sidebar_open(open);
+                }
+            }
+            "set_sidebar_width" => {
+                if let Some(width) = json.get("width").and_then(|v| v.as_f64()) {
+                    self.set_sidebar_width(width.max(0.0) as u32);
+                }
+            }
+            "set_right_panel_open" => {
+                if let Some(open) = json.get("open").and_then(|v| v.as_bool()) {
+                    self.set_right_panel_open(open);
+                }
             }
             "chrome_ready" => {
                 info!("Chrome UI initialized and ready");
@@ -812,6 +875,26 @@ impl Drop for NativeBrowser {
             }
         }
     }
+}
+
+/// Send a view's window to the bottom of its siblings' z-order.
+fn lower_view(engine: &Engine, id: EngineViewId) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    let Ok(hwnd) = engine.get_view_hwnd(id) else {
+        return;
+    };
+    // SAFETY: `hwnd` is a live child window owned by the engine; no size or
+    // position is touched, only the z-order.
+    let _ = unsafe {
+        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+    };
+}
+
+/// A layout rectangle as the engine's view bounds.
+fn to_bounds(r: layout::Rect) -> Bounds {
+    Bounds::new(r.x, r.y, r.width, r.height)
 }
 
 /// Print startup banner with build info.

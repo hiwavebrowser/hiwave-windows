@@ -313,6 +313,23 @@
             min-width: 0 !important;
             border-right: none;
         }
+        /* RustKit paints a <select>'s dropdown chevron outside an ancestor's
+           overflow clip, so the workspace picker in this 0-width sidebar showed
+           through over the toolbar's forward button. Chromium paints nothing.
+           Hide it while collapsed (hiwave-macos issue linked in the PR). */
+        .sidebar.collapsed select {
+            visibility: hidden;
+        }
+        /* RustKit takes the FIRST family in a stack for every glyph; there is no
+           per-glyph fallback. Arial lacks these symbols, so they drew as blanks
+           (reload, the collapse and expand triangles, the shift key). Name a
+           font that has them. Chromium falls back on its own. */
+        #refreshBtn,
+        .collapse-icon,
+        .workspace-expander,
+        .find-modal-hint-left kbd {
+            font-family: 'Segoe UI Symbol', 'Segoe UI', sans-serif;
+        }
 
         /* Sidebar resize handle */
         .sidebar-resize-handle {
