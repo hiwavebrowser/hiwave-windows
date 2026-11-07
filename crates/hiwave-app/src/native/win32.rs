@@ -51,6 +51,29 @@ const SIDEBAR_WIDTH: u32 = 220;
 const CHROME_HTML: &str = include_str!("../ui/chrome.html");
 const SHELF_HTML: &str = include_str!("../ui/shelf.html");
 const ABOUT_HTML: &str = include_str!("../ui/about.html");
+/// The `<title>` of the start page (ui/about.html).
+const ABOUT_TITLE: &str = "About HiWave";
+
+/// One row of the chrome's tab strip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TabRow {
+    id: u64,
+    title: String,
+    url: String,
+    active: bool,
+}
+
+/// What the chrome page was last told. The run loop compares the live state
+/// against this each turn and only calls into the page when something changed,
+/// so typing in the address bar is never overwritten by a periodic refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChromeSnapshot {
+    tabs: Vec<TabRow>,
+    url: String,
+    title: String,
+    can_go_back: bool,
+    can_go_forward: bool,
+}
 
 /// View types in the browser
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -100,6 +123,13 @@ pub struct NativeBrowser {
     /// bare main window (activation, a click on the frame); the main window
     /// ignores keys, so the shell hands focus back to this view.
     last_focus: std::cell::Cell<Option<EngineViewId>>,
+    /// The chrome page has loaded and sent `chrome_ready`; until then there is
+    /// no `window.hiwaveChrome` to call.
+    chrome_ready: bool,
+    /// Stable ids for the tab strip (a tab is an engine view; the page wants a number).
+    next_tab_id: u64,
+    tab_ids: HashMap<EngineViewId, u64>,
+    chrome_synced: Option<ChromeSnapshot>,
 }
 
 impl NativeBrowser {
@@ -152,6 +182,10 @@ impl NativeBrowser {
             sidebar_width: 0,
             right_panel_open: false,
             last_focus: std::cell::Cell::new(None),
+            chrome_ready: false,
+            next_tab_id: 1,
+            tab_ids: HashMap::new(),
+            chrome_synced: None,
         })
     }
 
@@ -778,6 +812,163 @@ impl NativeBrowser {
         }
     }
 
+    /// Run a script in the chrome page.
+    fn run_chrome_script(&self, script: &str) {
+        let Some(&chrome_id) = self.views.get(&ViewType::Chrome) else {
+            return;
+        };
+        if let Err(e) = self.engine.borrow_mut().execute_script(chrome_id, script) {
+            debug!(error = %e, "Chrome script failed");
+        }
+    }
+
+    /// The tab id the page uses for `view`, assigned on first sight.
+    fn tab_id_for(&mut self, view: EngineViewId) -> u64 {
+        let next = &mut self.next_tab_id;
+        *self.tab_ids.entry(view).or_insert_with(|| {
+            let id = *next;
+            *next += 1;
+            id
+        })
+    }
+
+    /// The position in the tab strip of the tab the page calls `id`.
+    fn tab_index_for_id(&self, id: u64) -> Option<usize> {
+        let tabs = self.tabs.as_ref()?;
+        tabs.views()
+            .iter()
+            .position(|view| self.tab_ids.get(view) == Some(&id))
+    }
+
+    /// Close the tab the page calls `id`, active or not.
+    fn close_tab_by_id(&mut self, id: u64) {
+        let Some(index) = self.tab_index_for_id(id) else {
+            return;
+        };
+        let active = self.tabs.as_ref().map(|t| t.active_index());
+        if active != Some(index) {
+            // Closing is defined on the active tab: make it the active one first.
+            self.activate_tab_by_index(index);
+        }
+        self.close_active_tab();
+    }
+
+    /// Minimise, maximise/restore or close the main window.
+    fn window_command(&self, cmd: &str) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsZoomed, PostMessageW, ShowWindow, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, WM_CLOSE,
+        };
+        let Some(hwnd) = self.viewhost.get_main_hwnd() else {
+            return;
+        };
+        // SAFETY: `hwnd` is the live main window this browser created.
+        unsafe {
+            match cmd {
+                "window_close" => {
+                    let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+                "window_minimize" => {
+                    let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                }
+                _ => {
+                    let _ = ShowWindow(hwnd, if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE });
+                }
+            }
+        }
+    }
+
+    /// Tell the chrome page what changed: the tab strip, the address bar, the
+    /// page title and the back/forward buttons. Compares against what it was
+    /// last told and does nothing when it is current.
+    fn sync_chrome(&mut self) {
+        if !self.chrome_ready {
+            return;
+        }
+        let Some(tabs) = self.tabs.as_ref() else {
+            return;
+        };
+        let views: Vec<EngineViewId> = tabs.views().to_vec();
+        let active = tabs.active_view();
+
+        let mut rows = Vec::with_capacity(views.len());
+        let (mut url, mut title, mut can_go_back, mut can_go_forward) =
+            (String::new(), String::new(), false, false);
+        {
+            let engine = self.engine.borrow();
+            for &view in &views {
+                let page_url = engine.get_url(view).map(|u| u.to_string()).unwrap_or_default();
+                let page_title = engine
+                    .get_title(view)
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| "New Tab".to_string());
+                if view == active {
+                    title = page_title.clone();
+                    can_go_back = engine.can_go_back(view);
+                    can_go_forward = engine.can_go_forward(view);
+                }
+                // The start page is loaded from a string, so the engine calls it
+                // about:blank; the page's own name for it is hiwave://about.
+                let page_url = if page_url == "about:blank" && page_title == ABOUT_TITLE {
+                    "hiwave://about".to_string()
+                } else {
+                    page_url
+                };
+                if view == active {
+                    url = page_url.clone();
+                }
+                rows.push((view, page_title, page_url));
+            }
+        }
+        let rows: Vec<TabRow> = rows
+            .into_iter()
+            .map(|(view, title, url)| TabRow {
+                id: self.tab_id_for(view),
+                title,
+                url,
+                active: view == active,
+            })
+            .collect();
+
+        let now = ChromeSnapshot { tabs: rows, url, title, can_go_back, can_go_forward };
+        if self.chrome_synced.as_ref() == Some(&now) {
+            return;
+        }
+        let before = self.chrome_synced.clone();
+        let mut script = String::from("if(window.hiwaveChrome){");
+        if before.as_ref().map(|b| &b.tabs) != Some(&now.tabs) {
+            let tabs_json: Vec<serde_json::Value> = now
+                .tabs
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": r.id,
+                        "title": r.title,
+                        "url": r.url,
+                        "is_active": r.active,
+                        "locked": false,
+                        "last_visited": 0,
+                        "decay_level": 0
+                    })
+                })
+                .collect();
+            script.push_str(&format!("hiwaveChrome.renderTabs({});", serde_json::Value::Array(tabs_json)));
+        }
+        if before.as_ref().map(|b| &b.url) != Some(&now.url) {
+            script.push_str(&format!("hiwaveChrome.updateUrl({});", serde_json::Value::String(now.url.clone())));
+        }
+        if before.as_ref().map(|b| &b.title) != Some(&now.title) {
+            script.push_str(&format!("hiwaveChrome.updateTitle({});", serde_json::Value::String(now.title.clone())));
+        }
+        if before.as_ref().map(|b| (b.can_go_back, b.can_go_forward)) != Some((now.can_go_back, now.can_go_forward)) {
+            script.push_str(&format!("hiwaveChrome.updateNavState({}, {});", now.can_go_back, now.can_go_forward));
+        }
+        script.push('}');
+        self.run_chrome_script(&script);
+        self.chrome_synced = Some(now);
+    }
+
     fn traverse(&self, direction: &str) {
         let Some(&content_id) = self.views.get(&ViewType::Content) else {
             return;
@@ -895,6 +1086,9 @@ impl NativeBrowser {
 
             // Run any keyboard shortcuts pressed since the last frame
             self.process_input_events();
+
+            // Keep the tab strip, address bar and nav buttons current
+            self.sync_chrome();
 
             self.pump_live_views();
             self.engine.borrow_mut().render_changed_views();
@@ -1017,8 +1211,47 @@ impl NativeBrowser {
             }
             "chrome_ready" => {
                 info!("Chrome UI initialized and ready");
-                // TODO: Send initial state to Chrome UI
+                self.chrome_ready = true;
+                // Whatever the page had is gone with its load: tell it everything.
+                self.chrome_synced = None;
             }
+            // The tab strip asks for its tabs; forget what it was told so the next
+            // sync sends them all.
+            "get_tabs" => self.chrome_synced = None,
+            "create_tab" => {
+                self.new_tab();
+                if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                    if !url.is_empty() {
+                        self.navigate(url);
+                    }
+                }
+            }
+            "close_tab" => match tab_id_of(&json) {
+                Some(id) => self.close_tab_by_id(id),
+                None => warn!("close_tab without an id"),
+            },
+            "activate_tab" => match tab_id_of(&json) {
+                Some(id) => {
+                    if let Some(index) = self.tab_index_for_id(id) {
+                        self.activate_tab_by_index(index);
+                    }
+                }
+                None => warn!("activate_tab without an id"),
+            },
+            // The chrome draws its own title-bar buttons.
+            "window_close" | "window_minimize" | "window_toggle_maximize" => {
+                self.window_command(cmd);
+            }
+            // The page keeps its sidebar width; answer with the default so it
+            // starts from a known width (nothing persists it in this shell yet).
+            "get_sidebar_width" => {
+                let script = format!(
+                    "if(window.hiwaveChrome && window.hiwaveChrome.setSidebarWidth) {{ window.hiwaveChrome.setSidebarWidth({}); }}",
+                    SIDEBAR_WIDTH
+                );
+                self.run_chrome_script(&script);
+            }
+            "save_sidebar_width" => {}
             "log" => {
                 // JavaScript console log forwarding
                 let level = json.get("level").and_then(|v| v.as_str()).unwrap_or("info");
@@ -1049,6 +1282,12 @@ impl Drop for NativeBrowser {
             }
         }
     }
+}
+
+/// The tab id in a chrome message. The page sends it as a number or a string.
+fn tab_id_of(json: &serde_json::Value) -> Option<u64> {
+    let id = json.get("id")?;
+    id.as_u64().or_else(|| id.as_str().and_then(|s| s.parse().ok()))
 }
 
 /// Send a view's window to the bottom of its siblings' z-order.
@@ -1342,3 +1581,21 @@ fn chrono_lite_timestamp() -> String {
     super::screenshot_harness::utc_timestamp_from_secs(secs)
 }
 
+#[cfg(test)]
+mod chrome_message_tests {
+    use super::tab_id_of;
+    use serde_json::json;
+
+    #[test]
+    fn a_tab_id_may_be_a_number_or_a_string() {
+        assert_eq!(tab_id_of(&json!({"cmd": "close_tab", "id": 7})), Some(7));
+        assert_eq!(tab_id_of(&json!({"cmd": "close_tab", "id": "12"})), Some(12));
+    }
+
+    #[test]
+    fn a_missing_or_malformed_tab_id_is_none() {
+        assert_eq!(tab_id_of(&json!({"cmd": "close_tab"})), None);
+        assert_eq!(tab_id_of(&json!({"id": "not a number"})), None);
+        assert_eq!(tab_id_of(&json!({"id": -3})), None);
+    }
+}
