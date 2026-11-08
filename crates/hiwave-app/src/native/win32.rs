@@ -554,6 +554,12 @@ impl NativeBrowser {
             }
         }
         info!(%domain, id, "Blocked the domain and closed its tab");
+        // The last tab cannot be closed (the strip never empties), which would leave the
+        // blocked page on screen: replace it with a new tab first (Pollux's R1 note on #130).
+        let open_tabs = self.page_tabs.as_ref().map(|t| t.count()).or_else(|| self.tabs.as_ref().map(|t| t.count())).unwrap_or(0);
+        if open_tabs <= 1 {
+            self.new_tab();
+        }
         self.close_tab_by_id(id);
         self.sync_blocklist();
     }
