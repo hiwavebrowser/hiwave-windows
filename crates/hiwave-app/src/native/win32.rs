@@ -73,6 +73,8 @@ struct ChromeSnapshot {
     title: String,
     can_go_back: bool,
     can_go_forward: bool,
+    shield_enabled: bool,
+    shield_blocked: u64,
 }
 
 /// View types in the browser
@@ -130,12 +132,22 @@ pub struct NativeBrowser {
     next_tab_id: u64,
     tab_ids: HashMap<EngineViewId, u64>,
     chrome_synced: Option<ChromeSnapshot>,
+    /// The request filter the engine runs; kept so the chrome can show its count
+    /// and switch it off.
+    shield: Arc<crate::shield_adapter::ShieldInterceptHandler>,
+    shield_enabled: bool,
 }
 
 impl NativeBrowser {
     /// Create a new native browser instance.
     pub fn new() -> Result<Self, String> {
         info!("Initializing native Win32 browser");
+
+        // The request filter. The engine gets it through an interceptor; we keep a
+        // handle for the blocked-request count and the on/off switch.
+        let shield = Arc::new(crate::shield_adapter::ShieldInterceptHandler::new());
+        let mut interceptor = rustkit_net::RequestInterceptor::new();
+        interceptor.add_handler(shield.clone());
 
         // Create the engine
         let engine = EngineBuilder::new()
@@ -152,7 +164,7 @@ impl NativeBrowser {
             .cookies_enabled(true)
             .script_budget_ms(15_000)
             .interrupt_scripts_at_budget(true)
-            .request_interceptor(crate::shield_adapter::create_shield_interceptor())
+            .request_interceptor(interceptor)
             .build()
             .map_err(|e| format!("Failed to create engine: {}", e))?;
 
@@ -186,6 +198,8 @@ impl NativeBrowser {
             next_tab_id: 1,
             tab_ids: HashMap::new(),
             chrome_synced: None,
+            shield,
+            shield_enabled: true,
         })
     }
 
@@ -931,7 +945,15 @@ impl NativeBrowser {
             })
             .collect();
 
-        let now = ChromeSnapshot { tabs: rows, url, title, can_go_back, can_go_forward };
+        let now = ChromeSnapshot {
+            tabs: rows,
+            url,
+            title,
+            can_go_back,
+            can_go_forward,
+            shield_enabled: self.shield_enabled,
+            shield_blocked: self.shield.blocked_count(),
+        };
         if self.chrome_synced.as_ref() == Some(&now) {
             return;
         }
@@ -963,6 +985,14 @@ impl NativeBrowser {
         }
         if before.as_ref().map(|b| (b.can_go_back, b.can_go_forward)) != Some((now.can_go_back, now.can_go_forward)) {
             script.push_str(&format!("hiwaveChrome.updateNavState({}, {});", now.can_go_back, now.can_go_forward));
+        }
+        if before.as_ref().map(|b| (b.shield_enabled, b.shield_blocked)) != Some((now.shield_enabled, now.shield_blocked)) {
+            // The chrome adds the two counts together, so the filter's one count goes
+            // in as requests and trackers stays 0 (it does not tell them apart).
+            script.push_str(&format!(
+                "hiwaveChrome.updateShieldStats({{\"enabled\":{},\"requests_blocked\":{},\"trackers_blocked\":0}});",
+                now.shield_enabled, now.shield_blocked
+            ));
         }
         script.push('}');
         self.run_chrome_script(&script);
@@ -1252,6 +1282,13 @@ impl NativeBrowser {
                 self.run_chrome_script(&script);
             }
             "save_sidebar_width" => {}
+            // The shield button: the chrome tracks its own state and says what it is now.
+            "toggle_shield" => {
+                if let Some(enabled) = json.get("enabled").and_then(|v| v.as_bool()) {
+                    self.shield.set_enabled(enabled);
+                    self.shield_enabled = enabled;
+                }
+            }
             "log" => {
                 // JavaScript console log forwarding
                 let level = json.get("level").and_then(|v| v.as_str()).unwrap_or("info");
