@@ -55,8 +55,20 @@ native shell sets the address itself).
 ## Receipt
 
 Working tree vs `8ebc1b79` blobs (line endings normalised), `crates/rustkit-*`:
-9 files differ, exactly the patch-touched set (`rustkit-core/input.rs`,
-`rustkit-engine/{inspector_page_tests,lib,text_control_select_tests,transform_rect_tests}.rs`,
-`rustkit-layout/{lib,text}.rs`, `rustkit-renderer/screenshot.rs`,
-`rustkit-viewhost/lib.rs`), plus `windows_live_input_tests.rs`, which patch 641
-creates. Nothing missing, nothing stray.
+10 files differ, from two sources, both reproduced by `scripts/apply_windows_patches.py`.
+
+- **Patch files** (`scripts/windows-patches/`): `rustkit-core/input.rs` (648),
+  `rustkit-engine/{lib.rs (641), inspector_page_tests.rs, text_control_select_tests.rs,
+  transform_rect_tests.rs (642-643, 645)}`, `rustkit-renderer/screenshot.rs` (646),
+  `rustkit-viewhost/lib.rs` (644), and `rustkit-engine/windows_live_input_tests.rs`,
+  which patch 641 creates.
+- **Inline edits in the script itself** (no `.patch` file): `rustkit-layout/src/text.rs`
+  (`sans-serif` resolves to Arial first on Windows; `-apple-system` and
+  `BlinkMacSystemFont` are skipped; one alias test) and `rustkit-layout/src/lib.rs`
+  (two strut-descent tests allow 1.0 where upstream has 0.5; Arial's descent 3.453
+  rounds to 4). They are listed in the script's own report on every run, so a refresh
+  that copies upstream verbatim and re-runs the script restores them.
+
+Nothing missing, nothing stray. Sending the `text.rs` arm upstream as a shared row
+(upstream already has a `cfg(not(target_os = "macos"))` branch there) would remove it
+from the Windows residual; that is a separate proposal.
