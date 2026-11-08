@@ -11,6 +11,8 @@
 #[cfg(target_os = "windows")]
 mod address;
 #[cfg(target_os = "windows")]
+mod content_page;
+#[cfg(target_os = "windows")]
 mod layout;
 #[cfg(target_os = "windows")]
 mod shortcuts;

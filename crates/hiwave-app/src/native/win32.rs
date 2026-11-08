@@ -27,6 +27,7 @@
 
 use rustkit_core::input::{InputEvent, KeyCode, KeyEvent, KeyEventType, Modifiers, MouseEventType};
 use super::shortcuts::{self, Shortcut};
+use super::content_page::{self, ContentPage};
 use super::layout::{self, Layout, LayoutInput};
 use super::tabs::{TabModel, TabSwitch};
 use rustkit_engine::{Engine, EngineBuilder, EngineViewId, IpcMessage};
@@ -77,6 +78,7 @@ struct ChromeSnapshot {
     can_go_forward: bool,
     shield_enabled: bool,
     shield_blocked: u64,
+    loading: bool,
 }
 
 /// View types in the browser
@@ -138,6 +140,9 @@ pub struct NativeBrowser {
     /// and switch it off.
     shield: Arc<crate::shield_adapter::ShieldInterceptHandler>,
     shield_enabled: bool,
+    /// The page on the content thread (`HIWAVE_CONTENT_THREAD=1`). `None`: pages
+    /// load on the window thread, as before.
+    page: Option<ContentPage>,
 }
 
 impl NativeBrowser {
@@ -148,25 +153,10 @@ impl NativeBrowser {
         // The request filter. The engine gets it through an interceptor; we keep a
         // handle for the blocked-request count and the on/off switch.
         let shield = Arc::new(crate::shield_adapter::ShieldInterceptHandler::new());
-        let mut interceptor = rustkit_net::RequestInterceptor::new();
-        interceptor.add_handler(shield.clone());
 
-        // Create the engine
-        let engine = EngineBuilder::new()
-            .user_agent(
-                // Finding 4 from the macOS live demo, ported: the bare
-                // "HiWave/1.0 RustKit/1.0" UA is scraper-shaped — Wikimedia
-                // 429'd it and eBay challenged it. Safari-shaped with an
-                // HONEST Windows platform string plus the HiWave token: sites
-                // get a recognisable engine family, and we stay identifiable
-                // rather than impersonating Chrome outright.
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/605.1.15                  (KHTML, like Gecko) Version/17.4 Safari/605.1.15 HiWave/1.0",
-            )
-            .javascript_enabled(true)
-            .cookies_enabled(true)
-            .script_budget_ms(script_budget_ms())
-            .interrupt_scripts_at_budget(true)
-            .request_interceptor(interceptor)
+        // Create the engine. The chrome and shelf live here; with the content thread
+        // on, the page gets its own engine from the same settings.
+        let engine = engine_builder(&shield)
             .build()
             .map_err(|e| format!("Failed to create engine: {}", e))?;
 
@@ -202,6 +192,7 @@ impl NativeBrowser {
             chrome_synced: None,
             shield,
             shield_enabled: true,
+            page: None,
         })
     }
 
@@ -266,14 +257,23 @@ impl NativeBrowser {
         self.engine_view_types.insert(chrome_id, ViewType::Chrome);
         debug!(?chrome_id, "Chrome view created");
 
-        // Create Content view (web page rendering)
-        let content_id = engine
-            .create_view(parent, content_bounds)
-            .map_err(|e| format!("Failed to create Content view: {}", e))?;
-        self.views.insert(ViewType::Content, content_id);
-        self.engine_view_types.insert(content_id, ViewType::Content);
-        self.tabs = Some(TabModel::new(content_id));
-        debug!(?content_id, "Content view created");
+        // Create Content view (web page rendering). With the content thread on, the
+        // page is not an engine view of this engine: it runs on its own thread and
+        // this window only shows what it publishes.
+        let content_id = if content_page::enabled() {
+            let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield))?;
+            self.page = Some(page);
+            None
+        } else {
+            let content_id = engine
+                .create_view(parent, content_bounds)
+                .map_err(|e| format!("Failed to create Content view: {}", e))?;
+            self.views.insert(ViewType::Content, content_id);
+            self.engine_view_types.insert(content_id, ViewType::Content);
+            self.tabs = Some(TabModel::new(content_id));
+            debug!(?content_id, "Content view created");
+            Some(content_id)
+        };
 
         // Create Shelf view (command palette, hidden by default)
         let shelf_id = engine
@@ -288,7 +288,7 @@ impl NativeBrowser {
         // first, ended up on top and hid the page), so say so explicitly.
         lower_view(&engine, chrome_id);
 
-        info!(chrome = ?chrome_id, content = ?content_id, shelf = ?shelf_id, "All views created");
+        info!(chrome = ?chrome_id, content = ?content_id, on_content_thread = self.page.is_some(), shelf = ?shelf_id, "All views created");
 
         Ok(())
     }
@@ -320,7 +320,9 @@ impl NativeBrowser {
         }
 
         // Load About page in content view
-        if let Some(&content_id) = self.views.get(&ViewType::Content) {
+        if let Some(page) = &self.page {
+            page.load_html(ABOUT_HTML);
+        } else if let Some(&content_id) = self.views.get(&ViewType::Content) {
             engine
                 .load_html(content_id, ABOUT_HTML)
                 .map_err(|e| format!("Failed to load About HTML: {}", e))?;
@@ -365,6 +367,9 @@ impl NativeBrowser {
             if let Err(e) = engine.resize_view(id, to_bounds(rect)) {
                 warn!(?view_type, error = %e, "Failed to resize view");
             }
+        }
+        if let Some(page) = &self.page {
+            page.resize(to_bounds(content));
         }
         if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
             lower_view(&engine, chrome_id);
@@ -471,6 +476,10 @@ impl NativeBrowser {
     /// `rustkit-net::fetch` has no cancellation surface yet. The bytes arrive
     /// and are discarded. Stop-as-observed, not stop-as-transport.
     pub fn stop_loading(&self) {
+        if let Some(page) = &self.page {
+            page.stop();
+            return;
+        }
         if let Some(&content_id) = self.views.get(&ViewType::Content) {
             let mut engine = self.engine.borrow_mut();
             if engine.stop(content_id) {
@@ -520,6 +529,10 @@ impl NativeBrowser {
 
     /// Open a new tab and select it.
     fn new_tab(&mut self) {
+        if self.page.is_some() {
+            warn!("Tabs are not supported yet with HIWAVE_CONTENT_THREAD=1");
+            return;
+        }
         let Some(parent) = self.viewhost.get_main_hwnd() else {
             warn!("No main window — cannot open a tab");
             return;
@@ -854,6 +867,10 @@ impl NativeBrowser {
     /// Find `query` in the active page and tell the chrome's find bar how many
     /// matches there are. The helper highlights matches in the page itself.
     fn find_in_page(&self, query: &str, case_sensitive: bool, direction: &str) {
+        if self.page.is_some() {
+            debug!("find_in_page is not wired to the content thread yet");
+            return;
+        }
         let Some(&content_id) = self.views.get(&ViewType::Content) else {
             return;
         };
@@ -949,6 +966,23 @@ impl NativeBrowser {
         if !self.chrome_ready {
             return;
         }
+        if let Some(page) = &self.page {
+            let state = page.state();
+            let url = state.url.clone().unwrap_or_default();
+            let title = state.title.clone().unwrap_or_else(|| "New Tab".to_string());
+            let now = ChromeSnapshot {
+                tabs: vec![TabRow { id: 1, title: title.clone(), url: url.clone(), active: true }],
+                url,
+                title,
+                can_go_back: state.can_go_back,
+                can_go_forward: state.can_go_forward,
+                shield_enabled: self.shield_enabled,
+                shield_blocked: self.shield.blocked_count(),
+                loading: state.loading,
+            };
+            self.push_snapshot(now);
+            return;
+        }
         let Some(tabs) = self.tabs.as_ref() else {
             return;
         };
@@ -1003,7 +1037,13 @@ impl NativeBrowser {
             can_go_forward,
             shield_enabled: self.shield_enabled,
             shield_blocked: self.shield.blocked_count(),
+            loading: false,
         };
+        self.push_snapshot(now);
+    }
+
+    /// Tell the chrome what differs between `now` and what it was last told.
+    fn push_snapshot(&mut self, now: ChromeSnapshot) {
         if self.chrome_synced.as_ref() == Some(&now) {
             return;
         }
@@ -1044,12 +1084,24 @@ impl NativeBrowser {
                 now.shield_enabled, now.shield_blocked
             ));
         }
+        if before.as_ref().map(|b| b.loading) != Some(now.loading) {
+            script.push_str(&format!("hiwaveChrome.setLoading({});", now.loading));
+        }
         script.push('}');
         self.run_chrome_script(&script);
         self.chrome_synced = Some(now);
     }
 
     fn traverse(&self, direction: &str) {
+        if let Some(page) = &self.page {
+            match direction {
+                "back" => page.go_back(),
+                "forward" => page.go_forward(),
+                "reload" => page.reload(),
+                _ => {}
+            }
+            return;
+        }
         let Some(&content_id) = self.views.get(&ViewType::Content) else {
             return;
         };
@@ -1079,6 +1131,13 @@ impl NativeBrowser {
             debug!(input = url, "Nothing to navigate to");
             return;
         };
+        if let Some(page) = &self.page {
+            match url::Url::parse(&url) {
+                Ok(parsed) => page.navigate(parsed),
+                Err(e) => warn!(error = %e, url, "Invalid URL"),
+            }
+            return;
+        }
         if let Some(&content_id) = self.views.get(&ViewType::Content) {
             self.navigate_view(content_id, &url);
         }
@@ -1166,6 +1225,11 @@ impl NativeBrowser {
 
             // Run any keyboard shortcuts pressed since the last frame
             self.process_input_events();
+
+            // Take what the content-thread page published and draw it
+            if let Some(page) = &self.page {
+                page.pump();
+            }
 
             // Keep the tab strip, address bar and nav buttons current
             self.sync_chrome();
@@ -1394,6 +1458,28 @@ fn find_state_payload(raw: &str, query: &str) -> Option<serde_json::Value> {
     let count = answer.get("count")?.as_i64()?.clamp(0, 1_000_000);
     let index = answer.get("index")?.as_i64()?.clamp(-1, 1_000_000);
     Some(serde_json::json!({ "count": count, "index": index, "query": query }))
+}
+
+/// The engine settings every page engine here uses (the chrome's, and the content
+/// thread's when it is on).
+fn engine_builder(shield: &Arc<crate::shield_adapter::ShieldInterceptHandler>) -> EngineBuilder {
+    let mut interceptor = rustkit_net::RequestInterceptor::new();
+    interceptor.add_handler(shield.clone());
+    EngineBuilder::new()
+        .user_agent(
+            // Finding 4 from the macOS live demo, ported: the bare
+            // "HiWave/1.0 RustKit/1.0" UA is scraper-shaped — Wikimedia
+            // 429'd it and eBay challenged it. Safari-shaped with an
+            // HONEST Windows platform string plus the HiWave token: sites
+            // get a recognisable engine family, and we stay identifiable
+            // rather than impersonating Chrome outright.
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/605.1.15                  (KHTML, like Gecko) Version/17.4 Safari/605.1.15 HiWave/1.0",
+        )
+        .javascript_enabled(true)
+        .cookies_enabled(true)
+        .script_budget_ms(script_budget_ms())
+        .interrupt_scripts_at_budget(true)
+        .request_interceptor(interceptor)
 }
 
 /// The tab id in a chrome message. The page sends it as a number or a string.
