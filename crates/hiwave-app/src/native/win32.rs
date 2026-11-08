@@ -1308,6 +1308,33 @@ impl NativeBrowser {
         *self.tab_ids.entry(view).or_insert_with(shell_tabs::alloc_tab_id)
     }
 
+    /// The id the chrome knows the active tab by.
+    fn active_native_id(&self) -> Option<u64> {
+        if let Some(tabs) = self.page_tabs.as_ref() {
+            return Some(tabs.active_view());
+        }
+        let tabs = self.tabs.as_ref()?;
+        self.tab_ids.get(&tabs.active_view()).copied()
+    }
+
+    /// After the active workspace changed, or a tab left it: make the active tab one the
+    /// workspace shows (its own active tab, else its first), or open a new tab in it.
+    fn settle_workspace(&mut self) {
+        let view = match self.app_state.lock() {
+            Ok(state) => shell_tabs::active_workspace_view(&state, &self.mirrored_tabs),
+            Err(_) => return,
+        };
+        match shell_tabs::after_switch(&view, self.active_native_id()) {
+            shell_tabs::AfterSwitch::Keep => {}
+            shell_tabs::AfterSwitch::Activate(id) => {
+                if let Some(index) = self.tab_index_for_id(id) {
+                    self.activate_tab_by_index(index);
+                }
+            }
+            shell_tabs::AfterSwitch::NewTab => self.new_tab(),
+        }
+    }
+
     /// The position in the tab strip of the tab the page calls `id`.
     fn tab_index_for_id(&self, id: u64) -> Option<usize> {
         if let Some(tabs) = self.page_tabs.as_ref() {
@@ -1457,7 +1484,7 @@ impl NativeBrowser {
 
     /// Keep the shared `BrowserShell` in step with this shell's tabs, save it when it
     /// changed, and take each tab's lock flag from it (the lock lives in the model).
-    fn mirror_tabs(&mut self, rows: &mut [TabRow]) {
+    fn mirror_tabs(&mut self, rows: &mut Vec<TabRow>) {
         let tabs: Vec<shell_tabs::NativeTab> = rows
             .iter()
             .map(|r| shell_tabs::NativeTab {
@@ -1479,7 +1506,10 @@ impl NativeBrowser {
         for row in rows.iter_mut() {
             row.locked = done.locked.contains(&row.id);
         }
+        // The strip shows the active workspace's tabs only.
+        let view = shell_tabs::active_workspace_view(&state, &self.mirrored_tabs);
         drop(state);
+        rows.retain(|r| view.visible.contains(&r.id));
         // Tabs came, went or changed: the sidebar lists them under their workspaces.
         if done.changed {
             self.sync_workspaces(false);
@@ -1867,6 +1897,17 @@ impl NativeBrowser {
                 }
             }
             "get_workspaces" => self.sync_workspaces(true),
+            "activate_workspace" => {
+                if let Some(id) = json.get("id").and_then(id_value) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        if let Err(e) = state.shell.set_active_workspace(hiwave_core::types::WorkspaceId(id)) {
+                            warn!(error = %e, "Could not activate the workspace");
+                        }
+                    }
+                    self.settle_workspace();
+                    self.save_and_sync_workspaces();
+                }
+            }
             "create_workspace" => {
                 let name = json.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
                 if !name.is_empty() {
@@ -1908,6 +1949,7 @@ impl NativeBrowser {
                             Err(e) => warn!(error = %e, "Could not delete the workspace"),
                         }
                     }
+                    self.settle_workspace();
                     self.save_and_sync_workspaces();
                 }
             }
@@ -1924,6 +1966,7 @@ impl NativeBrowser {
                             warn!(error = %e, "Could not move the tab");
                         }
                     }
+                    self.settle_workspace();
                     self.save_and_sync_workspaces();
                 }
             }

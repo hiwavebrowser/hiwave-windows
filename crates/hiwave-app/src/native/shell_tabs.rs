@@ -112,6 +112,51 @@ pub fn reconcile(state: &mut AppState, mirrored: &mut HashSet<u64>, tabs: &[Nati
     out
 }
 
+/// The native tabs that belong to the active workspace, and which of them it last had
+/// active. The tab strip shows only these.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct WorkspaceView {
+    /// Native tab ids in the active workspace, in the workspace's order.
+    pub visible: Vec<u64>,
+    /// The workspace's own active tab, when it is one of `visible`.
+    pub active: Option<u64>,
+}
+
+/// What the native shell must do so its active tab is one the active workspace shows.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AfterSwitch {
+    /// The active tab is already in the workspace.
+    Keep,
+    /// Make this native tab active.
+    Activate(u64),
+    /// The workspace has no native tab: open one (it lands in the active workspace).
+    NewTab,
+}
+
+/// The active workspace's native tabs. `native` is the set of ids this shell owns (tabs
+/// restored from disk have no view and are not shown).
+pub fn active_workspace_view(state: &AppState, native: &HashSet<u64>) -> WorkspaceView {
+    let Some(ws) = state.shell.get_active_workspace() else {
+        return WorkspaceView::default();
+    };
+    let visible: Vec<u64> = ws.tabs.iter().map(|t| t.0).filter(|id| native.contains(id)).collect();
+    let active = ws.active_tab.map(|t| t.0).filter(|id| visible.contains(id));
+    WorkspaceView { visible, active }
+}
+
+/// After the active workspace changed (or a tab moved out of it), pick the tab to show.
+pub fn after_switch(view: &WorkspaceView, current_active: Option<u64>) -> AfterSwitch {
+    if let Some(current) = current_active {
+        if view.visible.contains(&current) {
+            return AfterSwitch::Keep;
+        }
+    }
+    match view.active.or_else(|| view.visible.first().copied()) {
+        Some(id) => AfterSwitch::Activate(id),
+        None => AfterSwitch::NewTab,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +173,56 @@ mod tests {
 
     fn tab(id: u64, url: &str, title: &str, active: bool) -> NativeTab {
         NativeTab { id, url: url.into(), title: title.into(), active }
+    }
+
+    #[test]
+    fn the_view_is_the_active_workspaces_native_tabs_only() {
+        let mut s = state("view");
+        let mut mirrored = HashSet::new();
+        let (a, b) = (alloc_tab_id(), alloc_tab_id());
+        reconcile(&mut s, &mut mirrored, &[tab(a, "https://a.test/", "A", false), tab(b, "https://b.test/", "B", true)]);
+        let work = s.shell.create_workspace("Work".to_string());
+        s.shell.move_tab_to_workspace(TabId(a), work).unwrap();
+
+        let view = active_workspace_view(&s, &mirrored);
+        assert_eq!(view.visible, vec![b], "a moved-away tab is not in the strip");
+        assert_eq!(view.active, Some(b));
+
+        s.shell.set_active_workspace(work).unwrap();
+        let view = active_workspace_view(&s, &mirrored);
+        assert_eq!(view.visible, vec![a]);
+    }
+
+    #[test]
+    fn a_tab_restored_from_disk_is_not_in_the_view() {
+        let mut s = state("restored");
+        let ws = s.shell.get_active_workspace().map(|w| w.id).unwrap();
+        s.shell
+            .create_tab(TabInfo {
+                id: TabId::new(),
+                url: url::Url::parse("https://old.test/").unwrap(),
+                title: None,
+                favicon: None,
+                workspace_id: ws,
+                suspended: true,
+                loading: false,
+                locked: false,
+                last_visited: None,
+            })
+            .unwrap();
+        let view = active_workspace_view(&s, &HashSet::new());
+        assert!(view.visible.is_empty());
+    }
+
+    #[test]
+    fn after_a_switch_the_shell_keeps_picks_or_opens() {
+        let view = WorkspaceView { visible: vec![4, 5], active: Some(5) };
+        assert_eq!(after_switch(&view, Some(4)), AfterSwitch::Keep);
+        // The active tab is in another workspace: go to the workspace's own active tab.
+        assert_eq!(after_switch(&view, Some(9)), AfterSwitch::Activate(5));
+        let no_active = WorkspaceView { visible: vec![4, 5], active: None };
+        assert_eq!(after_switch(&no_active, None), AfterSwitch::Activate(4));
+        assert_eq!(after_switch(&WorkspaceView::default(), Some(9)), AfterSwitch::NewTab);
     }
 
     #[test]
