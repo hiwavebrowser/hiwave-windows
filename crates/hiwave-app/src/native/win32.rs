@@ -140,6 +140,8 @@ pub struct NativeBrowser {
     needs_settle: bool,
     /// The workspaces script the chrome was last sent, so it is sent again only when it changes.
     last_workspaces: String,
+    /// Which shelf the chrome last asked for (`"workspace"` or `"all"`).
+    shelf_scope: String,
     /// The view that last had the keyboard focus. Win32 can leave focus on the
     /// bare main window (activation, a click on the frame); the main window
     /// ignores keys, so the shell hands focus back to this view.
@@ -223,6 +225,7 @@ impl NativeBrowser {
             mirrored_tabs: std::collections::HashSet::new(),
             needs_settle: false,
             last_workspaces: String::new(),
+            shelf_scope: "workspace".to_string(),
             last_focus: std::cell::Cell::new(None),
             chrome_ready: false,
             tab_ids: HashMap::new(),
@@ -548,6 +551,57 @@ impl NativeBrowser {
         }
     }
 
+    /// Send the sidebar its shelf, for the scope it last asked for.
+    fn sync_shelf(&self) {
+        let script = match self.app_state.lock() {
+            Ok(state) => chrome_data::shelf_script(&state, &self.shelf_scope),
+            Err(_) => return,
+        };
+        self.run_chrome_script(&script);
+    }
+
+    /// How many tabs this shell has open.
+    fn native_tab_count(&self) -> usize {
+        if let Some(tabs) = self.page_tabs.as_ref() {
+            return tabs.count();
+        }
+        self.tabs.as_ref().map(|t| t.count()).unwrap_or(0)
+    }
+
+    /// Put a tab on its workspace's shelf and close it here. The shared model drops the tab
+    /// when it is shelved; if this shell kept it open the next turn would add it back, so
+    /// the last tab is replaced by a new one first (the strip never empties).
+    fn shelve_tab(&mut self, id: u64) {
+        let shelved = match self.app_state.lock() {
+            Ok(mut state) => matches!(state.add_to_shelf(hiwave_core::types::TabId(id)), Ok(Some(_))),
+            Err(_) => false,
+        };
+        if !shelved {
+            return;
+        }
+        if self.native_tab_count() <= 1 {
+            self.new_tab();
+        }
+        self.close_tab_by_id(id);
+        self.mirrored_tabs.remove(&id);
+        self.save_and_sync_workspaces();
+    }
+
+    /// Reopen a shelved page in a new tab of its workspace (or the one it was dropped on).
+    fn restore_shelf_item(&mut self, item: &str, workspace: Option<u64>) {
+        let taken = match self.app_state.lock() {
+            Ok(mut state) => shell_tabs::take_from_shelf(&mut state, item, workspace.map(hiwave_core::types::WorkspaceId)),
+            Err(_) => None,
+        };
+        let Some((url, _)) = taken else {
+            return;
+        };
+        // The workspace is active now; the new tab lands in it on the next turn.
+        self.new_tab();
+        self.navigate(&url);
+        self.save_and_sync_workspaces();
+    }
+
     /// Save the shared workspace state, then refresh the sidebar.
     fn save_and_sync_workspaces(&mut self) {
         if let Ok(state) = self.app_state.lock() {
@@ -556,6 +610,7 @@ impl NativeBrowser {
             }
         }
         self.sync_workspaces(true);
+        self.sync_shelf();
     }
 
     /// Send the blocklist panel its domains.
@@ -1991,6 +2046,24 @@ impl NativeBrowser {
                 }
             }
             "get_workspaces" => self.sync_workspaces(true),
+            "get_shelf" => {
+                if let Some(scope) = json.get("scope").and_then(|v| v.as_str()) {
+                    self.shelf_scope = if scope == "all" { "all" } else { "workspace" }.to_string();
+                }
+                self.sync_shelf();
+            }
+            "add_to_shelf" => {
+                if let Some(id) = json.get("tab_id").and_then(id_value) {
+                    self.shelve_tab(id);
+                }
+            }
+            "restore_from_shelf" => {
+                let item = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let workspace = json.get("workspace_id").and_then(id_value);
+                if !item.is_empty() {
+                    self.restore_shelf_item(&item, workspace);
+                }
+            }
             "activate_workspace" => {
                 if let Some(id) = json.get("id").and_then(id_value) {
                     if let Ok(mut state) = self.app_state.lock() {
