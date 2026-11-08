@@ -30,3 +30,26 @@ creates) plus the script's inline edits to `rustkit-layout` `text.rs` and `lib.r
 ## Not run
 No parity swarm, live-site board or native launch smoke; `collect-metrics` on the PR is the
 authoritative run.
+
+## Update: moved to develop `022aa2fa` (batch 41)
+
+Atlas posted a newer target while this PR was open ("one open refresh at a time; each
+supersedes the last"), so the same branch now carries a second commit up to hiwave-macos
+develop **`022aa2fa`**: batch 41, #992 (LAT13: the renderer records a frame into one
+encoder with one vertex/index arena buffer and shared layer-texture slots; a glyph-atlas
+mid-frame reset discards and re-records once; idle layer slots are trimmed). Six commits
+past `27129415`; seven files: engine `lib.rs`, `presenter.rs`, the new
+`layer_frame_time_tests.rs`, and renderer `lib.rs`, `glyph.rs`, `frame_stats.rs`, the new
+`layer_cost_tests.rs`. None of them is a file the Windows patches carry except engine
+`lib.rs` (641), which was re-applied the usual way: every patch re-applied, none dropped.
+
+Gates for the final tree:
+- `cargo test --workspace -- --test-threads=1`: exit 0, **4614 passed / 0 failed / 54
+  ignored** (the first commit: 4607 / 0 / 52; the new upstream tests account for the rest,
+  two of them ignored)
+- `cargo test -p rustkit-renderer -- --test-threads=1` alone: 157 passed, 3 ignored
+  (macOS reports renderer 157 for its own run)
+- WebView2 `hiwave-app`, native-win32, release `parity-capture`: all build
+
+Not run: the renderer's `layer_cost_table` timing (it is a GPU measurement on a Mac and is
+not a Windows claim), parity swarm, live-site board, launch smoke.
