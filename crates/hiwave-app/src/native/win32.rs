@@ -28,6 +28,7 @@
 use rustkit_core::input::{InputEvent, KeyCode, KeyEvent, KeyEventType, Modifiers, MouseButton, MouseEventType};
 use super::shortcuts::{self, Shortcut};
 use super::chrome_data;
+use super::shell_tabs;
 use super::content_page::{self, ContentPage};
 use super::layout::{self, Layout, LayoutInput};
 use super::tabs::{TabModel, TabSwitch};
@@ -132,8 +133,8 @@ pub struct NativeBrowser {
     right_panel_open: bool,
     /// Focus mode's chrome strip (see `LayoutInput::focus_bar`); None when not in focus mode.
     focus_bar: Option<u32>,
-    /// Tabs the user locked (pinned against decay), by the id the chrome knows them by.
-    locked_tabs: std::collections::HashSet<u64>,
+    /// Tab ids this shell has put into the shared `BrowserShell` (see `shell_tabs`).
+    mirrored_tabs: std::collections::HashSet<u64>,
     /// The view that last had the keyboard focus. Win32 can leave focus on the
     /// bare main window (activation, a click on the frame); the main window
     /// ignores keys, so the shell hands focus back to this view.
@@ -142,7 +143,6 @@ pub struct NativeBrowser {
     /// no `window.hiwaveChrome` to call.
     chrome_ready: bool,
     /// Stable ids for the tab strip (a tab is an engine view; the page wants a number).
-    next_tab_id: u64,
     tab_ids: HashMap<EngineViewId, u64>,
     chrome_synced: Option<ChromeSnapshot>,
     /// The request filter the engine runs; kept so the chrome can show its count
@@ -155,7 +155,6 @@ pub struct NativeBrowser {
     /// Which page is which tab, in order, and the active one. `None` unless the
     /// content thread is on.
     page_tabs: Option<TabModel<u64>>,
-    next_page_id: u64,
     /// A find on the content thread whose answer has not come back yet, with the
     /// query the chrome sent (the answer is echoed with that, never the page's).
     /// The last address written to the history, so a page is recorded once per visit.
@@ -206,17 +205,15 @@ impl NativeBrowser {
             sidebar_width: 0,
             right_panel_open: false,
             focus_bar: None,
-            locked_tabs: std::collections::HashSet::new(),
+            mirrored_tabs: std::collections::HashSet::new(),
             last_focus: std::cell::Cell::new(None),
             chrome_ready: false,
-            next_tab_id: 1,
             tab_ids: HashMap::new(),
             chrome_synced: None,
             shield,
             shield_enabled: true,
             pages: HashMap::new(),
             page_tabs: None,
-            next_page_id: 1,
             pending_find: RefCell::new(None),
             last_recorded_url: None,
             page_focused: std::cell::Cell::new(false),
@@ -285,8 +282,7 @@ impl NativeBrowser {
         let parent = self.viewhost.get_main_hwnd().ok_or("no main window")?;
         let bounds = to_bounds(self.layout().content);
         let page = ContentPage::spawn(parent, bounds, engine_builder(&self.shield))?;
-        let id = self.next_page_id;
-        self.next_page_id += 1;
+        let id = shell_tabs::alloc_tab_id();
         self.pages.insert(id, page);
         // Child windows do not stack in creation order here: keep the chrome under them.
         if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
@@ -334,8 +330,7 @@ impl NativeBrowser {
         // this window only shows what it publishes.
         let content_id = if content_page::enabled() {
             let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield))?;
-            let id = self.next_page_id;
-            self.next_page_id += 1;
+            let id = shell_tabs::alloc_tab_id();
             self.pages.insert(id, page);
             self.page_tabs = Some(TabModel::new(id));
             None
@@ -1284,12 +1279,7 @@ impl NativeBrowser {
 
     /// The tab id the page uses for `view`, assigned on first sight.
     fn tab_id_for(&mut self, view: EngineViewId) -> u64 {
-        let next = &mut self.next_tab_id;
-        *self.tab_ids.entry(view).or_insert_with(|| {
-            let id = *next;
-            *next += 1;
-            id
-        })
+        *self.tab_ids.entry(view).or_insert_with(shell_tabs::alloc_tab_id)
     }
 
     /// The position in the tab strip of the tab the page calls `id`.
@@ -1356,7 +1346,7 @@ impl NativeBrowser {
                 .filter_map(|id| self.pages.get(id).map(|page| (*id, page.state())))
                 .map(|(id, state)| TabRow {
                     id,
-                    locked: self.locked_tabs.contains(&id),
+                    locked: false,
                     title: state.title.clone().unwrap_or_else(|| "New Tab".to_string()),
                     url: state.url.clone().unwrap_or_default(),
                     active: id == active,
@@ -1418,7 +1408,7 @@ impl NativeBrowser {
                 let id = self.tab_id_for(view);
                 TabRow {
                     id,
-                    locked: self.locked_tabs.contains(&id),
+                    locked: false,
                     title,
                     url,
                     active: view == active,
@@ -1439,8 +1429,35 @@ impl NativeBrowser {
         self.push_snapshot(now);
     }
 
+    /// Keep the shared `BrowserShell` in step with this shell's tabs, save it when it
+    /// changed, and take each tab's lock flag from it (the lock lives in the model).
+    fn mirror_tabs(&mut self, rows: &mut [TabRow]) {
+        let tabs: Vec<shell_tabs::NativeTab> = rows
+            .iter()
+            .map(|r| shell_tabs::NativeTab {
+                id: r.id,
+                url: r.url.clone(),
+                title: r.title.clone(),
+                active: r.active,
+            })
+            .collect();
+        let Ok(mut state) = self.app_state.lock() else {
+            return;
+        };
+        let done = shell_tabs::reconcile(&mut state, &mut self.mirrored_tabs, &tabs);
+        if done.changed {
+            if let Err(e) = state.save_workspace_state() {
+                warn!(error = %e, "Failed to persist workspace state");
+            }
+        }
+        for row in rows.iter_mut() {
+            row.locked = done.locked.contains(&row.id);
+        }
+    }
+
     /// Tell the chrome what differs between `now` and what it was last told.
-    fn push_snapshot(&mut self, now: ChromeSnapshot) {
+    fn push_snapshot(&mut self, mut now: ChromeSnapshot) {
+        self.mirror_tabs(&mut now.tabs);
         self.record_visit_if_new(&now.url, &now.title);
         if self.chrome_synced.as_ref() == Some(&now) {
             return;
@@ -1804,10 +1821,17 @@ impl NativeBrowser {
             "set_mode" => debug!(mode = json.get("mode").and_then(|v| v.as_str()), "Mode selected"),
             "lock_page" | "unlock_page" => {
                 if let Some(id) = tab_ref_of(&json) {
-                    if cmd == "lock_page" {
-                        self.locked_tabs.insert(id);
-                    } else {
-                        self.locked_tabs.remove(&id);
+                    if let Ok(mut state) = self.app_state.lock() {
+                        let id = hiwave_core::types::TabId(id);
+                        let done = if cmd == "lock_page" { state.lock_tab(id) } else { state.unlock_tab(id) };
+                        match done {
+                            Ok(()) => {
+                                if let Err(e) = state.save_workspace_state() {
+                                    warn!(error = %e, "Failed to persist workspace state");
+                                }
+                            }
+                            Err(e) => warn!(error = %e, id = id.0, "Could not change the tab's lock"),
+                        }
                     }
                 }
             }
