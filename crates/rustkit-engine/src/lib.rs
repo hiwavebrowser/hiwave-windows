@@ -427,6 +427,8 @@ mod keyframes_opacity_tests;
 #[cfg(all(test, feature = "headless"))]
 mod float_margin_tests;
 #[cfg(all(test, feature = "headless"))]
+mod ua_em_margin_tests;
+#[cfg(all(test, feature = "headless"))]
 mod opacity_value_tests;
 #[cfg(test)]
 mod aspect_ratio_apply_tests;
@@ -13646,54 +13648,65 @@ impl layout_ctx::LayoutCtx {
                 style.margin_bottom = rustkit_css::Length::Px(8.0);
                 style.margin_left = rustkit_css::Length::Px(8.0);
             }
-            // Headings (Chrome uses em units, we convert to px assuming 16px base)
+            // Headings. Chromium's html.css writes the block margins of
+            // h1-h6, p, ul/ol/menu/dir, dl, blockquote, figure, pre/listing/
+            // xmp/plaintext and hr in `em`, and an em margin resolves against
+            // the element's OWN computed font-size — after the author's
+            // `font-size` has applied. They were px pre-multiplied at 16px
+            // (and at the UA heading size), so `.subtitle { font-size: .9rem }`
+            // on a <p> kept 16px margins where Chromium has 14.4px: settings
+            // and report shifted 1.6px below their header (chrome board
+            // re-rank 2026-11-07, ua_em_margin_tests). The 40px inline
+            // margins/paddings are px in html.css and stay px. Heading
+            // FONT-SIZES are still px here (2em/1.5em/… of the parent in
+            // Chromium) — a separate change.
             "h1" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(32.0); // 2em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(21.44); // 0.67em * 32px
-                style.margin_bottom = rustkit_css::Length::Px(21.44);
+                style.margin_top = rustkit_css::Length::Em(0.67);
+                style.margin_bottom = rustkit_css::Length::Em(0.67);
             }
             "h2" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(24.0); // 1.5em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(19.92); // 0.83em * 24px
-                style.margin_bottom = rustkit_css::Length::Px(19.92);
+                style.margin_top = rustkit_css::Length::Em(0.83);
+                style.margin_bottom = rustkit_css::Length::Em(0.83);
             }
             "h3" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(18.72); // 1.17em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(18.72); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(18.72);
+                style.margin_top = rustkit_css::Length::Em(1.0);
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
             }
             "h4" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(16.0); // 1em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(21.28); // 1.33em
-                style.margin_bottom = rustkit_css::Length::Px(21.28);
+                style.margin_top = rustkit_css::Length::Em(1.33); // 1.33em
+                style.margin_bottom = rustkit_css::Length::Em(1.33);
             }
             "h5" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(13.28); // 0.83em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(22.17); // 1.67em
-                style.margin_bottom = rustkit_css::Length::Px(22.17);
+                style.margin_top = rustkit_css::Length::Em(1.67); // 1.67em
+                style.margin_bottom = rustkit_css::Length::Em(1.67);
             }
             "h6" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(10.72); // 0.67em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(25.0); // 2.33em
-                style.margin_bottom = rustkit_css::Length::Px(25.0);
+                style.margin_top = rustkit_css::Length::Em(2.33); // 2.33em
+                style.margin_bottom = rustkit_css::Length::Em(2.33);
             }
             // Paragraphs and text blocks
             "p" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
             }
             "div" => {
                 style.display = rustkit_css::Display::Block;
@@ -13815,8 +13828,8 @@ impl layout_ctx::LayoutCtx {
             "pre" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_family = "monospace".to_string();
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 // HTML §15.3.9 UA sheet: `pre { white-space: pre }`. This
                 // was "(not implemented)" — every `<pre>` block without an
                 // author white-space rule collapsed its newlines and
@@ -13827,8 +13840,8 @@ impl layout_ctx::LayoutCtx {
             "listing" | "xmp" | "plaintext" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_family = "monospace".to_string();
-                style.margin_top = rustkit_css::Length::Px(16.0);
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0);
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 style.white_space = rustkit_css::WhiteSpace::Pre;
             }
             "code" | "kbd" | "samp" | "tt" => {
@@ -13838,8 +13851,8 @@ impl layout_ctx::LayoutCtx {
             // Lists
             "ul" | "ol" | "menu" | "dir" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 style.padding_left = rustkit_css::Length::Px(40.0);
             }
             "li" => {
@@ -13850,8 +13863,8 @@ impl layout_ctx::LayoutCtx {
             }
             "dl" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0);
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0);
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
             }
             "dt" => {
                 style.display = rustkit_css::Display::Block;
@@ -13863,8 +13876,8 @@ impl layout_ctx::LayoutCtx {
             // Quotes
             "blockquote" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 style.margin_left = rustkit_css::Length::Px(40.0);
                 style.margin_right = rustkit_css::Length::Px(40.0);
             }
@@ -13890,8 +13903,8 @@ impl layout_ctx::LayoutCtx {
                 style.border_right_color = gray;
                 style.border_bottom_color = gray;
                 style.border_left_color = gray;
-                style.margin_top = rustkit_css::Length::Px(8.0); // 0.5em
-                style.margin_bottom = rustkit_css::Length::Px(8.0);
+                style.margin_top = rustkit_css::Length::Em(0.5);
+                style.margin_bottom = rustkit_css::Length::Em(0.5);
             }
             // Sections
             "article" | "aside" | "footer" | "header" | "hgroup" | "main" | "nav" | "search"
@@ -13901,8 +13914,8 @@ impl layout_ctx::LayoutCtx {
             // Figure
             "figure" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 style.margin_left = rustkit_css::Length::Px(40.0);
                 style.margin_right = rustkit_css::Length::Px(40.0);
             }
