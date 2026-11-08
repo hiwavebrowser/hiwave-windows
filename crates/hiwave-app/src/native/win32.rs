@@ -792,16 +792,17 @@ impl NativeBrowser {
         }
     }
 
-    /// Escape means "stop loading" only for the page. With the chrome focused (the find
-    /// box, the address bar) it belongs to chrome.html, which closes its find bar and
-    /// panels on it.
+    /// Escape means "stop loading" only for the page. With one of the app's own views
+    /// focused (the chrome: the find box, the address bar; or the shelf, the command
+    /// palette) it belongs to that view's page, which closes its own UI on it.
     fn chrome_owns_escape(&self, shortcut: Shortcut) -> bool {
         shortcut == Shortcut::Stop
             && !self.page_focused.get()
-            && match (self.focused_view(), self.views.get(&ViewType::Chrome)) {
-                (Some(focused), Some(chrome)) => focused == *chrome,
-                _ => false,
-            }
+            && self.focused_view().is_some_and(|focused| {
+                [ViewType::Chrome, ViewType::Shelf]
+                    .iter()
+                    .any(|kind| self.views.get(kind) == Some(&focused))
+            })
     }
 
     /// Deliver mouse and key input from the content-thread page's window to the page.
