@@ -33,6 +33,8 @@ pub enum Shortcut {
     ToggleSidebar,
     /// Open the command palette (the shelf).
     CommandPalette,
+    /// Open the history panel.
+    History,
 }
 
 /// Resolve a key press to a shell action.
@@ -63,6 +65,7 @@ pub fn resolve(key: KeyCode, mods: Modifiers) -> Option<Shortcut> {
             KeyCode::KeyL => Some(Shortcut::FocusAddressBar),
             KeyCode::KeyB => Some(Shortcut::ToggleSidebar),
             KeyCode::KeyK => Some(Shortcut::CommandPalette),
+            KeyCode::KeyH => Some(Shortcut::History),
             KeyCode::Digit1 => Some(Shortcut::ActivateTab(0)),
             KeyCode::Digit2 => Some(Shortcut::ActivateTab(1)),
             KeyCode::Digit3 => Some(Shortcut::ActivateTab(2)),
@@ -138,6 +141,7 @@ mod tests {
         assert_eq!(resolve(KeyCode::KeyL, ctrl()), Some(Shortcut::FocusAddressBar));
         assert_eq!(resolve(KeyCode::KeyB, ctrl()), Some(Shortcut::ToggleSidebar));
         assert_eq!(resolve(KeyCode::KeyK, ctrl()), Some(Shortcut::CommandPalette));
+        assert_eq!(resolve(KeyCode::KeyH, ctrl()), Some(Shortcut::History));
     }
 
     #[test]
