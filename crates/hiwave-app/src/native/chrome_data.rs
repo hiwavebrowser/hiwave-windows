@@ -42,6 +42,38 @@ pub fn should_record_history_url(url: &str) -> bool {
         || lower.starts_with("hiwave:"))
 }
 
+/// Decides which snapshots of the active tab are a new visit for the history.
+///
+/// Three things are not visits: switching tabs (the other tab's page is not a new page),
+/// a page that is still loading (its title may still be the previous page's), and the same
+/// address seen again. Pollux's R1 on #126 found the first two.
+#[derive(Debug, Default)]
+pub struct VisitTracker {
+    last_url: Option<String>,
+    last_tab: Option<u64>,
+}
+
+impl VisitTracker {
+    /// Whether this snapshot (`url`, `title` of the active tab `tab`) should be written to
+    /// the history now.
+    pub fn should_record(&mut self, tab: Option<u64>, url: &str, title: &str, loading: bool) -> bool {
+        if tab != self.last_tab {
+            // A different tab is showing: adopt its address, record nothing.
+            self.last_tab = tab;
+            self.last_url = Some(url.to_string());
+            return false;
+        }
+        if loading || url.is_empty() || title.is_empty() || title == "New Tab" {
+            return false;
+        }
+        if !should_record_history_url(url) || self.last_url.as_deref() == Some(url) {
+            return false;
+        }
+        self.last_url = Some(url.to_string());
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,6 +100,46 @@ mod tests {
         let close = call.rfind("); }").unwrap();
         let back: serde_json::Value = serde_json::from_str(&call[open..close]).expect("one JSON value");
         assert_eq!(back[0]["title"], json!(title));
+    }
+
+    #[test]
+    fn a_navigation_is_a_visit_once() {
+        let mut v = VisitTracker::default();
+        assert!(!v.should_record(Some(1), "hiwave://about", "About HiWave", false), "the first snapshot only adopts");
+        assert!(v.should_record(Some(1), "https://a.test/", "A", false));
+        assert!(!v.should_record(Some(1), "https://a.test/", "A", false), "the same page again is not a new visit");
+        assert!(v.should_record(Some(1), "https://b.test/", "B", false));
+    }
+
+    #[test]
+    fn switching_tabs_does_not_record_visits() {
+        let mut v = VisitTracker::default();
+        v.should_record(Some(1), "https://a.test/", "A", false);
+        // Tab 2 shows B, tab 1 shows A again: no navigation happened in either.
+        assert!(!v.should_record(Some(2), "https://b.test/", "B", false));
+        assert!(!v.should_record(Some(1), "https://a.test/", "A", false));
+        assert!(!v.should_record(Some(2), "https://b.test/", "B", false));
+        // A real navigation in the tab that is showing still counts.
+        assert!(v.should_record(Some(2), "https://c.test/", "C", false));
+    }
+
+    #[test]
+    fn a_page_that_is_still_loading_is_not_recorded_with_the_old_title() {
+        let mut v = VisitTracker::default();
+        v.should_record(Some(1), "https://a.test/", "A", false);
+        // The new address is in but the title is still the previous page's.
+        assert!(!v.should_record(Some(1), "https://b.test/", "A", true));
+        // Once it has loaded, the pair is right and it is recorded.
+        assert!(v.should_record(Some(1), "https://b.test/", "B", false));
+    }
+
+    #[test]
+    fn a_failed_navigation_that_falls_back_is_not_a_visit() {
+        let mut v = VisitTracker::default();
+        v.should_record(Some(1), "https://a.test/", "A", false);
+        assert!(!v.should_record(Some(1), "https://dead.test/", "A", true));
+        // The address goes back to A when the load fails: A was already recorded.
+        assert!(!v.should_record(Some(1), "https://a.test/", "A", false));
     }
 
     #[test]

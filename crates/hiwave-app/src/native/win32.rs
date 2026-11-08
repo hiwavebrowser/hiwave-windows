@@ -148,10 +148,10 @@ pub struct NativeBrowser {
     /// content thread is on.
     page_tabs: Option<TabModel<u64>>,
     next_page_id: u64,
+    /// Which snapshots of the active tab are a new visit for the history.
+    visits: chrome_data::VisitTracker,
     /// A find on the content thread whose answer has not come back yet, with the
     /// query the chrome sent (the answer is echoed with that, never the page's).
-    /// The last address written to the history, so a page is recorded once per visit.
-    last_recorded_url: Option<String>,
     pending_find: RefCell<Option<(tokio::sync::oneshot::Receiver<Result<String, String>>, String)>>,
     /// The page (not a chrome view) has the keyboard.
     page_focused: std::cell::Cell<bool>,
@@ -208,7 +208,7 @@ impl NativeBrowser {
             page_tabs: None,
             next_page_id: 1,
             pending_find: RefCell::new(None),
-            last_recorded_url: None,
+            visits: chrome_data::VisitTracker::default(),
             page_focused: std::cell::Cell::new(false),
         })
     }
@@ -1107,15 +1107,11 @@ impl NativeBrowser {
         self.run_chrome_script(&script);
     }
 
-    /// Write the active page to the history once it has loaded (it has a title).
-    fn record_visit_if_new(&mut self, url: &str, title: &str) {
-        if url.is_empty() || title.is_empty() || title == "New Tab" {
+    /// Write the active page to the history when `VisitTracker` says it is a new visit.
+    fn record_visit_if_new(&mut self, tab: Option<u64>, url: &str, title: &str, loading: bool) {
+        if !self.visits.should_record(tab, url, title, loading) {
             return;
         }
-        if !chrome_data::should_record_history_url(url) || self.last_recorded_url.as_deref() == Some(url) {
-            return;
-        }
-        self.last_recorded_url = Some(url.to_string());
         if let Ok(mut state) = self.app_state.lock() {
             if let Err(e) = state.record_visit(url, Some(title.to_string()), None) {
                 warn!(error = %e, "Failed to write the history entry");
@@ -1287,7 +1283,8 @@ impl NativeBrowser {
 
     /// Tell the chrome what differs between `now` and what it was last told.
     fn push_snapshot(&mut self, now: ChromeSnapshot) {
-        self.record_visit_if_new(&now.url, &now.title);
+        let active_tab = now.tabs.iter().find(|r| r.active).map(|r| r.id);
+        self.record_visit_if_new(active_tab, &now.url, &now.title, now.loading);
         if self.chrome_synced.as_ref() == Some(&now) {
             return;
         }
