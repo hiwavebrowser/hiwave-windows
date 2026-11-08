@@ -20,6 +20,14 @@ pub fn history_script(state: &AppState) -> String {
     chrome_call("updateHistory", &history)
 }
 
+/// The blocklist panel's data: the user's blocked domains, sorted so the list does not
+/// reorder itself between calls (the set has no order).
+pub fn blocklist_script(state: &AppState) -> String {
+    let mut domains: Vec<&String> = state.user_blocklist.domains.iter().collect();
+    domains.sort();
+    chrome_call("updateBlocklist", &serde_json::json!(domains))
+}
+
 /// The downloads panel's data and the count of active downloads.
 pub fn downloads_script(state: &AppState) -> String {
     let payload = serde_json::json!({

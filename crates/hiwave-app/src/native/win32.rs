@@ -516,6 +516,42 @@ impl NativeBrowser {
         self.run_chrome_script(&script);
     }
 
+    /// Send the blocklist panel its domains.
+    fn sync_blocklist(&self) {
+        let script = match self.app_state.lock() {
+            Ok(state) => chrome_data::blocklist_script(&state),
+            Err(_) => return,
+        };
+        self.run_chrome_script(&script);
+    }
+
+    /// Whether the user has blocked this address's domain.
+    fn user_blocked(&self, url: &str) -> bool {
+        self.app_state.lock().map(|s| s.user_blocklist.should_block(url)).unwrap_or(false)
+    }
+
+    /// Block the domain of the tab the chrome calls `id`, then close the tab. The
+    /// address comes from the rows the chrome was last told about.
+    fn block_and_close(&mut self, id: u64) {
+        let url = self
+            .chrome_synced
+            .as_ref()
+            .and_then(|s| s.tabs.iter().find(|t| t.id == id))
+            .map(|t| t.url.clone());
+        let Some(domain) = url.as_deref().and_then(crate::state::UserBlocklist::extract_domain) else {
+            warn!(id, "block_and_close: the tab has no domain to block");
+            return;
+        };
+        if let Ok(mut state) = self.app_state.lock() {
+            if let Err(e) = state.block_domain(domain.clone()) {
+                warn!(error = %e, "Failed to save the blocklist");
+            }
+        }
+        info!(%domain, id, "Blocked the domain and closed its tab");
+        self.close_tab_by_id(id);
+        self.sync_blocklist();
+    }
+
     /// The peek: a taller chrome strip while the mouse is at the top in focus mode.
     fn set_focus_peek(&mut self, show: bool) {
         if self.focus_bar.is_none() {
@@ -1431,6 +1467,10 @@ impl NativeBrowser {
             debug!(input = url, "Nothing to navigate to");
             return;
         };
+        if self.user_blocked(&url) {
+            warn!(url, "Navigation refused: the domain is on the user's blocklist");
+            return;
+        }
         if let Some(page) = self.page() {
             match url::Url::parse(&url) {
                 Ok(parsed) => page.navigate(parsed),
@@ -1697,6 +1737,22 @@ impl NativeBrowser {
                 self.run_chrome_script(&script);
             }
             "save_sidebar_width" => {}
+            "get_blocklist" => self.sync_blocklist(),
+            "unblock_domain" => {
+                if let Some(domain) = json.get("domain").and_then(|v| v.as_str()) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        if let Err(e) = state.unblock_domain(domain) {
+                            warn!(error = %e, "Failed to unblock the domain");
+                        }
+                    }
+                }
+                self.sync_blocklist();
+            }
+            "block_and_close" => {
+                if let Some(id) = tab_id_of(&json) {
+                    self.block_and_close(id);
+                }
+            }
             "enter_focus_mode" => self.set_focus_mode(Some(true)),
             "exit_focus_mode" => self.set_focus_mode(Some(false)),
             "toggle_focus_mode" => self.set_focus_mode(None),
