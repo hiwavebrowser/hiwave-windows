@@ -866,9 +866,11 @@ impl NativeBrowser {
             "{FIND_IN_PAGE_HELPER}\n(() => {{ const r = window.__hiwaveFind && window.__hiwaveFind.run({payload}); return r ? JSON.stringify(r) : 'null'; }})();"
         );
         let out = self.engine.borrow_mut().execute_script(content_id, &script);
-        match out.ok().and_then(|o| script_string(&o)) {
-            Some(json) => self.run_chrome_script(&format!(
-                "if(window.hiwaveChrome) {{ hiwaveChrome.updateFindState({json}); }}"
+        // The helper ran in the PAGE, so its answer is page-controlled. Only numbers
+        // parsed out of it, and the query the chrome itself sent, reach the chrome.
+        match out.ok().and_then(|o| script_string(&o)).and_then(|raw| find_state_payload(&raw, query)) {
+            Some(state) => self.run_chrome_script(&format!(
+                "if(window.hiwaveChrome) {{ hiwaveChrome.updateFindState({state}); }}"
             )),
             None => debug!("find_in_page produced no result"),
         }
@@ -1381,6 +1383,19 @@ fn script_string(result: &str) -> Option<String> {
     serde_json::from_str::<String>(inner).ok().filter(|s| s != "null")
 }
 
+/// What the chrome's find bar is told, built from the find helper's answer.
+///
+/// The helper runs inside the page, so a page can make it return anything. This
+/// parses the answer and keeps only the two numbers, then re-serialises them with
+/// `query` (the text the chrome sent, not anything the page said). The result is
+/// plain JSON data; no page-supplied text can become script in the chrome.
+fn find_state_payload(raw: &str, query: &str) -> Option<serde_json::Value> {
+    let answer: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let count = answer.get("count")?.as_i64()?.clamp(0, 1_000_000);
+    let index = answer.get("index")?.as_i64()?.clamp(-1, 1_000_000);
+    Some(serde_json::json!({ "count": count, "index": index, "query": query }))
+}
+
 /// The tab id in a chrome message. The page sends it as a number or a string.
 fn tab_id_of(json: &serde_json::Value) -> Option<u64> {
     let id = json.get("id")?;
@@ -1699,7 +1714,7 @@ fn chrono_lite_timestamp() -> String {
 
 #[cfg(test)]
 mod chrome_message_tests {
-    use super::{parse_budget, tab_id_of};
+    use super::{find_state_payload, parse_budget, tab_id_of};
     use serde_json::json;
 
     #[test]
@@ -1728,5 +1743,35 @@ mod chrome_message_tests {
         assert_eq!(parse_budget(Some("abc")), 5_000);
         assert_eq!(parse_budget(Some("0")), 5_000);
         assert_eq!(parse_budget(Some("-1")), 5_000);
+    }
+
+    #[test]
+    fn a_find_answer_becomes_only_two_numbers_and_the_chromes_own_query() {
+        let state = find_state_payload(r#"{"count":4,"index":0,"query":"needle"}"#, "needle").unwrap();
+        assert_eq!(state, json!({"count": 4, "index": 0, "query": "needle"}));
+    }
+
+    #[test]
+    fn a_hostile_find_answer_cannot_put_page_text_into_the_chrome() {
+        // A page can make the helper say anything. Extra fields are dropped and the
+        // page's own "query" is ignored in favour of the one the chrome sent.
+        let hostile = r#"{"count":2,"index":1,"query":"1);window.ipc.postMessage('x')//","evil":"</script>"}"#;
+        let state = find_state_payload(hostile, "safe").unwrap();
+        assert_eq!(state, json!({"count": 2, "index": 1, "query": "safe"}));
+        let rendered = state.to_string();
+        assert!(!rendered.contains("ipc") && !rendered.contains("evil"), "{rendered}");
+    }
+
+    #[test]
+    fn a_find_answer_that_is_not_two_numbers_is_rejected() {
+        assert!(find_state_payload("1);alert(1)//", "q").is_none());
+        assert!(find_state_payload(r#"{"count":"1);x","index":0}"#, "q").is_none());
+        assert!(find_state_payload(r#"{"count":3}"#, "q").is_none());
+    }
+
+    #[test]
+    fn find_counts_are_clamped() {
+        let state = find_state_payload(r#"{"count":-5,"index":99999999999}"#, "q").unwrap();
+        assert_eq!(state, json!({"count": 0, "index": 1_000_000, "query": "q"}));
     }
 }
