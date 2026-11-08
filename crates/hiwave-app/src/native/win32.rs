@@ -277,7 +277,7 @@ impl NativeBrowser {
     fn spawn_page(&mut self) -> Result<u64, String> {
         let parent = self.viewhost.get_main_hwnd().ok_or("no main window")?;
         let bounds = to_bounds(self.layout().content);
-        let page = ContentPage::spawn(parent, bounds, engine_builder(&self.shield))?;
+        let page = ContentPage::spawn(parent, bounds, engine_builder(&self.shield), self.nav_guard())?;
         let id = self.next_page_id;
         self.next_page_id += 1;
         self.pages.insert(id, page);
@@ -326,7 +326,7 @@ impl NativeBrowser {
         // page is not an engine view of this engine: it runs on its own thread and
         // this window only shows what it publishes.
         let content_id = if content_page::enabled() {
-            let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield))?;
+            let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield), self.nav_guard())?;
             let id = self.next_page_id;
             self.next_page_id += 1;
             self.pages.insert(id, page);
@@ -527,7 +527,13 @@ impl NativeBrowser {
 
     /// Whether the user has blocked this address's domain.
     fn user_blocked(&self, url: &str) -> bool {
-        self.app_state.lock().map(|s| s.user_blocklist.should_block(url)).unwrap_or(false)
+        self.app_state.lock().map(|s| chrome_data::url_is_blocked(&s, url)).unwrap_or(false)
+    }
+
+    /// The blocklist check a content-thread page asks before each of its navigations.
+    fn nav_guard(&self) -> content_page::NavGuard {
+        let state = Arc::clone(&self.app_state);
+        std::rc::Rc::new(move |url: &str| state.lock().map(|s| chrome_data::url_is_blocked(&s, url)).unwrap_or(false))
     }
 
     /// Block the domain of the tab the chrome calls `id`, then close the tab. The
@@ -1494,6 +1500,12 @@ impl NativeBrowser {
     }
 
     fn navigate_view(&self, content_id: EngineViewId, url: &str) {
+        // Every engine-view navigation ends here: the address bar, a link click, a form
+        // submit and a script's location change.
+        if self.user_blocked(url) {
+            warn!(url, "Navigation refused: the domain is on the user's blocklist");
+            return;
+        }
         match url::Url::parse(url) {
             Ok(parsed) => {
                 let mut engine = self.engine.borrow_mut();
