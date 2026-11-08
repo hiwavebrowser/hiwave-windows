@@ -1202,13 +1202,8 @@ impl NativeBrowser {
         match shortcut {
             Shortcut::NewTab => self.new_tab(),
             Shortcut::CloseTab => self.close_active_tab(),
-            Shortcut::ActivateTab(i) => self.activate_tab_by_index(i),
-            Shortcut::ActivateLastTab => {
-                let count = self.page_tabs.as_ref().map(|t| t.count()).or_else(|| self.tabs.as_ref().map(|t| t.count()));
-                if let Some(last) = count.map(|c| c - 1) {
-                    self.activate_tab_by_index(last);
-                }
-            }
+            Shortcut::ActivateTab(i) => self.activate_strip_tab(shell_tabs::Pick::Nth(i)),
+            Shortcut::ActivateLastTab => self.activate_strip_tab(shell_tabs::Pick::Last),
             Shortcut::Back => self.traverse("back"),
             Shortcut::Forward => self.traverse("forward"),
             Shortcut::Reload => self.traverse("reload"),
@@ -1430,6 +1425,30 @@ impl NativeBrowser {
             self.activate_tab_by_index(index);
         }
         self.load_pending_for_active();
+    }
+
+    /// Every native tab's id, in the order of the tab model.
+    fn native_tab_order(&self) -> Vec<u64> {
+        if let Some(tabs) = self.page_tabs.as_ref() {
+            return tabs.views().to_vec();
+        }
+        let Some(tabs) = self.tabs.as_ref() else {
+            return Vec::new();
+        };
+        tabs.views().iter().filter_map(|v| self.tab_ids.get(v).copied()).collect()
+    }
+
+    /// Ctrl+1..9: activate the nth (or the last) tab of the STRIP, which shows only the
+    /// active workspace's tabs.
+    fn activate_strip_tab(&mut self, pick: shell_tabs::Pick) {
+        let visible = match self.app_state.lock() {
+            Ok(state) => shell_tabs::active_workspace_view(&state, &self.mirrored_tabs).visible,
+            Err(_) => return,
+        };
+        let order = self.native_tab_order();
+        if let Some(index) = shell_tabs::pick_visible(&order, &visible, pick).and_then(|id| self.tab_index_for_id(id)) {
+            self.activate_tab_by_index(index);
+        }
     }
 
     /// The id the chrome knows the active tab by.

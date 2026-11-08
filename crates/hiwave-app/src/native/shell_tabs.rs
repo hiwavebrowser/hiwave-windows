@@ -145,6 +145,26 @@ pub fn take_from_shelf(
     Some((item.url, workspace))
 }
 
+/// Which tab of the strip a Ctrl+number shortcut means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    /// The nth tab (0-based).
+    Nth(usize),
+    /// The last tab (Ctrl+9).
+    Last,
+}
+
+/// The native tab a Ctrl+number shortcut means: counted over the tabs the strip SHOWS (the
+/// active workspace's), in the strip's order, not over every tab this shell has open.
+/// `order` is every native tab in strip order; `visible` is the active workspace's.
+pub fn pick_visible(order: &[u64], visible: &[u64], pick: Pick) -> Option<u64> {
+    let shown: Vec<u64> = order.iter().copied().filter(|id| visible.contains(id)).collect();
+    match pick {
+        Pick::Nth(n) => shown.get(n).copied(),
+        Pick::Last => shown.last().copied(),
+    }
+}
+
 /// A tab in the shared model that this shell has no view for yet (restored from a
 /// previous session).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,6 +374,19 @@ mod tests {
         let (saved, _) = unowned_tabs(&s, &owned, ws);
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].id, ids[1].0);
+    }
+
+    #[test]
+    fn ctrl_number_counts_the_tabs_the_strip_shows() {
+        // Five tabs open; only 11, 13 and 15 are in the active workspace.
+        let order = [10, 11, 12, 13, 14, 15];
+        let visible = [15, 11, 13];
+        assert_eq!(pick_visible(&order, &visible, Pick::Nth(0)), Some(11));
+        assert_eq!(pick_visible(&order, &visible, Pick::Nth(1)), Some(13));
+        assert_eq!(pick_visible(&order, &visible, Pick::Nth(2)), Some(15));
+        assert_eq!(pick_visible(&order, &visible, Pick::Nth(3)), None, "past the end of the strip");
+        assert_eq!(pick_visible(&order, &visible, Pick::Last), Some(15));
+        assert_eq!(pick_visible(&order, &[], Pick::Last), None);
     }
 
     #[test]
