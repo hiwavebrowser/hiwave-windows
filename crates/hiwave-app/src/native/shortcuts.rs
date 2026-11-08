@@ -35,6 +35,8 @@ pub enum Shortcut {
     CommandPalette,
     /// Open the history panel.
     History,
+    /// Toggle focus mode (Ctrl+Shift+F, F11).
+    FocusMode,
 }
 
 /// Resolve a key press to a shell action.
@@ -55,7 +57,8 @@ pub fn resolve(key: KeyCode, mods: Modifiers) -> Option<Shortcut> {
         // the unshifted meaning — Ctrl+Shift+T must never silently open a
         // plain new tab.
         if mods.shift {
-            return None;
+            // The one Ctrl+Shift chord the shell owns: focus mode.
+            return (key == KeyCode::KeyF && !mods.alt).then_some(Shortcut::FocusMode);
         }
         return match key {
             KeyCode::KeyT => Some(Shortcut::NewTab),
@@ -91,6 +94,7 @@ pub fn resolve(key: KeyCode, mods: Modifiers) -> Option<Shortcut> {
         return match key {
             KeyCode::F5 => Some(Shortcut::Reload),
             KeyCode::Escape => Some(Shortcut::Stop),
+            KeyCode::F11 => Some(Shortcut::FocusMode),
             _ => None,
         };
     }
@@ -145,9 +149,10 @@ mod tests {
     }
 
     #[test]
-    fn the_chrome_chords_need_ctrl_alone() {
+    fn ctrl_shift_f_and_f11_are_focus_mode_a_bare_f_is_typing() {
         let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Default::default() };
-        assert_eq!(resolve(KeyCode::KeyF, ctrl_shift), None, "Ctrl+Shift+F is focus mode, a different chord");
+        assert_eq!(resolve(KeyCode::KeyF, ctrl_shift), Some(Shortcut::FocusMode));
+        assert_eq!(resolve(KeyCode::F11, none()), Some(Shortcut::FocusMode));
         assert_eq!(resolve(KeyCode::KeyF, none()), None, "a bare F is typing");
     }
 
