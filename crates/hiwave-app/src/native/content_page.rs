@@ -157,6 +157,35 @@ impl ContentPage {
         self.surface.borrow().grab_keyboard();
     }
 
+    /// Show or hide the page's window, and tell the page (a hidden page need not
+    /// draw). A background tab keeps loading either way.
+    pub fn set_visible(&self, visible: bool) {
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNA};
+        // SAFETY: the surface's window is live while `self` is, and this runs on the
+        // window thread that created it.
+        unsafe {
+            let _ = ShowWindow(self.hwnd(), if visible { SW_SHOWNA } else { SW_HIDE });
+        }
+        self.thread.enqueue(PageCmd::SetVisible { visible });
+        if visible {
+            // What it last published may not have been drawn while it was hidden.
+            self.needs_present.set(true);
+        }
+    }
+
+    /// Close the page: stop its thread and destroy its window. `WindowSurface` has
+    /// no `Drop` that does the second, so without this a closed tab's window would
+    /// stay on screen.
+    pub fn close(self) {
+        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+        let hwnd = self.hwnd();
+        drop(self);
+        // SAFETY: `hwnd` was created on this (the window) thread and is destroyed once.
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+    }
+
     // ---- input ------------------------------------------------------------------
     //
     // Everything here is fire-and-forget, as on macOS: the page acts on its own

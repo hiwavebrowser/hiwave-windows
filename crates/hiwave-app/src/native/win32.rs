@@ -142,7 +142,11 @@ pub struct NativeBrowser {
     shield_enabled: bool,
     /// The page on the content thread (`HIWAVE_CONTENT_THREAD=1`). `None`: pages
     /// load on the window thread, as before.
-    page: Option<ContentPage>,
+    pages: HashMap<u64, ContentPage>,
+    /// Which page is which tab, in order, and the active one. `None` unless the
+    /// content thread is on.
+    page_tabs: Option<TabModel<u64>>,
+    next_page_id: u64,
     /// The page (not a chrome view) has the keyboard.
     page_focused: std::cell::Cell<bool>,
 }
@@ -194,7 +198,9 @@ impl NativeBrowser {
             chrome_synced: None,
             shield,
             shield_enabled: true,
-            page: None,
+            pages: HashMap::new(),
+            page_tabs: None,
+            next_page_id: 1,
             page_focused: std::cell::Cell::new(false),
         })
     }
@@ -221,7 +227,7 @@ impl NativeBrowser {
         // Create the three views
         self.create_views(hwnd)?;
         self.subscribe_to_events();
-        if let Some(page) = &self.page {
+        if let Some(page) = self.page() {
             page.grab_keyboard();
             self.page_focused.set(true);
         }
@@ -243,6 +249,44 @@ impl NativeBrowser {
 
         info!("Native browser initialized");
         Ok(())
+    }
+
+    /// The active page, when the content thread is on.
+    fn page(&self) -> Option<&ContentPage> {
+        let tabs = self.page_tabs.as_ref()?;
+        self.pages.get(&tabs.active_view())
+    }
+
+    /// The page whose window reports its input under `host_view`.
+    fn page_for_viewhost(&self, host_view: rustkit_viewhost::ViewId) -> Option<&ContentPage> {
+        self.pages.values().find(|page| page.viewhost_id() == host_view)
+    }
+
+    /// Start a page on its own thread at the content bounds.
+    fn spawn_page(&mut self) -> Result<u64, String> {
+        let parent = self.viewhost.get_main_hwnd().ok_or("no main window")?;
+        let bounds = to_bounds(self.layout().content);
+        let page = ContentPage::spawn(parent, bounds, engine_builder(&self.shield))?;
+        let id = self.next_page_id;
+        self.next_page_id += 1;
+        self.pages.insert(id, page);
+        // Child windows do not stack in creation order here: keep the chrome under them.
+        if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
+            lower_view(&self.engine.borrow(), chrome_id);
+        }
+        Ok(id)
+    }
+
+    /// Show the page that became active and hide the one that stopped being.
+    fn apply_page_switch(&mut self, switch: TabSwitch<u64>) {
+        if let Some(previous) = self.pages.get(&switch.previous) {
+            previous.set_visible(false);
+        }
+        if let Some(current) = self.pages.get(&switch.current) {
+            current.set_visible(true);
+            current.grab_keyboard();
+            self.page_focused.set(true);
+        }
     }
 
     /// Create Chrome, Content, and Shelf views.
@@ -269,7 +313,10 @@ impl NativeBrowser {
         // this window only shows what it publishes.
         let content_id = if content_page::enabled() {
             let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield))?;
-            self.page = Some(page);
+            let id = self.next_page_id;
+            self.next_page_id += 1;
+            self.pages.insert(id, page);
+            self.page_tabs = Some(TabModel::new(id));
             None
         } else {
             let content_id = engine
@@ -295,7 +342,7 @@ impl NativeBrowser {
         // first, ended up on top and hid the page), so say so explicitly.
         lower_view(&engine, chrome_id);
 
-        info!(chrome = ?chrome_id, content = ?content_id, on_content_thread = self.page.is_some(), shelf = ?shelf_id, "All views created");
+        info!(chrome = ?chrome_id, content = ?content_id, on_content_thread = self.page_tabs.is_some(), shelf = ?shelf_id, "All views created");
 
         Ok(())
     }
@@ -327,7 +374,7 @@ impl NativeBrowser {
         }
 
         // Load About page in content view
-        if let Some(page) = &self.page {
+        if let Some(page) = self.page() {
             page.load_html(ABOUT_HTML);
         } else if let Some(&content_id) = self.views.get(&ViewType::Content) {
             engine
@@ -375,7 +422,7 @@ impl NativeBrowser {
                 warn!(?view_type, error = %e, "Failed to resize view");
             }
         }
-        if let Some(page) = &self.page {
+        for page in self.pages.values() {
             page.resize(to_bounds(content));
         }
         if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
@@ -483,7 +530,7 @@ impl NativeBrowser {
     /// `rustkit-net::fetch` has no cancellation surface yet. The bytes arrive
     /// and are discarded. Stop-as-observed, not stop-as-transport.
     pub fn stop_loading(&self) {
-        if let Some(page) = &self.page {
+        if let Some(page) = self.page() {
             page.stop();
             return;
         }
@@ -536,8 +583,18 @@ impl NativeBrowser {
 
     /// Open a new tab and select it.
     fn new_tab(&mut self) {
-        if self.page.is_some() {
-            warn!("Tabs are not supported yet with HIWAVE_CONTENT_THREAD=1");
+        if self.page_tabs.is_some() {
+            match self.spawn_page() {
+                Ok(id) => {
+                    if let Some(tabs) = self.page_tabs.as_mut() {
+                        let switch = tabs.push(id);
+                        let count = tabs.count();
+                        self.apply_page_switch(switch);
+                        info!(id, count, "New tab (content thread)");
+                    }
+                }
+                Err(e) => error!(error = %e, "Failed to start a page for the new tab"),
+            }
             return;
         }
         let Some(parent) = self.viewhost.get_main_hwnd() else {
@@ -574,6 +631,20 @@ impl NativeBrowser {
     /// `active_view()` total. Wire the quit at the window layer when the
     /// product calls for it.
     fn close_active_tab(&mut self) {
+        if let Some(tabs) = self.page_tabs.as_mut() {
+            let Some((closed, switch)) = tabs.close_active() else {
+                debug!("Refusing to close the last tab");
+                return;
+            };
+            let count = tabs.count();
+            self.apply_page_switch(switch);
+            // After the switch, so the replacement is already showing.
+            if let Some(page) = self.pages.remove(&closed) {
+                page.close();
+            }
+            info!(closed, count, "Tab closed (content thread)");
+            return;
+        }
         let Some(tabs) = self.tabs.as_mut() else {
             return;
         };
@@ -594,6 +665,13 @@ impl NativeBrowser {
 
     /// Select a tab by index (Ctrl+1..9).
     fn activate_tab_by_index(&mut self, index: usize) {
+        if let Some(tabs) = self.page_tabs.as_mut() {
+            if let Some(switch) = tabs.activate(index) {
+                self.apply_page_switch(switch);
+                debug!(index, "Tab activated (content thread)");
+            }
+            return;
+        }
         let Some(tabs) = self.tabs.as_mut() else {
             return;
         };
@@ -667,9 +745,9 @@ impl NativeBrowser {
                 }
             }
             // Input on the content-thread page goes to the page, not the engine.
-            if let (Some(page), ViewEvent::Input { view_id, event: inner }) = (&self.page, &event) {
-                if *view_id == page.viewhost_id() {
-                    self.route_page_input(inner);
+            if let ViewEvent::Input { view_id, event: inner } = &event {
+                if let Some(page) = self.page_for_viewhost(*view_id) {
+                    self.route_page_input(page, inner);
                     continue;
                 }
             }
@@ -705,10 +783,7 @@ impl NativeBrowser {
     }
 
     /// Deliver mouse and key input from the content-thread page's window to the page.
-    fn route_page_input(&self, input: &InputEvent) {
-        let Some(page) = &self.page else {
-            return;
-        };
+    fn route_page_input(&self, page: &ContentPage, input: &InputEvent) {
         match input {
             InputEvent::Mouse(m) => {
                 let (x, y) = (m.position.x as f32, m.position.y as f32);
@@ -774,11 +849,9 @@ impl NativeBrowser {
             self.page_focused.set(false);
             return;
         }
-        if let Some(page) = &self.page {
-            if focus == page.hwnd() {
-                self.page_focused.set(true);
-                return;
-            }
+        if self.pages.values().any(|page| page.hwnd() == focus) {
+            self.page_focused.set(true);
+            return;
         }
         let Some(main) = self.viewhost.get_main_hwnd() else {
             return;
@@ -786,7 +859,7 @@ impl NativeBrowser {
         if focus != main {
             return;
         }
-        if let (Some(page), true) = (&self.page, self.page_focused.get()) {
+        if let (Some(page), true) = (self.page(), self.page_focused.get()) {
             page.grab_keyboard();
             return;
         }
@@ -876,7 +949,8 @@ impl NativeBrowser {
             Shortcut::CloseTab => self.close_active_tab(),
             Shortcut::ActivateTab(i) => self.activate_tab_by_index(i),
             Shortcut::ActivateLastTab => {
-                if let Some(last) = self.tabs.as_ref().map(|t| t.count() - 1) {
+                let count = self.page_tabs.as_ref().map(|t| t.count()).or_else(|| self.tabs.as_ref().map(|t| t.count()));
+                if let Some(last) = count.map(|c| c - 1) {
                     self.activate_tab_by_index(last);
                 }
             }
@@ -914,7 +988,7 @@ impl NativeBrowser {
     /// Find `query` in the active page and tell the chrome's find bar how many
     /// matches there are. The helper highlights matches in the page itself.
     fn find_in_page(&self, query: &str, case_sensitive: bool, direction: &str) {
-        if self.page.is_some() {
+        if self.page_tabs.is_some() {
             debug!("find_in_page is not wired to the content thread yet");
             return;
         }
@@ -962,6 +1036,9 @@ impl NativeBrowser {
 
     /// The position in the tab strip of the tab the page calls `id`.
     fn tab_index_for_id(&self, id: u64) -> Option<usize> {
+        if let Some(tabs) = self.page_tabs.as_ref() {
+            return tabs.views().iter().position(|page| *page == id);
+        }
         let tabs = self.tabs.as_ref()?;
         tabs.views()
             .iter()
@@ -1013,14 +1090,24 @@ impl NativeBrowser {
         if !self.chrome_ready {
             return;
         }
-        if let Some(page) = &self.page {
-            let state = page.state();
-            let url = state.url.clone().unwrap_or_default();
-            let title = state.title.clone().unwrap_or_else(|| "New Tab".to_string());
+        if let Some(tabs) = self.page_tabs.as_ref() {
+            let active = tabs.active_view();
+            let rows: Vec<TabRow> = tabs
+                .views()
+                .iter()
+                .filter_map(|id| self.pages.get(id).map(|page| (*id, page.state())))
+                .map(|(id, state)| TabRow {
+                    id,
+                    title: state.title.clone().unwrap_or_else(|| "New Tab".to_string()),
+                    url: state.url.clone().unwrap_or_default(),
+                    active: id == active,
+                })
+                .collect();
+            let state = self.pages.get(&active).map(|page| page.state()).unwrap_or_default();
             let now = ChromeSnapshot {
-                tabs: vec![TabRow { id: 1, title: title.clone(), url: url.clone(), active: true }],
-                url,
-                title,
+                url: state.url.clone().unwrap_or_default(),
+                title: state.title.clone().unwrap_or_else(|| "New Tab".to_string()),
+                tabs: rows,
                 can_go_back: state.can_go_back,
                 can_go_forward: state.can_go_forward,
                 shield_enabled: self.shield_enabled,
@@ -1140,7 +1227,7 @@ impl NativeBrowser {
     }
 
     fn traverse(&self, direction: &str) {
-        if let Some(page) = &self.page {
+        if let Some(page) = self.page() {
             match direction {
                 "back" => page.go_back(),
                 "forward" => page.go_forward(),
@@ -1178,7 +1265,7 @@ impl NativeBrowser {
             debug!(input = url, "Nothing to navigate to");
             return;
         };
-        if let Some(page) = &self.page {
+        if let Some(page) = self.page() {
             match url::Url::parse(&url) {
                 Ok(parsed) => page.navigate(parsed),
                 Err(e) => warn!(error = %e, url, "Invalid URL"),
@@ -1274,7 +1361,7 @@ impl NativeBrowser {
             self.process_input_events();
 
             // Take what the content-thread page published and draw it
-            if let Some(page) = &self.page {
+            for page in self.pages.values() {
                 page.pump();
             }
 
