@@ -114,6 +114,9 @@ pub struct ContentPage {
     /// The newest frame the page published, and whether it has been drawn.
     latest_commit: RefCell<Option<FrameCommit>>,
     needs_present: Cell<bool>,
+    /// Whether the page's window is shown. A hidden tab keeps its newest frame but is
+    /// not drawn (no swapchain present for a window nobody sees).
+    visible: Cell<bool>,
     url: RefCell<Option<String>>,
     title: RefCell<Option<String>>,
     loading: Cell<bool>,
@@ -135,6 +138,7 @@ impl ContentPage {
             accepted_nav: Cell::new(0),
             latest_commit: RefCell::new(None),
             needs_present: Cell::new(false),
+            visible: Cell::new(true),
             url: RefCell::new(None),
             title: RefCell::new(None),
             loading: Cell::new(false),
@@ -173,6 +177,7 @@ impl ContentPage {
             let _ = ShowWindow(self.hwnd(), if visible { SW_SHOWNA } else { SW_HIDE });
         }
         self.thread.enqueue(PageCmd::SetVisible { visible });
+        self.visible.set(visible);
         if visible {
             // What it last published may not have been drawn while it was hidden.
             self.needs_present.set(true);
@@ -341,7 +346,7 @@ impl ContentPage {
             }
         }
 
-        if self.needs_present.get() {
+        if self.needs_present.get() && self.visible.get() {
             let commit = self.latest_commit.borrow().clone();
             if let (Some(commit), Some(images)) = (commit, self.thread.images()) {
                 match self.surface.borrow_mut().present_commit(&commit, &images) {

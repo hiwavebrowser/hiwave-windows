@@ -290,6 +290,9 @@ impl NativeBrowser {
 
     /// Show the page that became active and hide the one that stopped being.
     fn apply_page_switch(&mut self, switch: TabSwitch<u64>) {
+        // A find still waiting was asked of the tab being left; its answer must not
+        // reach the find bar for the new one.
+        *self.pending_find.borrow_mut() = None;
         if let Some(previous) = self.pages.get(&switch.previous) {
             previous.set_visible(false);
         }
