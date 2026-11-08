@@ -156,10 +156,10 @@ pub struct NativeBrowser {
     /// content thread is on.
     page_tabs: Option<TabModel<u64>>,
     next_page_id: u64,
+    /// Which snapshots of the active tab are a new visit for the history.
+    visits: chrome_data::VisitTracker,
     /// A find on the content thread whose answer has not come back yet, with the
     /// query the chrome sent (the answer is echoed with that, never the page's).
-    /// The last address written to the history, so a page is recorded once per visit.
-    last_recorded_url: Option<String>,
     pending_find: RefCell<Option<(tokio::sync::oneshot::Receiver<Result<String, String>>, String)>>,
     /// The page (not a chrome view) has the keyboard.
     page_focused: std::cell::Cell<bool>,
@@ -218,7 +218,7 @@ impl NativeBrowser {
             page_tabs: None,
             next_page_id: 1,
             pending_find: RefCell::new(None),
-            last_recorded_url: None,
+            visits: chrome_data::VisitTracker::default(),
             page_focused: std::cell::Cell::new(false),
         })
     }
@@ -284,7 +284,7 @@ impl NativeBrowser {
     fn spawn_page(&mut self) -> Result<u64, String> {
         let parent = self.viewhost.get_main_hwnd().ok_or("no main window")?;
         let bounds = to_bounds(self.layout().content);
-        let page = ContentPage::spawn(parent, bounds, engine_builder(&self.shield))?;
+        let page = ContentPage::spawn(parent, bounds, engine_builder(&self.shield), self.nav_guard())?;
         let id = self.next_page_id;
         self.next_page_id += 1;
         self.pages.insert(id, page);
@@ -333,7 +333,7 @@ impl NativeBrowser {
         // page is not an engine view of this engine: it runs on its own thread and
         // this window only shows what it publishes.
         let content_id = if content_page::enabled() {
-            let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield))?;
+            let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield), self.nav_guard())?;
             let id = self.next_page_id;
             self.next_page_id += 1;
             self.pages.insert(id, page);
@@ -534,7 +534,13 @@ impl NativeBrowser {
 
     /// Whether the user has blocked this address's domain.
     fn user_blocked(&self, url: &str) -> bool {
-        self.app_state.lock().map(|s| s.user_blocklist.should_block(url)).unwrap_or(false)
+        self.app_state.lock().map(|s| chrome_data::url_is_blocked(&s, url)).unwrap_or(false)
+    }
+
+    /// The blocklist check a content-thread page asks before each of its navigations.
+    fn nav_guard(&self) -> content_page::NavGuard {
+        let state = Arc::clone(&self.app_state);
+        std::rc::Rc::new(move |url: &str| state.lock().map(|s| chrome_data::url_is_blocked(&s, url)).unwrap_or(false))
     }
 
     /// Block the domain of the tab the chrome calls `id`, then close the tab. The
@@ -911,16 +917,17 @@ impl NativeBrowser {
         }
     }
 
-    /// Escape means "stop loading" only for the page. With the chrome focused (the find
-    /// box, the address bar) it belongs to chrome.html, which closes its find bar and
-    /// panels on it.
+    /// Escape means "stop loading" only for the page. With one of the app's own views
+    /// focused (the chrome: the find box, the address bar; or the shelf, the command
+    /// palette) it belongs to that view's page, which closes its own UI on it.
     fn chrome_owns_escape(&self, shortcut: Shortcut) -> bool {
         shortcut == Shortcut::Stop
             && !self.page_focused.get()
-            && match (self.focused_view(), self.views.get(&ViewType::Chrome)) {
-                (Some(focused), Some(chrome)) => focused == *chrome,
-                _ => false,
-            }
+            && self.focused_view().is_some_and(|focused| {
+                [ViewType::Chrome, ViewType::Shelf]
+                    .iter()
+                    .any(|kind| self.views.get(kind) == Some(&focused))
+            })
     }
 
     /// A secondary-button press or release on an engine view. Returns true when it was
@@ -1111,6 +1118,11 @@ impl NativeBrowser {
     }
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
+        // Focus mode hides the chrome: a chord that types into it must leave focus mode
+        // first, or the keystrokes would go into UI that is not on screen.
+        if self.focus_bar.is_some() && shortcuts::needs_chrome_visible(shortcut) {
+            self.set_focus_mode(Some(false));
+        }
         match shortcut {
             Shortcut::NewTab => self.new_tab(),
             Shortcut::CloseTab => self.close_active_tab(),
@@ -1124,7 +1136,14 @@ impl NativeBrowser {
             Shortcut::Back => self.traverse("back"),
             Shortcut::Forward => self.traverse("forward"),
             Shortcut::Reload => self.traverse("reload"),
-            Shortcut::Stop => self.stop_loading(),
+            Shortcut::Stop => {
+                let loading = self.chrome_synced.as_ref().is_some_and(|s| s.loading);
+                if shortcuts::escape_leaves_focus_mode(self.focus_bar.is_some(), loading) {
+                    self.set_focus_mode(Some(false));
+                } else {
+                    self.stop_loading();
+                }
+            }
             Shortcut::Find => self.send_chrome_chord(0x46, "f"),
             Shortcut::FocusAddressBar => self.send_chrome_chord(0x4C, "l"),
             Shortcut::ToggleSidebar => self.send_chrome_chord(0x42, "b"),
@@ -1253,15 +1272,11 @@ impl NativeBrowser {
         self.run_chrome_script(&script);
     }
 
-    /// Write the active page to the history once it has loaded (it has a title).
-    fn record_visit_if_new(&mut self, url: &str, title: &str) {
-        if url.is_empty() || title.is_empty() || title == "New Tab" {
+    /// Write the active page to the history when `VisitTracker` says it is a new visit.
+    fn record_visit_if_new(&mut self, tab: Option<u64>, url: &str, title: &str, loading: bool) {
+        if !self.visits.should_record(tab, url, title, loading) {
             return;
         }
-        if !chrome_data::should_record_history_url(url) || self.last_recorded_url.as_deref() == Some(url) {
-            return;
-        }
-        self.last_recorded_url = Some(url.to_string());
         if let Ok(mut state) = self.app_state.lock() {
             if let Err(e) = state.record_visit(url, Some(title.to_string()), None) {
                 warn!(error = %e, "Failed to write the history entry");
@@ -1438,7 +1453,8 @@ impl NativeBrowser {
 
     /// Tell the chrome what differs between `now` and what it was last told.
     fn push_snapshot(&mut self, now: ChromeSnapshot) {
-        self.record_visit_if_new(&now.url, &now.title);
+        let active_tab = now.tabs.iter().find(|r| r.active).map(|r| r.id);
+        self.record_visit_if_new(active_tab, &now.url, &now.title, now.loading);
         if self.chrome_synced.as_ref() == Some(&now) {
             return;
         }
@@ -1543,6 +1559,12 @@ impl NativeBrowser {
     }
 
     fn navigate_view(&self, content_id: EngineViewId, url: &str) {
+        // Every engine-view navigation ends here: the address bar, a link click, a form
+        // submit and a script's location change.
+        if self.user_blocked(url) {
+            warn!(url, "Navigation refused: the domain is on the user's blocklist");
+            return;
+        }
         match url::Url::parse(url) {
             Ok(parsed) => {
                 let mut engine = self.engine.borrow_mut();
