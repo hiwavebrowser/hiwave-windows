@@ -51,6 +51,8 @@ const SIDEBAR_WIDTH: u32 = 220;
 const CHROME_HTML: &str = include_str!("../ui/chrome.html");
 const SHELF_HTML: &str = include_str!("../ui/shelf.html");
 const ABOUT_HTML: &str = include_str!("../ui/about.html");
+/// The find-in-page helper. It runs inside the page and walks the DOM; it needs no engine support.
+const FIND_IN_PAGE_HELPER: &str = include_str!("../ui/find_in_page.js");
 /// The `<title>` of the start page (ui/about.html).
 const ABOUT_TITLE: &str = "About HiWave";
 
@@ -823,6 +825,54 @@ impl NativeBrowser {
             Shortcut::Forward => self.traverse("forward"),
             Shortcut::Reload => self.traverse("reload"),
             Shortcut::Stop => self.stop_loading(),
+            Shortcut::Find => self.send_chrome_chord(0x46, "f"),
+            Shortcut::FocusAddressBar => self.send_chrome_chord(0x4C, "l"),
+            Shortcut::ToggleSidebar => self.send_chrome_chord(0x42, "b"),
+            Shortcut::CommandPalette => self.send_chrome_chord(0x4B, "k"),
+        }
+    }
+
+    /// Deliver Ctrl+<key> to the chrome page as a keyboard event, the way typing it
+    /// there would, and move the keyboard focus to the chrome so what is typed next
+    /// lands in the field the page just focused. The page owns these chords (find,
+    /// address bar, sidebar, command palette) in its own keydown handler.
+    fn send_chrome_chord(&mut self, vk: u32, key: &str) {
+        let Some(&chrome_id) = self.views.get(&ViewType::Chrome) else {
+            return;
+        };
+        if self.engine.borrow().focus_view(chrome_id).is_ok() {
+            self.last_focus.set(Some(chrome_id));
+        }
+        let changed = self.engine.borrow_mut().handle_text_key(chrome_id, vk, key, true, false, false);
+        if changed {
+            if let Err(e) = self.engine.borrow_mut().relayout(chrome_id) {
+                warn!(error = %e, "Relayout after a chrome chord failed");
+            }
+        }
+    }
+
+    /// Find `query` in the active page and tell the chrome's find bar how many
+    /// matches there are. The helper highlights matches in the page itself.
+    fn find_in_page(&self, query: &str, case_sensitive: bool, direction: &str) {
+        let Some(&content_id) = self.views.get(&ViewType::Content) else {
+            return;
+        };
+        let payload = serde_json::json!({
+            "query": query,
+            "case_sensitive": case_sensitive,
+            "direction": direction,
+        });
+        let script = format!(
+            "{FIND_IN_PAGE_HELPER}\n(() => {{ const r = window.__hiwaveFind && window.__hiwaveFind.run({payload}); return r ? JSON.stringify(r) : 'null'; }})();"
+        );
+        let out = self.engine.borrow_mut().execute_script(content_id, &script);
+        // The helper ran in the PAGE, so its answer is page-controlled. Only numbers
+        // parsed out of it, and the query the chrome itself sent, reach the chrome.
+        match out.ok().and_then(|o| script_string(&o)).and_then(|raw| find_state_payload(&raw, query)) {
+            Some(state) => self.run_chrome_script(&format!(
+                "if(window.hiwaveChrome) {{ hiwaveChrome.updateFindState({state}); }}"
+            )),
+            None => debug!("find_in_page produced no result"),
         }
     }
 
@@ -1282,6 +1332,12 @@ impl NativeBrowser {
                 self.run_chrome_script(&script);
             }
             "save_sidebar_width" => {}
+            "find_in_page" => {
+                let query = json.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                let case_sensitive = json.get("case_sensitive").and_then(|v| v.as_bool()).unwrap_or(false);
+                let direction = json.get("direction").and_then(|v| v.as_str()).unwrap_or("next");
+                self.find_in_page(query, case_sensitive, direction);
+            }
             // The shield button: the chrome tracks its own state and says what it is now.
             "toggle_shield" => {
                 if let Some(enabled) = json.get("enabled").and_then(|v| v.as_bool()) {
@@ -1319,6 +1375,25 @@ impl Drop for NativeBrowser {
             }
         }
     }
+}
+
+/// The text of a script result. The engine reports a string as `String("...")`.
+fn script_string(result: &str) -> Option<String> {
+    let inner = result.strip_prefix("String(")?.strip_suffix(')')?;
+    serde_json::from_str::<String>(inner).ok().filter(|s| s != "null")
+}
+
+/// What the chrome's find bar is told, built from the find helper's answer.
+///
+/// The helper runs inside the page, so a page can make it return anything. This
+/// parses the answer and keeps only the two numbers, then re-serialises them with
+/// `query` (the text the chrome sent, not anything the page said). The result is
+/// plain JSON data; no page-supplied text can become script in the chrome.
+fn find_state_payload(raw: &str, query: &str) -> Option<serde_json::Value> {
+    let answer: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let count = answer.get("count")?.as_i64()?.clamp(0, 1_000_000);
+    let index = answer.get("index")?.as_i64()?.clamp(-1, 1_000_000);
+    Some(serde_json::json!({ "count": count, "index": index, "query": query }))
 }
 
 /// The tab id in a chrome message. The page sends it as a number or a string.
@@ -1639,7 +1714,7 @@ fn chrono_lite_timestamp() -> String {
 
 #[cfg(test)]
 mod chrome_message_tests {
-    use super::{parse_budget, tab_id_of};
+    use super::{find_state_payload, parse_budget, tab_id_of};
     use serde_json::json;
 
     #[test]
@@ -1668,5 +1743,35 @@ mod chrome_message_tests {
         assert_eq!(parse_budget(Some("abc")), 5_000);
         assert_eq!(parse_budget(Some("0")), 5_000);
         assert_eq!(parse_budget(Some("-1")), 5_000);
+    }
+
+    #[test]
+    fn a_find_answer_becomes_only_two_numbers_and_the_chromes_own_query() {
+        let state = find_state_payload(r#"{"count":4,"index":0,"query":"needle"}"#, "needle").unwrap();
+        assert_eq!(state, json!({"count": 4, "index": 0, "query": "needle"}));
+    }
+
+    #[test]
+    fn a_hostile_find_answer_cannot_put_page_text_into_the_chrome() {
+        // A page can make the helper say anything. Extra fields are dropped and the
+        // page's own "query" is ignored in favour of the one the chrome sent.
+        let hostile = r#"{"count":2,"index":1,"query":"1);window.ipc.postMessage('x')//","evil":"</script>"}"#;
+        let state = find_state_payload(hostile, "safe").unwrap();
+        assert_eq!(state, json!({"count": 2, "index": 1, "query": "safe"}));
+        let rendered = state.to_string();
+        assert!(!rendered.contains("ipc") && !rendered.contains("evil"), "{rendered}");
+    }
+
+    #[test]
+    fn a_find_answer_that_is_not_two_numbers_is_rejected() {
+        assert!(find_state_payload("1);alert(1)//", "q").is_none());
+        assert!(find_state_payload(r#"{"count":"1);x","index":0}"#, "q").is_none());
+        assert!(find_state_payload(r#"{"count":3}"#, "q").is_none());
+    }
+
+    #[test]
+    fn find_counts_are_clamped() {
+        let state = find_state_payload(r#"{"count":-5,"index":99999999999}"#, "q").unwrap();
+        assert_eq!(state, json!({"count": 0, "index": 1_000_000, "query": "q"}));
     }
 }
