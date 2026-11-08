@@ -135,6 +135,8 @@ pub struct NativeBrowser {
     focus_bar: Option<u32>,
     /// Tab ids this shell has put into the shared `BrowserShell` (see `shell_tabs`).
     mirrored_tabs: std::collections::HashSet<u64>,
+    /// The workspaces script the chrome was last sent, so it is sent again only when it changes.
+    last_workspaces: String,
     /// The view that last had the keyboard focus. Win32 can leave focus on the
     /// bare main window (activation, a click on the frame); the main window
     /// ignores keys, so the shell hands focus back to this view.
@@ -206,6 +208,7 @@ impl NativeBrowser {
             right_panel_open: false,
             focus_bar: None,
             mirrored_tabs: std::collections::HashSet::new(),
+            last_workspaces: String::new(),
             last_focus: std::cell::Cell::new(None),
             chrome_ready: false,
             tab_ids: HashMap::new(),
@@ -516,6 +519,29 @@ impl NativeBrowser {
             "if(window.hiwaveChrome) { hiwaveChrome.setFocusMode(false); }".to_string()
         };
         self.run_chrome_script(&script);
+    }
+
+    /// Send the sidebar its workspaces. `force` sends even when nothing changed (the
+    /// chrome asked); otherwise only a changed list is sent.
+    fn sync_workspaces(&mut self, force: bool) {
+        let script = match self.app_state.lock() {
+            Ok(state) => chrome_data::workspaces_script(&state),
+            Err(_) => return,
+        };
+        if force || script != self.last_workspaces {
+            self.run_chrome_script(&script);
+            self.last_workspaces = script;
+        }
+    }
+
+    /// Save the shared workspace state, then refresh the sidebar.
+    fn save_and_sync_workspaces(&mut self) {
+        if let Ok(state) = self.app_state.lock() {
+            if let Err(e) = state.save_workspace_state() {
+                warn!(error = %e, "Failed to persist workspace state");
+            }
+        }
+        self.sync_workspaces(true);
     }
 
     /// Send the blocklist panel its domains.
@@ -1453,6 +1479,11 @@ impl NativeBrowser {
         for row in rows.iter_mut() {
             row.locked = done.locked.contains(&row.id);
         }
+        drop(state);
+        // Tabs came, went or changed: the sidebar lists them under their workspaces.
+        if done.changed {
+            self.sync_workspaces(false);
+        }
     }
 
     /// Tell the chrome what differs between `now` and what it was last told.
@@ -1835,6 +1866,67 @@ impl NativeBrowser {
                     }
                 }
             }
+            "get_workspaces" => self.sync_workspaces(true),
+            "create_workspace" => {
+                let name = json.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                if !name.is_empty() {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        state.shell.create_workspace(name.clone());
+                        state.ensure_workspace_shelf(&name);
+                    }
+                    self.save_and_sync_workspaces();
+                }
+            }
+            "rename_workspace" => {
+                let id = json.get("id").and_then(id_value);
+                let name = json.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                if let (Some(id), false) = (id, name.is_empty()) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        let id = hiwave_core::types::WorkspaceId(id);
+                        let old = state.shell.get_workspace(id).map(|w| w.name.clone());
+                        if state.shell.rename_workspace(id, name.clone()).is_ok() {
+                            // The shelf is kept under the workspace's name.
+                            if let Some(items) = old.and_then(|o| state.shelves.remove(&o)) {
+                                state.shelves.insert(name, items);
+                            }
+                        }
+                    }
+                    self.save_and_sync_workspaces();
+                }
+            }
+            "delete_workspace" => {
+                if let Some(id) = json.get("id").and_then(id_value) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        let id = hiwave_core::types::WorkspaceId(id);
+                        let name = state.shell.get_workspace(id).map(|w| w.name.clone());
+                        match state.shell.delete_workspace(id) {
+                            Ok(()) => {
+                                if let Some(name) = name {
+                                    state.remove_workspace_shelf(&name);
+                                }
+                            }
+                            Err(e) => warn!(error = %e, "Could not delete the workspace"),
+                        }
+                    }
+                    self.save_and_sync_workspaces();
+                }
+            }
+            "move_tab_to_workspace" => {
+                let tab = json.get("tab_id").and_then(id_value);
+                let workspace = json.get("workspace_id").and_then(id_value);
+                if let (Some(tab), Some(workspace)) = (tab, workspace) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        let moved = state.shell.move_tab_to_workspace(
+                            hiwave_core::types::TabId(tab),
+                            hiwave_core::types::WorkspaceId(workspace),
+                        );
+                        if let Err(e) = moved {
+                            warn!(error = %e, "Could not move the tab");
+                        }
+                    }
+                    self.save_and_sync_workspaces();
+                }
+            }
             "get_blocklist" => self.sync_blocklist(),
             "unblock_domain" => {
                 if let Some(domain) = json.get("domain").and_then(|v| v.as_str()) {
@@ -2003,6 +2095,11 @@ fn engine_builder(shield: &Arc<crate::shield_adapter::ShieldInterceptHandler>) -
 }
 
 /// The tab id in a chrome message. The page sends it as a number or a string.
+/// A workspace or tab id as the chrome sends it: a number or a numeric string.
+fn id_value(v: &serde_json::Value) -> Option<u64> {
+    v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
 /// The tab a tab-actions command names (`tab_id`; the tab strip's own commands use `id`).
 fn tab_ref_of(json: &serde_json::Value) -> Option<u64> {
     let id = json.get("tab_id")?;

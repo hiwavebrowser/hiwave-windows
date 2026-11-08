@@ -69,7 +69,8 @@ pub fn reconcile(state: &mut AppState, mirrored: &mut HashSet<u64>, tabs: &[Nati
                 suspended: false,
                 loading: false,
                 locked: false,
-                last_visited: None,
+                // A tab with no last visit reads as fully decayed in the sidebar.
+                last_visited: Some(AppState::current_timestamp_secs()),
             };
             if state.shell.create_tab(info).is_ok() {
                 mirrored.insert(tab.id);
@@ -149,6 +150,16 @@ mod tests {
         assert_eq!(t.url.as_str(), "https://a.test/");
         assert_eq!(t.title.as_deref(), Some("A"));
         assert_eq!(s.shell.get_active_tab().map(|t| t.id), Some(TabId(id)));
+    }
+
+    #[test]
+    fn a_new_native_tab_is_fresh_not_decayed() {
+        let mut s = state("fresh");
+        let mut mirrored = HashSet::new();
+        let id = alloc_tab_id();
+        reconcile(&mut s, &mut mirrored, &[tab(id, "https://a.test/", "A", true)]);
+        let visited = s.shell.get_tab(TabId(id)).unwrap().last_visited;
+        assert!(visited.is_some(), "no last visit would show the tab as expired");
     }
 
     #[test]
