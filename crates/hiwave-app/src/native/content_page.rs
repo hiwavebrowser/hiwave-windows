@@ -216,6 +216,17 @@ impl ContentPage {
         self.thread.input(PageInput::MouseDown { x, y, clicks, shift });
     }
 
+    /// A secondary-button press: the page fires `pointerdown`, `mousedown` and
+    /// `contextmenu` (a page may cancel it).
+    pub fn secondary_down(&self, x: f32, y: f32) {
+        self.thread.input(PageInput::SecondaryDown { x, y });
+    }
+
+    /// The secondary-button release: `pointerup`, `mouseup`, `auxclick`.
+    pub fn secondary_up(&self, x: f32, y: f32) {
+        self.thread.input(PageInput::SecondaryUp { x, y });
+    }
+
     /// The release: the page fires `mouseup` and `click` and follows a link itself.
     pub fn click(&self, x: f32, y: f32) {
         let (reply, _unread) = oneshot::channel();
