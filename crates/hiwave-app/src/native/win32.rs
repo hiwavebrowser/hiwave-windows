@@ -162,7 +162,7 @@ impl NativeBrowser {
             )
             .javascript_enabled(true)
             .cookies_enabled(true)
-            .script_budget_ms(15_000)
+            .script_budget_ms(script_budget_ms())
             .interrupt_scripts_at_budget(true)
             .request_interceptor(interceptor)
             .build()
@@ -1342,6 +1342,25 @@ fn lower_view(engine: &Engine, id: EngineViewId) {
     };
 }
 
+/// How long a page's scripts may run, in milliseconds.
+///
+/// Pages load on the window thread in this shell, so every millisecond a script
+/// runs is a millisecond the window is frozen. 5 s is the parity board's own
+/// budget. (macOS lets pages run for 60 s because its content thread keeps the
+/// window alive; this shell has no such thread yet.) `HIWAVE_SCRIPT_BUDGET_MS`
+/// overrides it.
+fn script_budget_ms() -> u64 {
+    parse_budget(std::env::var("HIWAVE_SCRIPT_BUDGET_MS").ok().as_deref())
+}
+
+fn parse_budget(value: Option<&str>) -> u64 {
+    const DEFAULT_MS: u64 = 5_000;
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .unwrap_or(DEFAULT_MS)
+}
+
 /// A layout rectangle as the engine's view bounds.
 fn to_bounds(r: layout::Rect) -> Bounds {
     Bounds::new(r.x, r.y, r.width, r.height)
@@ -1620,7 +1639,7 @@ fn chrono_lite_timestamp() -> String {
 
 #[cfg(test)]
 mod chrome_message_tests {
-    use super::tab_id_of;
+    use super::{parse_budget, tab_id_of};
     use serde_json::json;
 
     #[test]
@@ -1634,5 +1653,20 @@ mod chrome_message_tests {
         assert_eq!(tab_id_of(&json!({"cmd": "close_tab"})), None);
         assert_eq!(tab_id_of(&json!({"id": "not a number"})), None);
         assert_eq!(tab_id_of(&json!({"id": -3})), None);
+    }
+
+    #[test]
+    fn the_script_budget_defaults_to_five_seconds_and_can_be_overridden() {
+        assert_eq!(parse_budget(None), 5_000);
+        assert_eq!(parse_budget(Some("15000")), 15_000);
+        assert_eq!(parse_budget(Some(" 2500 ")), 2_500);
+    }
+
+    #[test]
+    fn a_bad_script_budget_falls_back_to_the_default() {
+        assert_eq!(parse_budget(Some("")), 5_000);
+        assert_eq!(parse_budget(Some("abc")), 5_000);
+        assert_eq!(parse_budget(Some("0")), 5_000);
+        assert_eq!(parse_budget(Some("-1")), 5_000);
     }
 }
