@@ -1019,6 +1019,11 @@ impl NativeBrowser {
     }
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
+        // Focus mode hides the chrome: a chord that types into it must leave focus mode
+        // first, or the keystrokes would go into UI that is not on screen.
+        if self.focus_bar.is_some() && shortcuts::needs_chrome_visible(shortcut) {
+            self.set_focus_mode(Some(false));
+        }
         match shortcut {
             Shortcut::NewTab => self.new_tab(),
             Shortcut::CloseTab => self.close_active_tab(),
@@ -1032,7 +1037,14 @@ impl NativeBrowser {
             Shortcut::Back => self.traverse("back"),
             Shortcut::Forward => self.traverse("forward"),
             Shortcut::Reload => self.traverse("reload"),
-            Shortcut::Stop => self.stop_loading(),
+            Shortcut::Stop => {
+                let loading = self.chrome_synced.as_ref().is_some_and(|s| s.loading);
+                if shortcuts::escape_leaves_focus_mode(self.focus_bar.is_some(), loading) {
+                    self.set_focus_mode(Some(false));
+                } else {
+                    self.stop_loading();
+                }
+            }
             Shortcut::Find => self.send_chrome_chord(0x46, "f"),
             Shortcut::FocusAddressBar => self.send_chrome_chord(0x4C, "l"),
             Shortcut::ToggleSidebar => self.send_chrome_chord(0x42, "b"),
