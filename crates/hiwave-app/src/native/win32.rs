@@ -947,9 +947,17 @@ impl NativeBrowser {
             return false;
         };
         let (x, y) = (mouse.position.x as f32, mouse.position.y as f32);
+        // A right-click focuses what it lands on, as in Chrome (a text field takes the
+        // caret), so the keyboard goes there too.
+        if mouse.event_type == MouseEventType::MouseDown {
+            self.focus_clicked_view();
+        }
         let mut engine = self.engine.borrow_mut();
         if mouse.event_type == MouseEventType::MouseDown {
-            engine.context_menu_at_point(id, x, y);
+            // `true` means no listener cancelled the contextmenu event: the browser should
+            // show its own menu. There is no native menu yet, so it is dropped here. This
+            // is where one would be opened.
+            let _show_browser_menu = engine.context_menu_at_point(id, x, y);
         } else {
             engine.context_menu_release(id, x, y);
         }
@@ -1997,13 +2005,13 @@ fn engine_builder(shield: &Arc<crate::shield_adapter::ShieldInterceptHandler>) -
         .request_interceptor(interceptor)
 }
 
-/// The tab id in a chrome message. The page sends it as a number or a string.
 /// The tab a tab-actions command names (`tab_id`; the tab strip's own commands use `id`).
 fn tab_ref_of(json: &serde_json::Value) -> Option<u64> {
     let id = json.get("tab_id")?;
     id.as_u64().or_else(|| id.as_str().and_then(|s| s.parse().ok()))
 }
 
+/// The tab id in a chrome message. The page sends it as a number or a string.
 fn tab_id_of(json: &serde_json::Value) -> Option<u64> {
     let id = json.get("id")?;
     id.as_u64().or_else(|| id.as_str().and_then(|s| s.parse().ok()))
