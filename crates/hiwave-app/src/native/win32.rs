@@ -25,7 +25,7 @@
 //! cargo build --features native-win32
 //! ```
 
-use rustkit_core::input::{InputEvent, KeyCode, KeyEvent, KeyEventType, Modifiers, MouseEventType};
+use rustkit_core::input::{InputEvent, KeyCode, KeyEvent, KeyEventType, Modifiers, MouseButton, MouseEventType};
 use super::shortcuts::{self, Shortcut};
 use super::content_page::{self, ContentPage};
 use super::layout::{self, Layout, LayoutInput};
@@ -143,6 +143,8 @@ pub struct NativeBrowser {
     /// The page on the content thread (`HIWAVE_CONTENT_THREAD=1`). `None`: pages
     /// load on the window thread, as before.
     page: Option<ContentPage>,
+    /// The page (not a chrome view) has the keyboard.
+    page_focused: std::cell::Cell<bool>,
 }
 
 impl NativeBrowser {
@@ -193,6 +195,7 @@ impl NativeBrowser {
             shield,
             shield_enabled: true,
             page: None,
+            page_focused: std::cell::Cell::new(false),
         })
     }
 
@@ -218,6 +221,10 @@ impl NativeBrowser {
         // Create the three views
         self.create_views(hwnd)?;
         self.subscribe_to_events();
+        if let Some(page) = &self.page {
+            page.grab_keyboard();
+            self.page_focused.set(true);
+        }
         // Focus the content view. WITHOUT THIS, KEYBOARD SHORTCUTS DO NOT
         // WORK AT ALL: Win32 delivers WM_KEYDOWN to the FOCUSED window, the
         // main window proc handles no keys, and only the child-view proc
@@ -659,6 +666,13 @@ impl NativeBrowser {
                     }
                 }
             }
+            // Input on the content-thread page goes to the page, not the engine.
+            if let (Some(page), ViewEvent::Input { view_id, event: inner }) = (&self.page, &event) {
+                if *view_id == page.viewhost_id() {
+                    self.route_page_input(inner);
+                    continue;
+                }
+            }
             // A click gives the view it landed on the keyboard focus. Win32 sends
             // key messages only to the focused window, and nothing moved focus off
             // the page at startup, so typing in the chrome (the address bar) went
@@ -687,6 +701,43 @@ impl NativeBrowser {
             if let Some((id, url)) = navigation {
                 self.navigate_view(id, &url);
             }
+        }
+    }
+
+    /// Deliver mouse and key input from the content-thread page's window to the page.
+    fn route_page_input(&self, input: &InputEvent) {
+        let Some(page) = &self.page else {
+            return;
+        };
+        match input {
+            InputEvent::Mouse(m) => {
+                let (x, y) = (m.position.x as f32, m.position.y as f32);
+                match m.event_type {
+                    MouseEventType::MouseDown if m.button == MouseButton::Primary => {
+                        // Win32 does not move focus to a child window on a click.
+                        page.grab_keyboard();
+                        self.page_focused.set(true);
+                        page.mouse_down(x, y, m.click_count.max(1), m.modifiers.shift);
+                    }
+                    MouseEventType::MouseUp if m.button == MouseButton::Primary => page.click(x, y),
+                    MouseEventType::MouseMove | MouseEventType::MouseEnter => page.mouse_move(x, y),
+                    MouseEventType::MouseLeave => page.mouse_leave(),
+                    // ViewHost reports notches (120 native units); the page takes pixels.
+                    MouseEventType::Wheel => page.scroll_at(x, y, m.delta.x as f32 * 120.0, m.delta.y as f32 * 120.0),
+                    _ => {}
+                }
+            }
+            InputEvent::Key(key) => {
+                let mods = key.modifiers;
+                match key_action(key) {
+                    KeyAction::Send(vk, text) => page.key(vk, &text, mods.ctrl, mods.shift, mods.alt),
+                    KeyAction::Pass if key.event_type == KeyEventType::KeyUp => {
+                        page.key_up(key.key_code as u32, "", mods.ctrl, mods.shift, mods.alt)
+                    }
+                    _ => {}
+                }
+            }
+            InputEvent::Focus(_) => {}
         }
     }
 
@@ -720,12 +771,23 @@ impl NativeBrowser {
         let focus = unsafe { GetFocus() };
         if let Some(id) = self.engine_view_for_hwnd(focus) {
             self.last_focus.set(Some(id));
+            self.page_focused.set(false);
             return;
+        }
+        if let Some(page) = &self.page {
+            if focus == page.hwnd() {
+                self.page_focused.set(true);
+                return;
+            }
         }
         let Some(main) = self.viewhost.get_main_hwnd() else {
             return;
         };
         if focus != main {
+            return;
+        }
+        if let (Some(page), true) = (&self.page, self.page_focused.get()) {
+            page.grab_keyboard();
             return;
         }
         if let Some(id) = self.last_focus.get() {
@@ -751,7 +813,10 @@ impl NativeBrowser {
             return;
         };
         match self.engine.borrow().focus_view(id) {
-            Ok(()) => self.last_focus.set(Some(id)),
+            Ok(()) => {
+                self.last_focus.set(Some(id));
+                self.page_focused.set(false);
+            }
             Err(e) => warn!(error = %e, "Failed to focus the clicked view"),
         }
     }
@@ -765,29 +830,10 @@ impl NativeBrowser {
     /// as the letter with Ctrl set. Printable keys arrive twice on Win32 (WM_KEYDOWN
     /// and then WM_CHAR); only the WM_CHAR half types.
     fn route_text_key(&mut self, key: &KeyEvent) -> bool {
-        let (vk, text): (u32, String) = match key.event_type {
-            KeyEventType::KeyUp => return false,
-            KeyEventType::KeyDown => {
-                let vk = key.key_code as u32;
-                let m = key.modifiers;
-                match vk {
-                    // Backspace, Tab, Enter, Escape, PgUp..Down, End, Home, arrows, Delete
-                    0x08 | 0x09 | 0x0D | 0x1B | 0x21..=0x28 | 0x2E => (vk, String::new()),
-                    // Ctrl+A, C, V, X, Z
-                    0x41 | 0x43 | 0x56 | 0x58 | 0x5A if m.ctrl && !m.alt => {
-                        (0, ((vk as u8 + 32) as char).to_string())
-                    }
-                    // A printable key: its WM_CHAR types it.
-                    _ => return true,
-                }
-            }
-            KeyEventType::Input => {
-                // Tab and Enter also come as WM_CHAR; their key-down already acted.
-                if key.key.is_empty() || key.key == "\r" || key.key == "\t" {
-                    return true;
-                }
-                (0, key.key.clone())
-            }
+        let (vk, text) = match key_action(key) {
+            KeyAction::Pass => return false,
+            KeyAction::Ignore => return true,
+            KeyAction::Send(vk, text) => (vk, text),
         };
 
         let Some(id) = self.focused_view().or_else(|| self.last_focus.get()) else {
@@ -855,6 +901,7 @@ impl NativeBrowser {
         };
         if self.engine.borrow().focus_view(chrome_id).is_ok() {
             self.last_focus.set(Some(chrome_id));
+            self.page_focused.set(false);
         }
         let changed = self.engine.borrow_mut().handle_text_key(chrome_id, vk, key, true, false, false);
         if changed {
@@ -1447,6 +1494,49 @@ fn script_string(result: &str) -> Option<String> {
     serde_json::from_str::<String>(inner).ok().filter(|s| s != "null")
 }
 
+/// What a key event means for a text editor, before anyone knows who has the focus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeyAction {
+    /// Not ours to act on (key-up): leave it for the generic path.
+    Pass,
+    /// Nothing to do, and it must not reach the generic path either.
+    Ignore,
+    /// Send this virtual key and text to the editor.
+    Send(u32, String),
+}
+
+/// Same split as the macOS app: editing and navigation keys go as a virtual key
+/// with no text, typed characters as text with no key, and Ctrl+A/C/V/X/Z as the
+/// letter with Ctrl set. Printable keys arrive twice on Win32 (WM_KEYDOWN and then
+/// WM_CHAR); only the WM_CHAR half types.
+fn key_action(key: &KeyEvent) -> KeyAction {
+    match key.event_type {
+        KeyEventType::KeyUp => KeyAction::Pass,
+        KeyEventType::KeyDown => {
+            let vk = key.key_code as u32;
+            let m = key.modifiers;
+            match vk {
+                // Backspace, Tab, Enter, Escape, PgUp..Down, End, Home, arrows, Delete
+                0x08 | 0x09 | 0x0D | 0x1B | 0x21..=0x28 | 0x2E => KeyAction::Send(vk, String::new()),
+                // Ctrl+A, C, V, X, Z
+                0x41 | 0x43 | 0x56 | 0x58 | 0x5A if m.ctrl && !m.alt => {
+                    KeyAction::Send(0, ((vk as u8 + 32) as char).to_string())
+                }
+                // A printable key: its WM_CHAR types it.
+                _ => KeyAction::Ignore,
+            }
+        }
+        KeyEventType::Input => {
+            // Tab and Enter also come as WM_CHAR; their key-down already acted.
+            if key.key.is_empty() || key.key == "\r" || key.key == "\t" {
+                KeyAction::Ignore
+            } else {
+                KeyAction::Send(0, key.key.clone())
+            }
+        }
+    }
+}
+
 /// What the chrome's find bar is told, built from the find helper's answer.
 ///
 /// The helper runs inside the page, so a page can make it return anything. This
@@ -1800,7 +1890,8 @@ fn chrono_lite_timestamp() -> String {
 
 #[cfg(test)]
 mod chrome_message_tests {
-    use super::{find_state_payload, parse_budget, tab_id_of};
+    use super::{find_state_payload, key_action, parse_budget, tab_id_of, KeyAction};
+    use rustkit_core::input::{KeyCode, KeyEvent, KeyEventType, Modifiers};
     use serde_json::json;
 
     #[test]
@@ -1859,5 +1950,40 @@ mod chrome_message_tests {
     fn find_counts_are_clamped() {
         let state = find_state_payload(r#"{"count":-5,"index":99999999999}"#, "q").unwrap();
         assert_eq!(state, json!({"count": 0, "index": 1_000_000, "query": "q"}));
+    }
+
+    fn down(code: KeyCode, ctrl: bool) -> KeyEvent {
+        KeyEvent::new(KeyEventType::KeyDown, code, Modifiers { ctrl, ..Default::default() })
+    }
+
+    #[test]
+    fn editing_keys_go_as_a_virtual_key_with_no_text() {
+        assert_eq!(key_action(&down(KeyCode::Backspace, false)), KeyAction::Send(0x08, String::new()));
+        assert_eq!(key_action(&down(KeyCode::ArrowLeft, false)), KeyAction::Send(0x25, String::new()));
+        assert_eq!(key_action(&down(KeyCode::Enter, false)), KeyAction::Send(0x0D, String::new()));
+    }
+
+    #[test]
+    fn ctrl_a_c_v_x_z_go_as_the_lowercase_letter() {
+        assert_eq!(key_action(&down(KeyCode::KeyA, true)), KeyAction::Send(0, "a".to_string()));
+        assert_eq!(key_action(&down(KeyCode::KeyV, true)), KeyAction::Send(0, "v".to_string()));
+    }
+
+    #[test]
+    fn a_printable_key_down_is_left_to_its_char_message() {
+        assert_eq!(key_action(&down(KeyCode::KeyA, false)), KeyAction::Ignore);
+        assert_eq!(key_action(&down(KeyCode::KeyQ, true)), KeyAction::Ignore, "Ctrl+Q is not an editing chord");
+    }
+
+    #[test]
+    fn a_typed_character_goes_as_text_but_tab_and_enter_chars_do_not() {
+        assert_eq!(key_action(&KeyEvent::input('x')), KeyAction::Send(0, "x".to_string()));
+        assert_eq!(key_action(&KeyEvent::input('\r')), KeyAction::Ignore);
+        assert_eq!(key_action(&KeyEvent::input('\t')), KeyAction::Ignore);
+    }
+
+    #[test]
+    fn a_key_up_is_passed_on() {
+        assert_eq!(key_action(&KeyEvent::new(KeyEventType::KeyUp, KeyCode::KeyA, Modifiers::default())), KeyAction::Pass);
     }
 }

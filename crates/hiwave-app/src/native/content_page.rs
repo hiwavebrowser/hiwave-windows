@@ -12,9 +12,10 @@
 use std::cell::{Cell, RefCell};
 
 use rustkit_engine::{
-    ContentThread, EngineBuilder, FrameCommit, LoadState, PageEvent, WindowSurface,
+    ContentThread, EngineBuilder, FrameCommit, LoadState, PageCmd, PageEvent, PageInput, WindowSurface,
 };
-use rustkit_viewhost::Bounds;
+use rustkit_viewhost::{Bounds, ViewId};
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 use url::Url;
 use windows::Win32::Foundation::HWND;
@@ -141,11 +142,64 @@ impl ContentPage {
         })
     }
 
-    /// The surface's window, to stack it and to give it the keyboard. The input step
-    /// uses it; nothing does yet.
-    #[allow(dead_code)]
-    pub fn raw_view(&self) -> isize {
-        self.surface.borrow().raw_view()
+    /// The surface's window.
+    pub fn hwnd(&self) -> HWND {
+        HWND(self.surface.borrow().raw_view() as *mut _)
+    }
+
+    /// The viewhost id the surface's window reports its input under.
+    pub fn viewhost_id(&self) -> ViewId {
+        self.surface.borrow().viewhost_id()
+    }
+
+    /// Give the page the keyboard.
+    pub fn grab_keyboard(&self) {
+        self.surface.borrow().grab_keyboard();
+    }
+
+    // ---- input ------------------------------------------------------------------
+    //
+    // Everything here is fire-and-forget, as on macOS: the page acts on its own
+    // thread and publishes what changed. The replies the protocol offers are not
+    // read (a link click comes back as `NavigateRequested`, which `pump` follows;
+    // a scrolled or typed-into page publishes a new frame).
+
+    pub fn mouse_move(&self, x: f32, y: f32) {
+        self.thread.input(PageInput::MouseMove { x, y });
+    }
+
+    pub fn mouse_leave(&self) {
+        self.thread.input(PageInput::MouseLeave);
+    }
+
+    pub fn mouse_down(&self, x: f32, y: f32, clicks: u32, shift: bool) {
+        self.thread.input(PageInput::MouseDown { x, y, clicks, shift });
+    }
+
+    /// The release: the page fires `mouseup` and `click` and follows a link itself.
+    pub fn click(&self, x: f32, y: f32) {
+        let (reply, _unread) = oneshot::channel();
+        self.thread.input(PageInput::Click { x, y, reply });
+    }
+
+    /// A wheel over a point: the box under it may take it. Pixels; positive `dy`
+    /// scrolls up (the engine's convention).
+    pub fn scroll_at(&self, x: f32, y: f32, dx: f32, dy: f32) {
+        self.thread.input(PageInput::ScrollAt { x, y, dx, dy });
+    }
+
+    /// A key for the page's focused element (or the page itself, which scrolls an
+    /// unhandled one).
+    pub fn key(&self, key_code: u32, key: &str, ctrl: bool, shift: bool, alt: bool) {
+        let (reply, _unread) = oneshot::channel();
+        self.thread.input(PageInput::TextKey { key_code, key: key.to_string(), ctrl, shift, alt, reply });
+        // The key edits the page's text field; the page does not lay out and publish a
+        // frame for it by itself, so ask (the macOS window does the same after a key).
+        self.thread.enqueue(PageCmd::Relayout);
+    }
+
+    pub fn key_up(&self, key_code: u32, key: &str, ctrl: bool, shift: bool, alt: bool) {
+        self.thread.input(PageInput::KeyUp { key_code, key: key.to_string(), ctrl, shift, alt });
     }
 
     /// Load a page from a string (the start page).
