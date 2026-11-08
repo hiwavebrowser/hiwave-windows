@@ -337,7 +337,23 @@ pub fn parse_css_url(token: &str) -> Option<String> {
             }
             body
         }
-        _ => inner,
+        // An unquoted url holding a quote, a `(`, whitespace or a control
+        // character is a bad url (CSS Syntax 3 §4.3.6): Chromium drops the
+        // declaration (`url(it's)`, `url(a(b.png)` read `none`).
+        _ => {
+            let mut chars = inner.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => {
+                        chars.next();
+                    }
+                    '"' | '\'' | '(' => return None,
+                    c if c.is_whitespace() || c.is_control() => return None,
+                    _ => {}
+                }
+            }
+            inner
+        }
     };
     Some(url.to_string())
 }
@@ -365,26 +381,27 @@ fn parse_repeat(value: &str) -> Option<BackgroundRepeat> {
     }
 }
 
-/// `<geometry-box>` as an origin. The SVG boxes (`fill-box`, `stroke-box`,
-/// `view-box`) are the border box for an HTML element (§6.3).
+/// `<geometry-box>` as an origin. On an element with a CSS layout box the
+/// SVG boxes fall back (§6.3): `fill-box` to the content box, `stroke-box`
+/// and `view-box` to the border box.
 fn parse_origin(value: &str) -> Option<BackgroundOrigin> {
     Some(match value.trim().to_ascii_lowercase().as_str() {
-        "content-box" => BackgroundOrigin::ContentBox,
+        "content-box" | "fill-box" => BackgroundOrigin::ContentBox,
         "padding-box" => BackgroundOrigin::PaddingBox,
-        "border-box" | "margin-box" | "fill-box" | "stroke-box" | "view-box" => {
+        "border-box" | "margin-box" | "stroke-box" | "view-box" => {
             BackgroundOrigin::BorderBox
         }
         _ => return None,
     })
 }
 
-/// `<geometry-box> | no-clip` as a clip. `no-clip` is approximated by the
-/// border box.
+/// `<geometry-box> | no-clip` as a clip, the SVG boxes falling back as in
+/// [`parse_origin`]. `no-clip` is approximated by the border box.
 fn parse_clip(value: &str) -> Option<BackgroundClip> {
     Some(match value.trim().to_ascii_lowercase().as_str() {
-        "content-box" => BackgroundClip::ContentBox,
+        "content-box" | "fill-box" => BackgroundClip::ContentBox,
         "padding-box" => BackgroundClip::PaddingBox,
-        "border-box" | "margin-box" | "fill-box" | "stroke-box" | "view-box" | "no-clip" => {
+        "border-box" | "margin-box" | "stroke-box" | "view-box" | "no-clip" => {
             BackgroundClip::BorderBox
         }
         // Legacy `-webkit-mask-clip: text` etc. do not parse.
@@ -467,6 +484,23 @@ mod tests {
             );
             assert!(mask.has_image());
         }
+    }
+
+    /// The SVG boxes on an element with a CSS layout box (css-masking-1
+    /// §6.3, WPT mask-clip-8): `fill-box` is the content box, `stroke-box`
+    /// and `view-box` the border box. Chrome for Testing 148: a 20px
+    /// `mask-origin: fill-box` layer sits at the content box's corner, a
+    /// `view-box` one at the border box's; `mask-clip: fill-box` shows the
+    /// content box only.
+    #[test]
+    fn svg_boxes_fall_back_to_content_and_border_box() {
+        let m = applied(&[("mask-origin", "fill-box, stroke-box, view-box"), ("mask-clip", "fill-box, stroke-box, view-box")]);
+        use BackgroundClip as C;
+        use BackgroundOrigin as O;
+        assert_eq!(m.origins, vec![O::ContentBox, O::BorderBox, O::BorderBox]);
+        assert_eq!(m.clips, vec![C::ContentBox, C::BorderBox, C::BorderBox]);
+        let m = applied(&[("mask", "url(a.svg) fill-box")]);
+        assert_eq!((m.origins[0], m.clips[0]), (O::ContentBox, C::ContentBox));
     }
 
     #[test]

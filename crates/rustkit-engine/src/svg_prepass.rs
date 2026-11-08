@@ -160,6 +160,9 @@ pub(crate) struct PaintKey {
     pub(crate) external: Weak<Vec<Stylesheet>>,
     pub(crate) viewport: Option<(u32, u32)>,
     pub(crate) javascript_enabled: bool,
+    /// CH2.E19: the element state the paint rules read (hover, active,
+    /// focus, checkedness), when they read any (`SvgPaintRules::reads_state`).
+    pub(crate) state: Option<crate::SvgElementState>,
 }
 
 impl PaintKey {
@@ -168,6 +171,7 @@ impl PaintKey {
             && std::ptr::eq(self.external.as_ptr(), other.external.as_ptr())
             && self.viewport == other.viewport
             && self.javascript_enabled == other.javascript_enabled
+            && self.state == other.state
     }
 }
 
@@ -189,8 +193,9 @@ pub(crate) struct SvgPrepass {
     pub(crate) paint_rules: Option<Rc<SvgPaintRules>>,
     /// Per svg element (by pointer), when the paint rules read only the
     /// element and its ancestors: the element and its ancestors, the
-    /// rules, and the element's paint style under them.
-    element_paint: HashMap<usize, (Vec<Weak<Node>>, Weak<SvgPaintRules>, Option<SvgPaintStyle>)>,
+    /// rules, and the element's paint style under them; and (CH2.E19) the
+    /// element-state marks of the chain it was computed under.
+    element_paint: HashMap<usize, (Vec<Weak<Node>>, Weak<SvgPaintRules>, Vec<u8>, Option<SvgPaintStyle>)>,
 }
 
 impl SvgPrepass {
@@ -208,10 +213,14 @@ impl SvgPrepass {
     /// `element`'s paint style under `rules` (which read only the element
     /// and its ancestors): computed by `compute` unless the element and
     /// every ancestor are the nodes they were when it was last computed.
+    /// CH2.E19: `marks` gives each element's state marks; an element whose
+    /// chain has the marks it had keeps its style, so a hover recomputes
+    /// only the svg elements under the elements that gained or lost it.
     pub(crate) fn element_paint(
         &mut self,
         element: &Rc<Node>,
         rules: &Rc<SvgPaintRules>,
+        marks: &dyn Fn(usize) -> u8,
         compute: &mut dyn FnMut(&Rc<Node>) -> Option<SvgPaintStyle>,
     ) -> Option<SvgPaintStyle> {
         self.at_generation(rustkit_dom::mutation_generation());
@@ -219,11 +228,13 @@ impl SvgPrepass {
         while let Some(parent) = chain.last().and_then(|n| n.parent()) {
             chain.push(parent);
         }
+        let chain_marks: Vec<u8> = chain.iter().map(|n| marks(n.id.raw())).collect();
         let at = Rc::as_ptr(element) as usize;
-        if let Some((was, kept_rules, style)) = self.element_paint.get(&at) {
+        if let Some((was, kept_rules, was_marks, style)) = self.element_paint.get(&at) {
             let same = std::ptr::eq(kept_rules.as_ptr(), Rc::as_ptr(rules))
                 && was.len() == chain.len()
-                && was.iter().zip(&chain).all(|(w, n)| std::ptr::eq(w.as_ptr(), Rc::as_ptr(n)));
+                && was.iter().zip(&chain).all(|(w, n)| std::ptr::eq(w.as_ptr(), Rc::as_ptr(n)))
+                && *was_marks == chain_marks;
             if same {
                 return style.clone();
             }
@@ -231,7 +242,7 @@ impl SvgPrepass {
         let style = compute(element);
         self.element_paint.insert(
             at,
-            (chain.iter().map(Rc::downgrade).collect(), Rc::downgrade(rules), style.clone()),
+            (chain.iter().map(Rc::downgrade).collect(), Rc::downgrade(rules), chain_marks, style.clone()),
         );
         style
     }
@@ -326,5 +337,86 @@ impl SvgPrepass {
             rustkit_dom::mutation_generation(),
             Rc::downgrade(paint),
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! LAT4b pure helpers: id index referability and `<use>` part collection.
+    //! The headless cost/correctness suite is `inline_svg_prepass_tests`.
+
+    use super::{id_index, svg_parts, tree_root, REFERABLE};
+    use rustkit_dom::Document;
+    use std::rc::Rc;
+
+    fn doc(html: &str) -> rustkit_dom::Document {
+        Document::parse_html(html).unwrap()
+    }
+
+    #[test]
+    fn the_id_index_keeps_only_referable_elements_and_the_first_of_each_id() {
+        let document = doc(
+            r##"<html><body>
+              <div id="skip">no</div>
+              <svg xmlns="http://www.w3.org/2000/svg">
+                <symbol id="a"><path d="M0 0"/></symbol>
+                <g id="a"><circle/></g>
+                <path id="ok" d="M1 1"/>
+              </svg>
+            </body></html>"##,
+        );
+        let root = tree_root(&document.root());
+        let index = id_index(&root);
+        assert!(index.get("skip").is_none(), "HTML containers are not <use> targets");
+        let a = index.get("a").and_then(|w| w.upgrade()).expect("symbol a");
+        assert_eq!(a.tag_name().map(|t| t.to_ascii_lowercase()).as_deref(), Some("symbol"));
+        let ok = index.get("ok").and_then(|w| w.upgrade()).expect("path ok");
+        assert!(REFERABLE.iter().any(|r| ok.tag_name().unwrap().eq_ignore_ascii_case(r)));
+    }
+
+    #[test]
+    fn svg_parts_follows_nested_use_and_xlink_href_into_defs() {
+        let document = doc(
+            r##"<html><body>
+              <svg id="icon" xmlns="http://www.w3.org/2000/svg"><use href="#outer"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+                <symbol id="outer"><use xlink:href="#inner"/></symbol>
+                <symbol id="inner"><path id="leaf" d="M0 0h1v1H0z"/></symbol>
+              </svg>
+            </body></html>"##,
+        );
+        let icon = document.get_element_by_id("icon").expect("icon");
+        let index = id_index(&tree_root(&icon));
+        let parts = svg_parts(&icon, &mut |id| index.get(id).and_then(|w| w.upgrade()));
+        assert!(parts.defs, "external references wrap in a trailing <defs>");
+        assert_eq!(parts.roots.len(), 3, "svg + outer + inner");
+        let tags: Vec<String> = parts
+            .roots
+            .iter()
+            .map(|n| n.tag_name().unwrap().to_ascii_lowercase())
+            .collect();
+        assert_eq!(tags, vec!["svg", "symbol", "symbol"]);
+        assert!(
+            parts.nodes.iter().any(|n| n.get_attribute("id").as_deref() == Some("leaf")),
+            "nested target body is part of the markup walk"
+        );
+    }
+
+    #[test]
+    fn a_self_contained_svg_needs_no_defs() {
+        let document = doc(
+            r##"<html><body>
+              <svg id="icon" xmlns="http://www.w3.org/2000/svg">
+                <symbol id="local"><path d="M0 0"/></symbol>
+                <use href="#local"/>
+              </svg>
+            </body></html>"##,
+        );
+        let icon = document.get_element_by_id("icon").expect("icon");
+        let index = id_index(&tree_root(&icon));
+        let parts = svg_parts(&icon, &mut |id| index.get(id).and_then(|w| w.upgrade()));
+        assert!(!parts.defs);
+        assert_eq!(parts.roots.len(), 1);
+        assert!(Rc::ptr_eq(&parts.roots[0], &icon));
     }
 }

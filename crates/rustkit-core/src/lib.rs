@@ -642,6 +642,38 @@ mod tests {
         assert!(state.is_some(), "state object must survive a traversal load");
     }
 
+    /// S1: a provisional redirect rewrites the commit URL and the history
+    /// entry. Calling `redirected_to` after commit is a no-op.
+    #[test]
+    fn a_redirect_rewrites_the_commit_and_history_url() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut nav = NavigationStateMachine::new(tx);
+        let requested = Url::parse("https://www.gmail.com/signin").unwrap();
+        let last = Url::parse("https://accounts.google.com/ServiceLogin").unwrap();
+
+        nav.start_navigation(NavigationRequest::new(requested)).unwrap();
+        nav.redirected_to(last.clone());
+        nav.commit_navigation().unwrap();
+        nav.finish_navigation().unwrap();
+
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let commit = events
+            .iter()
+            .find_map(|e| match e {
+                LoadEvent::DidCommitLoad { url, .. } => Some(url),
+                _ => None,
+            })
+            .expect("DidCommitLoad");
+        assert_eq!(commit, &last);
+        assert_eq!(nav.current_url(), Some(&last));
+
+        // After commit the navigation is no longer provisional: a stray
+        // redirect must not rewrite the finished history entry.
+        let stray = Url::parse("https://evil.example/").unwrap();
+        nav.redirected_to(stray);
+        assert_eq!(nav.current_url(), Some(&last));
+    }
+
     #[test]
     fn test_history_navigation() {
         let (tx, _rx) = mpsc::unbounded_channel();

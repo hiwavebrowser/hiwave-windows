@@ -22,8 +22,11 @@ Builds nothing. For every row of tools/parity_oracle/chrome_fixtures/board.json:
      elements by selector, the worst rows first, and the CSS census red
      list of each page (the census's red properties that the page declares).
 
-The gate (PLAN-z CH0): every row <= 0.5 % pixel diff. A row whose capture
-failed is listed as such, never scored. A case whose fixture is missing is a
+The gate (PLAN-z CH0, docs/GATES.md): a row is green at <= 0.5 % pixel diff
+(PIXEL_GATE_PCT), OR at 0 geometry diffs with no join failures and <= 1.5 %
+pixel diff (GEOMETRY_PIXEL_GATE_PCT; Pete 2026-11-06: geometry that matches
+Chrome leaves only rasterisation). row_is_green() is the one place that
+decides. A row whose capture failed is listed as such, never scored. A case whose fixture is missing is a
 refusal before anything runs (scripts/tests/test_chrome_board.py).
 Captures (frames, rects, layouts) stay in --work (default target/chrome_board,
 gitignored); only the board files are for committing.
@@ -49,7 +52,37 @@ ORACLE_DIR = REPO_ROOT / "tools" / "parity_oracle"
 CHROMIUM_ARM = ORACLE_DIR / "chrome_board.mjs"
 CENSUS_DIR = REPO_ROOT / "docs" / "census"
 PIXEL_GATE_PCT = 0.5
+# Pete 2026-11-06: "add the additional 0 geometry rule and less or equal to
+# 1.5% pixel". A row whose geometry matches Chrome (0 diffs, 0 join failures)
+# differs only by rasterisation (CoreText vs Skia anti-aliasing).
+GEOMETRY_PIXEL_GATE_PCT = 1.5
 TOP_N = 3
+
+
+def green_rule(row: Dict[str, Any]) -> Optional[str]:
+    """Which gate makes a scored row green: "pixel", "geometry", or None (red).
+
+    The geometry rule needs geometry_diffs == 0 exactly and join_failures == 0:
+    a compare that did not run (None) or a join that failed is not "geometry
+    matches", so such a row keeps only the pixel rule.
+    """
+    if row.get("status") != "ok" or row.get("pixel_diff_pct") is None:
+        return None
+    pct = row["pixel_diff_pct"]
+    if pct <= PIXEL_GATE_PCT:
+        return "pixel"
+    if row.get("geometry_diffs") == 0 and row.get("join_failures", 0) == 0 and pct <= GEOMETRY_PIXEL_GATE_PCT:
+        return "geometry"
+    return None
+
+
+def row_is_green(row: Dict[str, Any]) -> bool:
+    return green_rule(row) is not None
+
+
+def gate_text() -> str:
+    return (f"green at ≤ {PIXEL_GATE_PCT}% pixel diff, OR at 0 geometry diffs and ≤ "
+            f"{GEOMETRY_PIXEL_GATE_PCT}% pixel diff")
 
 
 def _node_env() -> Dict[str, str]:
@@ -441,7 +474,7 @@ def write_board(out: Path, board_json: Dict[str, Any]) -> None:
     (out / "board.json").write_text(json.dumps(board_json, indent=2) + "\n", encoding="utf-8")
     rows = board_json["rows"]
     scored = [r for r in rows if r["status"] == "ok"]
-    green = [r for r in scored if r["pixel_diff_pct"] <= PIXEL_GATE_PCT]
+    green = [r for r in scored if row_is_green(r)]
     failed = [r for r in rows if r["status"] != "ok"]
     lines = [
         "# Chrome board — HiWave's own UI pages, RustKit vs Chromium (CH3.A1)",
@@ -450,32 +483,36 @@ def write_board(out: Path, board_json: Dict[str, Any]) -> None:
         f"`{board_json['run'].get('base') or '?'}` · oracle Chromium "
         f"{board_json['run'].get('chromium') or '?'} · parity-capture `{board_json['run']['parity_capture']}`",
         "",
-        f"Gate (PLAN-z CH0): every row ≤ {PIXEL_GATE_PCT}% pixel diff. "
+        f"Gate (PLAN-z CH0, docs/GATES.md): a row is {gate_text()} "
+        "(geometry matching Chrome leaves only rasterisation; a row whose geometry compare did not run "
+        "or whose join failed has only the first rule). "
         f"**{len(green)}/{len(rows)} rows green**, {len(scored) - len(green)} over the gate, "
         f"{len(failed)} not scored (a capture failed).",
         "",
         "Pixel diff % is pixelmatch over the whole viewport (compare_baseline.mjs). Geometry diffs is "
         "the count of (box, axis) pairs more than 0.5 px from Chrome's rect on the join selector "
         "(layout_oracle_gate.compare_case). Top 3 is the attribution of the diff pixels to elements "
-        "by selector; where fewer than three elements carry pixels, the worst geometry deltas fill in.",
+        "by selector; where fewer than three elements carry pixels, the worst geometry deltas fill in. "
+        "Gate is the rule that made the row green (`pixel` or `geometry`), or `red`.",
         "",
         "## Rows, worst first",
         "",
-        "| page | state | size | pixel diff % | geometry diffs | top 3 differing elements | notes |",
-        "|---|---|---|---:|---:|---|---|",
+        "| page | state | size | pixel diff % | geometry diffs | gate | top 3 differing elements | notes |",
+        "|---|---|---|---:|---:|---|---|---|",
     ]
     for r in sorted(rows, key=sort_key):
         geo = "—" if r["geometry_diffs"] is None else str(r["geometry_diffs"])
         status = "" if r["status"] == "ok" else f"**{r['status']}** "
         notes = status + "; ".join(r["notes"])
-        lines.append(f"| {r['page']} | {r['state']} | {r['size']} | {_fmt_pct(r['pixel_diff_pct'])} | {geo} | "
+        gate = "—" if r["status"] != "ok" else (green_rule(r) or "red")
+        lines.append(f"| {r['page']} | {r['state']} | {r['size']} | {_fmt_pct(r['pixel_diff_pct'])} | {geo} | {gate} | "
                      f"{_fmt_top(r['top'])} | {notes} |")
     lines += ["", "## Pages", "", "| page | rows | green | worst state | worst pixel diff % |", "|---|---:|---:|---|---:|"]
     pages = sorted({r["page"] for r in rows})
     for page in pages:
         mine = [r for r in rows if r["page"] == page]
         ok = [r for r in mine if r["status"] == "ok"]
-        g = [r for r in ok if r["pixel_diff_pct"] <= PIXEL_GATE_PCT]
+        g = [r for r in ok if row_is_green(r)]
         worst = max(ok, key=lambda r: r["pixel_diff_pct"]) if ok else None
         lines.append(f"| {page} | {len(mine)} | {len(g)} | {worst['state'] + ' ' + worst['size'] if worst else '—'} | "
                      f"{_fmt_pct(worst['pixel_diff_pct'] if worst else None)} |")
@@ -531,9 +568,28 @@ def report_only(board: Dict[str, Any], out: Path, census_path: Optional[Path]) -
     return 0
 
 
+def rescore(path: Path) -> int:
+    """Re-score a board.json under the current gate; prints before (the run's
+    own pixel-only gate) and after, and every row whose verdict moved."""
+    with open(path, encoding="utf-8") as handle:
+        board_json = json.load(handle)
+    rows = board_json["rows"]
+    old_pct = (board_json.get("run") or {}).get("gate_pct", PIXEL_GATE_PCT)
+    before = [r for r in rows if r["status"] == "ok" and r["pixel_diff_pct"] is not None and r["pixel_diff_pct"] <= old_pct]
+    after = [r for r in rows if row_is_green(r)]
+    print(f"rescore {path}: before {len(before)}/{len(rows)} (≤ {old_pct}% pixels) → "
+          f"after {len(after)}/{len(rows)} ({gate_text()})")
+    for r in rows:
+        was, now = any(r is b for b in before), row_is_green(r)
+        if was != now:
+            print(f"{'newly green' if now else 'newly red'}: {r['page']} {r['state']} {r['size']} "
+                  f"{_fmt_pct(r['pixel_diff_pct'])}% geo {r['geometry_diffs']} join {r.get('join_failures')}")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None, capture: Callable[..., Dict[str, Any]] = capture) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--parity-capture", required=True, help="path to a built parity-capture binary")
+    ap.add_argument("--parity-capture", help="path to a built parity-capture binary (required unless --rescore)")
     ap.add_argument("--board", default=str(DEFAULT_BOARD))
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="where BOARD.md and board.json go")
     ap.add_argument("--work", default=str(DEFAULT_WORK), help="captures and composed pages (not for committing)")
@@ -541,7 +597,13 @@ def main(argv: Optional[List[str]] = None, capture: Callable[..., Dict[str, Any]
     ap.add_argument("--census", help="CSS census JSON (default: newest docs/census/CSS_PROPERTY_CENSUS_*.json)")
     ap.add_argument("--report-only", action="store_true",
                     help="rewrite BOARD.md from <out>/board.json with the census named by --census; no captures")
+    ap.add_argument("--rescore", metavar="BOARD_JSON",
+                    help="print a board.json's green count before/after the current gate; no captures, no writes")
     args = ap.parse_args(argv)
+    if args.rescore:
+        return rescore(Path(args.rescore))
+    if not args.parity_capture:
+        ap.error("--parity-capture is required")
 
     binary = Path(args.parity_capture)
     out = Path(args.out)
@@ -580,6 +642,7 @@ def main(argv: Optional[List[str]] = None, capture: Callable[..., Dict[str, Any]
             "chromium": chromium_version,
             "parity_capture": str(binary),
             "gate_pct": PIXEL_GATE_PCT,
+            "gate_geometry_pixel_pct": GEOMETRY_PIXEL_GATE_PCT,
         },
         "sizes": board["sizes"],
         "states": {s: board["states"][s] for s in sorted({r.state for r in rows})},
@@ -588,8 +651,8 @@ def main(argv: Optional[List[str]] = None, capture: Callable[..., Dict[str, Any]
     }
     write_board(out, board_json)
     scored = [e for e in entries if e["status"] == "ok"]
-    green = sum(1 for e in scored if e["pixel_diff_pct"] <= PIXEL_GATE_PCT)
-    print(f"board: {green}/{len(entries)} rows green at {PIXEL_GATE_PCT}% → {out / 'BOARD.md'}")
+    green = sum(1 for e in entries if row_is_green(e))
+    print(f"board: {green}/{len(entries)} rows green ({gate_text()}) → {out / 'BOARD.md'}")
     return 0
 
 

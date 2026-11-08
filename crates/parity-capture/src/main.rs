@@ -894,9 +894,10 @@ fn script_log_json(log: &[ScriptRecord]) -> serde_json::Value {
 ///    the FIRST style in `<head>` — Chrome's capture injects it via an init
 ///    script before the fixture's own styles, so fixture rules win ties there
 ///    and must win ties here too.
+/// 3. Inline local image files as `data:` URLs (`inline_local_images`).
 fn preprocess_html(html: &str, html_path: &Path) -> String {
     let base_dir = html_path.parent().unwrap_or_else(|| Path::new("."));
-    let mut out = inline_stylesheet_links(html, base_dir);
+    let mut out = inline_local_images(&inline_stylesheet_links(html, base_dir), base_dir);
 
     if is_micro_suite_path(html_path) {
         if let Some(reset_css) = read_repo_parity_reset(html_path) {
@@ -995,6 +996,8 @@ fn stylesheet_replacement_for_link_tag(tag: &str, base_dir: &Path) -> Option<Str
         return None;
     }
 
+    // A sheet's url()s are relative to the sheet, not to the page.
+    let css = inline_local_images(&css, css_path.parent().unwrap_or(base_dir));
     let media = extract_attr(tag, "media").unwrap_or_default();
     let needs_media_wrap = !media.is_empty() && !media.eq_ignore_ascii_case("all");
     let body = if needs_media_wrap {
@@ -1005,6 +1008,138 @@ fn stylesheet_replacement_for_link_tag(tag: &str, base_dir: &Path) -> Option<Str
     Some(format!(
         "<style data-inlined-href=\"{}\">\n{}\n</style>",
         href, body
+    ))
+}
+
+/// Inline the page's local image files as `data:` URLs: CSS `url(...)`
+/// (backgrounds, masks, ...) and `<img src>`. `load_html` fetches no image
+/// (about:blank base, http(s) only), while the oracle serves the page over
+/// http as wptserve does, so a page that masks or paints with
+/// `support/icon.svg` was captured without it. A `data:` image takes the
+/// engine's own decode path (`cache_data_svg` for SVG). Left alone: any URL
+/// with a scheme, `//host`, `#id` and `file.svg#id` (an element of another
+/// document, not an image), a query, and a path that is not a readable
+/// image file.
+fn inline_local_images(text: &str, base_dir: &Path) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    loop {
+        let url_at = lower[pos..].find("url(").map(|i| (pos + i, true));
+        let src_at = find_img_src(&lower, pos).map(|i| (i, false));
+        let next = match (url_at, src_at) {
+            (Some(a), Some(b)) => if a.0 <= b.0 { a } else { b },
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => break,
+        };
+        let (start, is_css) = next;
+        // The value's span: inside `url( ... )`, or the quoted/unquoted
+        // attribute value after `src=`.
+        let (value_start, value_end, after) = if is_css {
+            let open = start + 4;
+            let Some(close) = text[open..].find(')').map(|i| open + i) else {
+                break;
+            };
+            (open, close, close)
+        } else {
+            let eq = start + lower[start..].find('=').unwrap() + 1;
+            let ws = text[eq..].len() - text[eq..].trim_start().len();
+            let v = eq + ws;
+            match text[v..].chars().next() {
+                Some(q @ ('"' | '\'')) => match text[v + 1..].find(q) {
+                    Some(e) => (v, v + 1 + e + 1, v + 1 + e + 1),
+                    None => break,
+                },
+                _ => {
+                    let e = text[v..]
+                        .find(|c: char| c.is_ascii_whitespace() || c == '>')
+                        .map_or(text.len(), |i| v + i);
+                    (v, e, e)
+                }
+            }
+        };
+        let raw = text[value_start..value_end].trim();
+        let reference = raw.trim_matches(|c| c == '"' || c == '\'');
+        match local_image_data_url(reference, base_dir) {
+            // A CSS url() is written unquoted: it may sit in a quoted
+            // `style` attribute, and either quote could close it (#966 R1).
+            // base64 needs no quoting there. An `<img src>` value is
+            // replaced with its own quotes, so it is quoted.
+            Some(data) if is_css => {
+                out.push_str(&text[pos..value_start]);
+                out.push_str(&data);
+                pos = after;
+            }
+            Some(data) => {
+                out.push_str(&text[pos..value_start]);
+                out.push('"');
+                out.push_str(&data);
+                out.push('"');
+                pos = after;
+            }
+            None => {
+                let step = if is_css { value_start } else { after.max(start + 1) };
+                out.push_str(&text[pos..step]);
+                pos = step;
+            }
+        }
+    }
+    out.push_str(&text[pos..]);
+    out
+}
+
+/// The byte offset of the next `src` attribute of an `<img>` tag at or after
+/// `from` in the lowercased text, pointing at the `s` of `src`.
+fn find_img_src(lower: &str, from: usize) -> Option<usize> {
+    let mut at = from;
+    while let Some(i) = lower[at..].find("<img") {
+        let tag_start = at + i;
+        let tag_end = lower[tag_start..].find('>').map_or(lower.len(), |e| tag_start + e);
+        let tag = &lower[tag_start..tag_end];
+        let mut search = 0;
+        while let Some(j) = tag[search..].find("src") {
+            let k = search + j;
+            let before_ok = tag[..k].chars().next_back().is_some_and(|c| c.is_ascii_whitespace());
+            let rest = tag[k + 3..].trim_start();
+            if before_ok && rest.starts_with('=') {
+                return Some(tag_start + k);
+            }
+            search = k + 3;
+        }
+        at = tag_end.max(tag_start + 4);
+    }
+    None
+}
+
+/// `reference` as a `data:` URL when it names a readable image file
+/// relative to `base_dir` (or an absolute path, as the WPT runner stages
+/// root-absolute references).
+fn local_image_data_url(reference: &str, base_dir: &Path) -> Option<String> {
+    use base64::Engine as _;
+    if reference.is_empty()
+        || reference.starts_with('#')
+        || reference.starts_with("//")
+        || reference.contains('#')
+        || reference.contains('?')
+        || Url::parse(reference).is_ok_and(|u| u.scheme().len() > 1)
+    {
+        return None;
+    }
+    let path = base_dir.join(reference);
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    let bytes = fs::read(&path).ok()?;
+    Some(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
 }
 
@@ -1202,6 +1337,131 @@ mod tests {
         let inlined = out.find("color: red").unwrap();
         let fixture = out.find("color:blue").unwrap();
         assert!(inlined < fixture);
+    }
+
+    /// The WPT masking reftests mask a box with an image file beside the
+    /// page (`mask-image: url(support/50x50-opaque-blue.svg)`), served by
+    /// wptserve. `load_html` fetches no image (about:blank base, http(s)
+    /// only), so the box painted nothing and 15 of the 30 css-masking-mask
+    /// cases failed without measuring the mask. Chromium 148 on this page
+    /// served over http: purple at (10, 10), white at (58, 10) and (10, 100).
+    /// (Over file:// Chromium paints nothing either: a mask image is a
+    /// CORS-mode fetch and a file:// page has an opaque origin.)
+    #[test]
+    fn an_html_file_capture_masks_with_an_image_file_beside_the_page() {
+        let dir = std::env::temp_dir().join(format!("pc-test-mask-file-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_file(
+            &dir,
+            "support/blue.svg",
+            r#"<svg width="50" height="50" xmlns="http://www.w3.org/2000/svg"><rect width="50" height="50" fill="blue"/></svg>"#,
+        );
+        write_file(
+            &dir,
+            "page.html",
+            "<!DOCTYPE html><style>body { margin: 0 } div { width: 64px; height: 128px; \
+background-color: purple; mask-image: url(support/blue.svg); mask-repeat: no-repeat; }</style><div></div>",
+        );
+        let frame = dir.join("frame.ppm");
+        let args = Args::try_parse_from([
+            "parity-capture",
+            "--html-file",
+            dir.join("page.html").to_str().unwrap(),
+            "--width",
+            "100",
+            "--height",
+            "160",
+            "--dump-frame",
+            frame.to_str().unwrap(),
+        ])
+        .expect("the command line parses");
+        let result = run_capture(&args);
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let ppm = fs::read(&frame).unwrap();
+        let header_end = ppm.windows(4).position(|w| w == b"255\n").unwrap() + 4;
+        let pixel = |x: usize, y: usize| {
+            let i = header_end + (y * 100 + x) * 3;
+            [ppm[i], ppm[i + 1], ppm[i + 2]]
+        };
+        assert_eq!(pixel(10, 10), [128, 0, 128], "under the mask image");
+        assert_eq!(pixel(58, 10), [255, 255, 255], "right of the 50px mask image");
+        assert_eq!(pixel(10, 100), [255, 255, 255], "below it (no-repeat)");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// #966 R1: a url() inside a double-quoted `style` attribute. Writing the
+    /// data URL as `url("data:...")` closed the attribute and the element
+    /// lost its whole style (border and size too). Chrome for Testing 148 on
+    /// this page over http: the 4px green border at (1, 1) and (66, 30),
+    /// white at (70, 30), the blue image inside it at (30, 30).
+    #[test]
+    fn an_image_in_a_double_quoted_style_attribute_keeps_the_rest_of_the_style() {
+        let dir = std::env::temp_dir().join(format!("pc-test-style-attr-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_file(
+            &dir,
+            "support/blue.svg",
+            r#"<svg width="60" height="60" xmlns="http://www.w3.org/2000/svg"><rect width="60" height="60" fill="blue"/></svg>"#,
+        );
+        write_file(
+            &dir,
+            "page.html",
+            r#"<!DOCTYPE html><body style="margin:0"><div style="background-image:url(support/blue.svg);width:60px;height:60px;border:4px solid green;background-repeat:no-repeat;background-position:4px 4px"></div>"#,
+        );
+        let frame = dir.join("frame.ppm");
+        let args = Args::try_parse_from([
+            "parity-capture",
+            "--html-file",
+            dir.join("page.html").to_str().unwrap(),
+            "--width",
+            "100",
+            "--height",
+            "100",
+            "--dump-frame",
+            frame.to_str().unwrap(),
+        ])
+        .expect("the command line parses");
+        let result = run_capture(&args);
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let ppm = fs::read(&frame).unwrap();
+        let header_end = ppm.windows(4).position(|w| w == b"255\n").unwrap() + 4;
+        let pixel = |x: usize, y: usize| {
+            let i = header_end + (y * 100 + x) * 3;
+            [ppm[i], ppm[i + 1], ppm[i + 2]]
+        };
+        assert_eq!(pixel(1, 1), [0, 128, 0], "the border survives");
+        assert_eq!(pixel(66, 30), [0, 128, 0], "and the 60px width: right border at 64..68");
+        assert_eq!(pixel(70, 30), [255, 255, 255], "nothing past the border box");
+        // Not pinned: the image itself. Chromium paints it blue at (30, 30);
+        // the engine splits a `style` attribute at every `;`, so the
+        // `;base64,` of any data: URL there cuts the declaration (an engine
+        // gap, C8 queue; a <style> block is not affected).
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// What is inlined and what is left: a sheet's url() is relative to the
+    /// sheet; scheme, fragment and missing references are untouched.
+    #[test]
+    fn inlines_local_image_files_and_leaves_other_references() {
+        let dir = std::env::temp_dir().join(format!("pc-test-img-inline-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_file(&dir, "a.svg", "<svg/>");
+        write_file(&dir, "css/b.png", "PNG");
+        write_file(&dir, "css/s.css", "p { background: url( 'b.png' ) }");
+        let html = concat!(
+            r#"<link rel="stylesheet" href="css/s.css">"#,
+            r#"<style>div { mask: url(a.svg) no-repeat; x: url(#m); y: url(a.svg#m); z: url(missing.svg); w: url(https://h/a.svg); }</style>"#,
+            r#"<img alt=x src=a.svg><img src="data:image/png;base64,AA"><img data-src="a.svg">"#,
+        );
+        let out = preprocess_html(html, &dir.join("page.html"));
+        let svg = "url(data:image/svg+xml;base64,PHN2Zy8+)";
+        assert!(out.contains(&format!("mask: {svg} no-repeat")), "{out}");
+        assert!(out.contains("background: url(data:image/png;base64,UE5H)"), "{out}");
+        assert!(out.contains(r#"<img alt=x src="data:image/svg+xml;base64,PHN2Zy8+">"#), "{out}");
+        for kept in ["url(#m)", "url(a.svg#m)", "url(missing.svg)", "url(https://h/a.svg)", r#"src="data:image/png;base64,AA""#, r#"data-src="a.svg""#] {
+            assert!(out.contains(kept), "{kept} should be left alone: {out}");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

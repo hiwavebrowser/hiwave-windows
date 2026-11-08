@@ -715,6 +715,13 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
             // is decoration, and decoration in a parser reads as intent.
             if c == ':' {
                 in_value = true;
+            } else if c == ';' && structural {
+                // A `;` before any `:` ends an empty declaration (`;;`) or
+                // one with no colon (`foo;`): both are skipped and the next
+                // declaration starts clean (CSS Syntax 3 §5.4.5). Kept as
+                // text, the `;` became part of the next property name, so
+                // `color:red;;background:blue` lost the background (CH2.E28).
+                current_property.clear();
             } else {
                 current_property.push(c);
             }
@@ -945,6 +952,150 @@ fn flush_decl(
     current_value.clear();
 }
 
+/// Split a declaration list -- the text of a `style` attribute -- into its
+/// declarations, the way CSS Syntax 3 §5.4.5 ("consume a list of
+/// declarations") does: only a `;` at the top level ends one. A `;` inside a
+/// quoted string, inside `()`/`[]`/`{}` (`calc()`, `var()` fallbacks,
+/// custom-property blocks), inside an unquoted `url(...)` or inside a
+/// comment does not, and an escaped `\;` is text. Comments are dropped (a
+/// tokenizer never yields them); one becomes a space so `1px/**/2px` stays
+/// two tokens. A closer ends only the block it matches (`(]` leaves the `(`
+/// open). Each declaration comes back trimmed; empty ones (`;;`, a trailing
+/// `;`) are skipped, as Chromium skips them.
+///
+/// An unquoted `url(` is ONE url token (§4.3.6): it runs to the first
+/// unescaped `)` with no string, comment or block inside it, so
+/// `url(a/*b)`, `url(it's)` and `url(a(b.png)` end at their `)` (the last
+/// two are bad urls, which the value parser rejects) and the next
+/// declaration survives.
+///
+/// End of input: a custom property keeps its text as written (Chromium reads
+/// `--s:'abc` back as `'abc`). Any other declaration gets its open url,
+/// string and blocks closed, which is what its value parser needs and what
+/// Chromium's tokenizer does: `url(data:...` at the end of the attribute
+/// still loads.
+///
+/// `rustkit-bindings`' `splitDecls` (dom.rs) is the JS copy of this rule;
+/// both run `declaration_list_cases.json`.
+///
+/// Splitting at every `;` cut `url(data:image/svg+xml;base64,...)` at its
+/// `;base64,`, so no inline data-URL background or mask ever applied (Z plan
+/// CH2.E27).
+pub fn split_declaration_list(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut closers: Vec<char> = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut open_url = false;
+    let mut chars = text.chars().peekable();
+    let finish = |current: &mut String, out: &mut Vec<String>| {
+        let declaration = current.trim();
+        if !declaration.is_empty() {
+            out.push(declaration.to_string());
+        }
+        current.clear();
+    };
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            current.push(c);
+            if let Some(n) = chars.next() {
+                current.push(n);
+            }
+            continue;
+        }
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            current.push(c);
+            continue;
+        }
+        match c {
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                while let Some(cc) = chars.next() {
+                    if cc == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        break;
+                    }
+                }
+                current.push(' ');
+                continue;
+            }
+            '(' if ends_with_url_ident(&current) => {
+                current.push(c);
+                let quoted = {
+                    let mut ahead = chars.clone();
+                    loop {
+                        match ahead.next() {
+                            Some(w) if w.is_whitespace() => continue,
+                            Some('"' | '\'') => break true,
+                            _ => break false,
+                        }
+                    }
+                };
+                if quoted {
+                    // `url("...")` is an ordinary function holding a string.
+                    closers.push(')');
+                    continue;
+                }
+                open_url = true;
+                while let Some(u) = chars.next() {
+                    current.push(u);
+                    if u == '\\' {
+                        if let Some(n) = chars.next() {
+                            current.push(n);
+                        }
+                    } else if u == ')' {
+                        open_url = false;
+                        break;
+                    }
+                }
+                continue;
+            }
+            '"' | '\'' => quote = Some(c),
+            '(' => closers.push(')'),
+            '[' => closers.push(']'),
+            '{' => closers.push('}'),
+            ')' | ']' | '}' if closers.last() == Some(&c) => {
+                closers.pop();
+            }
+            ';' if closers.is_empty() => {
+                finish(&mut current, &mut out);
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    if !current.trim_start().starts_with("--") {
+        if open_url {
+            current.push(')');
+        }
+        current.extend(quote);
+        current.extend(closers.iter().rev());
+    }
+    finish(&mut current, &mut out);
+    out
+}
+
+/// Whether `text` ends with the identifier `url` (ASCII case-insensitive), so
+/// a `(` after it opens a url token. `myurl(` and `my-url(` are other
+/// functions: the character before `url` must not continue an identifier.
+fn ends_with_url_ident(text: &str) -> bool {
+    let Some(head) = text.len().checked_sub(3).and_then(|i| text.get(i..).map(|t| (i, t))) else {
+        return false;
+    };
+    let (at, tail) = head;
+    if !tail.eq_ignore_ascii_case("url") {
+        return false;
+    }
+    !text[..at]
+        .chars()
+        .next_back()
+        .is_some_and(|p| p.is_alphanumeric() || p == '-' || p == '_' || p == '\\' || !p.is_ascii())
+}
+
 fn strip_important(value: &str) -> (&str, bool) {
     let lower = value.to_ascii_lowercase();
     if let Some(idx) = lower.rfind("!important") {
@@ -1013,6 +1164,81 @@ mod tests {
     }
 
     use super::*;
+
+    /// CH2.E28: an empty declaration, or one with no colon, is skipped and
+    /// the next one is kept (Chromium 148.0.7778.216 on the same rules:
+    /// tools/parity_oracle/empty_declaration_cases.json).
+    #[test]
+    fn an_empty_or_colonless_declaration_does_not_eat_the_next_one() {
+        let decls = |css: &str| -> Vec<(String, String, bool)> {
+            parse_stylesheet(css).unwrap().rules[0]
+                .declarations
+                .iter()
+                .map(|d| (d.property.clone(), d.value.clone(), d.important))
+                .collect()
+        };
+        let d = |p: &str, v: &str, i: bool| (p.to_string(), v.to_string(), i);
+        assert_eq!(decls("a{color:red;;background:blue}"), [d("color", "red", false), d("background", "blue", false)]);
+        assert_eq!(decls("a{;;color:red}"), [d("color", "red", false)]);
+        assert_eq!(decls("a{color:red;;background:blue !important}"), [d("color", "red", false), d("background", "blue", true)]);
+        assert_eq!(decls("a{foo;color:red}"), [d("color", "red", false)]);
+        assert_eq!(decls("a{width:1px;}"), [d("width", "1px", false)]);
+        assert_eq!(decls("a{b:url(x;y);;w:1}"), [d("b", "url(x;y)", false), d("w", "1", false)]);
+        assert_eq!(decls("a{--t: ;;w:1}"), [d("--t", "", false), d("w", "1", false)]);
+        assert_eq!(decls("a{f(;);color:red}"), [d("color", "red", false)]);
+    }
+
+    /// The case list both copies of the rule run (this one and the bindings'
+    /// JS `splitDecls`), so they cannot drift apart (#972 R1 nit 3).
+    #[test]
+    fn the_shared_declaration_list_cases_split_as_listed() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("declaration_list_cases.json")).expect("cases");
+        let mut wrong = Vec::new();
+        for case in doc["cases"].as_array().expect("cases") {
+            let input = case["input"].as_str().unwrap();
+            let want: Vec<(String, String)> = case["decls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| (d[0].as_str().unwrap().to_string(), d[1].as_str().unwrap().to_string()))
+                .collect();
+            let got: Vec<(String, String)> = split_declaration_list(input)
+                .iter()
+                .filter_map(|d| d.split_once(':'))
+                .map(|(n, v)| (n.trim().to_string(), v.trim().to_string()))
+                .collect();
+            if got != want {
+                wrong.push(format!("{input:?}: got {got:?}, want {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{} wrong\n{}", wrong.len(), wrong.join("\n"));
+    }
+
+    #[test]
+    fn a_declaration_list_splits_only_at_top_level_semicolons() {
+        let split = |s: &str| split_declaration_list(s);
+        assert_eq!(
+            split("background-image:url(data:image/svg+xml;base64,AA==);width:10px"),
+            ["background-image:url(data:image/svg+xml;base64,AA==)", "width:10px"]
+        );
+        assert_eq!(split("font-family:'a;b', serif;width:1px"), ["font-family:'a;b', serif", "width:1px"]);
+        assert_eq!(split("a:url(\"x;y\");b:1"), ["a:url(\"x;y\")", "b:1"]);
+        assert_eq!(split("--k:f(;);w:1"), ["--k:f(;)", "w:1"]);
+        assert_eq!(split("--k:[;];w:1"), ["--k:[;]", "w:1"]);
+        assert_eq!(split("--k:{;};w:1"), ["--k:{;}", "w:1"]);
+        assert_eq!(split("a:'it\\'s;x';b:1"), ["a:'it\\'s;x'", "b:1"]);
+        assert_eq!(split("a:x\\;y;b:1"), ["a:x\\;y", "b:1"]);
+        assert_eq!(split("width:20px /* ; */;height:2px"), ["width:20px", "height:2px"]);
+        assert_eq!(split("margin:1px/**/2px"), ["margin:1px 2px"]);
+        assert_eq!(split(" ;; color:red !important ;; ;"), ["color:red !important"]);
+        assert_eq!(split("w:1;b:url(data:x;y"), ["w:1", "b:url(data:x;y)"]);
+        assert_eq!(split("a:'open;b:1"), ["a:'open;b:1'"]);
+        assert_eq!(split("--a:'open;b:1"), ["--a:'open;b:1"]);
+        assert_eq!(split("a:f(];b:1"), ["a:f(];b:1)"]);
+        assert_eq!(split("a:1);b:2"), ["a:1)", "b:2"]);
+        assert!(split("").is_empty());
+    }
 
     #[test]
     fn parse_simple_stylesheet() {

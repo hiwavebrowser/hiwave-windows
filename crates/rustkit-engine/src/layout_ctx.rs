@@ -126,7 +126,13 @@ impl LayoutCtx {
             .as_ref()
             .map(|lay| (lay.hover_chain.borrow().clone(), lay.active_chain.borrow().clone()))
             .unwrap_or_default();
+        let focus = view
+            .lay
+            .as_ref()
+            .map(|lay| (lay.focus_chain.borrow().clone(), lay.focus_visible.get()))
+            .unwrap_or_default();
         let _walk_checked = crate::WalkCheckedScope::enter(Some(checked), Some(pointer));
+        let _walk_focus = crate::WalkFocusScope::enter(focus.0, focus.1);
         let lay = view.lay.clone();
         if let Some(lay) = lay.as_ref() {
             // Script's pause/play/cancel/finish of CSS animations, before
@@ -451,6 +457,15 @@ pub(crate) struct ViewLayout {
     /// The element the press in progress landed on and the elements above
     /// it: what `:active` matches, from the press to the release.
     pub(crate) active_chain: RefCell<Vec<usize>>,
+    /// CH2.E22: the page's focused element and the elements above it (a
+    /// shadow root's host included), innermost first, raw NodeIds: what
+    /// `:focus` (the first) and `:focus-within` (all) match in this view's
+    /// next build. Empty when nothing is focused. The page's focus, so a
+    /// focused button is here while `focused_node` (the control that takes
+    /// the keys) is not.
+    pub(crate) focus_chain: RefCell<Vec<usize>>,
+    /// CH2.E22: whether the focused element matches `:focus-visible`.
+    pub(crate) focus_visible: Cell<bool>,
     /// Live text-editing state for this view's form controls, keyed by raw
     /// `NodeId`.
     ///
