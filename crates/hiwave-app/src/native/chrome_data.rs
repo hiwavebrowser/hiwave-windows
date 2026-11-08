@@ -159,7 +159,12 @@ mod tests {
 
     #[test]
     fn a_blocked_domain_and_its_subdomains_are_blocked_everything_else_is_not() {
-        let mut s = temp_state("blocked");
+        let dir = std::env::temp_dir().join(format!("hiwave_blocked_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::state::AppConfig::default();
+        config.data_dir = dir.clone();
+        config.download_dir = dir.join("downloads");
+        let mut s = AppState::new(config).expect("state");
         s.block_domain("blocked.test".to_string()).unwrap();
         assert!(url_is_blocked(&s, "http://blocked.test/"));
         assert!(url_is_blocked(&s, "https://sub.blocked.test/page?x=1"));
