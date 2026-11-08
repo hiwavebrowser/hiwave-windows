@@ -85,6 +85,18 @@ fn used_offset_floors_to_a_sixty_fourth() {
     assert_eq!(negative.used_offset(16.0, 16.0), -3.0);
 }
 
+/// #866: rem outline-offset resolves against the root font, not the
+/// element's. A 62.5% root is 10px, so `1.5rem` is 15px.
+#[test]
+fn used_offset_rem_uses_the_root_font() {
+    let outline = Outline {
+        offset: Length::Rem(1.5),
+        ..Outline::default()
+    };
+    assert_eq!(outline.used_offset(16.0, 10.0), 15.0);
+    assert_eq!(outline.used_offset(16.0, 16.0), 24.0);
+}
+
 #[test]
 fn outline_style_keeps_auto_and_refuses_hidden() {
     assert_eq!(OutlineStyle::from_keyword("auto"), Some(OutlineStyle::Auto));

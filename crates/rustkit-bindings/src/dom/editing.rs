@@ -236,7 +236,7 @@ pub(crate) fn install(
                 super::note_mutation(&m, DomDirty::Layout, MutationKind::FormValue, || {
                     format!("{}#edit", node.tag_name().unwrap_or(""))
                 });
-                d.mark(DomDirty::Layout);
+                d.mark(DomDirty::Layout, "form");
             }
             JsValue::String(report.to_string())
         }),
@@ -316,7 +316,7 @@ pub(crate) fn install(
             if moved {
                 // The engine paints a focused control's selection from the
                 // state: lay it out again.
-                d.mark(DomDirty::Layout);
+                d.mark(DomDirty::Layout, "form");
             }
             JsValue::String(report.to_string())
         }),

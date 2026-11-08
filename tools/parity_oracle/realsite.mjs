@@ -20,6 +20,7 @@ import { chromium } from 'playwright';
 import { writeFileSync, readFileSync } from 'fs';
 import { join as pathJoin } from 'path';
 import { getDeterministicLaunchOptions } from './deterministic.mjs';
+import { oracleLaunchOptions } from './realsite_launch.mjs';
 import { comparePixels } from './compare_pixels.mjs';
 
 const NAV_TIMEOUT_MS = 30000;
@@ -54,8 +55,10 @@ function collectViewportText() {
 
 async function captureChrome(url, pngPath, textPath, width, height, settleMs) {
   const started = Date.now();
-  const browser = await chromium.launch(getDeterministicLaunchOptions());
-  const result = { url, status: 'ok', error: null, nav_error: null };
+  // Headless unless the board opted in to headed under the real-window lock (A1); see realsite_launch.mjs.
+  const launch = oracleLaunchOptions(width, height);
+  const browser = await chromium.launch(launch);
+  const result = { url, status: 'ok', error: null, nav_error: null, oracle_headless: launch.headless };
   try {
     // colorScheme is pinned: left unset, headless Chrome followed the seat's
     // OS appearance and served Google's dark theme, which RustKit never gets.
@@ -70,6 +73,14 @@ async function captureChrome(url, pngPath, textPath, width, height, settleMs) {
       extraHTTPHeaders: { 'Sec-CH-Prefers-Color-Scheme': 'light' },
     });
     const page = await context.newPage();
+    // Top-level document status, recorded even when goto throws: an error
+    // status is Chrome showing its own error page, not the site (x's 403).
+    // realsite_board.py's oracle_blocked() reads it.
+    page.on('response', (r) => {
+      if (r.request().isNavigationRequest() && r.frame() === page.mainFrame()) {
+        result.http_status = r.status();
+      }
+    });
     try {
       await page.goto(url, { waitUntil: 'load', timeout: NAV_TIMEOUT_MS });
     } catch (e) {

@@ -1467,11 +1467,15 @@ fn layout_flex_container_at(
                 (max_main, total_cross)
             }
             Axis::Vertical => {
-                // Main axis is vertical (height), cross axis is horizontal (width)
+                // Main axis is vertical (height), cross axis is horizontal (width).
+                // An item's extent runs to its MARGIN-box end: `main_position`
+                // is past the start margin, so the end margin is added back.
+                // Without it a column of one `<p>` was 16 + 20 tall where
+                // Chromium 148 gives 16 + 20 + 16 (CH2.B25).
                 let max_main: f32 = lines
                     .iter()
                     .flat_map(|l| l.items.iter())
-                    .map(|item| item.main_position + item.target_main_size)
+                    .map(|item| item.main_position + item.target_main_size + item.main_margin_end)
                     .fold(0.0f32, f32::max);
                 let total_cross: f32 = lines.iter().map(|l| l.cross_size).sum::<f32>()
                     + cross_gap * (lines.len().saturating_sub(1)) as f32;

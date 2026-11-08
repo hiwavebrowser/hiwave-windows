@@ -773,6 +773,7 @@ pub(crate) async fn pump_modules(
     document: &Url,
     fetched: &mut usize,
     inspector: &Arc<Inspector>,
+    prefetched: Option<&crate::module_prefetch::ModulePrefetch>,
 ) -> Pump {
     let mut out = Pump::default();
     for _ in 0..MAX_MODULE_ROUNDS {
@@ -793,6 +794,17 @@ pub(crate) async fn pump_modules(
             if i >= room {
                 return Err(format!("too many modules (limit {MAX_MODULES_PER_PAGE})"));
             }
+            // Fetched when the module script was discovered (S15): the
+            // same fetch's answer, without another round trip.
+            // Still out, it is awaited here: the one request, not a second.
+            // A prefetch that ran out of its own (earlier) deadline is
+            // fetched again under this one.
+            if let Some(module) = prefetched.and_then(|p| p.take(url)) {
+                let answer = module.await;
+                if !crate::module_prefetch::is_deadline_error(&answer) {
+                    return answer;
+                }
+            }
             fetch_module(policy, loader, url, document, deadline, inspector).await
         }))
         .await;
@@ -812,7 +824,7 @@ pub(crate) async fn pump_modules(
 
 /// One module through the policy's module entry point, as the page gets
 /// it: its source, or why there is none.
-async fn fetch_module(
+pub(crate) async fn fetch_module(
     policy: &FetchPolicy,
     loader: &ResourceLoader,
     url: &str,
@@ -837,9 +849,12 @@ async fn fetch_module(
             debug!(%url, ?denial, "Module fetch denied");
             Err(NETWORK_ERROR.to_string())
         }
-        Err(_) => Err("timed out".to_string()),
+        Err(_) => Err(MODULE_FETCH_TIMED_OUT.to_string()),
     }
 }
+
+/// Why a module fetch failed when its deadline passed.
+pub(crate) const MODULE_FETCH_TIMED_OUT: &str = "timed out";
 
 /// A module a dynamic `import()` asked for that is out: the URL as asked
 /// for and, in the end, its source or why there is none.
@@ -909,7 +924,7 @@ pub(crate) async fn pump_all(
         };
         let modules = match document {
             Some(document) => {
-                pump_modules(bindings, policy, loader, deadline, document, modules_fetched, inspector).await
+                pump_modules(bindings, policy, loader, deadline, document, modules_fetched, inspector, None).await
             }
             None => Pump::default(),
         };

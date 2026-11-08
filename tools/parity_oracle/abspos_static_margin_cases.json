@@ -1,0 +1,90 @@
+{
+ "viewport": [
+  400,
+  600
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "abspos-after-p",
+   "html": "<!doctype html><html><head><style>p{line-height:20px}#a{position:absolute;width:30px;height:10px}</style></head><body><p id=p>text</p><div id=a></div></body></html>",
+   "chrome_boxes": "p:8:16:384:20 a:8:52:30:10"
+  },
+  {
+   "name": "abspos-after-p-body-margin-0",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px}#a{position:absolute;width:30px;height:10px}</style></head><body><p id=p>text</p><div id=a></div></body></html>",
+   "chrome_boxes": "p:0:16:400:20 a:0:52:30:10"
+  },
+  {
+   "name": "abspos-after-p-then-inflow",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px}#a{position:absolute;width:30px;height:10px}#n{height:10px}</style></head><body><p id=p>text</p><div id=a></div><div id=n></div></body></html>",
+   "chrome_boxes": "p:0:16:400:20 a:0:52:30:10 n:0:52:400:10"
+  },
+  {
+   "name": "abspos-after-p-then-p",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px}#a{position:absolute;width:30px;height:10px}</style></head><body><p id=p>text</p><div id=a></div><p id=q>more</p></body></html>",
+   "chrome_boxes": "p:0:16:400:20 a:0:52:30:10 q:0:52:400:20"
+  },
+  {
+   "name": "abspos-with-own-margin-after-p",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px}#a{position:absolute;width:30px;height:10px;margin-top:5px}</style></head><body><p id=p>text</p><div id=a></div></body></html>",
+   "chrome_boxes": "p:0:16:400:20 a:0:57:30:10"
+  },
+  {
+   "name": "abspos-margin-50-after-p (clip-path-rectangle-ref)",
+   "html": "<!doctype html><html><head><style>p{line-height:20px}</style></head><body><p id=p>The test passes if there is a green box.</p><div id=a style=\"margin-top: 50px; margin-left: 50px; position: absolute; width: 150px; height: 100px; background-color: green;\"></div></body></html>",
+   "chrome_boxes": "p:8:16:384:20 a:58:102:150:100"
+  },
+  {
+   "name": "abspos-margin-larger-than-p-margin-then-inflow",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px}#a{position:absolute;width:30px;height:10px;margin-top:40px}#n{height:10px;margin-top:4px}</style></head><body><p id=p>text</p><div id=a></div><div id=n></div></body></html>",
+   "chrome_boxes": "p:0:16:400:20 a:0:92:30:10 n:0:52:400:10"
+  },
+  {
+   "name": "abspos-negative-margin-after-p",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px}#a{position:absolute;width:30px;height:10px;margin-top:-6px}</style></head><body><p id=p>text</p><div id=a></div></body></html>",
+   "chrome_boxes": "p:0:16:400:20 a:0:46:30:10"
+  },
+  {
+   "name": "abspos-after-margin-div-in-bordered-parent",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{border:1px solid;position:relative}#b{height:20px;margin-bottom:30px}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=c><div id=b></div><div id=a></div></div></body></html>",
+   "chrome_boxes": "c:0:0:400:52 b:1:1:398:20 a:1:51:30:10"
+  },
+  {
+   "name": "abspos-after-negative-margin",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{border:1px solid}#b{height:40px;margin-bottom:-10px}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=c><div id=b></div><div id=a></div></div></body></html>",
+   "chrome_boxes": "c:0:0:400:32 b:1:1:398:40 a:1:31:30:10"
+  },
+  {
+   "name": "abspos-after-two-collapsing-margins",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{border:1px solid}#b{height:20px;margin-bottom:12px}#e{margin:25px 0}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=c><div id=b></div><div id=e></div><div id=a></div></div></body></html>",
+   "chrome_boxes": "c:0:0:400:47 b:1:1:398:20 e:1:46:398:0 a:1:46:30:10"
+  },
+  {
+   "name": "abspos-first-child-of-margin-parent",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{margin-top:20px}#b{height:20px}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=b></div><div id=c><div id=a></div><div id=d style='height:5px'></div></div></body></html>",
+   "chrome_boxes": "b:0:0:400:20 c:0:40:400:5 a:0:40:30:10 d:0:40:400:5"
+  },
+  {
+   "name": "abspos-inline-after-p",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px}#a{position:absolute;width:30px;height:10px;display:inline-block}</style></head><body><p id=p>text</p><span id=a></span></body></html>",
+   "chrome_boxes": "p:0:16:400:20 a:0:52:30:10"
+  },
+  {
+   "name": "abspos-after-p-parent-height",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{border:1px solid}p{line-height:20px}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=c><p id=p>text</p><div id=a></div></div></body></html>",
+   "chrome_boxes": "c:0:0:400:54 p:1:17:398:20 a:1:53:30:10"
+  },
+  {
+   "name": "abspos-replaced-after-p",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px}#a{position:absolute;width:30px;height:10px;margin-top:3px}</style></head><body><p id=p>text</p><canvas id=a></canvas></body></html>",
+   "chrome_boxes": "p:0:16:400:20 a:0:55:30:10"
+  },
+  {
+   "name": "abspos-after-p-in-flex-item",
+   "html": "<!doctype html><html><head><style>body{margin:0}#f{display:flex}#i{width:200px}p{line-height:20px}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=f><div id=i><p id=p>text</p><div id=a></div></div></div></body></html>",
+   "chrome_boxes": "f:0:0:400:52 i:0:0:200:52 p:0:16:200:20 a:0:52:30:10"
+  }
+ ],
+ "chrome": "148.0.7778.216"
+}

@@ -37,3 +37,30 @@ fn contents_sets_display_and_the_container_flag_and_a_later_display_clears_both(
     assert_eq!(style.display, rustkit_css::Display::Block);
     assert!(!style.display_contents_declared);
 }
+
+/// #840 / C3: `z-index: 0` and `z-index: auto` both leave `z_index` at 0;
+/// only `z_index_declared` tells them apart for getComputedStyle. The page
+/// oracle lives in headless-gated `computed_display_tests`.
+#[test]
+fn z_index_zero_is_declared_and_auto_is_not() {
+    let engine = Engine::new(EngineConfig::default()).expect("engine");
+    let mut style = ComputedStyle::default();
+
+    engine
+        .lctx
+        .apply_style_property(&mut style, "z-index", "0");
+    assert_eq!(style.z_index, 0);
+    assert!(style.z_index_declared);
+
+    engine
+        .lctx
+        .apply_style_property(&mut style, "z-index", "auto");
+    assert_eq!(style.z_index, 0);
+    assert!(!style.z_index_declared);
+
+    engine
+        .lctx
+        .apply_style_property(&mut style, "z-index", "-1");
+    assert_eq!(style.z_index, -1);
+    assert!(style.z_index_declared);
+}

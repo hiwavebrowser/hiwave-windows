@@ -52,8 +52,8 @@ except ImportError:
         read_image = None
 
 BLANK_MIN_FRACTION = 0.02
-READABLE_MIN = 0.80
-LOOKS_RIGHT_MAX = 15.0
+# READABLE / LOOKS RIGHT thresholds live in realsite_board.py only (docs/GATES.md);
+# scorer v2 never used its copies, so they are gone rather than left to drift.
 
 
 def analyze_image_numpy(path: Path) -> Dict[str, Any]:

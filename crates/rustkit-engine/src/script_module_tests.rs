@@ -358,3 +358,259 @@ import('bare-specifier').then(function () { log.push('RESOLVED'); }, function (e
         "{got}"
     );
 }
+
+// S15 (microsoft.com: 87 static imports in 43 waves, ~8 s of idle network
+// inside the script task, `load` at 55.7 s). A module's static import graph
+// was walked only when that module's turn to run came, one level at a time.
+// Chromium fetches the whole static graph as soon as the module script is
+// discovered, then evaluates in order. Each page below also carries a
+// classic script the server holds for 300 ms (`/held...`): the page's
+// scripts are still arriving while it is out, and nothing has run yet.
+
+/// The request log's one entry for `path`.
+fn served_once(server: &crate::script_net_tests::Server, path: &str) -> crate::script_net_tests::ServedRequest {
+    let hits = server.served(path);
+    assert_eq!(hits.len(), 1, "{path} requested {} times: {:#?}", hits.len(), server.requests.lock().unwrap());
+    hits.into_iter().next().unwrap()
+}
+
+/// A three-deep chain: every module of it is requested while the held
+/// classic script is still out, so before any script ran and before `a`
+/// evaluates; each once; and evaluation order is c, b, a after the classic.
+#[test]
+fn a_module_graph_is_fetched_on_discovery_not_when_it_runs() {
+    let (mut engine, view, server) = load(vec![
+        (
+            "/",
+            "text/html",
+            page(r#"<script type="module" src="/a.js"></script><script src="/held-classic.js"></script>"#),
+        ),
+        ("/held-classic.js", JS, "log.push('classic');".into()),
+        ("/a.js", JS, "import { b } from './lib/b.js'; log.push('a:' + b);".into()),
+        ("/lib/b.js", JS, "import { c } from './c.js';\nexport const b = 'B' + c; log.push('b');".into()),
+        ("/lib/c.js", JS, "export const c = 'C'; log.push('c');".into()),
+    ]);
+    assert_eq!(log(&mut engine, view), "classic,c,b,a:BC");
+    let held = served_once(&server, "/held-classic.js");
+    let held_answered = held.answered.expect("held script answered");
+    for path in ["/a.js", "/lib/b.js", "/lib/c.js"] {
+        let hit = served_once(&server, path);
+        assert!(
+            hit.arrived < held_answered,
+            "{path} was requested {:?} after the page's held script was answered: the graph waited for its turn to run",
+            hit.arrived - held_answered
+        );
+    }
+}
+
+/// `import()` stays lazy, and an `import` in a comment, a string or a
+/// template is not an import.
+#[test]
+fn a_prefetched_graph_leaves_dynamic_imports_lazy() {
+    let (mut engine, view, server) = load(vec![
+        (
+            "/",
+            "text/html",
+            page(r#"<script type="module" src="/a.js"></script><script src="/held-classic.js"></script>"#),
+        ),
+        ("/held-classic.js", JS, "log.push('classic');".into()),
+        (
+            "/a.js",
+            JS,
+            r#"import './b.js';
+// import './in-comment.js';
+/* import x from './in-block-comment.js'; */
+const s = "import './in-string.js'";
+const t = `export * from './in-template.js'`;
+window.later = function () { return import('./lazy.js'); };
+log.push('a');"#
+                .into(),
+        ),
+        ("/b.js", JS, "log.push('b');".into()),
+        ("/lazy.js", JS, "log.push('lazy');".into()),
+    ]);
+    assert_eq!(log(&mut engine, view), "classic,b,a");
+    let held_answered = served_once(&server, "/held-classic.js").answered.unwrap();
+    assert!(served_once(&server, "/b.js").arrived < held_answered);
+    for path in ["/lazy.js", "/in-comment.js", "/in-block-comment.js", "/in-string.js", "/in-template.js"] {
+        assert!(server.served(path).is_empty(), "{path} was fetched");
+    }
+}
+
+/// A cycle is walked once and does not hang; each module is requested once.
+#[test]
+fn a_cyclic_graph_is_prefetched_once_and_runs() {
+    let (mut engine, view, server) = load(vec![
+        (
+            "/",
+            "text/html",
+            page(r#"<script type="module" src="/a.js"></script><script src="/held-classic.js"></script>"#),
+        ),
+        ("/held-classic.js", JS, "log.push('classic');".into()),
+        ("/a.js", JS, "import { b } from './b.js'; export const a = 'A'; log.push('a:' + b);".into()),
+        ("/b.js", JS, "import { a } from './a.js'; export const b = 'B'; log.push('b');".into()),
+    ]);
+    assert_eq!(log(&mut engine, view), "classic,b,a:B");
+    let held_answered = served_once(&server, "/held-classic.js").answered.unwrap();
+    assert!(served_once(&server, "/a.js").arrived < held_answered);
+    assert!(served_once(&server, "/b.js").arrived < held_answered);
+}
+
+/// A 404 inside one graph fails that module's evaluation only, logged as
+/// before ("module graph failed"), and its element hears `error`; the other
+/// module's graph runs.
+#[test]
+fn a_missing_module_in_a_prefetched_graph_fails_only_its_own_module() {
+    let (mut engine, view, server) = load(vec![
+        (
+            "/",
+            "text/html",
+            page(
+                r#"<script id="broken" type="module" src="/m1.js"></script>
+<script id="fine" type="module" src="/m2.js"></script>
+<script src="/held-classic.js"></script>
+<script>['broken', 'fine'].forEach(function (id) {
+    document.getElementById(id).addEventListener('error', function () { log.push('error:' + id); });
+    document.getElementById(id).addEventListener('load', function () { log.push('load:' + id); });
+});</script>"#,
+            ),
+        ),
+        ("/held-classic.js", JS, "log.push('classic');".into()),
+        ("/m1.js", JS, "import './lib/x.js'; log.push('m1 ran');".into()),
+        ("/lib/x.js", JS, "import '/missing-dep.js'; log.push('x ran');".into()),
+        ("/m2.js", JS, "import './lib/ok.js'; log.push('m2');".into()),
+        ("/lib/ok.js", JS, "log.push('ok');".into()),
+    ]);
+    assert_eq!(log(&mut engine, view), "classic,error:broken,ok,m2,load:fine");
+    let held_answered = served_once(&server, "/held-classic.js").answered.unwrap();
+    assert!(served_once(&server, "/missing-dep.js").arrived < held_answered);
+    served_once(&server, "/lib/ok.js");
+    let records = outcomes(&engine, view);
+    assert!(
+        records
+            .iter()
+            .any(|(src, o)| src.ends_with("/m1.js")
+                && matches!(o, ScriptOutcome::Threw(m) if m.starts_with("module graph failed"))),
+        "{records:#?}"
+    );
+}
+
+/// Review B2 on S15: a slow import must not hold the page's classic
+/// scripts. The prefetch walk stops when the page's scripts are in; a fetch
+/// still out is awaited only by the module that imports it.
+#[test]
+fn a_slow_prefetched_import_does_not_hold_the_classic_scripts() {
+    let (mut engine, view, server) = load(vec![
+        (
+            "/",
+            "text/html",
+            page(r#"<script type="module" src="/a.js"></script><script>log.push('classic'); window.classicAt = Date.now();</script>"#),
+        ),
+        ("/a.js", JS, "import './dep.js?delay=3000'; log.push('a');".into()),
+        ("/dep.js?delay=3000", JS, "log.push('dep');".into()),
+    ]);
+    assert_eq!(log(&mut engine, view), "classic,dep,a");
+    let classic_at = engine.execute_script(view, "String(window.classicAt)").unwrap();
+    let classic_ms: u128 = classic_at
+        .trim_start_matches("String(\"")
+        .trim_end_matches("\")")
+        .parse()
+        .unwrap_or_else(|_| panic!("classicAt: {classic_at}"));
+    let dep = served_once(&server, "/dep.js?delay=3000");
+    let dep_ms = dep
+        .answered_wall
+        .expect("dep answered")
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    assert!(
+        classic_ms < dep_ms,
+        "the classic script ran {} ms after the slow import was answered: it waited for the module graph",
+        classic_ms - dep_ms
+    );
+}
+
+/// R1 B1: a module whose text ends inside a string on a backslash (a body
+/// cut off at the network cap, say) is network input the prefetch lexer
+/// reads unchecked. It must not panic the load: the module is a syntax
+/// error for its own element (logged, `error`), and the page's other
+/// scripts run.
+#[test]
+fn a_module_cut_off_inside_a_string_is_a_module_error_not_a_panic() {
+    let (mut engine, view, _server) = load(vec![
+        (
+            "/",
+            "text/html",
+            page(
+                r#"<script id="cut" type="module" src="/cut.js"></script>
+<script>document.getElementById('cut').addEventListener('error', function () { log.push('error:cut'); });
+log.push('classic');</script>"#,
+            ),
+        ),
+        ("/cut.js", JS, "log.push('cut ran'); import \"a\\".into()),
+    ]);
+    assert_eq!(log(&mut engine, view), "classic,error:cut");
+    let records = outcomes(&engine, view);
+    assert!(
+        records
+            .iter()
+            .any(|(src, o)| src.ends_with("/cut.js") && matches!(o, ScriptOutcome::Threw(_))),
+        "{records:#?}"
+    );
+}
+
+/// Batch 19 HOLD on S15 (github.com stalled after a module script, 6 of 8
+/// captures). The prefetch walk stops once the page's scripts are in, but
+/// the fetches it started kept their place in the policy's per-origin queue
+/// (six at a time, first come first served) with nothing polling them: an
+/// answered prefetch never gave its slot back. A fetch the walk did not
+/// start (`late.js`, imported by a module that arrived after the walk
+/// stopped) then waited for a slot until its network cap. Here one graph
+/// shares a slow import with another and the second graph alone fills the
+/// origin's six slots.
+#[test]
+fn prefetches_left_running_never_starve_a_later_module_fetch() {
+    let (mut engine, view, server) = load(vec![
+        (
+            "/",
+            "text/html",
+            page(
+                r#"<script type="module" src="/m1.js"></script>
+<script type="module" src="/m2.js"></script>
+<script src="/held-classic.js"></script>"#,
+            ),
+        ),
+        // Held 300 ms: the walk is still going when every prefetch has been
+        // polled into the origin's queue (six slots, eight fetches), and has
+        // stopped before their 400 ms answers.
+        ("/held-classic.js", JS, "log.push('classic');".into()),
+        ("/m1.js", JS, "import './a.js?delay=400'; import './shared.js?delay=400'; log.push('m1');".into()),
+        ("/a.js?delay=400", JS, "import './late.js'; log.push('a');".into()),
+        ("/late.js", JS, "log.push('late');".into()),
+        ("/shared.js?delay=400", JS, "log.push('shared');".into()),
+        (
+            "/m2.js",
+            JS,
+            "import './shared.js?delay=400'; import './b1.js?delay=400'; import './b2.js?delay=400'; \
+             import './b3.js?delay=400'; import './b4.js?delay=400'; import './b5.js?delay=400'; \
+             import './b6.js?delay=400'; log.push('m2');"
+                .into(),
+        ),
+        ("/b1.js?delay=400", JS, "log.push('b1');".into()),
+        ("/b2.js?delay=400", JS, "log.push('b2');".into()),
+        ("/b3.js?delay=400", JS, "log.push('b3');".into()),
+        ("/b4.js?delay=400", JS, "log.push('b4');".into()),
+        ("/b5.js?delay=400", JS, "log.push('b5');".into()),
+        ("/b6.js?delay=400", JS, "log.push('b6');".into()),
+    ]);
+    assert_eq!(log(&mut engine, view), "classic,late,a,shared,m1,b1,b2,b3,b4,b5,b6,m2");
+    // Timed on the server, from the document's request to `late.js`'s
+    // answer (the engine's own start can wait on the GPU test guard).
+    let document = served_once(&server, "/");
+    let late = served_once(&server, "/late.js").answered.expect("late.js answered");
+    let elapsed = late - document.arrived;
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "late.js was answered {elapsed:?} after the page was requested: it waited on prefetch slots nobody polled"
+    );
+}

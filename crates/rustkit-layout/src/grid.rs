@@ -1489,6 +1489,16 @@ impl GridLayout {
 // ==================== Layout Algorithm ====================
 
 /// Lay out a grid container and its items.
+/// A child of a grid container that takes part in the grid: rendered, and
+/// in flow (an absolutely positioned child is placed apart; css-grid-1 §9).
+fn is_grid_item(child: &LayoutBox) -> bool {
+    child.style.display != Display::None
+        && !matches!(
+            child.style.position,
+            rustkit_css::Position::Absolute | rustkit_css::Position::Fixed
+        )
+}
+
 pub fn layout_grid_container(
     container: &mut LayoutBox,
     container_width: f32,
@@ -1572,7 +1582,7 @@ pub fn layout_grid_container(
     let mut items: Vec<GridItem> = container
         .children
         .iter()
-        .filter(|child| child.style.display != Display::None)
+        .filter(|child| is_grid_item(child))
         .map(|child| {
             let mut item = GridItem::new(child);
             // Set placement from style, resolving named lines via grid
@@ -2062,7 +2072,7 @@ pub fn layout_grid_container(
     // Phase 8: Apply positions to children
     let mut position_idx = 0;
     for child in container.children.iter_mut() {
-        if child.style.display == Display::None {
+        if !is_grid_item(child) {
             continue;
         }
 
@@ -2080,7 +2090,7 @@ pub fn layout_grid_container(
     let container_align_items = container.style.align_items;
     let mut phase9_idx: usize = 0;
     for child in container.children.iter_mut() {
-        if child.style.display == Display::None {
+        if !is_grid_item(child) {
             continue;
         }
         let item_idx = phase9_idx;
@@ -2611,7 +2621,7 @@ pub fn layout_grid_container(
         {
             let mut idx = 0usize;
             for child in container.children.iter() {
-                if child.style.display == Display::None {
+                if !is_grid_item(child) {
                     continue;
                 }
                 if let Some(&(r0, r1)) = row_spans.get(idx) {
@@ -2885,7 +2895,7 @@ pub fn layout_grid_container(
 
             let mut idx = 0usize;
             for child in container.children.iter_mut() {
-                if child.style.display == Display::None {
+                if !is_grid_item(child) {
                     continue;
                 }
                 if let Some(&(r0, r1)) = row_spans.get(idx) {
@@ -2971,7 +2981,7 @@ pub fn layout_grid_container(
             );
             let mut idx = 0usize;
             for child in container.children.iter_mut() {
-                if child.style.display == Display::None {
+                if !is_grid_item(child) {
                     continue;
                 }
                 let item_idx = idx;
@@ -3058,7 +3068,7 @@ pub fn layout_grid_container(
     {
         let mut idx = 0usize;
         for child in container.children.iter_mut() {
-            if child.style.display == Display::None {
+            if !is_grid_item(child) {
                 continue;
             }
             let item_idx = idx;
@@ -3117,7 +3127,7 @@ pub fn layout_grid_container(
     {
         let mut idx = 0usize;
         for child in container.children.iter_mut() {
-            if child.style.display == Display::None {
+            if !is_grid_item(child) {
                 continue;
             }
             if matches!(child.style.height, Length::FitContent) {
@@ -3144,7 +3154,7 @@ pub fn layout_grid_container(
     {
         let mut idx = 0usize;
         for child in container.children.iter_mut() {
-            if child.style.display == Display::None {
+            if !is_grid_item(child) {
                 continue;
             }
             let item_idx = idx;
@@ -3267,7 +3277,7 @@ pub fn layout_grid_container(
     {
         let mut idx = 0usize;
         for child in container.children.iter_mut() {
-            if child.style.display == Display::None {
+            if !is_grid_item(child) {
                 continue;
             }
             let item_idx = idx;
@@ -3286,6 +3296,34 @@ pub fn layout_grid_container(
                 crate::flex::layout_flex_container_at_used_height(child, used);
             }
         }
+    }
+
+    // css-grid-1 §9.3: an absolutely positioned child of the grid container
+    // is not a grid item (it takes no cell and sizes no track). With auto
+    // insets it sits at its static position: the content-box start corner
+    // of the grid container, or the padding-box corner when the container
+    // is itself the containing block (its auto grid lines are the padding
+    // edges; Chromium 148 puts a `position:relative; padding:6px` grid's
+    // abspos child at 0,0 and a static padded grid's at 6,6). The block
+    // pre-pass stacked it after the items as if in flow (CH2.B25). An inset
+    // that is set is applied over this by the owner's re-anchor.
+    let positioned_container = !matches!(container.style.position, rustkit_css::Position::Static);
+    let static_origin = if positioned_container {
+        let pb = container.dimensions.padding_box();
+        (pb.x, pb.y)
+    } else {
+        (container.dimensions.content.x, container.dimensions.content.y)
+    };
+    for child in container.children.iter_mut() {
+        if child.style.display == Display::None || is_grid_item(child) {
+            continue;
+        }
+        let margin_box = child.dimensions.margin_box();
+        crate::flex::translate_subtree(
+            child,
+            static_origin.0 - margin_box.x,
+            static_origin.1 - margin_box.y,
+        );
     }
 
     // Phase 9.9: every item's box is final; anchor the absolutely positioned

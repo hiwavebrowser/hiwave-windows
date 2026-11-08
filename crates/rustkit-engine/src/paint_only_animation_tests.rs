@@ -519,3 +519,123 @@ fn the_chrome_loading_animations_never_relay_out() {
     let anims = engine.views[&view].lay.animations.borrow();
     assert!(!anims.active(), "nothing animates once no page is loading");
 }
+
+// ---- #947 (LAT7) x #941 (LAT2): writes in the same turn as a WAAPI frame.
+// LAT7 skips no-op writes and marks writes inside a `display: none`
+// subtree as unseen (no forced layout); LAT2 paints a frame without layout
+// only when the animated-style layer write is all that changed.
+
+/// A running opacity Web Animation on `#a`; `#b` (visible, a class, an
+/// inline width, a text child); `#h` hidden with `#p` inside. Returns once
+/// the animation frames take the paint path.
+fn lat7_page() -> (Engine, EngineViewId, crate::script_net_tests::Server) {
+    let (mut engine, view, server) = load(
+        "<!doctype html><style>body{margin:0}\
+         #a{width:50px;height:50px;background:green}\
+         #b{height:20px;background:blue}\
+         </style><div id=a></div><div id=b class=k style=\"width:50px\">bee</div>\
+         <div id=h style=\"display:none\"><p id=p>old</p></div>\
+         <script>var a=document.getElementById('a'),b=document.getElementById('b'),\
+         p=document.getElementById('p'),h=document.getElementById('h');</script>",
+    );
+    run(
+        &mut engine,
+        view,
+        "a.animate([{opacity:1},{opacity:0.2}],{duration:1000,iterations:Infinity})",
+    );
+    for _ in 0..4 {
+        frame(&mut engine, view, 16);
+    }
+    let skip0 = skipped(&engine, view);
+    frame(&mut engine, view, 16);
+    assert_eq!(skipped(&engine, view), skip0 + 1, "the animation frames take the paint path");
+    (engine, view, server)
+}
+
+/// (a) A no-op style write (the same inline width, the same class) in
+/// every WAAPI frame is not a write: each frame still takes the paint-only
+/// path, and what it paints is what a full relayout paints.
+#[test]
+fn lat7_a_no_op_write_in_a_web_animation_frame_keeps_the_paint_path() {
+    if !animation_repaint_enabled() {
+        return;
+    }
+    let (mut engine, view, _server) = lat7_page();
+    run(
+        &mut engine,
+        view,
+        "window.__n=0;(function f(){requestAnimationFrame(function(){\
+         b.style.width='50px';b.className=b.className;b.setAttribute('class','k');\
+         window.__n++;f();});})()",
+    );
+    let mut relaid = relayouts(&engine, view);
+    let mut last = opacities(&engine, view);
+    for i in 0..4u32 {
+        let skip = skipped(&engine, view);
+        frame(&mut engine, view, 16);
+        assert_eq!(skipped(&engine, view), skip + 1, "frame {i}: the paint path");
+        assert_eq!(relayouts(&engine, view), relaid, "frame {i}: no relayout");
+        let now = opacities(&engine, view);
+        assert_ne!(now, last, "frame {i}: the opacity moved");
+        last = now;
+        let painted = list(&engine, view);
+        assert_eq!(painted, list_by_a_full_relayout(&mut engine, view), "frame {i}");
+        relaid = relayouts(&engine, view);
+    }
+    assert_eq!(read(&mut engine, view, "window.__n"), "4", "the no-op writes ran each frame");
+}
+
+/// (b) A real write LAT7 marks (a text change in a visible box) in a WAAPI
+/// frame: that frame is a full relayout, and the text reaches the layout.
+#[test]
+fn lat7_a_visible_text_write_in_a_web_animation_frame_takes_the_full_path() {
+    let (mut engine, view, _server) = lat7_page();
+    run(
+        &mut engine,
+        view,
+        "requestAnimationFrame(function(){b.firstChild.data='a much longer text';})",
+    );
+    let (skip, relaid) = (skipped(&engine, view), relayouts(&engine, view));
+    frame(&mut engine, view, 16);
+    assert_eq!(skipped(&engine, view), skip, "the frame with the write is not paint-only");
+    assert!(relayouts(&engine, view) > relaid, "it lays out");
+    assert_eq!(read(&mut engine, view, "b.textContent"), "a much longer text");
+    let painted = list(&engine, view);
+    assert_eq!(painted, list_by_a_full_relayout(&mut engine, view), "the painted frame is the laid-out one");
+}
+
+/// (c) A write inside a `display: none` subtree with LAT7's skip met (the
+/// layout current — a forced read just laid it out — computed styles
+/// built, no `:has()`, no shadow roots): the read after it forces nothing,
+/// but the frame is still a full relayout (the unseen write is beyond the
+/// animated-style layer), and the write reaches the next layout.
+#[test]
+fn lat7_an_unseen_write_in_a_web_animation_frame_still_takes_the_full_path() {
+    let (mut engine, view, _server) = lat7_page();
+    run(
+        &mut engine,
+        view,
+        "requestAnimationFrame(function(){\
+         var r=[b.offsetWidth,getComputedStyle(b).width];\
+         p.firstChild.data='new';p.className='x';\
+         r.push(b.offsetWidth);window.__r=r.join();})",
+    );
+    let (skip, relaid, forced0) = (
+        skipped(&engine, view),
+        relayouts(&engine, view),
+        engine.relayout_stats(view).unwrap().forced_layouts,
+    );
+    frame(&mut engine, view, 16);
+    assert_eq!(read(&mut engine, view, "window.__r"), "50,50px,50");
+    assert_eq!(
+        engine.relayout_stats(view).unwrap().forced_layouts,
+        forced0 + 1,
+        "the first read forces one layout (the layer write); the read after the hidden write forces none"
+    );
+    assert_eq!(skipped(&engine, view), skip, "the frame with the unseen write is not paint-only");
+    assert!(relayouts(&engine, view) > relaid, "it lays out");
+    let painted = list(&engine, view);
+    assert_eq!(painted, list_by_a_full_relayout(&mut engine, view), "the painted frame is the laid-out one");
+    run(&mut engine, view, "h.style.display='block'");
+    assert_eq!(read(&mut engine, view, "p.textContent+','+p.className"), "new,x");
+}

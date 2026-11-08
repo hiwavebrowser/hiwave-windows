@@ -10,13 +10,38 @@ use rustkit_net::{LoaderConfig, ResourceLoader};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use url::Url;
 
 pub(crate) struct Server {
     pub(crate) port: u16,
     pub(crate) hits: Arc<AtomicUsize>,
+    /// Every request in arrival order: its path, when it arrived, and when
+    /// its answer was written.
+    pub(crate) requests: Arc<Mutex<Vec<ServedRequest>>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ServedRequest {
+    pub(crate) path: String,
+    pub(crate) arrived: Instant,
+    pub(crate) answered: Option<Instant>,
+    /// `answered` on the wall clock, to compare with a page's `Date.now()`.
+    pub(crate) answered_wall: Option<std::time::SystemTime>,
+}
+
+impl Server {
+    /// The requests for `path`, in arrival order.
+    pub(crate) fn served(&self, path: &str) -> Vec<ServedRequest> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == path)
+            .cloned()
+            .collect()
+    }
 }
 
 /// `/echo` answers with the request body, `/slow*` after 300 ms, `/beacon*`
@@ -45,10 +70,13 @@ pub(crate) fn serve_byte_routes(routes: Vec<(&'static str, &'static str, Vec<u8>
     let port = listener.local_addr().unwrap().port();
     let hits = Arc::new(AtomicUsize::new(0));
     let counted = hits.clone();
+    let requests: Arc<Mutex<Vec<ServedRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let logged = requests.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let counted = counted.clone();
+            let logged = logged.clone();
             let routes = routes.clone();
             std::thread::spawn(move || {
                 let mut request = Vec::new();
@@ -65,6 +93,11 @@ pub(crate) fn serve_byte_routes(routes: Vec<(&'static str, &'static str, Vec<u8>
                 counted.fetch_add(1, Ordering::SeqCst);
                 let head = String::from_utf8_lossy(&request[..header_end]).to_string();
                 let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let entry = {
+                    let mut log = logged.lock().unwrap();
+                    log.push(ServedRequest { path: path.clone(), arrived: Instant::now(), answered: None, answered_wall: None });
+                    log.len() - 1
+                };
                 let length = head
                     .lines()
                     .find_map(|l| {
@@ -114,10 +147,16 @@ pub(crate) fn serve_byte_routes(routes: Vec<(&'static str, &'static str, Vec<u8>
                     body.len()
                 );
                 let _ = stream.write_all(&body);
+                let _ = stream.flush();
+                {
+                    let mut log = logged.lock().unwrap();
+                    log[entry].answered = Some(Instant::now());
+                    log[entry].answered_wall = Some(std::time::SystemTime::now());
+                }
             });
         }
     });
-    Server { port, hits }
+    Server { port, hits, requests }
 }
 
 struct Rig {

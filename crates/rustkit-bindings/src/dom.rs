@@ -141,7 +141,11 @@ pub struct CssAnimationInfo {
     /// view: script's `CSSAnimation`/`CSSTransition` object is keyed on it,
     /// so a restart or a same-name replacement is a new object.
     pub id: u64,
+    /// The element: the originating element of a pseudo-element's.
     pub node: usize,
+    /// `::before` or `::after` for a pseudo-element's animation
+    /// (`effect.pseudoElement`), `None` for the element's own.
+    pub pseudo: Option<&'static str>,
     /// `animation` or `transition`.
     pub kind: &'static str,
     /// The `animation` list index, or the transition's property index.
@@ -182,6 +186,11 @@ pub type SharedAnimatedStyles = Rc<std::cell::RefCell<AnimatedStyles>>;
 pub type GeometrySource =
     Box<dyn FnOnce() -> (HashMap<usize, BoxGeometry>, HashMap<usize, String>)>;
 
+/// One element's computed style as `name\tvalue` lines, formatted on the
+/// first read of that element (LAT8): a read of one element no longer
+/// formats every element's. `None` when the layout has no style for it.
+pub type ComputedLines = Rc<dyn Fn(usize) -> Option<String>>;
+
 /// The node under a viewport point, from the layout's hit test. `scroll`
 /// is the view's offset. `None` is a miss.
 pub type HitTester = Rc<dyn Fn(f32, f32, (f32, f32)) -> Option<usize>>;
@@ -201,6 +210,9 @@ pub struct ForcedGeometry {
     /// first read that needs them (as `DomBindings::set_geometry_source`).
     pub source: GeometrySource,
     pub hit_tester: Option<HitTester>,
+    /// Formats one element's computed style of this layout on its first
+    /// read (LAT8); `None` keeps whatever `source` returns.
+    pub computed_lines: Option<ComputedLines>,
     /// The furthest the view can scroll over this layout, as
     /// `DomBindings::set_scroll_state` takes it.
     pub max_scroll: (f32, f32),
@@ -231,8 +243,12 @@ pub(crate) struct DomHost {
     /// laid the page out (`DomBindings::set_geometry`).
     pub(crate) geometry: HashMap<usize, BoxGeometry>,
     /// The computed style of each laid-out element, by NodeId, as
-    /// `name\tvalue` lines (`DomBindings::set_computed_styles`).
-    pub(crate) computed: HashMap<usize, String>,
+    /// `name\tvalue` lines (`DomBindings::set_computed_styles`); with
+    /// `computed_lines`, the elements read so far.
+    pub(crate) computed: RefCell<HashMap<usize, String>>,
+    /// Formats an element's computed style of the last layout on its first
+    /// read (`DomBindings::set_computed_lines`, LAT8).
+    pub(crate) computed_lines: Option<ComputedLines>,
     /// What builds `geometry` and `computed` from the last layout, until
     /// script first reads either (`DomBindings::set_geometry_source`).
     pub(crate) geometry_source: Option<GeometrySource>,
@@ -248,6 +264,13 @@ pub(crate) struct DomHost {
     /// took the count.
     forced_in_task: u64,
     forced_ms: f64,
+    /// The forced layouts since the engine last took the count, by cause,
+    /// with their time (`DomBindings::take_forced_report`).
+    forced_report: crate::ForcedLayoutReport,
+    /// Whether the page's sheets have a `:has()` rule now (the engine's
+    /// rule index), so a write deep in a subtree can restyle an ancestor.
+    /// `None` until the engine installs it: assumed yes.
+    pub(crate) has_rules: Option<Rc<dyn Fn() -> bool>>,
     /// Whether a read since the count was taken answered from the last
     /// layout instead (budget spent, or the build state busy): logged once.
     forced_declined: bool,
@@ -304,9 +327,26 @@ impl DomHost {
     /// the layout changed since script last read them.
     pub(crate) fn ensure_geometry(&mut self) {
         if let Some(source) = self.geometry_source.take() {
-            (self.geometry, self.computed) = source();
+            let computed;
+            (self.geometry, computed) = source();
+            // A source with `computed_lines` returns no styles: what was
+            // formatted for this layout already stays.
+            if !computed.is_empty() {
+                *self.computed.borrow_mut() = computed;
+            }
             self.geometry_builds += 1;
         }
+    }
+
+    /// An element's computed-style lines from the last layout: formatted on
+    /// the first read when the layout publishes them lazily (LAT8).
+    pub(crate) fn computed_of(&self, node: usize) -> Option<String> {
+        if let Some(lines) = self.computed.borrow().get(&node) {
+            return Some(lines.clone());
+        }
+        let lines = (self.computed_lines.as_ref()?)(node)?;
+        self.computed.borrow_mut().insert(node, lines.clone());
+        Some(lines)
     }
 
     /// The rect of a box under a transform, its own or one above it, as x, y,
@@ -417,18 +457,25 @@ impl DomHost {
     /// What `ensure_geometry` gives, from a layout of the DOM as it is now:
     /// when script wrote to the DOM since the last layout was published, the
     /// page is laid out again first (forced layout), as in a browser.
-    pub(crate) fn ensure_fresh_geometry(host: &SharedDomHost, dirty: &crate::DirtyMark) {
-        Self::force_layout_if_written(host, dirty);
+    /// `read` names the read for the forced-layout log (`offset`, `rect`,
+    /// `computed_style`, ...).
+    pub(crate) fn ensure_fresh_geometry(host: &SharedDomHost, dirty: &crate::DirtyMark, read: &'static str) {
+        Self::force_layout_if_written(host, dirty, read);
         host.borrow_mut().ensure_geometry();
     }
 
     /// The forced layout half of `ensure_fresh_geometry`, for reads that
     /// need the layout current but not the geometry maps (the scroll
     /// maximum).
-    pub(crate) fn force_layout_if_written(host: &SharedDomHost, dirty: &crate::DirtyMark) {
-        if !dirty.written_since_layout() {
+    pub(crate) fn force_layout_if_written(host: &SharedDomHost, dirty: &crate::DirtyMark, read: &'static str) {
+        if !dirty.needs_layout_for(read) {
             return;
         }
+        // Only a paint-layer write (LAT7c) is pending: Web Animations'.
+        let cause = match dirty.written_since_layout() {
+            true => dirty.cause().unwrap_or("other"),
+            false => "animation",
+        };
         let forced = {
             let mut h = host.borrow_mut();
             let spent = h.forced_in_task >= FORCED_LAYOUTS_PER_TASK;
@@ -455,7 +502,8 @@ impl DomHost {
         };
         let laid = forced(&mut writes);
         let mut h = host.borrow_mut();
-        h.forced_ms += started.elapsed().as_secs_f64() * 1000.0;
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        h.forced_ms += ms;
         // What the layout did not apply stays for the engine's flush.
         writes.values.append(&mut h.value_writes);
         h.value_writes = writes.values;
@@ -466,7 +514,8 @@ impl DomHost {
             return;
         };
         h.geometry.clear();
-        h.computed.clear();
+        h.computed.borrow_mut().clear();
+        h.computed_lines = laid.computed_lines;
         h.geometry_source = Some(laid.source);
         h.hit_tester = laid.hit_tester;
         // The document may have grown or shrunk: scrollTo clamps to the new
@@ -479,6 +528,7 @@ impl DomHost {
         h.scroll = (s.x, s.y);
         h.forced_layouts += 1;
         h.forced_in_task += 1;
+        h.forced_report.note(cause, read, ms);
         dirty.laid_out();
     }
 
@@ -507,7 +557,15 @@ impl DomHost {
     /// count and budget.
     pub(crate) fn take_forced_layouts(&mut self) -> u64 {
         self.renew_forced_budget();
+        self.forced_report = crate::ForcedLayoutReport::default();
         std::mem::take(&mut self.forced_layouts)
+    }
+
+    /// `take_forced_layouts`, with the causes and time of the layouts.
+    pub(crate) fn take_forced_report(&mut self) -> crate::ForcedLayoutReport {
+        let report = std::mem::take(&mut self.forced_report);
+        let count = self.take_forced_layouts();
+        crate::ForcedLayoutReport { count, ..report }
     }
 
     pub(crate) fn note_scroll(&mut self, offset: (f32, f32)) {
@@ -931,15 +989,20 @@ fn write(host: &DomHost, args: &[JsValue]) -> Result<(JsValue, DomDirty), &'stat
             // restyles too, since attribute selectors can match on it.
             Ok((JsValue::Null, DomDirty::Style))
         }
-        ("setText", NodeType::Text(_) | NodeType::Comment(_)) => {
+        ("setText", NodeType::Text(old) | NodeType::Comment(old)) => {
             let data = string_arg(args, 3).unwrap_or("").to_string();
-            let node_type = match node.node_type {
-                NodeType::Text(_) => NodeType::Text(data),
-                _ => NodeType::Comment(data),
+            // LAT7: the same data again changes nothing.
+            if *old == data {
+                return Ok((JsValue::Null, DomDirty::Clean));
+            }
+            let (node_type, bucket) = match node.node_type {
+                // Pin §3.3: a text change relayouts.
+                NodeType::Text(_) => (NodeType::Text(data), DomDirty::Layout),
+                // A comment is never styled or laid out.
+                _ => (NodeType::Comment(data), DomDirty::Clean),
             };
             document.replace_node_data(node.id, node_type);
-            // Pin §3.3: a text change relayouts.
-            Ok((JsValue::Null, DomDirty::Layout))
+            Ok((JsValue::Null, bucket))
         }
         // DOM §4.4 textContent setter on an element or fragment: replace
         // all children with one Text node (none for the empty string).
@@ -1140,6 +1203,152 @@ fn node_label(host: &DomHost, args: &[JsValue], index: usize) -> String {
         Some(id) if !id.is_empty() => format!("{}#{}", label_part(tag_name), label_part(id)),
         _ => label_part(tag_name),
     }
+}
+
+/// Whether a script write can change a box of the published layout, which
+/// decides whether a geometry read after it lays the page out again (LAT7).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Reach {
+    /// It can: the read forces a layout.
+    Seen,
+    /// It cannot: the node is in no document, or inside a `display: none`
+    /// subtree the write cannot show. The engine still lays it out when
+    /// script settles (the bucket and the mutation log are kept), so what
+    /// it builds next is the same; only the read in between is spared.
+    Unseen,
+}
+
+impl Reach {
+    fn mark(self, dirty: &crate::DirtyMark, bucket: DomDirty, cause: &'static str) {
+        match self {
+            Reach::Seen => dirty.mark(bucket, cause),
+            Reach::Unseen => dirty.mark_unseen(bucket),
+        }
+    }
+}
+
+/// Elements a write under or to which may change something outside its
+/// box even when hidden: sheets, metadata, scripts, templates and slots,
+/// what a select or a picture draws from, replaced and embedded content,
+/// and the root elements.
+const UNSEEN_DENIED: &[&str] = &[
+    "html", "head", "body", "style", "link", "meta", "base", "title", "script", "noscript", "template",
+    "slot", "select", "option", "optgroup", "datalist", "picture", "source", "track", "img", "video",
+    "audio", "canvas", "iframe", "frame", "object", "embed", "input", "textarea", "label", "form",
+    "details", "summary", "dialog", "svg", "math",
+];
+
+/// In the document, a shadow tree's nodes through their host.
+fn rendered_connected(node: &Rc<Node>, document: &Document) -> bool {
+    let root = document.root().id;
+    let mut current = Some(node.clone());
+    while let Some(n) = current {
+        if n.id == root {
+            return true;
+        }
+        current = n.parent().or_else(|| n.shadow_host());
+    }
+    false
+}
+
+/// Whether a write to `container` itself (its attributes, children or
+/// text) is inside a `display: none` subtree of the published layout that
+/// it cannot show: a strict ancestor of `container` computed `display:
+/// none`, and every element from `container` up to it a plain HTML element
+/// (`UNSEEN_DENIED`). Only answered from what is already known: the
+/// layout must be current (no write since it), its computed styles built
+/// or formattable (a read built them; LAT8 formats each on its read), the page without `:has()` rules or shadow roots.
+/// Anything else answers no, and the read lays out as before.
+fn under_hidden(host: &DomHost, container: &Rc<Node>, dirty: &crate::DirtyMark) -> bool {
+    if dirty.written_since_layout()
+        || host.geometry_source.is_some()
+        || (host.computed_lines.is_none() && host.computed.borrow().is_empty())
+    {
+        return false;
+    }
+    if host.document.as_ref().is_none_or(|d| d.has_shadow_roots()) {
+        return false;
+    }
+    if host.has_rules.as_ref().is_none_or(|has| has()) {
+        return false;
+    }
+    let plain = |n: &Rc<Node>| {
+        is_html_element(n) && n.tag_name().is_some_and(|t| !UNSEEN_DENIED.iter().any(|d| t.eq_ignore_ascii_case(d)))
+    };
+    let display_none = |lines: &str| lines.lines().any(|l| l == "display\tnone");
+    if !plain(container) {
+        return false;
+    }
+    // A box of its own: shown.
+    if host.computed_of(container.id.raw()).is_some_and(|l| !display_none(&l)) {
+        return false;
+    }
+    let mut up = container.parent();
+    while let Some(n) = up {
+        if !plain(&n) {
+            return false;
+        }
+        if let Some(lines) = host.computed_of(n.id.raw()) {
+            return display_none(&lines);
+        }
+        up = n.parent();
+    }
+    false
+}
+
+/// What a `write` op would reach, and its cause name for the forced-layout
+/// log, read before the write (a `textContent` write takes the children
+/// out).
+fn write_reach(host: &DomHost, args: &[JsValue], dirty: &crate::DirtyMark) -> (Reach, &'static str) {
+    let Some(node) = host.node_at(args, 2) else {
+        return (Reach::Seen, "other");
+    };
+    let op = string_arg(args, 1).unwrap_or("");
+    let cause = match op {
+        "setAttr" | "removeAttr" => match string_arg(args, 3).map(str::to_ascii_lowercase).as_deref() {
+            Some("class") => "class",
+            Some("style") => "style",
+            _ => "attribute",
+        },
+        "setHTML" => "html",
+        _ => "text",
+    };
+    let Some(document) = args.first().and_then(|g| host.document_for(g)) else {
+        return (Reach::Seen, cause);
+    };
+    if !rendered_connected(&node, document) {
+        return (Reach::Unseen, cause);
+    }
+    let container = if node.is_element() { Some(node.clone()) } else { node.parent() };
+    match container {
+        Some(c) if under_hidden(host, &c, dirty) => (Reach::Unseen, cause),
+        _ => (Reach::Seen, cause),
+    }
+}
+
+/// `write_reach` for a `mutate` op: an insert of a node from no document
+/// into none, or into a hidden subtree, and a removal from either.
+fn mutate_reach(host: &DomHost, args: &[JsValue], dirty: &crate::DirtyMark) -> (Reach, &'static str) {
+    let cause = match string_arg(args, 1) {
+        Some("remove") => "remove",
+        _ => "insert",
+    };
+    let (Some(parent), Some(node), Some(document)) = (
+        host.node_at(args, 2),
+        host.node_at(args, 3),
+        args.first().and_then(|g| host.document_for(g)),
+    ) else {
+        return (Reach::Seen, cause);
+    };
+    let node_in = cause == "insert" && rendered_connected(&node, document);
+    if node_in {
+        // A move takes it out of where it was laid out.
+        return (Reach::Seen, cause);
+    }
+    if !rendered_connected(&parent, document) || under_hidden(host, &parent, dirty) {
+        return (Reach::Unseen, cause);
+    }
+    (Reach::Seen, cause)
 }
 
 /// Record a write that dirtied the page (`bucket` not `Clean`).
@@ -1711,14 +1920,31 @@ pub(crate) fn install(
         3,
         Box::new(move |args| {
             // innerText reads computed display/visibility (CH2.E13).
-            if matches!(
-                string_arg(args, 2),
-                Some("laidout" | "computed" | "geom" | "scroll" | "scrollChain" | "innerText")
-            ) {
-                DomHost::ensure_fresh_geometry(&h, &d);
+            // `geom:<read>` names the geometry read for the forced-layout log.
+            let (field, why) = match string_arg(args, 2) {
+                Some(f) => match f.split_once(':') {
+                    Some((f, why)) => (Some(f), Some(why)),
+                    None => (Some(f), None),
+                },
+                None => (None, None),
+            };
+            let read = match (field, why) {
+                (Some("geom"), Some("offset")) => Some("offset"),
+                (Some("geom"), Some("client")) => Some("client"),
+                (Some("geom"), Some("scroll_size")) => Some("scroll_size"),
+                (Some("geom"), _) => Some("rect"),
+                (Some("laidout"), _) => Some("laid_out"),
+                (Some("computed"), _) => Some("computed_style"),
+                (Some("scroll"), _) => Some("element_scroll"),
+                (Some("scrollChain"), _) => Some("scroll_chain"),
+                (Some("innerText"), _) => Some("inner_text"),
+                _ => None,
+            };
+            if let Some(read) = read {
+                DomHost::ensure_fresh_geometry(&h, &d, read);
             }
             let host = h.borrow();
-            match (host.node(args), string_arg(args, 2)) {
+            match (host.node(args), field) {
                 (Some(_), Some("stale")) => {
                     JsValue::String(if d.written_since_layout() { "1".into() } else { String::new() })
                 }
@@ -1726,7 +1952,7 @@ pub(crate) fn install(
                     JsValue::String(if host.geometry.is_empty() { String::new() } else { "1".into() })
                 }
                 (Some(node), Some("computed")) => JsValue::String(
-                    host.computed.get(&node.id.raw()).cloned().unwrap_or_default(),
+                    host.computed_of(node.id.raw()).unwrap_or_default(),
                 ),
                 (Some(node), Some("geom")) => match host.geometry.get(&node.id.raw()) {
                     Some(g) => {
@@ -1793,7 +2019,7 @@ pub(crate) fn install(
                 },
                 (Some(node), Some("innerText")) if node.is_element() => {
                     let style = |n: &rustkit_dom::Node| {
-                        host.computed.get(&n.id.raw()).and_then(|l| inner_text::Computed::from_lines(l))
+                        host.computed_of(n.id.raw()).and_then(|l| inner_text::Computed::from_lines(&l))
                     };
                     JsValue::String(inner_text::inner_text(&node, &style))
                 }
@@ -1838,13 +2064,27 @@ pub(crate) fn install(
                 _ => None,
             };
             let mut layer = host.animated.borrow_mut();
-            let changed = match entries {
-                Some(entries) => layer.script.insert(node.id.raw(), entries.clone()) != Some(entries),
-                None => layer.script.remove(&node.id.raw()).is_some(),
+            // What the layer held and holds for the element: the reads a
+            // change can reach are those of both (LAT7c).
+            let (changed, reads) = match entries {
+                Some(entries) => {
+                    let reads = layer_reads(entries.iter().map(|e| e.0.as_str()));
+                    let old = layer.script.insert(node.id.raw(), entries.clone());
+                    let old_reads = old.as_ref().map_or(Some(0), |o| layer_reads(o.iter().map(|e| e.0.as_str())));
+                    (old.as_ref() != Some(&entries), reads.zip(old_reads).map(|(a, b)| a | b))
+                }
+                None => match layer.script.remove(&node.id.raw()) {
+                    Some(old) => (true, layer_reads(old.iter().map(|e| e.0.as_str()))),
+                    None => (false, None),
+                },
             };
             if changed {
                 layer.generation += 1;
-                d.mark_animation_layer(crate::DomDirty::Layout);
+                match reads {
+                    // Paint properties only: the boxes did not move.
+                    Some(reads) => d.mark_animation_paint(crate::DomDirty::Layout, reads),
+                    None => d.mark_animation_layer(crate::DomDirty::Layout, "animation"),
+                }
                 // The element restyles as if its inline style changed, so
                 // the next build walks it rather than keep its box.
                 l.borrow_mut().push(MutationRecord {
@@ -1872,10 +2112,11 @@ pub(crate) fn install(
                 .iter()
                 .map(|a| {
                     format!(
-                        "{{\"id\":{},\"node\":{},\"kind\":{:?},\"index\":{},\"name\":{},\"start\":{},\"paused\":{},\"delay\":{},\
+                        "{{\"id\":{},\"node\":{},\"pseudo\":{},\"kind\":{:?},\"index\":{},\"name\":{},\"start\":{},\"paused\":{},\"delay\":{},\
                          \"duration\":{},\"iterations\":{},\"direction\":{:?},\"fill\":{:?},\"easing\":{},\"ended\":{}}}",
                         a.id,
                         a.node,
+                        a.pseudo.map_or("null".to_string(), |p| format!("{p:?}")),
                         a.kind,
                         a.index,
                         serde_json::to_string(&a.name).unwrap_or_default(),
@@ -1943,7 +2184,7 @@ pub(crate) fn install(
                 kind: kind.clone(),
                 op: op.clone(),
             });
-            d.mark(crate::DomDirty::Layout);
+            d.mark(crate::DomDirty::Layout, "animation");
             JsValue::Undefined
         }),
     )?;
@@ -1957,7 +2198,7 @@ pub(crate) fn install(
         "__rustkit_dom_hit",
         2,
         Box::new(move |args| {
-            DomHost::ensure_fresh_geometry(&h, &d);
+            DomHost::ensure_fresh_geometry(&h, &d, "hit_test");
             let host = h.borrow();
             if host.geometry.is_empty() {
                 return JsValue::Null;
@@ -2002,6 +2243,7 @@ pub(crate) fn install(
         5,
         Box::new(move |args| {
             let records = mutate_records(&h.borrow(), args);
+            let (reach, cause) = mutate_reach(&h.borrow(), args, &d);
             match mutate(&h.borrow(), args) {
             Ok(()) => {
                 let mut log = l.borrow_mut();
@@ -2014,7 +2256,7 @@ pub(crate) fn install(
                     node_label(&h.borrow(), args, 2)
                 });
                 // Pin §3.3: a structure insert/remove/move restyles.
-                d.mark(DomDirty::Style);
+                reach.mark(&d, DomDirty::Style, cause);
                 JsValue::Null
             }
             Err(name) => JsValue::String(name.to_string()),
@@ -2033,6 +2275,7 @@ pub(crate) fn install(
         5,
         Box::new(move |args| {
             let record = write_record(&h.borrow(), args);
+            let (reach, cause) = write_reach(&h.borrow(), args, &d);
             match write(&h.borrow(), args) {
             Ok((result, bucket)) => {
                 if let Some(record) = record.filter(|_| bucket != DomDirty::Clean) {
@@ -2042,7 +2285,7 @@ pub(crate) fn install(
                 note_mutation(&m, bucket, write_kind(args), || {
                     node_label(&h.borrow(), args, 2)
                 });
-                d.mark(bucket);
+                reach.mark(&d, bucket, cause);
                 result
             }
             Err(name) => JsValue::String(name.to_string()),
@@ -2074,7 +2317,7 @@ pub(crate) fn install(
             note_mutation(&m, bucket, MutationKind::FormValue, || {
                 node_label(&h.borrow(), args, 1)
             });
-            d.mark(bucket);
+            d.mark(bucket, "form");
             result
         }),
     )?;
@@ -2094,7 +2337,7 @@ pub(crate) fn install(
             note_mutation(&m, bucket, MutationKind::FormValue, || {
                 node_label(&h.borrow(), args, 1)
             });
-            d.mark(bucket);
+            d.mark(bucket, "form");
             JsValue::Null
         }),
     )?;
@@ -2173,7 +2416,7 @@ pub(crate) fn install(
                 return JsValue::Null;
             };
             node.set_adopted_styles(texts);
-            d.mark(DomDirty::Style);
+            d.mark(DomDirty::Style, "sheet");
             JsValue::Null
         }),
     )?;
@@ -3148,8 +3391,8 @@ const WRAPPERS_JS: &str = r#"
     // next layout. An element with no box (display:none, not rendered, or
     // measured before any layout) reads as all zeros, and has no offsetParent.
     function finite(v) { v = Number(v); return isFinite(v) ? v : 0; }
-    function geom(el) {
-        var raw = info(el, 'geom');
+    function geom(el, why) {
+        var raw = info(el, why ? 'geom:' + why : 'geom');
         if (!raw) return null;
         var p = raw.split(' ');
         var n = [];
@@ -3214,7 +3457,7 @@ const WRAPPERS_JS: &str = r#"
     };
     function metric(name, pick) {
         getter(HTMLElement.prototype, name, function () {
-            var b = geom(this);
+            var b = geom(this, 'offset');
             return b ? pick(b, this) : 0;
         });
     }
@@ -3228,14 +3471,14 @@ const WRAPPERS_JS: &str = r#"
     // body itself.
     var TABLE_PARENTS = { TD: 1, TH: 1, TABLE: 1 };
     function offsetParentOf(el) {
-        var b = geom(el);
+        var b = geom(el, 'offset');
         if (!b || b.pos === 2) return null;
         var body = document.body;
         if (el === body || el === document.documentElement) return null;
         var isStatic = b.pos === 0;
         for (var p = el.parentElement; p; p = p.parentElement) {
             if (p === body) return body;
-            var pb = geom(p);
+            var pb = geom(p, 'offset');
             if (!pb) continue;
             if (pb.pos !== 0) return p;
             if (isStatic && p.namespaceURI === 'http://www.w3.org/1999/xhtml' && TABLE_PARENTS[p.tagName]) return p;
@@ -3246,12 +3489,12 @@ const WRAPPERS_JS: &str = r#"
     // Offsets are from the offsetParent's padding edge; from the document
     // origin when that is the body.
     function offsetFrom(el, axis) {
-        var b = geom(el);
+        var b = geom(el, 'offset');
         if (!b) return 0;
         var parent = offsetParentOf(el);
         var base = 0;
         if (parent && parent !== document.body) {
-            var pb = geom(parent);
+            var pb = geom(parent, 'offset');
             if (pb) base = axis === 'x' ? pb.lx + pb.bl : pb.ly + pb.bt;
         }
         return round((axis === 'x' ? b.lx : b.ly) - base);
@@ -3483,6 +3726,11 @@ const WRAPPERS_JS: &str = r#"
         // row is empty, where the engine is known to drop part of the value,
         // where layout does not apply, and when the write has not been laid
         // out (the forced-layout budget). `display: none` has no transform.
+        // A declaration `el.style` leaves out (a bad url, CH2.E29) is not
+        // here at all, so the cascaded value shows. No row cannot be read as
+        // "initial" in general: the engine stores `justify-content:
+        // flex-start` and `align-items: stretch` as its defaults
+        // and publishes no row for them, where Chromium reads the value.
         var inline = el.style;
         if (inline) {
             var stale = !!info(el, 'stale');
@@ -3640,38 +3888,120 @@ const WRAPPERS_JS: &str = r#"
     }
     getter(Element.prototype, 'clientWidth', function () {
         if (isRoot(this)) return round(viewport('x'));
-        var b = geom(this); return b ? round(b.cw) : 0;
+        var b = geom(this, 'client'); return b ? round(b.cw) : 0;
     });
     getter(Element.prototype, 'clientHeight', function () {
         if (isRoot(this)) return round(viewport('y'));
-        var b = geom(this); return b ? round(b.ch) : 0;
+        var b = geom(this, 'client'); return b ? round(b.ch) : 0;
     });
-    getter(Element.prototype, 'clientLeft', function () { var b = geom(this); return b ? round(b.bl) : 0; });
-    getter(Element.prototype, 'clientTop', function () { var b = geom(this); return b ? round(b.bt) : 0; });
+    getter(Element.prototype, 'clientLeft', function () { var b = geom(this, 'client'); return b ? round(b.bl) : 0; });
+    getter(Element.prototype, 'clientTop', function () { var b = geom(this, 'client'); return b ? round(b.bt) : 0; });
     getter(Element.prototype, 'scrollWidth', function () {
         if (isRoot(this)) return round(documentExtent('x'));
-        var b = geom(this); return b ? round(Math.max(b.sw, b.cw)) : 0;
+        var b = geom(this, 'scroll_size'); return b ? round(Math.max(b.sw, b.cw)) : 0;
     });
     getter(Element.prototype, 'scrollHeight', function () {
         if (isRoot(this)) return round(documentExtent('y'));
-        var b = geom(this); return b ? round(Math.max(b.sh, b.ch)) : 0;
+        var b = geom(this, 'scroll_size'); return b ? round(Math.max(b.sh, b.ch)) : 0;
     });
 
     // style: a CSSStyleDeclaration over the style attribute, one per
     // element. Reads parse the attribute; writes reserialize it, so the
     // cascade sees them through the attribute (and the write marks Style).
-    // A `;` inside a string or url() is not yet split correctly.
     var CSSStyleDeclaration = iface('CSSStyleDeclaration');
     var OWNER = Symbol('rustkit.styleOwner');
+    // The attribute is a declaration list (CH2.E27): only a top-level `;`
+    // ends a declaration, not one inside a string, a ()/[]/{} block, an
+    // unquoted url( token (one token to its first unescaped `)`, with no
+    // string, comment or block inside: `url(a/*b)`, `url(it's)`) or a
+    // comment; `\;` is text. Comments drop out. At the end a custom property
+    // keeps its text as written; any other declaration gets its open url,
+    // string and blocks closed. rustkit_cssparser::split_declaration_list is
+    // the Rust copy of this rule; both run declaration_list_cases.json.
+    function splitDecls(text) {
+        var out = [], cur = '', closers = [], quote = null, openUrl = false, i = 0, c, j;
+        var pairs = { '(': ')', '[': ']', '{': '}' };
+        while (i < text.length) {
+            c = text.charAt(i++);
+            if (c === '\\') { cur += c + text.charAt(i++); continue; }
+            if (quote) { if (c === quote) quote = null; cur += c; continue; }
+            if (c === '/' && text.charAt(i) === '*') {
+                var end = text.indexOf('*/', i + 1);
+                i = end < 0 ? text.length : end + 2;
+                cur += ' ';
+                continue;
+            }
+            if (c === '(' && /(^|[^\w\-\\\u0080-￿])url$/i.test(cur)) {
+                cur += c;
+                for (j = i; j < text.length && /\s/.test(text.charAt(j)); j++) {}
+                if (text.charAt(j) === '"' || text.charAt(j) === "'") { closers.push(')'); continue; }
+                openUrl = true;
+                while (i < text.length) {
+                    c = text.charAt(i++);
+                    cur += c;
+                    if (c === '\\') cur += text.charAt(i++);
+                    else if (c === ')') { openUrl = false; break; }
+                }
+                continue;
+            }
+            if (c === '"' || c === "'") quote = c;
+            else if (pairs[c]) closers.push(pairs[c]);
+            else if (closers.length && c === closers[closers.length - 1]) closers.pop();
+            else if (c === ';' && !closers.length) { out.push(cur); cur = ''; continue; }
+            cur += c;
+        }
+        if (!/^\s*--/.test(cur)) {
+            if (openUrl) cur += ')';
+            if (quote) cur += quote;
+            while (closers.length) cur += closers.pop();
+        }
+        out.push(cur);
+        return out;
+    }
+    // A value holding a bad url (CSS Syntax 3 §4.3.6: an unquoted url with a
+    // quote, `(`, inner whitespace or a control character in it) is invalid
+    // for every property, so the declaration is not in the block (CH2.E29:
+    // Chromium's `el.style.length` leaves it out and the earlier value
+    // stands). The same rule as `rustkit_css::mask::parse_css_url`.
+    function hasBadUrl(value) {
+        var quote = null, i, j, k, c;
+        for (i = 0; i < value.length; i++) {
+            c = value.charAt(i);
+            if (quote) { if (c === '\\') i++; else if (c === quote) quote = null; continue; }
+            if (c === '"' || c === "'") { quote = c; continue; }
+            if (c === '\\') { i++; continue; }
+            // `url(` as its own function name, not the tail of `foourl(`.
+            if (value.substr(i, 4).toLowerCase() !== 'url(' ||
+                (i > 0 && /[\w\-\\\u0080-￿]/.test(value.charAt(i - 1)))) continue;
+            for (j = i + 4; j < value.length && /\s/.test(value.charAt(j)); j++) {}
+            // A quoted url is a function with a string: the strings rule above reads it.
+            if (value.charAt(j) === '"' || value.charAt(j) === "'") { i = j - 1; continue; }
+            for (; j < value.length; j++) {
+                c = value.charAt(j);
+                if (c === '\\') { j++; continue; }
+                if (c === ')') break;
+                if (c === '"' || c === "'" || c === '(' || /[\x00-\x08\x0b\x0e-\x1f\x7f]/.test(c)) return true;
+                if (/\s/.test(c)) {
+                    for (k = j; k < value.length && /\s/.test(value.charAt(k)); k++) {}
+                    // Whitespace is allowed only before the closing `)`.
+                    if (k < value.length && value.charAt(k) !== ')') return true;
+                    j = k - 1;
+                }
+            }
+            i = j;
+        }
+        return false;
+    }
     function decls(st) {
         var out = [];
-        (st[OWNER].getAttribute('style') || '').split(';').forEach(function (d) {
+        splitDecls(st[OWNER].getAttribute('style') || '').forEach(function (d) {
             var i = d.indexOf(':');
             if (i < 0) return;
             var name = d.slice(0, i).trim().toLowerCase(), value = d.slice(i + 1).trim();
             var important = /!\s*important$/i.test(value);
             if (important) value = value.replace(/\s*!\s*important$/i, '');
             if (!name || !value) return;
+            if (hasBadUrl(value)) return;
             out = out.filter(function (x) { return x.name !== name; });
             out.push({ name: name, value: value, important: important });
         });
@@ -3703,8 +4033,14 @@ const WRAPPERS_JS: &str = r#"
             name = String(name).trim().toLowerCase();
             value = value == null ? '' : String(value).trim();
             if (value === '') { this.removeProperty(name); return; }
+            // An invalid value changes nothing (the attribute is not rewritten).
+            if (hasBadUrl(value)) return;
             var ds = decls(this), d = ds.filter(function (x) { return x.name === name; })[0];
             var important = String(priority || '').toLowerCase() === 'important';
+            // The same declaration again changes nothing: the attribute is
+            // not rewritten (Blink's set-property returns "did not change"),
+            // so a geometry read after it lays nothing out (LAT7).
+            if (d && d.value === value && d.important === important) return;
             if (d) { d.value = value; d.important = important; }
             else ds.push({ name: name, value: value, important: important });
             storeDecls(this, ds);
@@ -5750,4 +6086,21 @@ mod tests {
         let (_, label) = b.take_script_mutations().first.expect("a write");
         assert_eq!(label, format!("div#{}…", "b".repeat(48)));
     }
+}
+
+/// LAT7c: the reads a Web Animations layer write of `props` reaches, or
+/// `None` when one of them is one layout reads (the boxes may move). The
+/// paint properties are the engine's paint-only animation frame's
+/// (`animations::is_paint_prop`).
+fn layer_reads<'a>(props: impl Iterator<Item = &'a str>) -> Option<u8> {
+    let mut reads = 0;
+    for prop in props {
+        reads |= match prop {
+            "opacity" | "color" | "background-color" | "border-top-color" | "border-right-color"
+            | "border-bottom-color" | "border-left-color" => crate::LAYER_PAINT,
+            "transform" | "translate" | "rotate" | "scale" => crate::LAYER_PAINT | crate::LAYER_TRANSFORM,
+            _ => return None,
+        };
+    }
+    Some(reads)
 }
