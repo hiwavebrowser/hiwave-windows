@@ -112,6 +112,39 @@ pub fn reconcile(state: &mut AppState, mirrored: &mut HashSet<u64>, tabs: &[Nati
     out
 }
 
+/// Take an item off the shelf for the native shell to reopen. Unlike
+/// `AppState::restore_from_shelf` this does not add a tab to the shared model: the native
+/// shell opens the page itself and `reconcile` adds it. It does make the target the active
+/// workspace, as the shared restore does. Returns the address and the workspace.
+pub fn take_from_shelf(
+    state: &mut AppState,
+    id: &str,
+    target: Option<hiwave_core::types::WorkspaceId>,
+) -> Option<(String, hiwave_core::types::WorkspaceId)> {
+    let mut found = None;
+    let mut source = None;
+    for (workspace, items) in state.shelves.iter_mut() {
+        if let Some(index) = items.iter().position(|item| item.id == id) {
+            found = Some(items.remove(index));
+            source = Some(workspace.clone());
+            break;
+        }
+    }
+    let item = found?;
+    let workspace = target.or_else(|| {
+        let name = source.unwrap_or_else(|| item.workspace.clone());
+        state
+            .shell
+            .list_workspaces()
+            .iter()
+            .find(|ws| ws.name == name)
+            .map(|ws| ws.id)
+            .or_else(|| state.shell.get_active_workspace().map(|ws| ws.id))
+    })?;
+    let _ = state.shell.set_active_workspace(workspace);
+    Some((item.url, workspace))
+}
+
 /// The native tabs that belong to the active workspace, and which of them it last had
 /// active. The tab strip shows only these.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -223,6 +256,40 @@ mod tests {
         let no_active = WorkspaceView { visible: vec![4, 5], active: None };
         assert_eq!(after_switch(&no_active, None), AfterSwitch::Activate(4));
         assert_eq!(after_switch(&WorkspaceView::default(), Some(9)), AfterSwitch::NewTab);
+    }
+
+    #[test]
+    fn taking_an_item_off_the_shelf_returns_its_page_and_activates_its_workspace() {
+        let mut s = state("shelf_take");
+        let mut mirrored = HashSet::new();
+        let id = alloc_tab_id();
+        reconcile(&mut s, &mut mirrored, &[tab(id, "https://a.test/page", "A", true)]);
+        let item = s.add_to_shelf(TabId(id)).unwrap().expect("shelved");
+        let work = s.shell.create_workspace("Work".to_string());
+        s.shell.set_active_workspace(work).unwrap();
+
+        let (url, workspace) = take_from_shelf(&mut s, &item.id, None).expect("on the shelf");
+        assert_eq!(url, "https://a.test/page");
+        // It goes back to the workspace it was shelved from, and that becomes active.
+        assert_eq!(s.shell.get_workspace(workspace).map(|w| w.name.as_str()), Some("Default"));
+        assert_eq!(s.shell.get_active_workspace().map(|w| w.id), Some(workspace));
+        assert_eq!(s.shelf_count_all(), 0, "it is off the shelf");
+        // And the shared model got no tab out of it: the native shell opens the page.
+        assert!(s.shell.list_tabs(Some(workspace)).is_empty());
+        assert!(take_from_shelf(&mut s, &item.id, None).is_none(), "a second take finds nothing");
+    }
+
+    #[test]
+    fn an_explicit_target_workspace_wins() {
+        let mut s = state("shelf_target");
+        let mut mirrored = HashSet::new();
+        let id = alloc_tab_id();
+        reconcile(&mut s, &mut mirrored, &[tab(id, "https://a.test/", "A", true)]);
+        let item = s.add_to_shelf(TabId(id)).unwrap().unwrap();
+        let work = s.shell.create_workspace("Work".to_string());
+        let (_, workspace) = take_from_shelf(&mut s, &item.id, Some(work)).unwrap();
+        assert_eq!(workspace, work);
+        assert_eq!(s.shell.get_active_workspace().map(|w| w.id), Some(work));
     }
 
     #[test]

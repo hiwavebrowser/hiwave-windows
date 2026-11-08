@@ -27,9 +27,11 @@ pub fn workspaces_json(state: &AppState) -> serde_json::Value {
     let active_ws = state.shell.get_active_workspace().map(|w| w.id);
     let active_tab = state.shell.get_active_tab().map(|t| t.id);
     let decay_days = state.user_settings.tab_decay_days;
-    let workspaces: Vec<serde_json::Value> = state
-        .shell
-        .list_workspaces()
+    // `list_workspaces` walks a HashMap, so its order changes from run to run; the sidebar
+    // lists workspaces in the order they were made.
+    let mut ordered = state.shell.list_workspaces();
+    ordered.sort_by_key(|ws| ws.id.0);
+    let workspaces: Vec<serde_json::Value> = ordered
         .iter()
         .map(|ws| {
             let tabs: Vec<serde_json::Value> = ws
@@ -59,6 +61,31 @@ pub fn workspaces_json(state: &AppState) -> serde_json::Value {
         })
         .collect();
     serde_json::Value::Array(workspaces)
+}
+
+/// The shelf's data for `scope` (`"all"` or `"workspace"`, the active workspace's), in the
+/// shape `renderShelf` reads (the same one `main.rs` builds for the WebView2 shell).
+pub fn shelf_payload(state: &AppState, scope: &str) -> serde_json::Value {
+    let all = scope == "all";
+    let (items, workspace) = if all {
+        (state.shelf_items_all(), None)
+    } else {
+        (
+            state.shelf_items_for_active_workspace(),
+            state.shell.get_active_workspace().map(|w| w.name.clone()),
+        )
+    };
+    serde_json::json!({
+        "scope": if all { "all" } else { "workspace" },
+        "workspace": workspace,
+        "items": items,
+        "global_count": state.shelf_count_all(),
+    })
+}
+
+/// The script that hands the sidebar its shelf.
+pub fn shelf_script(state: &AppState, scope: &str) -> String {
+    chrome_call("renderShelf", &shelf_payload(state, scope))
 }
 
 /// The script that hands the sidebar its workspaces.
@@ -184,6 +211,46 @@ mod tests {
         let json = workspaces_json(&s);
         let level = json[0]["tabs"][0]["decay_level"].as_u64().unwrap();
         assert!(level < 5, "a fresh tab has decay level {level}, which the sidebar draws struck through");
+    }
+
+    #[test]
+    fn workspaces_are_listed_in_the_order_they_were_made() {
+        let mut s = temp_state("ws_order");
+        for name in ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"] {
+            s.shell.create_workspace(name.to_string());
+        }
+        let json = workspaces_json(&s);
+        let names: Vec<&str> = json.as_array().unwrap().iter().map(|w| w["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Default", "Alpha", "Beta", "Gamma", "Delta", "Epsilon"]);
+    }
+
+    #[test]
+    fn the_shelf_payload_follows_the_scope() {
+        let mut s = temp_state("shelf");
+        let work = s.shell.create_workspace("Work".to_string());
+        s.ensure_workspace_shelf("Work");
+        let mut mirrored = std::collections::HashSet::new();
+        let id = super::super::shell_tabs::alloc_tab_id();
+        super::super::shell_tabs::reconcile(
+            &mut s,
+            &mut mirrored,
+            &[super::super::shell_tabs::NativeTab { id, url: "https://a.test/".into(), title: "A".into(), active: true }],
+        );
+        s.add_to_shelf(hiwave_core::types::TabId(id)).unwrap().expect("shelved");
+
+        let here = shelf_payload(&s, "workspace");
+        assert_eq!(here["scope"], "workspace");
+        assert_eq!(here["workspace"], "Default");
+        assert_eq!(here["items"].as_array().unwrap().len(), 1);
+        assert_eq!(here["global_count"], 1);
+
+        s.shell.set_active_workspace(work).unwrap();
+        let there = shelf_payload(&s, "workspace");
+        assert_eq!(there["items"].as_array().unwrap().len(), 0, "the other workspace's shelf is empty");
+        assert_eq!(shelf_payload(&s, "all")["items"].as_array().unwrap().len(), 1);
+        // Anything but "all" is the workspace scope.
+        assert_eq!(shelf_payload(&s, "bogus")["scope"], "workspace");
+        assert!(shelf_script(&s, "all").starts_with("if(window.hiwaveChrome) { hiwaveChrome.renderShelf({"));
     }
 
     #[test]
