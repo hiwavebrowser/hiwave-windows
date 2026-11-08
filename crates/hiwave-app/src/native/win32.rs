@@ -744,7 +744,9 @@ impl NativeBrowser {
             } = &event
             {
                 if key.event_type == KeyEventType::KeyDown {
-                    if let Some(shortcut) = shortcuts::resolve(key.key_code, key.modifiers) {
+                    if let Some(shortcut) = shortcuts::resolve(key.key_code, key.modifiers)
+                        .filter(|s| !self.chrome_owns_escape(*s))
+                    {
                         debug!(?shortcut, "Shortcut");
                         self.run_shortcut(shortcut);
                         // Claimed by the shell; the page never sees it.
@@ -788,6 +790,18 @@ impl NativeBrowser {
                 self.navigate_view(id, &url);
             }
         }
+    }
+
+    /// Escape means "stop loading" only for the page. With the chrome focused (the find
+    /// box, the address bar) it belongs to chrome.html, which closes its find bar and
+    /// panels on it.
+    fn chrome_owns_escape(&self, shortcut: Shortcut) -> bool {
+        shortcut == Shortcut::Stop
+            && !self.page_focused.get()
+            && match (self.focused_view(), self.views.get(&ViewType::Chrome)) {
+                (Some(focused), Some(chrome)) => focused == *chrome,
+                _ => false,
+            }
     }
 
     /// Deliver mouse and key input from the content-thread page's window to the page.
