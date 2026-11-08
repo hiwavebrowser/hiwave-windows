@@ -71,7 +71,7 @@ rustkit-engine = { workspace = true, optional = true }
 rustkit-viewhost = { workspace = true, optional = true }
 rustkit-bindings = { workspace = true, optional = true }
 rustkit-net = { workspace = true, optional = true }
-windows = { version = "0.58", features = ["Win32_Foundation"], optional = true }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"], optional = true }
 tokio = { version = "1.42", features = ["rt", "time"], optional = true }
 
 [dev-dependencies]

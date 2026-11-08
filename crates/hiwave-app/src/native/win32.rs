@@ -25,8 +25,9 @@
 //! cargo build --features native-win32
 //! ```
 
-use rustkit_core::input::{InputEvent, KeyCode, KeyEventType, Modifiers};
+use rustkit_core::input::{InputEvent, KeyCode, KeyEvent, KeyEventType, Modifiers, MouseEventType};
 use super::shortcuts::{self, Shortcut};
+use super::layout::{self, Layout, LayoutInput};
 use super::tabs::{TabModel, TabSwitch};
 use rustkit_engine::{Engine, EngineBuilder, EngineViewId, IpcMessage};
 use rustkit_viewhost::{Bounds, MainWindowConfig, ViewEvent, ViewHost};
@@ -92,8 +93,13 @@ pub struct NativeBrowser {
     /// Layout state
     chrome_height: u32,
     shelf_height: u32,
+    /// Width of the left sidebar; 0 while it is closed (chrome.html starts closed).
     sidebar_width: u32,
-    sidebar_open: bool,
+    right_panel_open: bool,
+    /// The view that last had the keyboard focus. Win32 can leave focus on the
+    /// bare main window (activation, a click on the frame); the main window
+    /// ignores keys, so the shell hands focus back to this view.
+    last_focus: std::cell::Cell<Option<EngineViewId>>,
 }
 
 impl NativeBrowser {
@@ -143,8 +149,9 @@ impl NativeBrowser {
             window_height: 800,
             chrome_height: CHROME_HEIGHT_DEFAULT,
             shelf_height: SHELF_HEIGHT_DEFAULT,
-            sidebar_width: SIDEBAR_WIDTH,
-            sidebar_open: true,
+            sidebar_width: 0,
+            right_panel_open: false,
+            last_focus: std::cell::Cell::new(None),
         })
     }
 
@@ -163,6 +170,10 @@ impl NativeBrowser {
             debug!(?event, "View event received");
         });
 
+        // Lay out against the window as it really is, not the size asked for:
+        // the client area is smaller than the outer size by the frame.
+        self.sync_window_size();
+
         // Create the three views
         self.create_views(hwnd)?;
         self.subscribe_to_events();
@@ -173,8 +184,9 @@ impl NativeBrowser {
         // to a window that dropped it. Found by pressing Ctrl+T at a running
         // browser and reading the log — the unit tests were all green.
         if let Some(&content) = self.views.get(&ViewType::Content) {
-            if let Err(e) = self.engine.borrow().focus_view(content) {
-                warn!(error = %e, "Failed to focus the content view");
+            match self.engine.borrow().focus_view(content) {
+                Ok(()) => self.last_focus.set(Some(content)),
+                Err(e) => warn!(error = %e, "Failed to focus the content view"),
             }
         }
 
@@ -189,12 +201,12 @@ impl NativeBrowser {
     fn create_views(&mut self, parent: HWND) -> Result<(), String> {
         let mut engine = self.engine.borrow_mut();
 
-        // Calculate initial bounds
-        // Chrome view covers the sidebar area (left column, full height)
-        // The chrome.html contains the sidebar UI
-        let chrome_bounds = Bounds::new(0, 0, self.sidebar_width, self.window_height);
-        let content_bounds = self.calculate_content_bounds();
-        let shelf_bounds = self.calculate_shelf_bounds();
+        // The chrome view spans the window; content and shelf are created
+        // after it so they sit on top (see native/layout.rs).
+        let Layout { chrome, content, shelf } = self.layout();
+        let chrome_bounds = to_bounds(chrome);
+        let content_bounds = to_bounds(content);
+        let shelf_bounds = to_bounds(shelf);
 
         // Create Chrome view (tabs, address bar, toolbar)
         let chrome_id = engine
@@ -221,6 +233,11 @@ impl NativeBrowser {
         self.engine_view_types.insert(shelf_id, ViewType::Shelf);
         debug!(?shelf_id, "Shelf view created");
         
+        // The chrome view spans the window, so it must sit UNDER the content view.
+        // Child windows do not stack in creation order here (the chrome view, made
+        // first, ended up on top and hid the page), so say so explicitly.
+        lower_view(&engine, chrome_id);
+
         info!(chrome = ?chrome_id, content = ?content_id, shelf = ?shelf_id, "All views created");
 
         Ok(())
@@ -232,6 +249,11 @@ impl NativeBrowser {
 
         // Load Chrome UI
         if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
+            // The app's own documents are the only ones given window.ipc, and the
+            // engine drops IPC from every other view (CH3.A7). It must be set
+            // BEFORE the load: the bridge is built with the document. Without it
+            // the toolbar, tabs, sidebar and shelf all talk to nobody.
+            engine.set_app_owned(chrome_id, true);
             engine
                 .load_html(chrome_id, CHROME_HTML)
                 .map_err(|e| format!("Failed to load Chrome HTML: {}", e))?;
@@ -240,6 +262,7 @@ impl NativeBrowser {
 
         // Load Shelf UI
         if let Some(&shelf_id) = self.views.get(&ViewType::Shelf) {
+            engine.set_app_owned(shelf_id, true);
             engine
                 .load_html(shelf_id, SHELF_HTML)
                 .map_err(|e| format!("Failed to load Shelf HTML: {}", e))?;
@@ -258,79 +281,83 @@ impl NativeBrowser {
         Ok(())
     }
 
-    /// Calculate bounds for the content view.
-    fn calculate_content_bounds(&self) -> Bounds {
-        let x = if self.sidebar_open {
-            self.sidebar_width as i32
-        } else {
-            0
-        };
-        let y = 0; // Content starts at top (no toolbar in native mode)
-        let width = if self.sidebar_open {
-            self.window_width.saturating_sub(self.sidebar_width)
-        } else {
-            self.window_width
-        };
-        let height = self
-            .window_height
-            .saturating_sub(self.shelf_height);
-
-        Bounds::new(x, y, width, height)
-    }
-
-    /// Calculate bounds for the shelf view.
-    fn calculate_shelf_bounds(&self) -> Bounds {
-        let x = if self.sidebar_open {
-            self.sidebar_width as i32
-        } else {
-            0
-        };
-        let y = (self.window_height - self.shelf_height) as i32;
-        let width = if self.sidebar_open {
-            self.window_width.saturating_sub(self.sidebar_width)
-        } else {
-            self.window_width
-        };
-
-        Bounds::new(x, y, width, self.shelf_height)
+    /// Where each view goes for the current window and panel state.
+    fn layout(&self) -> Layout {
+        layout::compute(LayoutInput {
+            window_width: self.window_width,
+            window_height: self.window_height,
+            chrome_height: self.chrome_height,
+            shelf_height: self.shelf_height,
+            sidebar_width: self.sidebar_width,
+            right_panel_open: self.right_panel_open,
+        })
     }
 
     /// Update layout after window resize or layout change.
     fn update_layout(&self) {
         let mut engine = self.engine.borrow_mut();
+        let Layout { chrome, content, shelf } = self.layout();
 
-        // Update Chrome view (sidebar area - left column, full height)
+        let mut targets = vec![
+            (ViewType::Chrome, chrome, self.views.get(&ViewType::Chrome).copied()),
+            (ViewType::Shelf, shelf, self.views.get(&ViewType::Shelf).copied()),
+        ];
+        // Every tab is its own content view; only the active one is shown, but
+        // a background tab must already have the right size when it is
+        // switched to, or it comes back at whatever the window used to be.
+        match self.tabs.as_ref() {
+            Some(tabs) => targets.extend(tabs.views().iter().map(|&id| (ViewType::Content, content, Some(id)))),
+            None => targets.push((ViewType::Content, content, self.views.get(&ViewType::Content).copied())),
+        }
+
+        for (view_type, rect, id) in targets {
+            let Some(id) = id else { continue };
+            if let Err(e) = engine.resize_view(id, to_bounds(rect)) {
+                warn!(?view_type, error = %e, "Failed to resize view");
+            }
+        }
         if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
-            let width = if self.sidebar_open { self.sidebar_width } else { 0 };
-            let bounds = Bounds::new(0, 0, width, self.window_height);
-            if let Err(e) = engine.resize_view(chrome_id, bounds) {
-                warn!(error = %e, "Failed to resize Chrome view");
-            }
+            lower_view(&engine, chrome_id);
         }
+    }
 
-        // Update Content view
-        if let Some(&content_id) = self.views.get(&ViewType::Content) {
-            let bounds = self.calculate_content_bounds();
-            if let Err(e) = engine.resize_view(content_id, bounds) {
-                warn!(error = %e, "Failed to resize Content view");
-            }
+    /// Follow the window's real client size. Nothing else tells this shell the
+    /// window was resized or maximised, so the run loop calls this every turn;
+    /// it does nothing unless the size changed. A minimised window reports
+    /// 0x0, which is ignored so the views keep their size for the restore.
+    fn sync_window_size(&mut self) {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+        let Some(hwnd) = self.viewhost.get_main_hwnd() else {
+            return;
+        };
+        let mut rect = RECT::default();
+        // SAFETY: `hwnd` is the live main window this browser created, and
+        // `rect` is a valid out-pointer for the duration of the call.
+        if unsafe { GetClientRect(hwnd, &mut rect) }.is_err() {
+            return;
         }
-
-        // Update Shelf view
-        if let Some(&shelf_id) = self.views.get(&ViewType::Shelf) {
-            let bounds = self.calculate_shelf_bounds();
-            if let Err(e) = engine.resize_view(shelf_id, bounds) {
-                warn!(error = %e, "Failed to resize Shelf view");
-            }
+        let (width, height) = (
+            (rect.right - rect.left).max(0) as u32,
+            (rect.bottom - rect.top).max(0) as u32,
+        );
+        if width == 0 || height == 0 {
+            return;
+        }
+        if (width, height) != (self.window_width, self.window_height) {
+            self.on_resize(width, height);
         }
     }
 
     /// Handle window resize event.
-    #[allow(dead_code)]
     pub fn on_resize(&mut self, width: u32, height: u32) {
         self.window_width = width;
         self.window_height = height;
-        self.update_layout();
+        // Before the views exist (first call, from init) there is nothing to move.
+        if !self.views.is_empty() {
+            self.update_layout();
+        }
     }
 
     /// Expand the Chrome UI (for overlays).
@@ -359,7 +386,25 @@ impl NativeBrowser {
 
     /// Toggle sidebar visibility.
     pub fn toggle_sidebar(&mut self) {
-        self.sidebar_open = !self.sidebar_open;
+        let open = self.sidebar_width == 0;
+        self.set_sidebar_open(open);
+    }
+
+    /// Open the sidebar at its default width, or close it.
+    pub fn set_sidebar_open(&mut self, open: bool) {
+        self.sidebar_width = if open { SIDEBAR_WIDTH } else { 0 };
+        self.update_layout();
+    }
+
+    /// Set the sidebar's width (the chrome sends this while it is dragged).
+    pub fn set_sidebar_width(&mut self, width: u32) {
+        self.sidebar_width = width;
+        self.update_layout();
+    }
+
+    /// Open or close the right-hand panel.
+    pub fn set_right_panel_open(&mut self, open: bool) {
+        self.right_panel_open = open;
         self.update_layout();
     }
 
@@ -417,8 +462,9 @@ impl NativeBrowser {
             .insert(switch.current, ViewType::Content);
         // Focus follows the active tab, or the next shortcut goes to a window
         // that is no longer showing.
-        if let Err(e) = self.engine.borrow().focus_view(switch.current) {
-            warn!(error = %e, "Failed to focus the incoming tab");
+        match self.engine.borrow().focus_view(switch.current) {
+            Ok(()) => self.last_focus.set(Some(switch.current)),
+            Err(e) => warn!(error = %e, "Failed to focus the incoming tab"),
         }
     }
 
@@ -428,8 +474,11 @@ impl NativeBrowser {
             warn!("No main window — cannot open a tab");
             return;
         };
-        let bounds = self.calculate_content_bounds();
+        let bounds = to_bounds(self.layout().content);
         let created = self.engine.borrow_mut().create_view(parent, bounds);
+        if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
+            lower_view(&self.engine.borrow(), chrome_id);
+        }
         let view = match created {
             Ok(v) => v,
             Err(e) => {
@@ -547,11 +596,169 @@ impl NativeBrowser {
                     }
                 }
             }
+            // A click gives the view it landed on the keyboard focus. Win32 sends
+            // key messages only to the focused window, and nothing moved focus off
+            // the page at startup, so typing in the chrome (the address bar) went
+            // to the page.
+            if let ViewEvent::Input {
+                event: InputEvent::Mouse(mouse),
+                ..
+            } = &event
+            {
+                if mouse.event_type == MouseEventType::MouseDown {
+                    self.focus_clicked_view();
+                }
+            }
+            // Text goes to the engine's editor. handle_view_event only fires DOM
+            // key events; it never types into a field.
+            if let ViewEvent::Input {
+                event: InputEvent::Key(key),
+                ..
+            } = &event
+            {
+                if self.route_text_key(key) {
+                    continue;
+                }
+            }
             let navigation = self.engine.borrow_mut().handle_view_event(event);
             if let Some((id, url)) = navigation {
                 self.navigate_view(id, &url);
             }
         }
+    }
+
+    /// The engine view whose window is `hwnd`, if it is one of ours. Child
+    /// windows are identified by handle: the engine owns its own ViewHost, so
+    /// the viewhost view ids on input events do not resolve in this shell's.
+    fn engine_view_for_hwnd(&self, hwnd: HWND) -> Option<EngineViewId> {
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let engine = self.engine.borrow();
+        self.engine_view_types
+            .keys()
+            .copied()
+            .find(|&id| engine.get_view_hwnd(id).map(|h| h == hwnd).unwrap_or(false))
+    }
+
+    /// The view that has the keyboard focus (key messages go only to it).
+    fn focused_view(&self) -> Option<EngineViewId> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        // SAFETY: GetFocus has no preconditions; this runs on the window's own thread.
+        self.engine_view_for_hwnd(unsafe { GetFocus() })
+    }
+
+    /// Remember which view has the focus, and give it back if it landed on the
+    /// bare main window. Only acts when the main window itself is the focus
+    /// window, so it never takes focus from another application.
+    fn restore_focus(&self) {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        // SAFETY: GetFocus has no preconditions; this runs on the window's own thread.
+        let focus = unsafe { GetFocus() };
+        if let Some(id) = self.engine_view_for_hwnd(focus) {
+            self.last_focus.set(Some(id));
+            return;
+        }
+        let Some(main) = self.viewhost.get_main_hwnd() else {
+            return;
+        };
+        if focus != main {
+            return;
+        }
+        if let Some(id) = self.last_focus.get() {
+            if self.engine_view_types.contains_key(&id) {
+                let _ = self.engine.borrow().focus_view(id);
+            }
+        }
+    }
+
+    /// Give the keyboard focus to the view under the mouse (the one just
+    /// clicked). Win32 does not move focus to a child window on a click.
+    fn focus_clicked_view(&self) {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, WindowFromPoint};
+
+        let mut pt = POINT::default();
+        // SAFETY: `pt` is a valid out-pointer.
+        if unsafe { GetCursorPos(&mut pt) }.is_err() {
+            return;
+        }
+        // SAFETY: plain query by screen point.
+        let Some(id) = self.engine_view_for_hwnd(unsafe { WindowFromPoint(pt) }) else {
+            return;
+        };
+        match self.engine.borrow().focus_view(id) {
+            Ok(()) => self.last_focus.set(Some(id)),
+            Err(e) => warn!(error = %e, "Failed to focus the clicked view"),
+        }
+    }
+
+    /// Deliver a key to the engine's text editor. Returns true when the event
+    /// was handled here and must not also go to `handle_view_event` (which
+    /// would fire the same DOM key event a second time); false for key-up.
+    ///
+    /// Same split as the macOS app: editing and navigation keys go as a virtual
+    /// key with no text, typed characters as text with no key, and Ctrl+A/C/V/X/Z
+    /// as the letter with Ctrl set. Printable keys arrive twice on Win32 (WM_KEYDOWN
+    /// and then WM_CHAR); only the WM_CHAR half types.
+    fn route_text_key(&mut self, key: &KeyEvent) -> bool {
+        let (vk, text): (u32, String) = match key.event_type {
+            KeyEventType::KeyUp => return false,
+            KeyEventType::KeyDown => {
+                let vk = key.key_code as u32;
+                let m = key.modifiers;
+                match vk {
+                    // Backspace, Tab, Enter, Escape, PgUp..Down, End, Home, arrows, Delete
+                    0x08 | 0x09 | 0x0D | 0x1B | 0x21..=0x28 | 0x2E => (vk, String::new()),
+                    // Ctrl+A, C, V, X, Z
+                    0x41 | 0x43 | 0x56 | 0x58 | 0x5A if m.ctrl && !m.alt => {
+                        (0, ((vk as u8 + 32) as char).to_string())
+                    }
+                    // A printable key: its WM_CHAR types it.
+                    _ => return true,
+                }
+            }
+            KeyEventType::Input => {
+                // Tab and Enter also come as WM_CHAR; their key-down already acted.
+                if key.key.is_empty() || key.key == "\r" || key.key == "\t" {
+                    return true;
+                }
+                (0, key.key.clone())
+            }
+        };
+
+        let Some(id) = self.focused_view().or_else(|| self.last_focus.get()) else {
+            return false;
+        };
+        let m = key.modifiers;
+
+        // Enter goes through the engine's form submission first, in every view:
+        // that is what fires Enter's keydown, which is how the chrome's address
+        // bar hears it (handle_text_key fires none for Enter). A page's form
+        // that submits to a URL navigates, as on macOS; if nothing took the
+        // key, Enter's default (a newline in a textarea, a pick in a select)
+        // falls through to handle_text_key.
+        if vk == 0x0D {
+            let submitted = self.engine.borrow_mut().submit_focused_form(id);
+            if let Some(url) = submitted {
+                if self.engine_view_types.get(&id) == Some(&ViewType::Content) {
+                    info!(%url, "Form submitted");
+                    self.navigate_view(id, &url);
+                }
+                return true;
+            }
+        }
+
+        let changed = self
+            .engine
+            .borrow_mut()
+            .handle_text_key(id, vk, &text, m.ctrl, m.shift, m.alt);
+        if changed {
+            if let Err(e) = self.engine.borrow_mut().relayout(id) {
+                warn!(error = %e, "Relayout after a key failed");
+            }
+        }
+        true
     }
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
@@ -595,8 +802,14 @@ impl NativeBrowser {
     }
 
     pub fn navigate(&self, url: &str) {
+        // The address bar sends what was typed; turn it into a URL (a host gets
+        // https://, other text is a search) the way the WebView2 shell does.
+        let Some(url) = super::address::resolve(url) else {
+            debug!(input = url, "Nothing to navigate to");
+            return;
+        };
         if let Some(&content_id) = self.views.get(&ViewType::Content) {
-            self.navigate_view(content_id, url);
+            self.navigate_view(content_id, &url);
         }
     }
 
@@ -668,6 +881,12 @@ impl NativeBrowser {
                 // WM_QUIT received, exit the loop
                 break;
             }
+
+            // Follow the window if it was resized or maximised
+            self.sync_window_size();
+
+            // Keep keyboard focus on a view
+            self.restore_focus();
 
             self.pump_live_views();
 
@@ -775,8 +994,26 @@ impl NativeBrowser {
                 self.collapse_shelf();
             }
             "toggle_sidebar" => {
-                debug!(open = !self.sidebar_open, "Sidebar toggled");
+                debug!(open = self.sidebar_width == 0, "Sidebar toggled");
                 self.toggle_sidebar();
+            }
+            // chrome.html owns the sidebar's state and tells the shell, so the
+            // content view can make room for it (same messages the WebView2
+            // shell handles).
+            "set_sidebar_open" => {
+                if let Some(open) = json.get("open").and_then(|v| v.as_bool()) {
+                    self.set_sidebar_open(open);
+                }
+            }
+            "set_sidebar_width" => {
+                if let Some(width) = json.get("width").and_then(|v| v.as_f64()) {
+                    self.set_sidebar_width(width.max(0.0) as u32);
+                }
+            }
+            "set_right_panel_open" => {
+                if let Some(open) = json.get("open").and_then(|v| v.as_bool()) {
+                    self.set_right_panel_open(open);
+                }
             }
             "chrome_ready" => {
                 info!("Chrome UI initialized and ready");
@@ -812,6 +1049,26 @@ impl Drop for NativeBrowser {
             }
         }
     }
+}
+
+/// Send a view's window to the bottom of its siblings' z-order.
+fn lower_view(engine: &Engine, id: EngineViewId) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    let Ok(hwnd) = engine.get_view_hwnd(id) else {
+        return;
+    };
+    // SAFETY: `hwnd` is a live child window owned by the engine; no size or
+    // position is touched, only the z-order.
+    let _ = unsafe {
+        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+    };
+}
+
+/// A layout rectangle as the engine's view bounds.
+fn to_bounds(r: layout::Rect) -> Bounds {
+    Bounds::new(r.x, r.y, r.width, r.height)
 }
 
 /// Print startup banner with build info.
