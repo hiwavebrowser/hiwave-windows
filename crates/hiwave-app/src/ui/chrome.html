@@ -5985,7 +5985,11 @@
                     const workspaceLabel = workspaces.length > 1
                         ? `${activeWs.name} (${workspaces.length})`
                         : activeWs.name;
-                    document.getElementById('workspaceName').textContent = workspaceLabel;
+                    // The toggle button this names is not in this chrome (upstream's setText
+                    // skips a missing element too): without the guard renderWorkspaces threw here
+                    // and the sidebar never drew past the first workspace.
+                    const workspaceNameEl = document.getElementById('workspaceName');
+                    if (workspaceNameEl) workspaceNameEl.textContent = workspaceLabel;
                 }
 
                 // Auto-expand active workspace only on first render, or if expanded workspace was deleted
