@@ -45,15 +45,31 @@
         });
     }
 
-    function highlightRange(node, start, end) {
-        const range = document.createRange();
-        range.setStart(node, start);
-        range.setEnd(node, end);
-        const mark = document.createElement('span');
-        mark.className = matchClass;
-        range.surroundContents(mark);
-        range.detach();
-        return mark;
+    // Replace one text node with its pieces: the text between matches as plain
+    // text nodes and each match wrapped in a span. Only createTextNode,
+    // insertBefore and removeChild are used (RustKit has neither
+    // Range.surroundContents nor Text.splitText). `ranges` are ascending.
+    function highlightNode(node, ranges) {
+        const parent = node.parentNode;
+        const text = node.nodeValue;
+        const marks = [];
+        let at = 0;
+        ranges.forEach(({ start, end }) => {
+            if (start > at) {
+                parent.insertBefore(document.createTextNode(text.slice(at, start)), node);
+            }
+            const mark = document.createElement('span');
+            mark.className = matchClass;
+            mark.appendChild(document.createTextNode(text.slice(start, end)));
+            parent.insertBefore(mark, node);
+            marks.push(mark);
+            at = end;
+        });
+        if (at < text.length) {
+            parent.insertBefore(document.createTextNode(text.slice(at)), node);
+        }
+        parent.removeChild(node);
+        return marks;
     }
 
     function highlightDocumentMatches(query, caseSensitive) {
@@ -92,13 +108,8 @@
         }
 
         matchesByNode.forEach(({ node: textNode, ranges }) => {
-            ranges.sort((a, b) => b.start - a.start);
-            const marks = [];
-            ranges.forEach(({ start, end }) => {
-                const mark = highlightRange(textNode, start, end);
-                marks.unshift(mark);
-            });
-            window.__hiwaveFind.matches.push(...marks);
+            ranges.sort((a, b) => a.start - b.start);
+            window.__hiwaveFind.matches.push(...highlightNode(textNode, ranges));
         });
 
         document.body.normalize();
@@ -108,7 +119,9 @@
         if (!element) {
             return;
         }
-        element.scrollIntoView({ block: 'center', behavior: 'auto' });
+        if (element.scrollIntoView) {
+            element.scrollIntoView({ block: 'center', behavior: 'auto' });
+        }
     }
 
     const hiwaveFind = {

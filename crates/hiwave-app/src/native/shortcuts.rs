@@ -26,6 +26,13 @@ pub enum Shortcut {
     Forward,
     Reload,
     Stop,
+    /// Open the find bar (the chrome page owns it).
+    Find,
+    /// Focus the address bar.
+    FocusAddressBar,
+    ToggleSidebar,
+    /// Open the command palette (the shelf).
+    CommandPalette,
 }
 
 /// Resolve a key press to a shell action.
@@ -52,6 +59,10 @@ pub fn resolve(key: KeyCode, mods: Modifiers) -> Option<Shortcut> {
             KeyCode::KeyT => Some(Shortcut::NewTab),
             KeyCode::KeyW => Some(Shortcut::CloseTab),
             KeyCode::KeyR => Some(Shortcut::Reload),
+            KeyCode::KeyF => Some(Shortcut::Find),
+            KeyCode::KeyL => Some(Shortcut::FocusAddressBar),
+            KeyCode::KeyB => Some(Shortcut::ToggleSidebar),
+            KeyCode::KeyK => Some(Shortcut::CommandPalette),
             KeyCode::Digit1 => Some(Shortcut::ActivateTab(0)),
             KeyCode::Digit2 => Some(Shortcut::ActivateTab(1)),
             KeyCode::Digit3 => Some(Shortcut::ActivateTab(2)),
@@ -119,6 +130,21 @@ mod tests {
         assert_eq!(resolve(KeyCode::KeyR, ctrl()), Some(Shortcut::Reload));
         assert_eq!(resolve(KeyCode::F5, none()), Some(Shortcut::Reload));
         assert_eq!(resolve(KeyCode::Escape, none()), Some(Shortcut::Stop));
+    }
+
+    #[test]
+    fn the_chrome_chords_resolve() {
+        assert_eq!(resolve(KeyCode::KeyF, ctrl()), Some(Shortcut::Find));
+        assert_eq!(resolve(KeyCode::KeyL, ctrl()), Some(Shortcut::FocusAddressBar));
+        assert_eq!(resolve(KeyCode::KeyB, ctrl()), Some(Shortcut::ToggleSidebar));
+        assert_eq!(resolve(KeyCode::KeyK, ctrl()), Some(Shortcut::CommandPalette));
+    }
+
+    #[test]
+    fn the_chrome_chords_need_ctrl_alone() {
+        let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Default::default() };
+        assert_eq!(resolve(KeyCode::KeyF, ctrl_shift), None, "Ctrl+Shift+F is focus mode, a different chord");
+        assert_eq!(resolve(KeyCode::KeyF, none()), None, "a bare F is typing");
     }
 
     #[test]
