@@ -1,0 +1,191 @@
+# Nested layout matrix cases that do not match Chromium yet, one per line:
+# `case-name cause-tag`. Every case not listed here must match Chromium within
+# 1px, and every case listed must still differ (nested_layout_matrix_tests in
+# rustkit-engine). A fix that makes a case match removes its line.
+# The causes are described in docs/layout/NESTED_LAYOUT_MATRIX_2026-10.md;
+# every tag must be one of its headings.
+# A case may have more than one cause. The tag names the cause of the first
+# box, in document order, that differs on develop (the `#r` line box and the
+# `#s` baseline probe count only when nothing else differs).
+
+# intrinsic-width-keyword-unparsed: 36
+core--block--block--w-min-content--h-auto            intrinsic-width-keyword-unparsed
+core--block--block--w-max-content--h-50pct           intrinsic-width-keyword-unparsed
+core--block--flex-row--w-min-content--h-auto         intrinsic-width-keyword-unparsed
+core--block--flex-row--w-max-content--h-50pct        intrinsic-width-keyword-unparsed
+core--block--flex-col--w-min-content--h-auto         intrinsic-width-keyword-unparsed
+core--block--flex-col--w-max-content--h-50pct        intrinsic-width-keyword-unparsed
+core--block--grid--w-min-content--h-auto             intrinsic-width-keyword-unparsed
+core--block--grid--w-max-content--h-50pct            intrinsic-width-keyword-unparsed
+core--flex-col--block--w-min-content--h-auto         intrinsic-width-keyword-unparsed
+core--flex-col--block--w-max-content--h-50pct        intrinsic-width-keyword-unparsed
+core--flex-col--flex-row--w-min-content--h-auto      intrinsic-width-keyword-unparsed
+core--flex-col--flex-row--w-max-content--h-50pct     intrinsic-width-keyword-unparsed
+core--flex-col--flex-col--w-min-content--h-auto      intrinsic-width-keyword-unparsed
+core--flex-col--flex-col--w-max-content--h-50pct     intrinsic-width-keyword-unparsed
+core--flex-col--grid--w-min-content--h-auto          intrinsic-width-keyword-unparsed
+core--flex-col--grid--w-max-content--h-50pct         intrinsic-width-keyword-unparsed
+core--flex-col--inline-block--w-min-content--h-auto  intrinsic-width-keyword-unparsed
+core--flex-col--inline-block--w-max-content--h-50pct intrinsic-width-keyword-unparsed
+core--grid--block--w-min-content--h-auto             intrinsic-width-keyword-unparsed
+core--grid--block--w-max-content--h-50pct            intrinsic-width-keyword-unparsed
+core--grid--flex-row--w-min-content--h-auto          intrinsic-width-keyword-unparsed
+core--grid--flex-row--w-max-content--h-50pct         intrinsic-width-keyword-unparsed
+core--grid--flex-col--w-min-content--h-auto          intrinsic-width-keyword-unparsed
+core--grid--flex-col--w-max-content--h-50pct         intrinsic-width-keyword-unparsed
+core--grid--grid--w-min-content--h-auto              intrinsic-width-keyword-unparsed
+core--grid--grid--w-max-content--h-50pct             intrinsic-width-keyword-unparsed
+core--grid--inline-block--w-min-content--h-auto      intrinsic-width-keyword-unparsed
+core--grid--inline-block--w-max-content--h-50pct     intrinsic-width-keyword-unparsed
+core--table-cell--block--w-min-content--h-auto       intrinsic-width-keyword-unparsed
+core--table-cell--block--w-max-content--h-50pct      intrinsic-width-keyword-unparsed
+core--table-cell--flex-row--w-min-content--h-auto    intrinsic-width-keyword-unparsed
+core--table-cell--flex-row--w-max-content--h-50pct   intrinsic-width-keyword-unparsed
+core--table-cell--flex-col--w-min-content--h-auto    intrinsic-width-keyword-unparsed
+core--table-cell--flex-col--w-max-content--h-50pct   intrinsic-width-keyword-unparsed
+core--table-cell--grid--w-min-content--h-auto        intrinsic-width-keyword-unparsed
+core--table-cell--grid--w-max-content--h-50pct       intrinsic-width-keyword-unparsed
+
+# grid-item-of-flex-laid-out-as-block: 8
+core--flex-row--grid--w-auto--h-auto         grid-item-of-flex-laid-out-as-block
+core--flex-row--grid--w-50pct--h-auto        grid-item-of-flex-laid-out-as-block
+core--flex-row--grid--w-200px--h-auto        grid-item-of-flex-laid-out-as-block
+core--flex-row--grid--w-min-content--h-auto  grid-item-of-flex-laid-out-as-block
+margin-auto--flex-row--grid                  grid-item-of-flex-laid-out-as-block
+margin-auto--flex-col--grid                  grid-item-of-flex-laid-out-as-block
+gap--flex-row--grid                          grid-item-of-flex-laid-out-as-block
+
+# fit-content-width-of-column-flex-item-is-zero: 5
+core--flex-col--block--w-fit-content--h-120px            fit-content-width-of-column-flex-item-is-zero
+core--flex-col--flex-row--w-fit-content--h-120px         fit-content-width-of-column-flex-item-is-zero
+core--flex-col--flex-col--w-fit-content--h-120px         fit-content-width-of-column-flex-item-is-zero
+core--flex-col--grid--w-fit-content--h-120px             fit-content-width-of-column-flex-item-is-zero
+core--flex-col--inline-block--w-fit-content--h-120px     fit-content-width-of-column-flex-item-is-zero
+
+# inline-block-baseline-of-flex-or-grid-content: 27
+core--inline-block--flex-row--w-auto--h-auto         inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-row--w-200px--h-auto        inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-row--w-min-content--h-auto  inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-row--w-auto--h-50pct        inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-row--w-200px--h-50pct       inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-row--w-max-content--h-50pct inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-row--w-auto--h-120px        inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-row--w-200px--h-120px       inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-auto--h-auto         inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-50pct--h-auto        inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-200px--h-auto        inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-min-content--h-auto  inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-auto--h-50pct        inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-50pct--h-50pct       inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-200px--h-50pct       inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-max-content--h-50pct inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-auto--h-120px        inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-50pct--h-120px       inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-200px--h-120px       inline-block-baseline-of-flex-or-grid-content
+core--inline-block--grid--w-200px--h-auto            inline-block-baseline-of-flex-or-grid-content
+core--inline-block--grid--w-200px--h-120px           inline-block-baseline-of-flex-or-grid-content
+flex-wrap--inline-block--auto-width                  inline-block-baseline-of-flex-or-grid-content
+shrink-to-fit-flex--inline-block--grow               inline-block-baseline-of-flex-or-grid-content
+shrink-to-fit-flex--inline-block--wrap               inline-block-baseline-of-flex-or-grid-content
+shrink-to-fit-flex--inline-block--column             inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-row--w-fit-content--h-120px inline-block-baseline-of-flex-or-grid-content
+core--inline-block--flex-col--w-fit-content--h-120px inline-block-baseline-of-flex-or-grid-content
+
+# grid-max-content-width-no-grid-arm: 12
+core--inline-block--grid--w-auto--h-auto         grid-max-content-width-no-grid-arm
+core--inline-block--grid--w-50pct--h-auto        grid-max-content-width-no-grid-arm
+core--inline-block--grid--w-min-content--h-auto  grid-max-content-width-no-grid-arm
+core--inline-block--grid--w-auto--h-50pct        grid-max-content-width-no-grid-arm
+core--inline-block--grid--w-50pct--h-50pct       grid-max-content-width-no-grid-arm
+core--inline-block--grid--w-max-content--h-50pct grid-max-content-width-no-grid-arm
+core--inline-block--grid--w-auto--h-120px        grid-max-content-width-no-grid-arm
+core--inline-block--grid--w-50pct--h-120px       grid-max-content-width-no-grid-arm
+core--abspos--grid--w-auto--h-50pct              grid-max-content-width-no-grid-arm
+core--abspos--grid--w-50pct--h-50pct             grid-max-content-width-no-grid-arm
+core--abspos--grid--w-max-content--h-50pct       grid-max-content-width-no-grid-arm
+core--inline-block--grid--w-fit-content--h-120px grid-max-content-width-no-grid-arm
+
+# flex-item-min-width-is-its-own-width: 20
+core--float--flex-row--w-50pct--h-auto         flex-item-min-width-is-its-own-width
+core--float--flex-row--w-50pct--h-50pct        flex-item-min-width-is-its-own-width
+core--float--flex-row--w-50pct--h-120px        flex-item-min-width-is-its-own-width
+core--inline-block--flex-row--w-50pct--h-auto  flex-item-min-width-is-its-own-width
+core--inline-block--flex-row--w-50pct--h-50pct flex-item-min-width-is-its-own-width
+core--inline-block--flex-row--w-50pct--h-120px flex-item-min-width-is-its-own-width
+core--abspos--flex-row--w-50pct--h-auto        flex-item-min-width-is-its-own-width
+core--abspos--flex-row--w-50pct--h-50pct       flex-item-min-width-is-its-own-width
+core--abspos--flex-row--w-50pct--h-120px       flex-item-min-width-is-its-own-width
+clamp--block--max-width-flex                   flex-item-min-width-is-its-own-width
+clamp--flex-row--max-width-flex                flex-item-min-width-is-its-own-width
+clamp--grid--max-width-flex                    flex-item-min-width-is-its-own-width
+flex-min-auto--block--empty-basis-0            flex-item-min-width-is-its-own-width
+flex-min-auto--flex-row--empty-basis-0         flex-item-min-width-is-its-own-width
+flex-min-auto--flex-col--empty-basis-0         flex-item-min-width-is-its-own-width
+flex-min-auto--grid--empty-basis-0             flex-item-min-width-is-its-own-width
+flex-min-auto--block--content-overflows        flex-item-min-width-is-its-own-width
+flex-min-auto--flex-row--content-overflows     flex-item-min-width-is-its-own-width
+flex-min-auto--flex-col--content-overflows     flex-item-min-width-is-its-own-width
+flex-min-auto--grid--content-overflows         flex-item-min-width-is-its-own-width
+
+# table-cell-percent-height: 16
+core--table-cell--block--w-auto--h-50pct               table-cell-percent-height
+core--table-cell--block--w-50pct--h-50pct              table-cell-percent-height
+core--table-cell--block--w-200px--h-50pct              table-cell-percent-height
+core--table-cell--flex-row--w-auto--h-50pct            table-cell-percent-height
+core--table-cell--flex-row--w-50pct--h-50pct           table-cell-percent-height
+core--table-cell--flex-row--w-200px--h-50pct           table-cell-percent-height
+core--table-cell--flex-col--w-auto--h-50pct            table-cell-percent-height
+core--table-cell--flex-col--w-50pct--h-50pct           table-cell-percent-height
+core--table-cell--flex-col--w-200px--h-50pct           table-cell-percent-height
+core--table-cell--grid--w-auto--h-50pct                table-cell-percent-height
+core--table-cell--grid--w-50pct--h-50pct               table-cell-percent-height
+core--table-cell--grid--w-200px--h-50pct               table-cell-percent-height
+core--table-cell--inline-block--w-auto--h-50pct        table-cell-percent-height
+core--table-cell--inline-block--w-50pct--h-50pct       table-cell-percent-height
+core--table-cell--inline-block--w-200px--h-50pct       table-cell-percent-height
+core--table-cell--inline-block--w-max-content--h-50pct table-cell-percent-height
+
+# grid-auto-rows-not-stretched-to-non-px-height: 10
+core--block--grid--w-auto--h-50pct         grid-auto-rows-not-stretched-to-non-px-height
+core--block--grid--w-50pct--h-50pct        grid-auto-rows-not-stretched-to-non-px-height
+core--block--grid--w-200px--h-50pct        grid-auto-rows-not-stretched-to-non-px-height
+core--inline-block--grid--w-200px--h-50pct grid-auto-rows-not-stretched-to-non-px-height
+core--grid--grid--w-auto--h-auto           grid-auto-rows-not-stretched-to-non-px-height
+core--grid--grid--w-50pct--h-auto          grid-auto-rows-not-stretched-to-non-px-height
+core--grid--grid--w-200px--h-auto          grid-auto-rows-not-stretched-to-non-px-height
+core--abspos--grid--w-200px--h-50pct       grid-auto-rows-not-stretched-to-non-px-height
+grid-span--grid--auto-rows-auto            grid-auto-rows-not-stretched-to-non-px-height
+gap--grid--grid                            grid-auto-rows-not-stretched-to-non-px-height
+
+# column-flex-item-stretches-to-outer-width: 5
+
+# fit-content-grid-item-stretches: 5
+core--grid--block--w-fit-content--h-120px        fit-content-grid-item-stretches
+core--grid--flex-row--w-fit-content--h-120px     fit-content-grid-item-stretches
+core--grid--flex-col--w-fit-content--h-120px     fit-content-grid-item-stretches
+core--grid--grid--w-fit-content--h-120px         fit-content-grid-item-stretches
+core--grid--inline-block--w-fit-content--h-120px fit-content-grid-item-stretches
+
+# grid-max-content-width-zero-with-column-span: 5
+grid-span--float--auto-rows-40        grid-max-content-width-zero-with-column-span
+grid-span--inline-block--auto-rows-40 grid-max-content-width-zero-with-column-span
+grid-span--flex-row--auto-rows-40     grid-max-content-width-zero-with-column-span
+grid-span--abspos--auto-rows-40       grid-max-content-width-zero-with-column-span
+grid-span--flex-row--auto-rows-auto   grid-max-content-width-zero-with-column-span
+
+# aspect-ratio-width-not-derived-from-height: 3 (flex-row--fixed-height fixed by C10 e)
+aspect-ratio--flex-row--auto         aspect-ratio-width-not-derived-from-height
+aspect-ratio--block--fixed-height    aspect-ratio-width-not-derived-from-height
+aspect-ratio--grid--fixed-height     aspect-ratio-width-not-derived-from-height
+
+# aspect-ratio-height-of-column-flex-item: 0 (both fixed by C10 e)
+
+# grid-item-auto-margins-ignored: 2
+margin-auto--block--grid grid-item-auto-margins-ignored
+margin-auto--grid--grid  grid-item-auto-margins-ignored
+
+# percent-height-chain-in-stretched-grid-item: 1
+percent-height--grid--through-auto percent-height-chain-in-stretched-grid-item
+
+# max-height-ignored-on-stretched-item: 1
+clamp--grid--max-height-grid max-height-ignored-on-stretched-item

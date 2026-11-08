@@ -117,6 +117,58 @@ receipt honest and points at the flake if it recurs.
   real glyphs (render-test smoke; Pete eyeball).
 - Numbers go in the PR body, never as committed run outputs (macOS #220).
 
+**2026-11-06 (refresh #13):** crates now verbatim from hiwave-macos develop
+`95691f85` (batch 29, 1,582 commits past `f54103d9`, which #114 synced).
+Boa moved to a single vendored `third_party/boa_engine` (0.22 plus a
+cross-thread interrupt word); `third_party/boa_gc` and `boa_parser` are gone.
+
+Outside `crates/rustkit-*`:
+
+- **`Cargo.toml`, `.cargo/config.toml`.** Mirror upstream: `exclude` and
+  `[patch.crates-io]` point at `third_party/boa_engine`; `[env] RUST_MIN_STACK`
+  is added next to Windows' own `/STACK` rustflag. `hiwave-shield-intercept` and
+  the `css_census` member are not carried: nothing Windows builds needs them.
+- **`parity-capture`** handles the two `ScriptOutcome` variants upstream added
+  (`Nomodule`, `EngineFailed`) the way the macOS tool does.
+- **Parity tooling** synced from the same commit (124 files).
+  `sync_parity_tooling.py` now skips `node -e script` calls whose script is a
+  variable (upstream added one); it only rewrites inline f-string blocks.
+
+New standing steps for every refresh:
+
+1. After the crate copy, run `python scripts/sync_engine_fixtures.py <macos>`.
+   Engine crates `include_str!`/`include_bytes!` files outside their crate
+   (`inspector_rustkit.html`, `fixtures/consent-overlay/*`, js-ladder images,
+   `docs/diagnostics/*`); this copies the missing ones as raw blobs.
+2. Do NOT preserve files a patch creates when copying. `apply_windows_patches.py`
+   treats a patch whose marker test is present as applied, so keeping
+   `windows_live_input_tests.rs` silently skipped the `lib.rs` hunk of 641.
+   Delete the file, run the script, confirm with `git apply --reverse --check`.
+3. Anything added by hand to a synced crate is lost by the copy unless it is a
+   patch file. Check the seam: compare the tree to the macOS blobs (CR
+   normalized); the residual must be exactly the files the patches touch.
+
+Patches (all test-only unless stated): 641 and 642-643 unchanged; new
+**644** (viewhost: CH2.E3 re-exports `input_queue::InputEvent`, which collides
+with the cfg(windows) `rustkit_core::InputEvent` import, E0252, so
+`rustkit-viewhost` did not build on Windows; the Windows type is aliased
+`CoreInputEvent`), **645** (three tests assumed macOS fonts: a Menlo advance
+pin, an integer offset compared with a fractional rect, a sentence that
+soft-wraps after a hyphen; the click test now measures the stack the page
+renders), **646** (the `windows_capture_metadata_pins` test from #114, which a
+verbatim copy drops), **647** (`scroll_cost_tests::a_batch_past_the_buffer_limit_is_flushed_instead_of_panicking`
+draws 3.4M glyph quads in one frame; on the hosted runner's CPU adapter wgpu
+times out and panics inside `Queue::drop`, which aborts the whole test binary
+(exit 2173) and drops every later test; skipped on a software adapter, still run on a
+GPU). Residual vs the tip: 9 files, plus the one 641 creates.
+
+Gates (Windows): `cargo build --workspace` exit 0; `cargo test --workspace --
+--test-threads=1` exit 0, 4433 passed / 0 failed / 50 ignored; release
+`parity-capture`, WebView2 and native-win32 shells build. Parity swarm: 26/26,
+mean 1.12% (refresh #12: 1.13%), 24 cases unchanged, `shelf@1280x120` better,
+none worse beyond 0.05. `docs/BOA_UPGRADE_PARKED_2026-10-03.md` is now stale
+(upstream upgraded Boa); left for review rather than deleted here.
+
 **2026-10-03 (refresh #12, N1):** crates now verbatim from hiwave-macos
 develop `877fa551`, the Z phase's module and script-network work on top of
 refresh #11: import maps and dynamic `import()` (Z2-C3), custom elements

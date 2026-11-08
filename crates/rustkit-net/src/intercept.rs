@@ -11,10 +11,24 @@ pub enum InterceptAction {
     Allow,
     /// Block the request.
     Block,
+    /// Block the request, saying which filter list and rule refused it
+    /// (dev-tools T2: the event log's `failure.blocked_by`).
+    BlockedBy(BlockReason),
     /// Redirect to a different URL.
     Redirect(Url),
     /// Modify the request.
     Modify(Box<Request>),
+}
+
+/// Which list, and which of its rules, refused a request. Both are the
+/// filter list's own public text, never the page's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockReason {
+    /// The list's name (`EasyList`, `EasyPrivacy`), or the handler's own
+    /// name for a verdict from no list (`domain-floor`).
+    pub list: String,
+    /// The rule as written in the list, when the handler knows it.
+    pub rule: Option<String>,
 }
 
 /// Handler for intercepting requests.

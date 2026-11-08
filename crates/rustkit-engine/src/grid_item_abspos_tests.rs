@@ -29,17 +29,12 @@ const BOXES: &str = "Array.prototype.map.call(document.querySelectorAll('[id]'),
 /// box to its parent only, so a static item's abspos child keeps the flow
 /// position (not a grid fault: the same in a block).
 ///
-/// `issue-560-a-whole-card-link-over-text`,
-/// `issue-560-a-centred-card-with-a-whole-card-link`: the overlay is an `<a>`
-/// with no content. Box construction does not make an absolutely positioned
-/// inline a block (CSS 2.1 section 9.7), and an inline with no content gets
-/// no box at all, so script reads 0:0:0:0. The same pages with a `<div>`
-/// overlay are in this file and match.
+/// The two `issue-560-*-whole-card-link*` pages (an empty absolutely
+/// positioned `<a>` overlay) match since box construction blockifies an
+/// absolutely positioned inline (CSS 2.1 section 9.7).
 const GAPS: &[&str] = &[
     "a-static-item-in-a-relative-grid",
     "a-static-centred-item-in-a-relative-grid",
-    "issue-560-a-whole-card-link-over-text",
-    "issue-560-a-centred-card-with-a-whole-card-link",
 ];
 
 #[test]

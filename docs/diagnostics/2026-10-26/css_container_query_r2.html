@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<!-- #782 R2 (review on 5c3b1ae7): @container conditions with a part the evaluator does not know (style(), ch, media-only features, device-*), a bare (width) on a 0px container, a size container with min-/max-height, and max-width/max-height: none after a limit. Each bar is one query; green = Chromium 148 applies it, red = it does not. Chromium 148 shows 8 green bars (k1 k9 k11 k17 k18 k21 k22 k24) and no red; RustKit leaves k1 (not style(--x)) unpainted, since style queries stay false. Bars are absolutely placed so only the query decides colour. Pass: no red. -->
+<html><head><style>
+body { margin: 0 }
+.c { container-type: inline-size; position: relative; width: 300px; height: 14px; margin-bottom: 2px }
+.c > div, .s > div { position: absolute; left: 10px; top: 2px; width: 300px; height: 0 }
+.g { background: green } .x { background: red }
+#z { width: 0 } #f40 { font-size: 40px } #f20 { font-size: 20px }
+.s { container-type: size; position: relative; width: 300px; margin-bottom: 2px }
+#s1 { height: 200px; max-height: 30px } #s2 { height: 10px; min-height: 30px }
+#s3 { height: 200px; max-height: 30px; min-height: 40px }
+.m { container-type: inline-size; position: relative; max-width: 500px; height: 14px; margin-bottom: 2px }
+.m.n { max-width: none } .m > div { position: absolute; left: 10px; top: 2px; width: 300px; height: 0 }
+.mh { max-height: 30px } .mh.n { max-height: none } #s4 { height: 200px }
+@container not style(--x) { #k1 { height: 10px } }
+@container not (width >= 30ch) { #k2 { height: 10px } }
+@container (hover) { #k3 { height: 10px } }
+@container not (hover) { #k4 { height: 10px } }
+@container (color) { #k5 { height: 10px } }
+@container (prefers-color-scheme: light) { #k6 { height: 10px } }
+@container (min-device-width: 1px) { #k7 { height: 10px } }
+@container (width) { #k8 { height: 10px } }
+@container (width) { #k9 { height: 10px } }
+@container (width > 10em) { #k10 { height: 10px } }
+@container (width < 16em) { #k11 { height: 10px } }
+@container (width > 50vw) { #k12 { height: 10px } }
+@container (width > 299px) or (hover) { #k13 { height: 10px } }
+@container (width > 400px) or not (hover) { #k14 { height: 10px } }
+@container (width > 299px) and (hover) { #k15 { height: 10px } }
+@container (height > 100px) { #k16 { height: 10px } }
+@container (height >= 30px) { #k17 { height: 10px } }
+@container (height >= 40px) { #k18 { height: 10px } }
+@container (width < 600px) { #k19 { height: 10px } }
+@container (max-width: 600px) { #k20 { height: 10px } }
+@container (height > 100px) { #k21 { height: 10px } }
+@container not (not (width > 299px)) { #k22 { height: 10px } }
+@container not (width > 299px) or (hover) { #k23 { height: 10px } }
+@container (width > 299px) { #k24 { height: 10px } }
+</style></head><body>
+<div class="c"><div id="k1" class="g"></div></div>
+<div class="c"><div id="k2" class="x"></div></div>
+<div class="c"><div id="k3" class="x"></div></div>
+<div class="c"><div id="k4" class="x"></div></div>
+<div class="c"><div id="k5" class="x"></div></div>
+<div class="c"><div id="k6" class="x"></div></div>
+<div class="c"><div id="k7" class="x"></div></div>
+<div class="c" id="z"><div id="k8" class="x"></div></div>
+<div class="c"><div id="k9" class="g"></div></div>
+<div class="c" id="f40"><div id="k10" class="x"></div></div>
+<div class="c" id="f20"><div id="k11" class="g"></div></div>
+<div class="c"><div id="k12" class="x"></div></div>
+<div class="c"><div id="k13" class="x"></div></div>
+<div class="c"><div id="k14" class="x"></div></div>
+<div class="c"><div id="k15" class="x"></div></div>
+<div class="s" id="s1"><div id="k16" class="x"></div></div>
+<div class="s" id="s2"><div id="k17" class="g"></div></div>
+<div class="s" id="s3"><div id="k18" class="g"></div></div>
+<div class="m n"><div id="k19" class="x"></div></div>
+<div class="m n"><div id="k20" class="x"></div></div>
+<div class="s mh n" id="s4"><div id="k21" class="g"></div></div>
+<div class="c"><div id="k22" class="g"></div></div>
+<div class="c"><div id="k23" class="x"></div></div>
+<div class="c"><div id="k24" class="g"></div></div>
+</body></html>

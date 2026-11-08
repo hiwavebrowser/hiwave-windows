@@ -276,7 +276,7 @@ fn a_slow_image_added_by_a_script_does_not_hold_the_live_turn() {
         held < std::time::Duration::from_millis(150),
         "the turn that found an image the server holds for 300 ms lasted {held:?}"
     );
-    assert!(!engine.svg_cache.contains_key(&image));
+    assert!(!engine.lctx.svg_cache.borrow().contains_key(&image));
 
     let mut turns = 0;
     loop {
@@ -284,7 +284,7 @@ fn a_slow_image_added_by_a_script_does_not_hold_the_live_turn() {
         std::thread::sleep(std::time::Duration::from_millis(5));
         let turn = rt.block_on(engine.pump_live(view, 5));
         turns += 1;
-        if engine.svg_cache.contains_key(&image) {
+        if engine.lctx.svg_cache.borrow().contains_key(&image) {
             assert!(turn.relaid_out, "the turn that keeps the image lays the page out again");
             break;
         }

@@ -11,7 +11,7 @@ license = "MIT"
 rustkit-http = { path = "../rustkit-http" }
 
 # Async runtime
-tokio = { version = "1.42", features = ["sync", "time", "fs", "io-util", "macros"] }
+tokio = { version = "1.42", features = ["sync", "time", "fs", "io-util", "macros", "rt"] }
 futures = "0.3"
 
 # Serialization

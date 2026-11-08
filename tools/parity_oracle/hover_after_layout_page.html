@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><style>
+  body { margin: 0; }
+  #side { width: 100px; height: 40px; background: #ccc; }
+  #row { display: flex; }
+  #side:hover { background: #00f; }
+  #row.collapsed #side { width: 0; }
+  button { all: unset; display: block; width: 80px; height: 40px; background: #eee; }
+  button:hover { background: #f00; }
+  #scroller { height: 100px; overflow: auto; margin-top: 20px; }
+  #scroller div { height: 40px; }
+  #scroller div:hover { background: #0f0; }
+  #tall { height: 2000px; }
+</style></head><body>
+<div id="row"><div id="side"></div><button id="tab">tab</button></div>
+<div id="scroller"><div id="s0">0</div><div id="s1">1</div><div id="s2">2</div><div id="s3">3</div></div>
+<div id="tall"></div>
+</body></html>

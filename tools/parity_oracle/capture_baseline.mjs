@@ -54,50 +54,17 @@ const KEY_PROPERTIES = [
 ];
 
 /**
- * Capture full baseline for a single HTML file
- * 
- * @param {string} htmlPath - Path to HTML file
- * @param {string} outputDir - Directory to save baseline files
- * @param {number} width - Viewport width
- * @param {number} height - Viewport height
- * @returns {Promise<Object>} Capture results
+ * Read every visible element's computed styles and layout rect from an open
+ * page. THE JOIN KEY lives in `getSelector` below; see the comment there. One
+ * function, so the campaign baselines (captureBaseline) and the chrome board
+ * (chrome_board.mjs, which drives actions first) read geometry through the
+ * same code and key.
+ *
+ * @param {import('playwright').Page} page
+ * @returns {Promise<{styles: Array, rects: Array}>}
  */
-export async function captureBaseline(htmlPath, outputDir, width, height) {
-  const absolutePath = resolve(htmlPath);
-  
-  if (!existsSync(absolutePath)) {
-    throw new Error(`HTML file not found: ${absolutePath}`);
-  }
-  
-  mkdirSync(outputDir, { recursive: true });
-  
-  const browser = await chromium.launch(getDeterministicLaunchOptions());
-  
-  try {
-    const context = await createDeterministicContext(
-      browser,
-      width,
-      height,
-      { applyParityReset: shouldApplyParityResetForHtmlPath(absolutePath) }
-    );
-    
-    const page = await context.newPage();
-    
-    // Load the page
-    const fileUrl = `file://${absolutePath}`;
-    await page.goto(fileUrl, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(50);  // Animations are frozen; allow layout/fonts to settle
-    
-    // 1. Capture screenshot
-    const screenshotPath = join(outputDir, 'baseline.png');
-    await page.screenshot({
-      path: screenshotPath,
-      type: 'png',
-      fullPage: false,
-    });
-    
-    // 2. Extract computed styles and layout rects
-    const { styles, rects } = await page.evaluate((properties) => {
+export async function extractPageGeometry(page) {
+  return page.evaluate((properties) => {
       const results = { styles: [], rects: [] };
       
       // THE JOIN KEY. Gates A, B and C all match RustKit boxes to Chrome rects
@@ -181,9 +148,14 @@ export async function captureBaseline(htmlPath, outputDir, width, height) {
         });
         
         // Layout rect
+        // `id` / `className` are additive (tools/element_diff reads them when
+        // present); the selector above stays the join key. SVG elements
+        // expose className as an SVGAnimatedString, hence the attribute read.
         results.rects.push({
           selector,
           tag,
+          id: el.id || null,
+          className: (typeof el.className === 'string' ? el.className : el.getAttribute('class')) || null,
           rect: {
             x: rect.x,
             y: rect.y,
@@ -208,7 +180,54 @@ export async function captureBaseline(htmlPath, outputDir, width, height) {
       }
       
       return results;
-    }, KEY_PROPERTIES);
+  }, KEY_PROPERTIES);
+}
+
+/**
+ * Capture full baseline for a single HTML file
+ * 
+ * @param {string} htmlPath - Path to HTML file
+ * @param {string} outputDir - Directory to save baseline files
+ * @param {number} width - Viewport width
+ * @param {number} height - Viewport height
+ * @returns {Promise<Object>} Capture results
+ */
+export async function captureBaseline(htmlPath, outputDir, width, height) {
+  const absolutePath = resolve(htmlPath);
+  
+  if (!existsSync(absolutePath)) {
+    throw new Error(`HTML file not found: ${absolutePath}`);
+  }
+  
+  mkdirSync(outputDir, { recursive: true });
+  
+  const browser = await chromium.launch(getDeterministicLaunchOptions());
+  
+  try {
+    const context = await createDeterministicContext(
+      browser,
+      width,
+      height,
+      { applyParityReset: shouldApplyParityResetForHtmlPath(absolutePath) }
+    );
+    
+    const page = await context.newPage();
+    
+    // Load the page
+    const fileUrl = `file://${absolutePath}`;
+    await page.goto(fileUrl, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(50);  // Animations are frozen; allow layout/fonts to settle
+    
+    // 1. Capture screenshot
+    const screenshotPath = join(outputDir, 'baseline.png');
+    await page.screenshot({
+      path: screenshotPath,
+      type: 'png',
+      fullPage: false,
+    });
+    
+    // 2. Extract computed styles and layout rects
+    const { styles, rects } = await extractPageGeometry(page);
     
     // Save computed styles
     const stylesPath = join(outputDir, 'computed-styles.json');

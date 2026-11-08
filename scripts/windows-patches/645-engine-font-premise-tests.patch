@@ -1,0 +1,58 @@
+Upstream: test premises that hold only for macOS fonts. (1) text_control_select_tests pins the
+Menlo 20px advance; (2) transform_rect_tests compares a fractional rect with an integer offset
+(its sibling test already rounds); (3) inspector_page_tests breaks when the sentence soft-wraps
+after a hyphen. Remove after the premises are fixed upstream.
+
+--- a/crates/rustkit-engine/src/text_control_select_tests.rs
++++ b/crates/rustkit-engine/src/text_control_select_tests.rs
+@@ -11,7 +11,7 @@
+ 
+ use super::*;
+ 
+-const STYLE: &str = "position:absolute;left:10px;width:300px;height:30px;margin:0;padding:0;border:0;font-family:Menlo;font-size:20px";
++const STYLE: &str = "position:absolute;left:10px;width:300px;height:30px;margin:0;padding:0;border:0;font-family:Menlo,Consolas,monospace;font-size:20px";
+ 
+ fn page() -> (Engine, EngineViewId) {
+     let html = format!(
+@@ -67,7 +67,7 @@
+ 
+ /// Menlo's advance at 20px (the oracle's canvas measure: 12.041015625).
+ fn advance() -> f32 {
+-    rustkit_layout::measure_text_advanced("o", "Menlo", 20.0, Default::default(), Default::default()).width
++    rustkit_layout::measure_text_advanced("o", "Menlo,Consolas,monospace", 20.0, Default::default(), Default::default()).width
+ }
+ 
+ // (a) Click a filled input, Cmd+A, type: the typed text replaces the value.
+@@ -151,6 +151,8 @@
+ #[test]
+ fn a_click_places_the_caret_at_the_click_point() {
+     let adv = advance();
++    // Menlo is a macOS font: the click maths below scale with `adv`, only this pin does not.
++    #[cfg(target_os = "macos")]
+     assert!((adv - 12.041).abs() < 0.05, "Menlo 20px advance {adv}");
+     for (f, want) in [(0.2, "0,0"), (1.4, "1,1"), (3.3, "3,3"), (3.7, "4,4"), (8.6, "9,9"), (12.0, "9,9")] {
+         let (mut engine, id) = page();
+--- a/crates/rustkit-engine/src/transform_rect_tests.rs
++++ b/crates/rustkit-engine/src/transform_rect_tests.rs
+@@ -531,7 +531,7 @@
+ fn a_transform_does_not_apply_to_a_plain_inline() {
+     check(
+         INLINES,
+-        "var r = $('sp').getBoundingClientRect(); [r.x - $('sp').offsetLeft, r.y - $('sp').offsetTop].join(' ')",
++        "var r = $('sp').getBoundingClientRect(); [r.x - $('sp').offsetLeft, r.y - $('sp').offsetTop].map(Math.round).join(' ')",
+         "0 0",
+     );
+ }
+--- a/crates/rustkit-engine/src/inspector_page_tests.rs
++++ b/crates/rustkit-engine/src/inspector_page_tests.rs
+@@ -409,7 +409,9 @@
+     let dump = target_dump();
+     let why = |id: &str| {
+         let (engine, view) = inspector(&inspector_page_html(&dump, None, Some(node_of(&dump, id))).unwrap());
+-        shown_in(&engine, view, "#why")
++        // A wider font can soft-wrap the sentence after a hyphen (`nth-` / `child(4)`); the
++        // runs are joined with a space, so undo that one join.
++        shown_in(&engine, view, "#why").replace("nth- child", "nth-child")
+     };
+     let gone = why("gone");
+     assert!(gone.contains("It has no layout box: display:none, or dropped by the box tree builder."), "{gone}");

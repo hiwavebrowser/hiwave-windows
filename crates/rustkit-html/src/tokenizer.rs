@@ -269,7 +269,11 @@ impl Tokenizer {
                 self.state = State::TagName;
             }
             Some('?') => {
-                self.consume();
+                // HTML: unexpected-question-mark-instead-of-tag-name. The
+                // comment's data starts empty, then the `?` is reconsumed
+                // in the bogus comment state, so `<?lit$1$>` is a comment
+                // whose data is `?lit$1$`. Lit's template markers match that.
+                self.current_comment.clear();
                 self.state = State::BogusComment;
             }
             _ => {
@@ -1192,6 +1196,16 @@ mod tests {
     fn test_comment() {
         let tokens = tokenize("<!-- comment -->").unwrap();
         assert!(matches!(tokens[0], Token::Comment(ref s) if s == " comment "));
+    }
+
+    /// `<?` is a bogus comment. The `?` is part of the data (HTML tokenizer:
+    /// reconsume in the bogus comment state). Lit writes `<?lit$…$>` and
+    /// matches the comment data `?lit$…$`.
+    #[test]
+    fn test_question_mark_bogus_comment_keeps_the_question_mark() {
+        let tokens = tokenize("<?lit$1$><slot name=\"title\"></slot>").unwrap();
+        assert!(matches!(tokens[0], Token::Comment(ref s) if s == "?lit$1$"), "{tokens:?}");
+        assert!(matches!(tokens[1], Token::StartTag { ref name, .. } if name == "slot"));
     }
 
     #[test]

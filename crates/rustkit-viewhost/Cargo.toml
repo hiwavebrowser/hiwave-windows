@@ -60,10 +60,22 @@ name = "macos_key_events"
 harness = false
 
 [[test]]
+name = "macos_text_input"
+harness = false
+
+[[test]]
 name = "macos_pointer_moves"
 harness = false
 
 # Runs a tao event loop, which must own the main thread.
 [[test]]
 name = "macos_wheel_recorded"
+harness = false
+
+[[test]]
+name = "macos_input_order"
+harness = false
+
+[[test]]
+name = "macos_transparent_region"
 harness = false

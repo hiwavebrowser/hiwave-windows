@@ -9,9 +9,15 @@
 // engine's style pipeline reads on the next relayout: that is how CSS-in-JS
 // libraries (emotion, styled-components) inject styles.
 //
-// Stated limits: adoptedStyleSheets and constructed sheets are not applied by
-// the engine (it reads only <style>/<link>); `disabled` is recorded but not
-// honoured; a <link>'s sheet has no rules (the bindings never see its text);
+// Constructed sheets adopted by the document or a shadow root are published
+// to the engine (`__rkSetAdoptedStyles`) and applied on the next layout,
+// after that tree's `<style>` and `<link>` sheets. `disabled` is honoured
+// at publish time (an empty string) and a `media` list wraps the rules in
+// `@media`. A later `replaceSync`, `insertRule`, `deleteRule`, declaration
+// edit, `disabled` or `media.mediaText` change republishes every root that
+// adopted the sheet, and so does a change to the observable
+// `adoptedStyleSheets` list itself (`push`, `splice`, `length = 0`). A `<link>`'s sheet has no rules (the bindings never see its
+// text);
 // at-rules (@media, @font-face, ...) are CSSRule objects with their text only,
 // no nested cssRules; CSS.supports checks property names against the list the
 // engine applies and validates values only for display and position.
@@ -270,6 +276,7 @@
         if (!sheet) return;
         if (isStyle(sheet)) write(sheet, sheet._rules.map(sourceOf).join('\n'));
         fill(sheet._list, sheet._rules);
+        refreshAdopted(sheet);
     }
     function write(sheet, text) { sheet._text = text; sheet._owner.textContent = text; }
     function checkIndex(sheet, index, max) {
@@ -306,6 +313,7 @@
             if (!this._constructed) throw domError("Can't call replaceSync on non-constructed CSSStyleSheets.", 'NotAllowedError');
             this._rules = parseSheet(String(text), this, true);
             fill(this._list, this._rules);
+            refreshAdopted(this);
         },
         replace: function (text) {
             try { this.replaceSync(text); } catch (e) { return Promise.reject(e); }
@@ -326,8 +334,36 @@
     });
     getter(StyleSheet.prototype, 'title', function () { return this._owner ? this._owner.getAttribute('title') : null; });
     getter(StyleSheet.prototype, 'media', function () {
-        var text = this._owner ? this._owner.getAttribute('media') || '' : this._media || '';
+        if (!this._owner) return mediaList(this);
+        var text = this._owner.getAttribute('media') || '';
         return { mediaText: text, length: text ? text.split(',').length : 0, toString: function () { return text; } };
+    });
+    // A constructed sheet's media list: setting mediaText republishes every
+    // root that adopted the sheet (sheetCss wraps the rules in @media).
+    function mediaList(sheet) {
+        if (sheet._mediaList) return sheet._mediaList;
+        var list = {};
+        Object.defineProperty(list, 'mediaText', {
+            get: function () { return sheet._media || ''; },
+            set: function (v) { sheet._media = v == null ? '' : String(v).trim(); refreshAdopted(sheet); },
+            enumerable: true
+        });
+        Object.defineProperty(list, 'length', {
+            get: function () { return sheet._media ? sheet._media.split(',').length : 0; }
+        });
+        list.toString = function () { return sheet._media || ''; };
+        sheet._mediaList = list;
+        return list;
+    }
+    // `disabled` republishes a constructed sheet's adopters.
+    Object.defineProperty(StyleSheet.prototype, 'disabled', {
+        get: function () { return !!this._disabled; },
+        set: function (v) {
+            var was = !!this._disabled;
+            this._disabled = !!v;
+            if (was !== this._disabled) refreshAdopted(this);
+        },
+        configurable: true
     });
 
     // ---- <style>.sheet, <link rel=stylesheet>.sheet, document.styleSheets
@@ -354,20 +390,101 @@
         }
         return fill(Object.create(StyleSheetList.prototype), els.map(ownSheet).filter(Boolean));
     });
+    // Document and ShadowRoot share one list. web_shadow.js installs a
+    // placeholder on ShadowRoot first; this replaces it so both validate
+    // constructed sheets and publish their text.
+    // Per document or shadow root: the backing array, the observable list
+    // script sees (one object for the root's lifetime, as in Chrome), and
+    // the sheets it was last linked to.
     var adopted = new WeakMap();
-    getter(g.Document.prototype, 'adoptedStyleSheets', function () {
-        var a = adopted.get(this);
-        if (!a) { a = []; adopted.set(this, a); }
-        return a;
-    }, function (v) {
+    // Per constructed sheet: the roots that adopt it (a Set: adopting the
+    // same sheet on n roots is O(n), not O(n^2)). The roots are held
+    // strongly while they adopt the sheet.
+    var adopters = new WeakMap();
+    function sheetCss(sheet) {
+        if (!sheet || sheet.disabled) return '';
+        var css = (sheet._rules || []).map(sourceOf).join('\n');
+        // A constructed sheet's media list applies like a <style media>.
+        return sheet._media ? '@media ' + sheet._media + ' {\n' + css + '\n}' : css;
+    }
+    function publishAdopted(node) {
+        var entry = adopted.get(node);
+        var list = entry ? entry.raw : [];
+        var texts = [];
+        for (var i = 0; i < list.length; i++) if (list[i] instanceof CSSStyleSheet) texts.push(sheetCss(list[i]));
+        if (typeof g.__rkSetAdoptedStyles === 'function') g.__rkSetAdoptedStyles(node, JSON.stringify(texts));
+    }
+    function checkAdoptable(s) {
+        if (!(s instanceof CSSStyleSheet)) throw new TypeError("Failed to set 'adoptedStyleSheets': element is not a CSSStyleSheet.");
+        if (!s._constructed) throw domError("Can't adopt non-constructed stylesheets.", 'NotAllowedError');
+    }
+    // Re-link the root to the sheets now in its list, then publish. A
+    // splice moves elements one index write at a time, so the list can
+    // briefly hold holes: only sheets are linked.
+    function relink(node, entry) {
+        var before = entry.linked, now = [];
+        for (var i = 0; i < entry.raw.length; i++) {
+            var s = entry.raw[i];
+            if (s instanceof CSSStyleSheet && now.indexOf(s) < 0) now.push(s);
+        }
+        for (var b = 0; b < before.length; b++) {
+            if (now.indexOf(before[b]) < 0) { var gone = adopters.get(before[b]); if (gone) gone.delete(node); }
+        }
+        for (var n = 0; n < now.length; n++) {
+            var nodes = adopters.get(now[n]);
+            if (!nodes) { nodes = new Set(); adopters.set(now[n], nodes); }
+            nodes.add(node);
+        }
+        entry.linked = now;
+        publishAdopted(node);
+    }
+    function entryFor(node) {
+        var entry = adopted.get(node);
+        if (!entry) { entry = { raw: [], linked: [], list: null }; adopted.set(node, entry); }
+        return entry;
+    }
+    // An ObservableArray (CSSOM §6.3): index writes are validated, and any
+    // change (push, splice, length = 0) re-links and republishes. Made on
+    // the first read, so a root whose list is only ever assigned (Lit) pays
+    // for no proxy.
+    function observedList(node) {
+        var entry = entryFor(node);
+        if (entry.list) return entry.list;
+        entry.list = new Proxy(entry.raw, {
+            set: function (t, k, v) {
+                if (typeof k === 'string' && k !== 'length' && String(k >>> 0) === k) checkAdoptable(v);
+                t[k] = v;
+                relink(node, entry);
+                return true;
+            },
+            deleteProperty: function (t, k) {
+                delete t[k];
+                relink(node, entry);
+                return true;
+            }
+        });
+        return entry.list;
+    }
+    function setAdopted(node, v) {
         if (v == null || typeof v[Symbol.iterator] !== 'function') throw new TypeError('adoptedStyleSheets must be an array');
         var list = Array.from(v);
-        list.forEach(function (s) {
-            if (!(s instanceof CSSStyleSheet)) throw new TypeError("Failed to set 'adoptedStyleSheets': element is not a CSSStyleSheet.");
-            if (!s._constructed) throw domError("Can't adopt non-constructed stylesheets.", 'NotAllowedError');
-        });
-        adopted.set(this, list);
-    });
+        for (var i = 0; i < list.length; i++) checkAdoptable(list[i]);
+        var entry = entryFor(node);
+        entry.raw.length = 0;
+        for (var j = 0; j < list.length; j++) entry.raw.push(list[j]);
+        relink(node, entry);
+    }
+    function refreshAdopted(sheet) {
+        if (!sheet || !sheet._constructed) return;
+        var nodes = adopters.get(sheet);
+        if (!nodes) return;
+        nodes.forEach(publishAdopted);
+    }
+    function adoptedGetter() {
+        return observedList(this);
+    }
+    getter(g.Document.prototype, 'adoptedStyleSheets', adoptedGetter, function (v) { setAdopted(this, v); });
+    if (g.ShadowRoot) getter(g.ShadowRoot.prototype, 'adoptedStyleSheets', adoptedGetter, function (v) { setAdopted(this, v); });
 
     // ---- CSS namespace: supports() and escape()
     // The properties rustkit-engine's apply_style_property has an arm for,

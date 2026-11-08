@@ -629,37 +629,22 @@ impl BoxShadow {
     }
 }
 
-/// A filter function that can be applied to the backdrop.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum BackdropFilter {
-    /// No backdrop filter.
-    #[default]
-    None,
-    /// Gaussian blur with the specified radius in pixels.
-    Blur(f32),
-    /// Grayscale filter (0.0 = no effect, 1.0 = fully grayscale).
-    Grayscale(f32),
-    /// Brightness adjustment (1.0 = no change).
-    Brightness(f32),
-    /// Contrast adjustment (1.0 = no change).
-    Contrast(f32),
-    /// Saturate adjustment (1.0 = no change, 0.0 = grayscale, >1 = oversaturated).
-    Saturate(f32),
-    /// Sepia filter (0.0 = no effect, 1.0 = fully sepia).
-    Sepia(f32),
-}
-
-impl BackdropFilter {
-    /// Check if this filter has any effect.
-    pub fn is_none(&self) -> bool {
-        matches!(self, BackdropFilter::None)
-    }
-
-    /// Check if this filter requires blur (most expensive operation).
-    pub fn needs_blur(&self) -> bool {
-        matches!(self, BackdropFilter::Blur(r) if *r > 0.0)
-    }
-}
+/// `ComputedStyle::stacks`: `isolation: isolate`.
+pub const STACKS_ISOLATION: u8 = 1;
+/// `ComputedStyle::stacks`: a `mix-blend-mode` other than `normal`.
+pub const STACKS_BLEND: u8 = 2;
+/// `ComputedStyle::stacks`: a `perspective` other than `none`.
+pub const STACKS_PERSPECTIVE: u8 = 4;
+/// `ComputedStyle::stacks`: `transform-style: preserve-3d`.
+pub const STACKS_PRESERVE_3D: u8 = 8;
+/// `ComputedStyle::stacks`: `will-change` names a property that makes one.
+pub const STACKS_WILL_CHANGE: u8 = 16;
+/// `ComputedStyle::stacks`: a `backdrop-filter` other than `none`.
+pub const STACKS_BACKDROP: u8 = 32;
+/// `ComputedStyle::stacks`: `content-visibility: auto` or `hidden`.
+pub const STACKS_CONTENT_VISIBILITY: u8 = 64;
+/// `ComputedStyle::stacks`: a `view-transition-name` other than `none` or `auto`.
+pub const STACKS_VIEW_TRANSITION: u8 = 128;
 
 /// Position along a gradient stop.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1111,9 +1096,55 @@ pub enum Display {
     /// Columns and column groups are never rendered; they only carry widths.
     TableColumn,
     TableColumnGroup,
+    /// `contents`: the element generates no box; its children take its
+    /// place (CSS Display 3). Author `display: contents` and the UA style
+    /// of `<slot>` both set it, and the box-tree build removes such boxes.
+    Contents,
+}
+
+/// What `getComputedStyle(el).display` says beyond the layout enum. The
+/// enum folds `list-item` into `Block`/`Inline` and `flow-root` into `Block`
+/// (that is how they lay out), so the authored keyword is kept beside it for
+/// CSSOM. It only applies with `Block` or `Inline` (an `li` set to
+/// `display: none` or `flex` reads that).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayModifier {
+    #[default]
+    None,
+    /// `list-item` / `block flow list-item` (reads `list-item`), or
+    /// `inline list-item`.
+    ListItem,
+    /// `flow-root` / `block flow-root` (reads `flow-root`).
+    FlowRoot,
 }
 
 impl Display {
+    /// The keyword CSSOM serialises this value as (`table-cell`,
+    /// `inline-flex`, ...), without any [`DisplayModifier`].
+    pub fn css_keyword(self) -> &'static str {
+        match self {
+            Display::Block => "block",
+            Display::Inline => "inline",
+            Display::InlineBlock => "inline-block",
+            Display::Flex => "flex",
+            Display::InlineFlex => "inline-flex",
+            Display::Grid => "grid",
+            Display::InlineGrid => "inline-grid",
+            Display::None => "none",
+            Display::Table => "table",
+            Display::InlineTable => "inline-table",
+            Display::TableRowGroup => "table-row-group",
+            Display::TableHeaderGroup => "table-header-group",
+            Display::TableFooterGroup => "table-footer-group",
+            Display::TableRow => "table-row",
+            Display::TableCell => "table-cell",
+            Display::TableCaption => "table-caption",
+            Display::TableColumn => "table-column",
+            Display::TableColumnGroup => "table-column-group",
+            Display::Contents => "contents",
+        }
+    }
+
     /// Check if this is a flex container.
     pub fn is_flex(self) -> bool {
         matches!(self, Display::Flex | Display::InlineFlex)
@@ -1150,6 +1181,30 @@ impl Display {
             self,
             Display::InlineBlock | Display::InlineFlex | Display::InlineGrid | Display::InlineTable
         )
+    }
+
+    /// CSS Display 3 §2.7: the block-level equivalent of this display.
+    ///
+    /// `inline` / `inline-block` become `block`, the inline-level inner
+    /// displays become their block-level forms, and a table-internal
+    /// display becomes `block`. `none` and `contents` generate no box, so
+    /// they are left alone (there is nothing to blockify).
+    pub fn blockified(self) -> Self {
+        match self {
+            Display::Inline | Display::InlineBlock => Display::Block,
+            Display::InlineFlex => Display::Flex,
+            Display::InlineGrid => Display::Grid,
+            Display::InlineTable => Display::Table,
+            Display::TableRow
+            | Display::TableRowGroup
+            | Display::TableHeaderGroup
+            | Display::TableFooterGroup
+            | Display::TableCell
+            | Display::TableCaption
+            | Display::TableColumn
+            | Display::TableColumnGroup => Display::Block,
+            other => other,
+        }
     }
 
     /// `table` or `inline-table`: the box that runs table layout.
@@ -1725,6 +1780,69 @@ pub enum Position {
     Sticky,
 }
 
+/// Whose scroll moves a sticky box's scrollport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StickyPort {
+    /// The window: the scroll is known only when a frame is drawn or a point
+    /// is tested, so the rule travels in the display list.
+    Window,
+    /// The window, from under a fixed box: no scroll moves the two apart.
+    Still,
+    /// The element scroller with this node.
+    Element(usize),
+}
+
+/// Where `position: sticky` puts a box, once layout is final. All in layout
+/// coordinates, with nothing scrolled.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StickyRule {
+    pub port: StickyPort,
+    /// The scrollport (x, y, width, height), less the scroller's padding.
+    pub scrollport: (f32, f32, f32, f32),
+    /// The box's border box where the flow put it (x, y, width, height).
+    pub natural: (f32, f32, f32, f32),
+    pub top: Option<f32>,
+    pub right: Option<f32>,
+    pub bottom: Option<f32>,
+    pub left: Option<f32>,
+    /// How far its containing block lets it move, up to its margins, as
+    /// (back, on) on each axis: back is at most 0, on at least 0.
+    pub room_x: (f32, f32),
+    pub room_y: (f32, f32),
+}
+
+impl StickyRule {
+    /// How far the box moves from where the flow put it, with its scrollport
+    /// scrolled by `scroll` and sticky boxes around it, inside the same
+    /// scrollport, already moved by `above`. Its containing block moves with
+    /// those, so `above` only changes where the scrollport is.
+    pub fn shift(&self, scroll: (f32, f32), above: (f32, f32)) -> (f32, f32) {
+        // A box that does not fit between the two insets has only the near one.
+        let axis = |port: f32, size: f32, at: f32, length: f32, near: Option<f32>, far: Option<f32>, room: (f32, f32)| {
+            let mut moved = 0.0f32;
+            if let Some(far) = far.filter(|far| near.is_none_or(|near| near + far + length <= size)) {
+                let want = port + size - far - (at + length);
+                if want < 0.0 {
+                    moved = want.max(room.0);
+                }
+            }
+            if let Some(near) = near {
+                let want = port + near - (at + moved);
+                if want > 0.0 {
+                    moved = (moved + want).min(room.1);
+                }
+            }
+            moved
+        };
+        let (px, py, pw, ph) = self.scrollport;
+        let (x, y, w, h) = self.natural;
+        (
+            axis(px + scroll.0 - above.0, pw, x, w, self.left, self.right, self.room_x),
+            axis(py + scroll.1 - above.1, ph, y, h, self.top, self.bottom, self.room_y),
+        )
+    }
+}
+
 /// CSS float property values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Float {
@@ -1855,6 +1973,130 @@ pub enum Visibility {
     Visible,
     Hidden,
     Collapse,
+}
+
+/// `pointer-events` (CSS UI 4 §8.1; the SVG-only values count as `auto`).
+/// Inherited. A `none` box is no target of a hit test: the point goes to
+/// what is under it, and a descendant can set `auto` again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerEvents {
+    #[default]
+    Auto,
+    None,
+}
+
+/// `cursor` (CSS UI 4 §7.1.1): the keyword the pointer shows over the box.
+/// Inherited. A `url()` image is not drawn: the keyword it falls back to
+/// is the value (`url(a.png), pointer` is `Pointer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cursor {
+    #[default]
+    Auto,
+    Default,
+    None,
+    ContextMenu,
+    Help,
+    Pointer,
+    Progress,
+    Wait,
+    Cell,
+    Crosshair,
+    Text,
+    VerticalText,
+    Alias,
+    Copy,
+    Move,
+    NoDrop,
+    NotAllowed,
+    Grab,
+    Grabbing,
+    AllScroll,
+    ColResize,
+    RowResize,
+    NResize,
+    EResize,
+    SResize,
+    WResize,
+    NeResize,
+    NwResize,
+    SeResize,
+    SwResize,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ZoomIn,
+    ZoomOut,
+}
+
+impl Cursor {
+    const ALL: [(Cursor, &'static str); 36] = [
+        (Cursor::Auto, "auto"),
+        (Cursor::Default, "default"),
+        (Cursor::None, "none"),
+        (Cursor::ContextMenu, "context-menu"),
+        (Cursor::Help, "help"),
+        (Cursor::Pointer, "pointer"),
+        (Cursor::Progress, "progress"),
+        (Cursor::Wait, "wait"),
+        (Cursor::Cell, "cell"),
+        (Cursor::Crosshair, "crosshair"),
+        (Cursor::Text, "text"),
+        (Cursor::VerticalText, "vertical-text"),
+        (Cursor::Alias, "alias"),
+        (Cursor::Copy, "copy"),
+        (Cursor::Move, "move"),
+        (Cursor::NoDrop, "no-drop"),
+        (Cursor::NotAllowed, "not-allowed"),
+        (Cursor::Grab, "grab"),
+        (Cursor::Grabbing, "grabbing"),
+        (Cursor::AllScroll, "all-scroll"),
+        (Cursor::ColResize, "col-resize"),
+        (Cursor::RowResize, "row-resize"),
+        (Cursor::NResize, "n-resize"),
+        (Cursor::EResize, "e-resize"),
+        (Cursor::SResize, "s-resize"),
+        (Cursor::WResize, "w-resize"),
+        (Cursor::NeResize, "ne-resize"),
+        (Cursor::NwResize, "nw-resize"),
+        (Cursor::SeResize, "se-resize"),
+        (Cursor::SwResize, "sw-resize"),
+        (Cursor::EwResize, "ew-resize"),
+        (Cursor::NsResize, "ns-resize"),
+        (Cursor::NeswResize, "nesw-resize"),
+        (Cursor::NwseResize, "nwse-resize"),
+        (Cursor::ZoomIn, "zoom-in"),
+        (Cursor::ZoomOut, "zoom-out"),
+    ];
+
+    /// The CSS keyword.
+    pub fn as_str(self) -> &'static str {
+        Self::ALL.iter().find(|(c, _)| *c == self).map_or("auto", |(_, k)| k)
+    }
+
+    /// A keyword (any case, `-webkit-grab` and `-webkit-grabbing` too).
+    pub fn from_keyword(keyword: &str) -> Option<Cursor> {
+        let k = keyword.trim().to_ascii_lowercase();
+        let k = k.strip_prefix("-webkit-").unwrap_or(&k);
+        Self::ALL.iter().find(|(_, name)| *name == k).map(|(c, _)| *c)
+    }
+
+    /// A declared value: `[<url> [<x> <y>]?,]* <keyword>`. The keyword
+    /// after the last comma decides; `None` when it is not one (the
+    /// declaration is invalid and ignored).
+    pub fn parse(value: &str) -> Option<Cursor> {
+        let mut depth = 0usize;
+        let mut last = 0;
+        for (i, ch) in value.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => last = i + 1,
+                _ => {}
+            }
+        }
+        Self::from_keyword(&value[last..])
+    }
 }
 
 /// Overflow behavior.
@@ -2243,6 +2485,108 @@ impl Default for TransformOrigin {
 
 // ==================== Animation/Transition Types ====================
 
+/// One entry of the `transition` list: a property name (`all` for every
+/// animatable one), with its duration, delay (seconds) and timing function.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TransitionItem {
+    pub property: String,
+    pub duration: f32,
+    pub delay: f32,
+    pub timing: TimingFunction,
+}
+
+/// One entry of the `animation` list (css-animations-1 §4): a `@keyframes`
+/// name (`none` for no animation) with its timing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimationItem {
+    pub name: String,
+    pub duration: f32,
+    pub delay: f32,
+    pub timing: TimingFunction,
+    pub iteration_count: AnimationIterationCount,
+    pub direction: AnimationDirection,
+    pub fill_mode: AnimationFillMode,
+    pub play_state: AnimationPlayState,
+}
+
+impl Default for AnimationItem {
+    fn default() -> Self {
+        Self {
+            name: "none".to_string(),
+            duration: 0.0,
+            delay: 0.0,
+            timing: TimingFunction::Ease,
+            iteration_count: AnimationIterationCount::One,
+            direction: AnimationDirection::Normal,
+            fill_mode: AnimationFillMode::None,
+            play_state: AnimationPlayState::Running,
+        }
+    }
+}
+
+impl TimingFunction {
+    /// The output progress for input progress `t` in 0..=1 (css-easing-1):
+    /// the cubic Bézier solved for `x = t`, or the step function.
+    pub fn evaluate(&self, t: f32) -> f32 {
+        let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+        let bezier = |x1: f32, y1: f32, x2: f32, y2: f32| {
+            if t <= 0.0 {
+                return 0.0;
+            }
+            if t >= 1.0 {
+                return 1.0;
+            }
+            let at = |p1: f32, p2: f32, s: f32| {
+                let a = 1.0 - 3.0 * p2 + 3.0 * p1;
+                let b = 3.0 * p2 - 6.0 * p1;
+                let c = 3.0 * p1;
+                ((a * s + b) * s + c) * s
+            };
+            // Bisection on x: robust for every bounded curve.
+            let (mut lo, mut hi) = (0.0f32, 1.0f32);
+            let mut s = t;
+            for _ in 0..40 {
+                let x = at(x1, x2, s);
+                if (x - t).abs() < 1e-5 {
+                    break;
+                }
+                if x < t {
+                    lo = s;
+                } else {
+                    hi = s;
+                }
+                s = (lo + hi) / 2.0;
+            }
+            at(y1, y2, s)
+        };
+        let steps = |n: u32, jump_start: bool| {
+            if n == 0 {
+                return t;
+            }
+            let n_f = n as f32;
+            let mut step = (t * n_f).floor();
+            if jump_start {
+                step += 1.0;
+            }
+            if t >= 1.0 {
+                step = n_f;
+            }
+            (step / n_f).clamp(0.0, 1.0)
+        };
+        match self {
+            TimingFunction::Linear => t,
+            TimingFunction::Ease => bezier(0.25, 0.1, 0.25, 1.0),
+            TimingFunction::EaseIn => bezier(0.42, 0.0, 1.0, 1.0),
+            TimingFunction::EaseOut => bezier(0.0, 0.0, 0.58, 1.0),
+            TimingFunction::EaseInOut => bezier(0.42, 0.0, 0.58, 1.0),
+            TimingFunction::StepStart => steps(1, true),
+            TimingFunction::StepEnd => steps(1, false),
+            TimingFunction::Steps(n, jump_start) => steps(*n, *jump_start),
+            TimingFunction::CubicBezier(x1, y1, x2, y2) => bezier(*x1, *y1, *x2, *y2),
+        }
+    }
+}
+
 /// Animation timing function.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum TimingFunction {
@@ -2339,6 +2683,117 @@ impl BorderStyle {
             "solid" | "double" | "groove" | "ridge" | "inset" | "outset" => Some(Self::Solid),
             "none" | "hidden" => Some(Self::None),
             _ => None,
+        }
+    }
+}
+
+/// `outline-style`. Unlike [`BorderStyle`] it keeps every keyword, for
+/// `getComputedStyle` and for paint, and it has `auto` and no `hidden`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutlineStyle {
+    #[default]
+    None,
+    Auto,
+    Solid,
+    Dashed,
+    Dotted,
+    Double,
+    Groove,
+    Ridge,
+    Inset,
+    Outset,
+}
+
+impl OutlineStyle {
+    /// The style a lowercase keyword names.
+    pub fn from_keyword(keyword: &str) -> Option<Self> {
+        Some(match keyword {
+            "none" => Self::None,
+            "auto" => Self::Auto,
+            "solid" => Self::Solid,
+            "dashed" => Self::Dashed,
+            "dotted" => Self::Dotted,
+            "double" => Self::Double,
+            "groove" => Self::Groove,
+            "ridge" => Self::Ridge,
+            "inset" => Self::Inset,
+            "outset" => Self::Outset,
+            _ => return None,
+        })
+    }
+
+    pub fn keyword(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Auto => "auto",
+            Self::Solid => "solid",
+            Self::Dashed => "dashed",
+            Self::Dotted => "dotted",
+            Self::Double => "double",
+            Self::Groove => "groove",
+            Self::Ridge => "ridge",
+            Self::Inset => "inset",
+            Self::Outset => "outset",
+        }
+    }
+}
+
+/// The `outline-*` longhands. Not inherited, and no part of layout.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Outline {
+    pub style: OutlineStyle,
+    /// `None` is the initial `medium`.
+    pub width: Option<Length>,
+    /// `None` is the initial `currentcolor`.
+    pub color: Option<Color>,
+    pub offset: Length,
+}
+
+impl Outline {
+    /// The width as Chromium computes it: 0 with no style, otherwise floored
+    /// to a whole pixel, and at least 1 if it is not 0 (1.5px is 1, 0.5px is 1).
+    pub fn used_width(&self, font_size: f32, root_font_size: f32) -> f32 {
+        if self.style == OutlineStyle::None {
+            return 0.0;
+        }
+        let px = match &self.width {
+            None => 3.0,
+            Some(width) => width.to_px(font_size, root_font_size, 0.0).max(0.0),
+        };
+        if px > 0.0 { px.floor().max(1.0) } else { 0.0 }
+    }
+
+    /// The offset as Chromium computes it, floored to a 64th of a pixel.
+    pub fn used_offset(&self, font_size: f32, root_font_size: f32) -> f32 {
+        (self.offset.to_px(font_size, root_font_size, 0.0) * 64.0).floor() / 64.0
+    }
+
+    /// An `outline-width` value, lowercase: a keyword or a length that is
+    /// not negative. No percentage, and no bare number but 0.
+    pub fn parse_width(value: &str) -> Option<Length> {
+        match value {
+            "thin" => return Some(Length::Px(1.0)),
+            "medium" => return Some(Length::Px(3.0)),
+            "thick" => return Some(Length::Px(5.0)),
+            _ => {}
+        }
+        let length = Self::parse_offset(value)?;
+        let negative = match length {
+            Length::Px(v) | Length::Em(v) | Length::Rem(v) | Length::Vw(v) | Length::Vh(v)
+            | Length::Vmin(v) | Length::Vmax(v) => v < 0.0,
+            _ => false,
+        };
+        (!negative).then_some(length)
+    }
+
+    /// An `outline-offset` value, lowercase: a length, of either sign.
+    pub fn parse_offset(value: &str) -> Option<Length> {
+        if value.parse::<f32>().is_ok_and(|n| n != 0.0) {
+            return None;
+        }
+        match parse_length(value)? {
+            Length::Auto | Length::FitContent | Length::Percent(_) => None,
+            length => Some(length),
         }
     }
 }
@@ -2475,11 +2930,95 @@ impl std::fmt::Debug for CustomProperties {
     }
 }
 
+impl ComputedStyle {
+    /// `display` as `getComputedStyle` serialises it: the layout enum's
+    /// keyword, with the modifier the enum folds (`list-item`,
+    /// `inline list-item`, `flow-root`) and the legacy `-webkit-box` /
+    /// `-webkit-inline-box` put back.
+    pub fn display_keyword(&self) -> &'static str {
+        if let Some(inline) = self.webkit_box {
+            return if inline { "-webkit-inline-box" } else { "-webkit-box" };
+        }
+        match (self.display, self.display_modifier) {
+            (Display::Block, DisplayModifier::ListItem) => "list-item",
+            (Display::Inline, DisplayModifier::ListItem) => "inline list-item",
+            (Display::Block, DisplayModifier::FlowRoot) => "flow-root",
+            (display, _) => display.css_keyword(),
+        }
+    }
+
+    /// Take from `from` the properties that change what is painted and
+    /// nothing else: no box is sized, placed, created or dropped by them,
+    /// and no stacking context comes or goes. The list is deliberately
+    /// short (`opacity`, `transform`, `visibility` and background images
+    /// are not on it); a property left off costs a layout, never a wrong
+    /// frame.
+    pub fn copy_paint_only(&mut self, from: &ComputedStyle) {
+        self.color = from.color;
+        self.background_color = from.background_color;
+        self.border_top_color = from.border_top_color;
+        self.border_right_color = from.border_right_color;
+        self.border_bottom_color = from.border_bottom_color;
+        self.border_left_color = from.border_left_color;
+        self.text_decoration_line = from.text_decoration_line;
+        self.text_decoration_color = from.text_decoration_color;
+        self.text_decoration_style = from.text_decoration_style;
+        self.text_decoration_thickness = from.text_decoration_thickness.clone();
+        self.webkit_text_fill_color = from.webkit_text_fill_color;
+        self.box_shadows = from.box_shadows.clone();
+        self.outline = from.outline.clone();
+        self.transition_property = from.transition_property.clone();
+        self.transition_duration = from.transition_duration;
+        self.transition_timing_function = from.transition_timing_function.clone();
+        self.transition_delay = from.transition_delay;
+        // Custom properties are substituted into the values above and
+        // below at the cascade; nothing later reads them but script.
+        self.custom_properties = from.custom_properties.clone();
+    }
+
+    /// Whether the properties [`Self::copy_paint_only`] lists are the same
+    /// in both, custom properties aside (comparing those flattens both
+    /// sets, hundreds of entries on a themed page).
+    pub fn same_paint(&self, other: &ComputedStyle) -> bool {
+        self.color == other.color
+            && self.background_color == other.background_color
+            && self.border_top_color == other.border_top_color
+            && self.border_right_color == other.border_right_color
+            && self.border_bottom_color == other.border_bottom_color
+            && self.border_left_color == other.border_left_color
+            && self.text_decoration_line == other.text_decoration_line
+            && self.text_decoration_color == other.text_decoration_color
+            && self.text_decoration_style == other.text_decoration_style
+            && self.text_decoration_thickness == other.text_decoration_thickness
+            && self.webkit_text_fill_color == other.webkit_text_fill_color
+            && self.box_shadows == other.box_shadows
+            && self.outline == other.outline
+            && self.transition_property == other.transition_property
+            && self.transition_duration == other.transition_duration
+            && self.transition_timing_function == other.transition_timing_function
+            && self.transition_delay == other.transition_delay
+    }
+
+    /// Whether `self` and `other` differ, if at all, only in the
+    /// properties [`Self::copy_paint_only`] lists.
+    pub fn differs_only_in_paint(&self, other: &ComputedStyle) -> bool {
+        // With `self`'s paint properties and its custom property set (the
+        // same `Arc`, so that comparison is a pointer check) the rest
+        // must be equal.
+        let mut masked = other.clone();
+        masked.copy_paint_only(self);
+        masked == *self
+    }
+}
+
 /// Computed style for an element.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ComputedStyle {
     // Box model
     pub display: Display,
+    /// The authored `display` keyword `display` folds (`list-item`,
+    /// `flow-root`), for `getComputedStyle` ([`ComputedStyle::display_keyword`]).
+    pub display_modifier: DisplayModifier,
     pub position: Position,
     pub float: Float,
     pub clear: Clear,
@@ -2490,6 +3029,10 @@ pub struct ComputedStyle {
     pub max_width: Length,
     pub max_height: Length,
     pub aspect_ratio: Option<f32>, // width / height ratio
+    /// `aspect-ratio: auto <ratio>` (either order): a replaced box with a
+    /// natural ratio uses that instead of `aspect_ratio`; every other box
+    /// uses `aspect_ratio` as if `auto` were absent.
+    pub aspect_ratio_auto: bool,
 
     // Margin
     pub margin_top: Length,
@@ -2516,6 +3059,8 @@ pub struct ComputedStyle {
     pub border_right_style: BorderStyle,
     pub border_bottom_style: BorderStyle,
     pub border_left_style: BorderStyle,
+
+    pub outline: Outline,
 
     // Border radius (for rounded corners): a horizontal and a vertical
     // radius per corner (CSS Backgrounds 3 §5.1)
@@ -2574,6 +3119,10 @@ pub struct ComputedStyle {
     pub bottom: Option<Length>,
     pub left: Option<Length>,
     pub z_index: i32,
+    /// Whether `z_index` was declared as an integer: `z-index: 0` and
+    /// `z-index: auto` both leave `z_index` at 0, and only the computed
+    /// style reads them apart (`0` / `auto`).
+    pub z_index_declared: bool,
 
     // Transforms
     pub transform: TransformList,
@@ -2585,11 +3134,18 @@ pub struct ComputedStyle {
     pub rotate: Option<TransformOp>,
     pub scale: Option<TransformOp>,
 
-    // Transitions (parsed but not executed during parity capture)
+    // Transitions. The four scalars are the first item's (what
+    // `getComputedStyle` serializes); `transitions` is the whole list the
+    // engine runs (css-transitions-1 §2: one entry per `transition-property`
+    // name, the other longhands repeated to that length).
     pub transition_property: String,
     pub transition_duration: f32, // seconds
     pub transition_timing_function: TimingFunction,
     pub transition_delay: f32, // seconds
+    pub transitions: Vec<TransitionItem>,
+    /// The whole `animation` list the engine runs; the scalars below are
+    /// the first item's, and `animation_name` joins every name.
+    pub animations: Vec<AnimationItem>,
 
     // Animations (parsed but not executed during parity capture)
     pub animation_name: String,
@@ -2600,23 +3156,82 @@ pub struct ComputedStyle {
     pub animation_direction: AnimationDirection,
     pub animation_fill_mode: AnimationFillMode,
     pub animation_play_state: AnimationPlayState,
+    /// The `opacity` the box's animation settles on, when its `@keyframes`
+    /// are known (see [`Self::settle_animation_opacity`]).
+    pub animation_settled_opacity: Option<f32>,
 
     // Box sizing
     pub box_sizing: BoxSizing,
 
     // Visual
     pub opacity: f32,
+    /// `clip-path` as authored (empty for `none`); layout resolves the
+    /// basic shape against the box it clips. Not inherited.
+    pub clip_path: String,
+    /// The legacy `clip` property (CSS 2.1 §11.1.2, CSS Masking 1 §6.1):
+    /// `None` for `auto`. Only an absolutely or fixed positioned box is
+    /// clipped by it. Not inherited.
+    pub clip: Option<ClipRect>,
     pub visibility: Visibility,
+    pub pointer_events: PointerEvents,
+    pub cursor: Cursor,
     pub overflow_x: Overflow,
     pub overflow_y: Overflow,
     /// css-overflow-3 §5.1; only meaningful when the overflow above clips.
     pub text_overflow: TextOverflow,
+    /// The cascaded `display` was `-webkit-box` (`Some(false)`) or
+    /// `-webkit-inline-box` (`Some(true)`). `display` keeps its previous
+    /// value: the legacy flexbox is not laid out, except in the line-clamp
+    /// form, see [`ComputedStyle::line_clamp`]. Not inherited.
+    pub webkit_box: Option<bool>,
+    /// `-webkit-box-orient: vertical` (or `block-axis`). Not inherited.
+    pub webkit_box_orient_vertical: bool,
+    /// `-webkit-line-clamp: <integer>`; `None` is `none`. Not inherited.
+    pub webkit_line_clamp: Option<u32>,
+    /// css-contain-3 §6.1 `container-type`. Not inherited.
+    pub container_type: ContainerType,
+    /// css-contain-3 §6.2 `container-name`; empty is `none`. Not inherited.
+    pub container_name: Vec<String>,
+    /// A `width` (bit 1), `min-width` (2) or `max-width` (4) value that
+    /// `Length` cannot carry (`min-content`, `-webkit-max-content`,
+    /// `MAX-CONTENT`, ...); layout keeps the previous value. `@container`
+    /// treats the box's width as unknown. Not inherited.
+    pub width_keywords: u8,
+    /// A `writing-mode` other than `horizontal-tb` was declared. Layout
+    /// does not honour it yet, but `@container` treats the box's width as
+    /// unknown (its inline size is the physical height). Not inherited.
+    pub writing_mode_declared: bool,
+    /// `columns` or `column-width` other than `auto` was declared. Layout
+    /// does not split into columns for them yet, but `@container` treats a
+    /// child's width as unknown. Not inherited.
+    pub columns_declared: bool,
+    /// An author `display: contents` (with `display` set to
+    /// `Display::Contents`): the element generates no box, and `@container`
+    /// treats it as having no size. Not inherited by the cascade, but
+    /// `display: inherit` copies it along with the keyword.
+    pub display_contents_declared: bool,
 
     // Box shadows (multiple shadows supported)
     pub box_shadows: Vec<BoxShadow>,
 
-    // Backdrop filter (blur, grayscale, etc.)
-    pub backdrop_filter: BackdropFilter,
+    /// `backdrop-filter` (Filter Effects 2 §3) as declared, lowercased;
+    /// empty is `none`. Only a valid list is kept (an invalid declaration
+    /// leaves the earlier one). Paint reads its steps through
+    /// `rustkit_layout::filter_steps`. Not inherited.
+    pub backdrop_filter: String,
+    /// `filter` (Filter Effects 1 §5) as declared, lowercased; empty is
+    /// `none`. Paint reads the colour-matrix functions from it
+    /// (`rustkit_layout::filter_color_matrix`). Not inherited.
+    pub filter: String,
+    /// `will-change` names a property that makes a containing block for
+    /// fixed boxes. Only that is kept: nothing else reads it. Not inherited.
+    pub will_change_holds_fixed: bool,
+    /// `contain` has `paint` or `layout`, alone or through `strict` or
+    /// `content`: a containing block for fixed boxes. Not inherited.
+    pub contain_holds_fixed: bool,
+    /// Declarations read only to tell a stacking context, one `STACKS_*` bit
+    /// each: nothing paints or lays out by them. Not inherited.
+    pub stacks: u8,
 
     // Image/replaced element
     pub image_url: Option<String>,
@@ -2653,6 +3268,10 @@ pub struct ComputedStyle {
     pub scrollbar_width: ScrollbarWidth,
     pub scrollbar_gutter: ScrollbarGutter,
     pub scrollbar_color: Option<(Color, Color)>, // (thumb, track)
+    /// What the `::-webkit-scrollbar*` rules give this element (CH2.E7);
+    /// `None` when no `::-webkit-scrollbar` rule matches it. Computed by
+    /// the engine for scroll containers and the root only.
+    pub webkit_scrollbar: Option<Box<scrollbar::WebkitScrollbar>>,
 
     // Grid Container
     pub grid_template_columns: GridTemplate,
@@ -2717,6 +3336,35 @@ impl ComputedStyle {
             .chain(self.transform.ops.iter().cloned())
             .collect();
         std::borrow::Cow::Owned(TransformList { ops })
+    }
+
+    /// css-overflow-4 §4.2, the legacy form: a `display: -webkit-box` (or
+    /// `-webkit-inline-box`) with `-webkit-box-orient: vertical` and
+    /// `-webkit-line-clamp: N` shows only its first N line boxes. `Some(N)`
+    /// when all three are set; any of them alone does nothing, as in Chrome.
+    pub fn line_clamp(&self) -> Option<u32> {
+        match (
+            self.webkit_box,
+            self.webkit_box_orient_vertical,
+            self.webkit_line_clamp,
+        ) {
+            (Some(_), true, Some(n)) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Run once the cascade is done: a line-clamped `-webkit-box` is laid
+    /// out as a block container (Chrome computes its display to
+    /// `flow-root`), so the clamp has line boxes to count. Every other
+    /// `-webkit-box` is left alone.
+    pub fn apply_line_clamp_display(&mut self) {
+        if let (Some(inline), Some(_)) = (self.webkit_box, self.line_clamp()) {
+            self.display = if inline {
+                Display::InlineBlock
+            } else {
+                Display::Block
+            };
+        }
     }
 
     /// Create default style.
@@ -2786,6 +3434,8 @@ impl ComputedStyle {
             direction: parent.direction,
             writing_mode: parent.writing_mode,
             visibility: parent.visibility,
+            pointer_events: parent.pointer_events,
+            cursor: parent.cursor,
             border_spacing: parent.border_spacing,
             border_collapse: parent.border_collapse,
 
@@ -2828,6 +3478,10 @@ pub struct Rule {
     /// Media query lists of the enclosing `@media` blocks, outermost first;
     /// the rule applies only where all of them match (`Rule::applies_at`).
     pub media: Vec<String>,
+    /// Preludes of the enclosing `@container` blocks, outermost first; the
+    /// rule applies to an element only where each holds for its query
+    /// container.
+    pub container: Vec<String>,
     /// Full dotted name of the rule's cascade layer; `None` when unlayered.
     pub layer: Option<String>,
     /// The layer's rank in the document's layer order (`assign_layer_order`):
@@ -2953,6 +3607,66 @@ pub struct Stylesheet {
     pub rules: Vec<Rule>,
     /// The cascade layer names the sheet declares, in declaration order.
     pub layer_statements: Vec<LayerStatement>,
+    /// What each `@keyframes` of the sheet says about `opacity`.
+    pub keyframes: Vec<rustkit_cssparser::KeyframesAst>,
+}
+
+impl ComputedStyle {
+    /// The one frame painted for a box whose animation sets `opacity`, the
+    /// engine running no animations: the frame the animation settles on.
+    ///
+    /// A finite animation with a forward fill holds the keyframe it ends on;
+    /// one without ends on the box's own value (`.page { animation: in .5s }`
+    /// must not stay on its 0% frame). An infinite one never settles and
+    /// paints its first keyframe. An end that sets no `opacity` is the box's
+    /// own, as a keyframe it does not name would be.
+    ///
+    /// Left `None` for what cannot be settled (no `@keyframes` of that name,
+    /// several animations): layout then paints at full opacity, as it did for
+    /// every animated box, so a rule that was not carried never hides a page.
+    pub fn settle_animation_opacity(&mut self, sheets: &[Stylesheet]) {
+        self.animation_settled_opacity = None;
+        let name = self.animation_name.trim();
+        if name.is_empty() || name.eq_ignore_ascii_case("none") || name.contains(',') {
+            return;
+        }
+        let Some(frames) = sheets
+            .iter()
+            .rev()
+            .flat_map(|sheet| sheet.keyframes.iter().rev())
+            .find(|frames| frames.name == name)
+        else {
+            return;
+        };
+        let reversed = matches!(
+            self.animation_direction,
+            AnimationDirection::Reverse | AnimationDirection::AlternateReverse
+        );
+        let alternates = matches!(
+            self.animation_direction,
+            AnimationDirection::Alternate | AnimationDirection::AlternateReverse
+        );
+        let start = if reversed { frames.last } else { frames.first };
+        let end = if reversed { frames.first } else { frames.last };
+        let holds = matches!(
+            self.animation_fill_mode,
+            AnimationFillMode::Forwards | AnimationFillMode::Both
+        );
+        let frame = match self.animation_iteration_count {
+            AnimationIterationCount::Infinite => start,
+            AnimationIterationCount::One if holds => end,
+            // An even number of alternating runs comes back to where it began.
+            AnimationIterationCount::Count(n) if holds => {
+                if alternates && (n.ceil() as u32) % 2 == 0 {
+                    start
+                } else {
+                    end
+                }
+            }
+            _ => None,
+        };
+        self.animation_settled_opacity = Some(frame.unwrap_or(self.opacity));
+    }
 }
 
 impl Stylesheet {
@@ -2971,6 +3685,7 @@ impl Stylesheet {
             .into_iter()
             .map(|r| Rule {
                 media: r.media,
+                container: r.container,
                 layer: r.layer,
                 layer_order: UNLAYERED,
                 selector: match encode_selector_escapes(&r.selector) {
@@ -3003,6 +3718,7 @@ impl Stylesheet {
         Ok(Stylesheet {
             rules,
             layer_statements,
+            keyframes: ast.keyframes,
         })
     }
 
@@ -3013,6 +3729,7 @@ impl Stylesheet {
 }
 
 pub mod background;
+mod color_mix;
 pub mod mask;
 pub use mask::Mask;
 
@@ -3020,9 +3737,23 @@ pub mod font_face;
 pub use font_face::{parse_font_face, FontDisplayValue, FontFaceRule};
 
 pub mod media;
-pub use media::media_query_list_matches;
+pub use media::{media_query_list_matches, media_query_list_serialize};
 
+mod color_fn;
+pub use color_fn::is_unreadable_color_function;
+#[cfg(test)]
+mod color_syntax_tests;
+#[cfg(test)]
+mod unreadable_color_tests;
+#[cfg(test)]
+mod opacity_parse_tests;
+#[cfg(test)]
+mod clip_parse_tests;
+#[cfg(test)]
+mod outline_parse_tests;
 pub mod content;
+pub mod scrollbar;
+pub use scrollbar::{parse_scrollbar_color, parse_scrollbar_width, ScrollbarPart, WebkitScrollbar};
 pub mod selector_escape;
 pub use selector_escape::{css_ident, encode_selector_escapes};
 
@@ -3215,65 +3946,30 @@ pub fn parse_color(value: &str) -> Option<Color> {
         return Some(Color::new(r, g, b, a));
     }
 
-    // rgb() / rgba()
-    if value.starts_with("rgb") {
-        // Simplified parsing
-        let inner = value
-            .trim_start_matches("rgba(")
-            .trim_start_matches("rgb(")
-            .trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(',').collect();
-        if parts.len() >= 3 {
-            let r = parts[0].trim().parse::<u8>().ok()?;
-            let g = parts[1].trim().parse::<u8>().ok()?;
-            let b = parts[2].trim().parse::<u8>().ok()?;
-            let a = if parts.len() >= 4 {
-                parts[3].trim().parse::<f32>().ok()?
-            } else {
-                1.0
-            };
-            return Some(Color::new(r, g, b, a));
-        }
+    if value.starts_with("color-mix(") {
+        return color_mix::parse_color_mix(&value.to_lowercase());
     }
 
-    // hsl() / hsla()
-    if value.starts_with("hsl") {
-        let inner = value
-            .trim_start_matches("hsla(")
-            .trim_start_matches("hsl(")
-            .trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(',').collect();
-        if parts.len() >= 3 {
-            let h = parts[0]
-                .trim()
-                .trim_end_matches("deg")
-                .parse::<f32>()
-                .ok()?;
-            let s = parts[1].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
-            let l = parts[2].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
-            let a = if parts.len() >= 4 {
-                parts[3].trim().parse::<f32>().ok()?
-            } else {
-                1.0
-            };
-
-            // HSL to RGB conversion
-            let (r, g, b) = hsl_to_rgb(h, s, l);
-            return Some(Color::new(r, g, b, a));
-        }
+    // rgb() / rgba() / hsl() / hsla(), comma or space syntax
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("rgb") || lower.starts_with("hsl") {
+        return color_fn::parse_color_function(&lower);
     }
 
     None
 }
 
-/// Convert HSL to RGB
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-    let s = s.clamp(0.0, 1.0);
-    let l = l.clamp(0.0, 1.0);
+/// Convert HSL to RGB. A channel that lands exactly on .5 (`hsl(90 50% 50%)`'s
+/// red, 127.5) rounds up as Chromium does; in plain f32 it came out a hair
+/// under and rounded down.
+pub(crate) fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let (s, l) = (s.clamp(0.0, 1.0), l.clamp(0.0, 1.0));
 
+    // Chromium rounds an exact .5 up; nudge so f64 error below it does too.
+    let byte = |v: f64| (v * 255.0 + 1e-6).round() as u8;
     if s < 0.0001 {
         // Achromatic (gray)
-        let v = (l * 255.0).round() as u8;
+        let v = byte(l);
         return (v, v, v);
     }
 
@@ -3290,14 +3986,10 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
     let g = hue_to_rgb(p, q, h);
     let b = hue_to_rgb(p, q, h - 1.0 / 3.0);
 
-    (
-        (r * 255.0).round() as u8,
-        (g * 255.0).round() as u8,
-        (b * 255.0).round() as u8,
-    )
+    (byte(r), byte(g), byte(b))
 }
 
-fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
+fn hue_to_rgb(p: f64, q: f64, mut t: f64) -> f64 {
     if t < 0.0 {
         t += 1.0;
     }
@@ -3327,8 +4019,13 @@ pub fn parse_length(value: &str) -> Option<Length> {
     if value == "fit-content" {
         return Some(Length::FitContent);
     }
+    // An authored unitless `0` is a definite zero length, exactly `0px`
+    // (css-values-4 §6.1.1), NOT `Length::Zero`: `Zero` is the `#[default]`,
+    // the value an unset property holds, and code that tells "not set" from
+    // "set to zero" by that variant (multicol's `column-gap: normal` = 1em,
+    // the getComputedStyle gap read) read a bare `0` as unset (CH2.B14).
     if value == "0" {
-        return Some(Length::Zero);
+        return Some(Length::Px(0.0));
     }
 
     // Handle min(), max(), clamp() CSS math functions
@@ -3436,6 +4133,187 @@ pub fn parse_length(value: &str) -> Option<Length> {
     }
 
     None
+}
+
+/// An `opacity` value, clamped to 0..1: `<number> | <percentage>`, or a `calc()`
+/// of either but not of both (Chromium 143, `opacity_pct_probe.mjs` on the hub).
+/// `min()`, `max()` and `clamp()` are not read.
+/// `clip: rect(<top>, <right>, <bottom>, <left>)`: each side a length or
+/// `auto`; `right` and `bottom` are measured from the box's left and top
+/// border edges, as `top` and `left` are (CSS 2.1 §11.1.2).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ClipRect {
+    pub top: Option<Length>,
+    pub right: Option<Length>,
+    pub bottom: Option<Length>,
+    pub left: Option<Length>,
+}
+
+/// Parses the `clip` property: `Some(None)` for `auto`, `Some(Some(rect))`
+/// for `rect()` with four sides separated by commas or by white space, as
+/// Chromium takes both (Bootstrap writes `rect(0,0,0,0)`, others
+/// `rect(0 0 0 0)`). A percentage or anything else refuses the declaration.
+pub fn parse_clip(value: &str) -> Option<Option<ClipRect>> {
+    let value = value.trim().to_ascii_lowercase();
+    if value == "auto" {
+        return Some(None);
+    }
+    let inner = value.strip_prefix("rect(")?.strip_suffix(')')?;
+    let parts: Vec<&str> = if inner.contains(',') {
+        inner.split(',').map(str::trim).collect()
+    } else {
+        inner.split_whitespace().collect()
+    };
+    let [top, right, bottom, left] = parts.as_slice() else {
+        return None;
+    };
+    let side = |token: &str| -> Option<Option<Length>> {
+        match token {
+            "auto" => Some(None),
+            "" => None,
+            // `parse_length` takes a bare number as px; only `0` may be unitless.
+            t if t != "0" && t.parse::<f32>().is_ok() => None,
+            t => match parse_length(t)? {
+                Length::Percent(_) | Length::Auto | Length::FitContent => None,
+                l => Some(Some(l)),
+            },
+        }
+    };
+    Some(Some(ClipRect {
+        top: side(top)?,
+        right: side(right)?,
+        bottom: side(bottom)?,
+        left: side(left)?,
+    }))
+}
+
+pub fn parse_opacity(value: &str) -> Option<f32> {
+    let value = value.trim().to_ascii_lowercase();
+    let opacity = if value.starts_with("calc(") && value.ends_with(')') {
+        // CSS has four more whitespace characters than the splitters below look for.
+        let inner = value[5..value.len() - 1].replace(['\t', '\n', '\r', '\u{c}'], " ");
+        // `parse_calc_sum` files a bare number under `px`: no unit may reach it.
+        let bare = inner.replace("calc", "");
+        // `%` belongs to its number; the unit splitter would trim a space away.
+        if !bare.chars().all(|c| c.is_ascii_digit() || " .+-*/()%e".contains(c))
+            || inner.contains(" %")
+            || calc_mixes_percent(&inner)
+        {
+            return None;
+        }
+        let sum = parse_calc_sum(&hold_at_float_max(&inner))?;
+        // Read only the field in use: scaling by an overflowed `1 / 1e-40` turns
+        // an unused zero field into NaN. In the used field only overflow makes a
+        // NaN, and `calc((1e40 + 1e40) * 0)` is 0 in Chromium.
+        let opacity = if inner.contains('%') { sum.percent / 100.0 } else { sum.px };
+        if opacity.is_nan() { 0.0 } else { opacity }
+    } else {
+        let (number, percent) = match value.strip_suffix('%') {
+            Some(number) => (number, true),
+            None => (value.as_str(), false),
+        };
+        if !is_css_number(number) {
+            return None;
+        }
+        let number = number.parse::<f32>().ok()?;
+        if percent { number / 100.0 } else { number }
+    };
+    // `1e40` overflows to infinity, and clamps like any other large number.
+    Some(opacity.clamp(0.0, 1.0))
+}
+
+/// Rewrites each number past `f32`'s range as `f32::MAX`, where Chromium holds it
+/// (`calc(1e40 * 1e-40)` is 0.034), because the calc parser refuses an infinity
+/// for every property.
+fn hold_at_float_max(inner: &str) -> String {
+    let bytes = inner.as_bytes();
+    let mut held = String::with_capacity(inner.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let start = i;
+        if !(bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+            i += 1;
+            held.push_str(&inner[start..i]);
+            continue;
+        }
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+            i += 1;
+        }
+        if bytes.get(i) == Some(&b'e') {
+            let sign = usize::from(matches!(bytes.get(i + 1), Some(b'+' | b'-')));
+            if bytes.get(i + 1 + sign).is_some_and(u8::is_ascii_digit) {
+                i += 1 + sign;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+        }
+        let number = &inner[start..i];
+        // Only a CSS number is held: `1.e40` is not one, and stays an infinity
+        // the calc parser refuses.
+        if is_css_number(number) && number.parse::<f32>().is_ok_and(f32::is_infinite) {
+            held.push_str(&format!("{:e}", f32::MAX));
+        } else {
+            held.push_str(number);
+        }
+    }
+    held
+}
+
+/// Whether one sum in this `calc()` adds a percentage to a number. Their values
+/// cannot tell: `calc(0 + 50%)` has a number that is zero, and is still invalid.
+fn calc_mixes_percent(inner: &str) -> bool {
+    let bytes = inner.as_bytes();
+    let (mut depth, mut start) = (0i32, 0);
+    let mut terms = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b'+' | b'-' if depth == 0 && i > 0 && bytes[i - 1] == b' ' && bytes.get(i + 1) == Some(&b' ') => {
+                terms.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    terms.push(&inner[start..]);
+    let with_percent = terms.iter().filter(|term| term.contains('%')).count();
+    if with_percent != 0 && with_percent != terms.len() {
+        return true;
+    }
+    // Each bracket holds a sum of its own.
+    let mut open = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => open.push(i),
+            b')' => {
+                if let Some(from) = open.pop() {
+                    if open.is_empty() && calc_mixes_percent(&inner[from + 1..i]) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// css-syntax-3 §4.3.3's number, which Rust's float parser is wider than: it
+/// also takes `inf`, `NaN` and `1.`.
+fn is_css_number(value: &str) -> bool {
+    let value = value.strip_prefix(['+', '-']).unwrap_or(value);
+    let (mantissa, exponent) = match value.split_once('e') {
+        Some((mantissa, exponent)) => (mantissa, Some(exponent)),
+        None => (value, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let mantissa_ok = match mantissa.split_once('.') {
+        Some((whole, fraction)) => (whole.is_empty() || digits(whole)) && digits(fraction),
+        None => digits(mantissa),
+    };
+    mantissa_ok && exponent.is_none_or(|e| digits(e.strip_prefix(['+', '-']).unwrap_or(e)))
 }
 
 /// Parse the inside of a `calc()` into css-values-3 §8.1 normal form.
@@ -3653,6 +4531,81 @@ pub fn parse_border_spacing(value: &str) -> Option<(Length, Length)> {
     }
 }
 
+/// `display: -webkit-box` / `-webkit-inline-box`: `Some(inline)`, else
+/// `None` (see [`ComputedStyle::webkit_box`]).
+pub fn parse_webkit_box_display(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "-webkit-box" => Some(false),
+        "-webkit-inline-box" => Some(true),
+        _ => None,
+    }
+}
+
+/// css-contain-3 §6.1 `container-type`: what an `@container` query may ask
+/// of the element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContainerType {
+    /// `normal`: a container for style queries only, not for size queries.
+    #[default]
+    Normal,
+    /// `inline-size`: its inline size can be queried.
+    InlineSize,
+    /// `size`: its inline and block sizes can be queried.
+    Size,
+}
+
+/// `container-type: normal | size | inline-size`; `None` when invalid.
+pub fn parse_container_type(value: &str) -> Option<ContainerType> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(ContainerType::Normal),
+        "inline-size" => Some(ContainerType::InlineSize),
+        "size" => Some(ContainerType::Size),
+        _ => None,
+    }
+}
+
+/// `container-name: none | <custom-ident>+`; `None` when invalid.
+pub fn parse_container_name(value: &str) -> Option<Vec<String>> {
+    let names: Vec<&str> = value.split_whitespace().collect();
+    if names.len() == 1 && names[0].eq_ignore_ascii_case("none") {
+        return Some(Vec::new());
+    }
+    let reserved = |n: &str| {
+        ["none", "and", "or", "not", "initial", "inherit", "unset", "default"]
+            .iter()
+            .any(|r| n.eq_ignore_ascii_case(r))
+    };
+    let ident = |n: &str| {
+        let body = n.strip_prefix('-').unwrap_or(n);
+        body.starts_with(|c: char| c.is_alphabetic() || c == '_' || c == '-' || !c.is_ascii())
+            && n.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || !c.is_ascii())
+    };
+    (!names.is_empty() && names.iter().all(|n| ident(n) && !reserved(n)))
+        .then(|| names.iter().map(|n| n.to_string()).collect())
+}
+
+/// The `container` shorthand: `<container-name> [ / <container-type> ]?`.
+pub fn parse_container(value: &str) -> Option<(Vec<String>, ContainerType)> {
+    let (name, kind) = match value.split_once('/') {
+        Some((n, t)) => (n, parse_container_type(t)?),
+        None => (value, ContainerType::Normal),
+    };
+    Some((parse_container_name(name)?, kind))
+}
+
+/// `-webkit-line-clamp: none | <integer [1,∞]>`. `Some(None)` is `none`;
+/// `None` is an invalid value (the declaration is dropped).
+pub fn parse_webkit_line_clamp(value: &str) -> Option<Option<u32>> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Some(None);
+    }
+    match value.parse::<u32>() {
+        Ok(n) if n >= 1 => Some(Some(n)),
+        _ => None,
+    }
+}
+
 /// Parse display value.
 ///
 /// Besides the legacy single keywords, this takes css-display-3's
@@ -3662,29 +4615,39 @@ pub fn parse_border_spacing(value: &str) -> Option<(Length, Length)> {
 /// (its new formatting context only matters for floats and margin collapse);
 /// `list-item` lays out as its outer display, with no marker. The CSS 2.1
 /// table keywords (and `block table` / `inline table`) map to the table
-/// variants. `contents` and `ruby` stay unsupported (`None`).
+/// variants. `ruby` stays unsupported (`None`).
 pub fn parse_display(value: &str) -> Option<Display> {
+    parse_display_modifier(value).map(|(display, _)| display)
+}
+
+/// [`parse_display`], with the authored keyword the layout enum folds
+/// (`list-item`, `flow-root`) returned beside it for `getComputedStyle`.
+pub fn parse_display_modifier(value: &str) -> Option<(Display, DisplayModifier)> {
     let value = value.trim().to_lowercase();
-    match value.as_str() {
-        "block" => return Some(Display::Block),
-        "inline" => return Some(Display::Inline),
-        "inline-block" => return Some(Display::InlineBlock),
-        "flex" => return Some(Display::Flex),
-        "inline-flex" => return Some(Display::InlineFlex),
-        "grid" => return Some(Display::Grid),
-        "inline-grid" => return Some(Display::InlineGrid),
-        "none" => return Some(Display::None),
-        "table" => return Some(Display::Table),
-        "inline-table" => return Some(Display::InlineTable),
-        "table-row-group" => return Some(Display::TableRowGroup),
-        "table-header-group" => return Some(Display::TableHeaderGroup),
-        "table-footer-group" => return Some(Display::TableFooterGroup),
-        "table-row" => return Some(Display::TableRow),
-        "table-cell" => return Some(Display::TableCell),
-        "table-caption" => return Some(Display::TableCaption),
-        "table-column" => return Some(Display::TableColumn),
-        "table-column-group" => return Some(Display::TableColumnGroup),
-        _ => {}
+    let simple = match value.as_str() {
+        "block" => Some(Display::Block),
+        "inline" => Some(Display::Inline),
+        "inline-block" => Some(Display::InlineBlock),
+        "flex" => Some(Display::Flex),
+        "inline-flex" => Some(Display::InlineFlex),
+        "grid" => Some(Display::Grid),
+        "inline-grid" => Some(Display::InlineGrid),
+        "none" => Some(Display::None),
+        "contents" => Some(Display::Contents),
+        "table" => Some(Display::Table),
+        "inline-table" => Some(Display::InlineTable),
+        "table-row-group" => Some(Display::TableRowGroup),
+        "table-header-group" => Some(Display::TableHeaderGroup),
+        "table-footer-group" => Some(Display::TableFooterGroup),
+        "table-row" => Some(Display::TableRow),
+        "table-cell" => Some(Display::TableCell),
+        "table-caption" => Some(Display::TableCaption),
+        "table-column" => Some(Display::TableColumn),
+        "table-column-group" => Some(Display::TableColumnGroup),
+        _ => None,
+    };
+    if let Some(display) = simple {
+        return Some((display, DisplayModifier::None));
     }
     let (mut outer, mut inner, mut list_item) = (None, None, false);
     for token in value.split_whitespace() {
@@ -3703,7 +4666,7 @@ pub fn parse_display(value: &str) -> Option<Display> {
         return None;
     }
     let inline = outer == Some("inline");
-    Some(match (inline, inner.unwrap_or("flow")) {
+    let display = match (inline, inner.unwrap_or("flow")) {
         (false, "flex") => Display::Flex,
         (true, "flex") => Display::InlineFlex,
         (false, "grid") => Display::Grid,
@@ -3713,7 +4676,17 @@ pub fn parse_display(value: &str) -> Option<Display> {
         (true, "flow-root") => Display::InlineBlock,
         (true, _) => Display::Inline,
         (false, _) => Display::Block,
-    })
+    };
+    // `inline flow-root` is `inline-block`, which the enum keeps. `block
+    // flow-root` and `list-item` fold into `Block`/`Inline`.
+    let modifier = if list_item {
+        DisplayModifier::ListItem
+    } else if display == Display::Block && inner == Some("flow-root") {
+        DisplayModifier::FlowRoot
+    } else {
+        DisplayModifier::None
+    };
+    Some((display, modifier))
 }
 
 #[cfg(test)]
@@ -3769,8 +4742,8 @@ mod tests {
             // Legacy keywords are unchanged.
             ("inline-block", Some(Display::InlineBlock)),
             ("none", Some(Display::None)),
-            // Unsupported or invalid: still ignored.
-            ("contents", None),
+            ("contents", Some(Display::Contents)),
+            // Invalid: still ignored.
             ("block block", None),
             ("flex list-item", None),
             ("block wobble", None),
@@ -3779,6 +4752,113 @@ mod tests {
         for (value, want) in cases {
             assert_eq!(parse_display(value), *want, "display: {value:?}");
         }
+    }
+
+    /// Z-plan C3: the keyword `getComputedStyle` reads for a `display` the
+    /// layout enum folds (Chromium 143's serialisation).
+    #[test]
+    fn display_keyword_puts_back_what_the_layout_enum_folds() {
+        let cases: &[(&str, &str)] = &[
+            ("list-item", "list-item"),
+            ("block flow list-item", "list-item"),
+            ("inline list-item", "inline list-item"),
+            ("flow-root", "flow-root"),
+            ("block flow-root", "flow-root"),
+            ("inline flow-root", "inline-block"),
+            ("inline-block", "inline-block"),
+            ("block flow", "block"),
+            ("inline flex", "inline-flex"),
+            ("table-cell", "table-cell"),
+            ("table-header-group", "table-header-group"),
+            ("contents", "contents"),
+            ("none", "none"),
+        ];
+        for (value, want) in cases {
+            let (display, modifier) = parse_display_modifier(value).expect(value);
+            let style = ComputedStyle {
+                display,
+                display_modifier: modifier,
+                ..Default::default()
+            };
+            assert_eq!(style.display_keyword(), *want, "display: {value:?}");
+        }
+        // The modifier only applies with the outer display it was parsed
+        // with: an `li` that became flex or none reads that.
+        for display in [Display::Flex, Display::None, Display::TableCell] {
+            let style = ComputedStyle {
+                display,
+                display_modifier: DisplayModifier::ListItem,
+                ..Default::default()
+            };
+            assert_eq!(style.display_keyword(), display.css_keyword());
+        }
+        let webkit = ComputedStyle {
+            webkit_box: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(webkit.display_keyword(), "-webkit-box");
+    }
+
+    #[test]
+    fn webkit_line_clamp_needs_webkit_box_vertical_orient_and_a_count() {
+        assert_eq!(parse_webkit_box_display("-webkit-box"), Some(false));
+        assert_eq!(parse_webkit_box_display(" -WEBKIT-INLINE-BOX "), Some(true));
+        assert_eq!(parse_webkit_box_display("flex"), None);
+        assert_eq!(parse_webkit_line_clamp("2"), Some(Some(2)));
+        assert_eq!(parse_webkit_line_clamp("none"), Some(None));
+        for bad in ["0", "-1", "1.5", "2px", ""] {
+            assert_eq!(parse_webkit_line_clamp(bad), None, "{bad:?}");
+        }
+
+        let mut s = ComputedStyle::new();
+        s.webkit_box = Some(false);
+        s.webkit_box_orient_vertical = true;
+        s.webkit_line_clamp = Some(2);
+        assert_eq!(s.line_clamp(), Some(2));
+        s.display = Display::Flex;
+        s.apply_line_clamp_display();
+        assert_eq!(
+            s.display,
+            Display::Block,
+            "a clamped -webkit-box is a block container"
+        );
+        s.webkit_box = Some(true);
+        s.apply_line_clamp_display();
+        assert_eq!(s.display, Display::InlineBlock);
+
+        // Any one of the three missing: no clamp, display untouched.
+        for (webkit_box, vertical, count) in [
+            (None, true, Some(2)),
+            (Some(false), false, Some(2)),
+            (Some(false), true, None),
+        ] {
+            let mut s = ComputedStyle::new();
+            s.display = Display::Inline;
+            (
+                s.webkit_box,
+                s.webkit_box_orient_vertical,
+                s.webkit_line_clamp,
+            ) = (webkit_box, vertical, count);
+            assert_eq!(s.line_clamp(), None);
+            s.apply_line_clamp_display();
+            assert_eq!(s.display, Display::Inline);
+        }
+    }
+
+    #[test]
+    fn display_blockifies_inline_level_and_table_internal_values() {
+        assert_eq!(Display::Inline.blockified(), Display::Block);
+        assert_eq!(Display::InlineBlock.blockified(), Display::Block);
+        assert_eq!(Display::InlineFlex.blockified(), Display::Flex);
+        assert_eq!(Display::InlineGrid.blockified(), Display::Grid);
+        assert_eq!(Display::InlineTable.blockified(), Display::Table);
+        assert_eq!(Display::TableCell.blockified(), Display::Block);
+        assert_eq!(Display::TableRow.blockified(), Display::Block);
+        assert_eq!(Display::TableCaption.blockified(), Display::Block);
+        assert_eq!(Display::Contents.blockified(), Display::Contents);
+        assert_eq!(Display::None.blockified(), Display::None);
+        assert_eq!(Display::Block.blockified(), Display::Block);
+        assert_eq!(Display::Flex.blockified(), Display::Flex);
     }
 
     #[test]
@@ -3848,10 +4928,11 @@ mod tests {
             parse_border_spacing("10px 4px"),
             Some((Length::Px(10.0), Length::Px(4.0)))
         );
-        assert_eq!(parse_border_spacing("0"), Some((Length::Zero, Length::Zero)));
+        // A bare `0` is `0px` (CH2.B14).
+        assert_eq!(parse_border_spacing("0"), Some((Length::Px(0.0), Length::Px(0.0))));
         assert_eq!(
             parse_border_spacing(" 0.2em 0 "),
-            Some((Length::Em(0.2), Length::Zero))
+            Some((Length::Em(0.2), Length::Px(0.0)))
         );
         // Negative lengths, percentages, keywords and three values are invalid.
         for bad in ["-1px", "10%", "auto", "1px 2px 3px", "", "red"] {
@@ -4421,6 +5502,152 @@ mod custom_properties_collapse_tests {
             assert!(cur.depth < CustomProperties::MAX_LAYERS, "layer {i}: depth {}", cur.depth);
             assert_eq!(cur.to_map(), flat, "layer {i}");
         }
+    }
+}
+
+/// #833 RD3: which opacity frame a finished animation paints. The engine
+/// companion is headless-only; this pure settle pin runs on every
+/// `cargo test -p rustkit-css --lib`.
+#[cfg(test)]
+mod settle_animation_opacity_tests {
+    use super::*;
+    use rustkit_cssparser::KeyframesAst;
+
+    #[test]
+    fn settle_animation_opacity_picks_the_frame_the_fill_holds() {
+        let sheets = |first: Option<f32>, last: Option<f32>| -> [Stylesheet; 1] {
+            [Stylesheet {
+                keyframes: vec![KeyframesAst {
+                    name: "x".into(),
+                    first,
+                    last,
+                    frames: Vec::new(),
+                }],
+                ..Default::default()
+            }]
+        };
+        let settle = |fill: AnimationFillMode,
+                      direction: AnimationDirection,
+                      count: AnimationIterationCount,
+                      opacity: f32,
+                      frames: &[Stylesheet]| {
+            let mut style = ComputedStyle::new();
+            style.opacity = opacity;
+            style.animation_name = "x".into();
+            style.animation_fill_mode = fill;
+            style.animation_direction = direction;
+            style.animation_iteration_count = count;
+            style.settle_animation_opacity(frames);
+            style.animation_settled_opacity
+        };
+
+        let fade = sheets(Some(0.0), Some(1.0));
+        assert_eq!(
+            settle(
+                AnimationFillMode::None,
+                AnimationDirection::Normal,
+                AnimationIterationCount::Infinite,
+                0.75,
+                &fade
+            ),
+            Some(0.0),
+            "infinite paints the first keyframe"
+        );
+        assert_eq!(
+            settle(
+                AnimationFillMode::Forwards,
+                AnimationDirection::Normal,
+                AnimationIterationCount::One,
+                0.0,
+                &fade
+            ),
+            Some(1.0),
+            "forwards holds the last"
+        );
+        assert_eq!(
+            settle(
+                AnimationFillMode::Both,
+                AnimationDirection::Normal,
+                AnimationIterationCount::One,
+                0.0,
+                &fade
+            ),
+            Some(1.0),
+            "both holds the last"
+        );
+        // No forward fill: settle on the box's own value (fade-in idiom).
+        assert_eq!(
+            settle(
+                AnimationFillMode::None,
+                AnimationDirection::Normal,
+                AnimationIterationCount::One,
+                0.5,
+                &fade
+            ),
+            Some(0.5)
+        );
+        // Alternate + ceil even/odd (incl. fractional longhand counts).
+        assert_eq!(
+            settle(
+                AnimationFillMode::Forwards,
+                AnimationDirection::Alternate,
+                AnimationIterationCount::Count(2.0),
+                1.0,
+                &fade
+            ),
+            Some(0.0),
+            "2 alternate runs land on start"
+        );
+        assert_eq!(
+            settle(
+                AnimationFillMode::Forwards,
+                AnimationDirection::Alternate,
+                AnimationIterationCount::Count(2.5),
+                1.0,
+                &fade
+            ),
+            Some(1.0),
+            "2.5 alternate runs ceil to odd → end"
+        );
+        assert_eq!(
+            settle(
+                AnimationFillMode::Forwards,
+                AnimationDirection::AlternateReverse,
+                AnimationIterationCount::Count(2.0),
+                1.0,
+                &fade
+            ),
+            Some(1.0),
+            "alternate-reverse start is last; even lands there"
+        );
+
+        // Unsettleable: field stays None so layout paints at full opacity.
+        let mut multi = ComputedStyle::new();
+        multi.opacity = 0.0;
+        multi.animation_name = "a, b".into();
+        multi.animation_fill_mode = AnimationFillMode::Forwards;
+        multi.settle_animation_opacity(&fade);
+        assert_eq!(multi.animation_settled_opacity, None);
+
+        let mut missing = ComputedStyle::new();
+        missing.opacity = 0.0;
+        missing.animation_name = "nosuch".into();
+        missing.animation_fill_mode = AnimationFillMode::Forwards;
+        missing.settle_animation_opacity(&fade);
+        assert_eq!(missing.animation_settled_opacity, None);
+
+        // End sets no opacity → hold the box's own.
+        let no_end = sheets(Some(0.2), None);
+        assert_eq!(
+            settle(
+                AnimationFillMode::Forwards,
+                AnimationDirection::Normal,
+                AnimationIterationCount::One,
+                0.75,
+                &no_end
+            ),
+            Some(0.75)
+        );
     }
 }
 

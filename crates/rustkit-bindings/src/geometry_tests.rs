@@ -21,6 +21,7 @@ fn geom(x: f32, y: f32, w: f32, h: f32) -> BoxGeometry {
         scroll_width: w,
         scroll_height: h,
         position: 0,
+        ..Default::default()
     }
 }
 
@@ -130,6 +131,40 @@ fn offset_top_and_left_are_from_the_offset_parent() {
 }
 
 #[test]
+fn a_static_element_stops_at_a_table_cell_and_a_positioned_one_does_not() {
+    let b = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+    let doc = Rc::new(
+        Document::parse_html(
+            "<html><body><table id=tb><tr id=tr><td id=c><p id=s></p><p id=r></p></td></tr></table></body></html>",
+        )
+        .unwrap(),
+    );
+    b.set_document(doc.clone()).unwrap();
+    let mut m = HashMap::new();
+    m.insert(id(&doc, "tb"), geom(5.0, 5.0, 100.0, 100.0));
+    m.insert(id(&doc, "tr"), geom(5.0, 5.0, 100.0, 100.0));
+    let mut cell = geom(5.0, 5.0, 100.0, 100.0);
+    cell.border_left = 2.0;
+    cell.border_top = 2.0;
+    m.insert(id(&doc, "c"), cell);
+    m.insert(id(&doc, "s"), geom(12.0, 13.0, 10.0, 10.0));
+    let mut relative = geom(12.0, 33.0, 10.0, 10.0);
+    relative.position = 1;
+    m.insert(id(&doc, "r"), relative);
+    b.set_geometry(m);
+    assert_eq!(
+        ev(&b, "var e = document.getElementById('s'); [e.offsetParent.id, e.offsetLeft, e.offsetTop].join()"),
+        "c,5,6"
+    );
+    assert_eq!(ev(&b, "document.getElementById('c').offsetParent.id"), "tb");
+    assert_eq!(ev(&b, "document.getElementById('tr').offsetParent.id"), "tb");
+    assert_eq!(
+        ev(&b, "var e = document.getElementById('r'); [e.offsetParent === document.body, e.offsetLeft, e.offsetTop].join()"),
+        "true,12,33"
+    );
+}
+
+#[test]
 fn a_fixed_element_has_no_offset_parent() {
     let (b, doc) = bound();
     let mut m = HashMap::new();
@@ -150,6 +185,70 @@ fn geometry_is_replaced_not_merged_by_the_next_publish() {
     assert_eq!(ev(&b, "document.getElementById('outer').offsetWidth"), "10");
     b.set_geometry(HashMap::new());
     assert_eq!(ev(&b, "document.getElementById('outer').offsetWidth"), "0");
+}
+
+#[test]
+fn a_geometry_source_clears_old_maps_builds_once_and_serves_later_reads() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let (b, doc) = bound();
+    let outer = id(&doc, "outer");
+    let mut stale = HashMap::new();
+    stale.insert(outer, geom(0.0, 0.0, 10.0, 10.0));
+    b.set_geometry(stale);
+    let mut stale_styles = HashMap::new();
+    stale_styles.insert(outer, styles(&[("display", "flex")]));
+    b.set_computed_styles(stale_styles);
+    assert_eq!(ev(&b, "document.getElementById('outer').offsetWidth"), "10");
+
+    let builds = Arc::new(AtomicUsize::new(0));
+    let counted = builds.clone();
+    b.set_geometry_source(Box::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        let mut geometry = HashMap::new();
+        geometry.insert(outer, geom(0.0, 0.0, 40.0, 40.0));
+        let mut computed = HashMap::new();
+        computed.insert(outer, styles(&[("display", "block")]));
+        (geometry, computed)
+    }));
+    assert_eq!(b.geometry_builds(), 0);
+    // Publishing a source drops the previous maps: the first read must not
+    // see width 10 / display flex from the eager publish above.
+    assert_eq!(ev(&b, "document.getElementById('outer').offsetWidth"), "40");
+    assert_eq!(
+        ev(&b, "getComputedStyle(document.getElementById('outer')).display"),
+        "block"
+    );
+    assert_eq!(b.geometry_builds(), 1);
+    assert_eq!(builds.load(Ordering::SeqCst), 1);
+    assert_eq!(ev(&b, "document.getElementById('outer').offsetWidth"), "40");
+    assert_eq!(
+        b.geometry_builds(),
+        1,
+        "later reads share the one build"
+    );
+}
+
+#[test]
+fn set_geometry_drops_a_pending_source_without_building_it() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let (b, doc) = bound();
+    let outer = id(&doc, "outer");
+    let builds = Arc::new(AtomicUsize::new(0));
+    let counted = builds.clone();
+    b.set_geometry_source(Box::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        (HashMap::new(), HashMap::new())
+    }));
+    let mut eager = HashMap::new();
+    eager.insert(outer, geom(0.0, 0.0, 22.0, 22.0));
+    b.set_geometry(eager);
+    assert_eq!(ev(&b, "document.getElementById('outer').offsetWidth"), "22");
+    assert_eq!(b.geometry_builds(), 0);
+    assert_eq!(builds.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -190,7 +289,10 @@ fn getcomputedstyle_reads_the_published_style() {
         ev(&b, "var c = getComputedStyle(document.getElementById('outer')); [c.display, c.getPropertyValue('color'), c.fontSize, c['margin-top'], c.marginTop, c.cssFloat, c.getPropertyValue('nope') === ''].join()"),
         "flex,rgb(1, 2, 3),20px,4px,4px,left,true"
     );
-    assert_eq!(ev(&b, "var c = getComputedStyle(document.getElementById('outer')); [c.length, c.item(0), typeof c.getPropertyPriority].join()"), "5,color,function");
+    // The published rows, the unset radii and the initial values of every
+    // longhand the engine serializes (`COMPUTED_INITIAL`); shorthands and
+    // empty values are not listed, `-webkit-` names come last, as in Chromium.
+    assert_eq!(ev(&b, "var c = getComputedStyle(document.getElementById('outer')); [c.length, c.item(0), typeof c.getPropertyPriority].join()"), "125,align-content,function");
     assert_eq!(
         ev(&b, "var c = getComputedStyle(document.getElementById('outer')); try { c.setProperty('color', 'red'); 'no throw' } catch (e) { e.name }"),
         "NoModificationAllowedError"
@@ -222,8 +324,38 @@ fn an_element_with_no_box_after_a_layout_is_display_none() {
     m.insert(id(&doc, "outer"), geom(0.0, 0.0, 10.0, 10.0));
         b.set_geometry(m);
     assert_eq!(
-        ev(&b, "var c = getComputedStyle(document.getElementById('gone')); [c.display, c.visibility].join()"),
-        "none,visible"
+        ev(&b, "var c = getComputedStyle(document.getElementById('gone')); [c.display, c.visibility, c.borderRadius].join()"),
+        "none,visible,0px"
+    );
+}
+
+#[test]
+fn an_unset_border_radius_is_zero_px_and_a_non_finite_box_stays_finite() {
+    let (b, doc) = bound();
+    let mut m = HashMap::new();
+    m.insert(id(&doc, "outer"), geom(f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 40.0));
+    m.insert(id(&doc, "inner"), geom(10.0, 20.0, 40.0, 20.0));
+    b.set_geometry(m);
+    assert_eq!(
+        ev(&b, "var c = getComputedStyle(document.getElementById('inner')); [c.borderRadius, c.borderTopLeftRadius, c.borderTopRightRadius, c.borderBottomRightRadius, c.borderBottomLeftRadius, Number.parseInt(c.borderRadius)].join()"),
+        "0px,0px,0px,0px,0px,0"
+    );
+    assert_eq!(
+        ev(&b, "var r = document.getElementById('outer').getBoundingClientRect(); [r.x, r.y, r.width, r.height, r.top, r.left, r.right, r.bottom].every(Number.isFinite)"),
+        "true"
+    );
+    assert_eq!(
+        ev(&b, "var r = document.getElementById('outer').getBoundingClientRect(); [r.x, r.y, r.width, r.height].join()"),
+        "0,0,0,40"
+    );
+    // The radius is a finite offset, so the point query does not throw.
+    assert_eq!(
+        ev(&b, "var e = document.elementFromPoint(20, 30); var half = Number.parseInt(getComputedStyle(e).borderRadius) / 2; document.elementFromPoint(20, 30 + half).id"),
+        "inner"
+    );
+    assert_eq!(
+        ev(&b, "var name = ''; try { document.elementFromPoint(NaN, 0); } catch (e) { name = e.name; } name"),
+        "TypeError"
     );
 }
 

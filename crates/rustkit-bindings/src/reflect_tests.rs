@@ -80,8 +80,8 @@ fn anchor_iframe_and_form_reflect() {
     assert_eq!(ev(&b, "var a = document.getElementById('a'); [a.target, a.download, a.text].join()"), "_blank,f.txt,link");
     assert_eq!(ev(&b, "a.target = '_self'; a.getAttribute('target')"), "_self");
     assert_eq!(ev(&b, "var fr = document.getElementById('fr'); [fr.src, fr.name, fr.sandbox.length, fr.sandbox.contains('allow-forms'), String(fr.contentWindow), String(fr.contentDocument)].join()"), "https://example.test/sub/frame.html,nm,2,true,null,null");
-    assert_eq!(ev(&b, "var f = document.getElementById('f'); [f.action, f.method, f.enctype, f.noValidate, f.autocomplete].join()"), "submit,post,application/x-www-form-urlencoded,false,on");
-    // form.action is web_forms.js's (the attribute as written); not overridden here.
+    assert_eq!(ev(&b, "var f = document.getElementById('f'); [f.action, f.method, f.enctype, f.noValidate, f.autocomplete].join()"), "https://example.test/sub/submit,post,application/x-www-form-urlencoded,false,on");
+    // form.action is the attribute resolved against the base URL (HTML §4.10.18.6).
     assert_eq!(ev(&b, "var f2 = document.getElementById('f2'); [f2.action === '' || f2.action === document.URL, f2.method].join()"), "true,get");
 }
 

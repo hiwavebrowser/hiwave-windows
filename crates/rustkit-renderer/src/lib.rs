@@ -49,6 +49,12 @@ use thiserror::Error;
 use wgpu::util::DeviceExt;
 
 pub mod dither;
+mod cull;
+mod frame_stats;
+mod glyph_grid;
+#[cfg(test)]
+mod scroll_cost_tests;
+pub use frame_stats::FrameStats;
 mod glyph;
 mod pipeline;
 pub mod screenshot;
@@ -86,8 +92,28 @@ pub enum RendererError {
 
 // ==================== Constants ====================
 
-/// Maximum GPU buffer size (256 MB) - prevents OOM on pathological inputs
+/// Maximum GPU buffer size (256 MB) - prevents OOM on pathological inputs.
+/// A batch past it (or past the device's own limit) is drawn in pieces
+/// (`Renderer::draw_split`), so no page fails the frame.
 const MAX_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
+/// A batch is flushed once one of its buffers reaches this size, which
+/// bounds the memory a frame holds. A single command can still go past it
+/// (2.3 M characters on one line is 294 MB of glyph quads); the draw splits
+/// that.
+const MAX_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+
+fn is_decoration(cmd: &DisplayCommand) -> bool {
+    matches!(cmd, DisplayCommand::TextDecoration { .. })
+}
+
+/// True when the decoration at `commands[i]` belongs to a `Text`: the
+/// first command before it that is not a decoration is text.
+fn follows_text(commands: &[DisplayCommand], i: usize) -> bool {
+    matches!(
+        commands[..i].iter().rev().find(|c| !is_decoration(c)),
+        Some(DisplayCommand::Text { .. })
+    )
+}
 
 // ==================== Vertex Types ====================
 
@@ -381,10 +407,10 @@ pub struct Renderer {
     // Blit pipeline for copying RGBA textures (unlike texture_pipeline which treats R as alpha)
     blit_pipeline: wgpu::RenderPipeline,
     color_glyph_pipeline: wgpu::RenderPipeline,
+    // CSS `filter` colour-matrix layer composite
+    filter_matrix_pipeline: pipeline::FilterMatrixPipeline,
     // Image pipeline: the blit shader composited source-over (straight alpha)
     image_pipeline: wgpu::RenderPipeline,
-    // Blit pipeline for Rgba8Unorm targets (for blitting to filter textures)
-    blit_pipeline_rgba: wgpu::RenderPipeline,
 
     // Backdrop filter pipelines (compute shaders for blur + color filters)
     backdrop_filter_pipelines: pipeline::BackdropFilterPipelines,
@@ -432,6 +458,41 @@ pub struct Renderer {
     /// Stack of 2D transform matrices and their origins.
     /// Each entry is (matrix [a,b,c,d,e,f], origin (x,y)).
     transform_stack: Vec<([f32; 6], (f32, f32))>,
+    /// The page's scroll offset, applied while a list is executed (see
+    /// `set_scroll_offset`).
+    scroll_offset: (f32, f32),
+    /// What the open `PushWindowSticky` runs have moved things by, and that
+    /// sum outside the innermost of them.
+    window_sticky: (f32, f32),
+    window_sticky_outer: Vec<(f32, f32)>,
+    /// `window_sticky` outside the open `PushViewportFixed` run.
+    window_sticky_outside_fixed: (f32, f32),
+    /// Address and length of the last list `execute` drew, so a test can
+    /// tell the list it handed over was drawn in place and not copied.
+    last_list: (usize, usize),
+    /// Counters of the frame being drawn (see `FrameStats`).
+    stats: FrameStats,
+    submits: frame_stats::SubmitCounter,
+    /// `set_measure`: time the overlap check and count off-screen quads.
+    measure: bool,
+    /// The batched glyph quads, by screen cell, for the overlap check.
+    glyph_grid: glyph_grid::GlyphGrid,
+    /// The largest vertex or index buffer a batch draw creates: the
+    /// device's `max_buffer_size`, at most `MAX_BUFFER_SIZE`. A larger
+    /// batch is drawn in pieces (`draw_split`).
+    max_buffer_bytes: u64,
+    /// A batch is flushed between commands once one of its buffers reaches
+    /// this (`MAX_BATCH_BYTES`; tests lower it).
+    max_batch_bytes: u64,
+    /// Tests: draw without culling and answer the order check by a linear
+    /// scan, the reference the fast path is compared against.
+    #[cfg(test)]
+    reference: bool,
+    /// Open `PushOpacity` scopes on the paths that fade per command.
+    opacity_scopes: OpacityScopes,
+    /// Layer textures for opacity scopes, by nesting depth.
+    opacity_layer_pool: Vec<(wgpu::Texture, wgpu::TextureView)>,
+    opacity_layer_size: (u32, u32),
 
     // Caches
     texture_cache: TextureCache,
@@ -445,12 +506,27 @@ pub struct Renderer {
     intermediate_texture: Option<wgpu::Texture>,
     intermediate_view: Option<wgpu::TextureView>,
     intermediate_size: (u32, u32),
+    /// `paint_backdrop`'s two scratch textures and their size.
+    backdrop_scratch: Vec<(wgpu::Texture, wgpu::TextureView)>,
+    backdrop_scratch_size: (u32, u32),
 
     // Sampler for drawing filtered textures back to screen
     filter_sampler: wgpu::Sampler,
 
     // Surface format for creating compatible textures
     surface_format: wgpu::TextureFormat,
+    /// What `flush_to` clears to. The page's canvas colour; white until a
+    /// frame sets it. The display list covers the viewport it was laid out
+    /// for, and this colour is what a larger surface shows past that.
+    clear_color: wgpu::Color,
+    /// A transparent target (CH3.A3c, the RustKit chrome over the page):
+    /// every first pass clears to (0, 0, 0, 0) instead of the canvas or
+    /// white. Every pipeline already leaves premultiplied colour in its
+    /// target (straight sources through `ALPHA_BLENDING`, whose alpha is
+    /// `One, OneMinusSrcAlpha`; premultiplied ones through
+    /// `PREMULTIPLIED_ALPHA_BLENDING`), so starting from transparent the
+    /// frame is premultiplied, as Core Animation composites it.
+    transparent: bool,
 }
 
 /// A stacking context for z-ordering.
@@ -604,18 +680,17 @@ impl Renderer {
             &texture_bind_group_layout,
         );
 
-        // Image pipeline: blit shader + source-over blend for straight alpha.
-        let image_pipeline = pipeline::create_image_pipeline(
+        let filter_matrix_pipeline = pipeline::create_filter_matrix_pipeline(
             &device,
             surface_format,
             &uniform_bind_group_layout,
             &texture_bind_group_layout,
         );
 
-        // Create blit pipeline for Rgba8Unorm targets (blitting to filter textures)
-        let blit_pipeline_rgba = pipeline::create_blit_pipeline(
+        // Image pipeline: blit shader + source-over blend for straight alpha.
+        let image_pipeline = pipeline::create_image_pipeline(
             &device,
-            wgpu::TextureFormat::Rgba8Unorm,
+            surface_format,
             &uniform_bind_group_layout,
             &texture_bind_group_layout,
         );
@@ -666,6 +741,7 @@ impl Renderer {
             );
         }
         let gpu_gradients_enabled = false;
+        let max_buffer_bytes = device.limits().max_buffer_size.min(MAX_BUFFER_SIZE);
 
         Ok(Self {
             device,
@@ -675,8 +751,8 @@ impl Renderer {
             _texture_pipeline_rgba: texture_pipeline_rgba,
             blit_pipeline,
             color_glyph_pipeline,
+            filter_matrix_pipeline,
             image_pipeline,
-            blit_pipeline_rgba,
             backdrop_filter_pipelines,
             gradient_pipeline,
             gpu_gradients_enabled,
@@ -699,30 +775,62 @@ impl Renderer {
             clip_pieces: Vec::new(),
             stacking_contexts: Vec::new(),
             transform_stack: Vec::new(),
+            scroll_offset: (0.0, 0.0),
+            window_sticky: (0.0, 0.0),
+            window_sticky_outer: Vec::new(),
+            window_sticky_outside_fixed: (0.0, 0.0),
+            last_list: (0, 0),
+            stats: FrameStats::default(),
+            submits: Default::default(),
+            measure: false,
+            glyph_grid: Default::default(),
+            max_buffer_bytes,
+            max_batch_bytes: MAX_BATCH_BYTES,
+            #[cfg(test)]
+            reference: false,
+            opacity_scopes: OpacityScopes::default(),
+            opacity_layer_pool: Vec::new(),
+            opacity_layer_size: (0, 0),
             texture_cache,
             glyph_cache,
             texture_bind_group_layout,
             intermediate_texture: None,
             intermediate_view: None,
             intermediate_size: (0, 0),
+            backdrop_scratch: Vec::new(),
+            backdrop_scratch_size: (0, 0),
             filter_sampler,
             surface_format,
+            clear_color: wgpu::Color::WHITE,
+            transparent: false,
         })
     }
 
-    /// Validate buffer size to prevent GPU memory exhaustion.
-    /// Returns Ok(size) if size is within limits, Err otherwise.
-    fn validate_buffer_size(&self, size: u64, label: &str) -> Result<u64, RendererError> {
-        if size > MAX_BUFFER_SIZE {
-            tracing::error!(
-                "Buffer '{}' size {} bytes exceeds maximum {} bytes",
-                label,
-                size,
-                MAX_BUFFER_SIZE
-            );
-            return Err(RendererError::BufferTooLarge(size, MAX_BUFFER_SIZE));
+    /// Draw frames into a transparent target (CH3.A3c): see `transparent`.
+    pub fn set_transparent(&mut self, transparent: bool) {
+        self.transparent = transparent;
+    }
+
+    /// What a frame's first pass clears to on the paths that did not take
+    /// the canvas colour (gradients, opacity groups, backdrop filters):
+    /// white, as before, unless the target is transparent.
+    fn first_clear(&self) -> wgpu::Color {
+        if self.transparent {
+            wgpu::Color::TRANSPARENT
+        } else {
+            wgpu::Color::WHITE
         }
-        Ok(size)
+    }
+
+    /// The colour a frame clears to. The page's canvas, so a surface that
+    /// is wider than the layout shows that colour rather than white.
+    pub fn set_clear_color(&mut self, rgba: [f64; 4]) {
+        self.clear_color = wgpu::Color {
+            r: rgba[0],
+            g: rgba[1],
+            b: rgba[2],
+            a: rgba[3],
+        };
     }
 
     /// Set the viewport size.
@@ -749,7 +857,7 @@ impl Renderer {
                 label: Some("Screenshot Copy Encoder"),
             });
         readback.copy_from_texture(&mut encoder, &texture);
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
 
         let mut pixels = readback
             .read_data_sync(&self.device)
@@ -872,6 +980,8 @@ impl Renderer {
     /// Flush current batched vertices to the target without clearing.
     /// Used for incremental rendering when backdrop filters are present.
     fn flush_batches_to(&mut self, target: &wgpu::TextureView, clear: bool) -> Result<(), RendererError> {
+        self.settle_opacity();
+        self.tally_flush();
         if self.color_vertices.is_empty()
             && self.texture_vertices.is_empty()
             && self.image_vertices.is_empty()
@@ -886,7 +996,7 @@ impl Renderer {
 
         {
             let load_op = if clear {
-                wgpu::LoadOp::Clear(wgpu::Color::WHITE)
+                wgpu::LoadOp::Clear(self.first_clear())
             } else {
                 wgpu::LoadOp::Load
             };
@@ -908,30 +1018,15 @@ impl Renderer {
 
             // Draw solid colors
             if !self.color_vertices.is_empty() {
-                // Validate buffer sizes before allocation
-                let vertex_size = (self.color_vertices.len() * std::mem::size_of::<ColorVertex>()) as u64;
-                let index_size = (self.color_indices.len() * std::mem::size_of::<u32>()) as u64;
-
-                self.validate_buffer_size(vertex_size, "Color Vertex Buffer")?;
-                self.validate_buffer_size(index_size, "Color Index Buffer")?;
-
-                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Color Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&self.color_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-
-                let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Color Index Buffer"),
-                    contents: bytemuck::cast_slice(&self.color_indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-
                 render_pass.set_pipeline(&self.color_pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..self.color_indices.len() as u32, 0, 0..1);
+                self.draw_split(
+                    &mut render_pass,
+                    "Color",
+                    &self.color_vertices,
+                    &self.color_indices,
+                    0..self.color_indices.len(),
+                );
             }
 
             // Draw images (own textures) between backgrounds and text
@@ -939,38 +1034,23 @@ impl Renderer {
 
             // Draw textured quads
             if !self.texture_vertices.is_empty() {
-                // Validate buffer sizes before allocation
-                let vertex_size = (self.texture_vertices.len() * std::mem::size_of::<TextureVertex>()) as u64;
-                let index_size = (self.texture_indices.len() * std::mem::size_of::<u32>()) as u64;
-
-                self.validate_buffer_size(vertex_size, "Texture Vertex Buffer")?;
-                self.validate_buffer_size(index_size, "Texture Index Buffer")?;
-
-                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Texture Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&self.texture_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-
-                let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Texture Index Buffer"),
-                    contents: bytemuck::cast_slice(&self.texture_indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-
                 render_pass.set_pipeline(&self.texture_pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 render_pass.set_bind_group(1, self.glyph_cache.bind_group(), &[]);
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..self.texture_indices.len() as u32, 0, 0..1);
+                self.draw_split(
+                    &mut render_pass,
+                    "Texture",
+                    &self.texture_vertices,
+                    &self.texture_indices,
+                    0..self.texture_indices.len(),
+                );
             }
 
             // Color glyphs (emoji) drawn on top via the RGBA atlas + blit pipeline.
             self.draw_color_glyph_batch(&mut render_pass);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
 
         // Clear batches after flushing
         self.color_vertices.clear();
@@ -979,15 +1059,19 @@ impl Renderer {
         self.texture_indices.clear();
         self.color_glyph_vertices.clear();
         self.color_glyph_indices.clear();
+        self.glyph_grid.clear();
         self.image_vertices.clear();
         self.image_indices.clear();
         self.image_runs.clear();
+        self.opacity_scopes.rebase();
         Ok(())
     }
 
     /// Flush batched vertices before rendering a GPU gradient.
     /// This ensures correct z-order: batched content renders before the gradient.
     fn flush_batches_for_gradient(&mut self, target: &wgpu::TextureView, clear: bool) -> Result<(), RendererError> {
+        self.settle_opacity();
+        self.tally_flush();
         if self.color_vertices.is_empty()
             && self.texture_vertices.is_empty()
             && self.image_vertices.is_empty()
@@ -1004,7 +1088,7 @@ impl Renderer {
                             view: target,
                             resolve_target: None,
                             ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                                load: wgpu::LoadOp::Clear(self.first_clear()),
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
@@ -1013,7 +1097,7 @@ impl Renderer {
                         occlusion_query_set: None,
                     });
                 }
-                self.queue.submit(std::iter::once(encoder.finish()));
+                self.submit(encoder);
             }
             return Ok(());
         }
@@ -1024,7 +1108,7 @@ impl Renderer {
 
         {
             let load_op = if clear {
-                wgpu::LoadOp::Clear(wgpu::Color::WHITE)
+                wgpu::LoadOp::Clear(self.first_clear())
             } else {
                 wgpu::LoadOp::Load
             };
@@ -1046,30 +1130,15 @@ impl Renderer {
 
             // Draw solid colors
             if !self.color_vertices.is_empty() {
-                // Validate buffer sizes before allocation
-                let vertex_size = (self.color_vertices.len() * std::mem::size_of::<ColorVertex>()) as u64;
-                let index_size = (self.color_indices.len() * std::mem::size_of::<u32>()) as u64;
-
-                self.validate_buffer_size(vertex_size, "Color Vertex Buffer")?;
-                self.validate_buffer_size(index_size, "Color Index Buffer")?;
-
-                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Color Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&self.color_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-
-                let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Color Index Buffer"),
-                    contents: bytemuck::cast_slice(&self.color_indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-
                 render_pass.set_pipeline(&self.color_pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..self.color_indices.len() as u32, 0, 0..1);
+                self.draw_split(
+                    &mut render_pass,
+                    "Color",
+                    &self.color_vertices,
+                    &self.color_indices,
+                    0..self.color_indices.len(),
+                );
             }
 
             // Draw images (own textures) between backgrounds and text
@@ -1077,38 +1146,23 @@ impl Renderer {
 
             // Draw textured quads
             if !self.texture_vertices.is_empty() {
-                // Validate buffer sizes before allocation
-                let vertex_size = (self.texture_vertices.len() * std::mem::size_of::<TextureVertex>()) as u64;
-                let index_size = (self.texture_indices.len() * std::mem::size_of::<u32>()) as u64;
-
-                self.validate_buffer_size(vertex_size, "Texture Vertex Buffer")?;
-                self.validate_buffer_size(index_size, "Texture Index Buffer")?;
-
-                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Texture Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&self.texture_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-
-                let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Texture Index Buffer"),
-                    contents: bytemuck::cast_slice(&self.texture_indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-
                 render_pass.set_pipeline(&self.texture_pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 render_pass.set_bind_group(1, self.glyph_cache.bind_group(), &[]);
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..self.texture_indices.len() as u32, 0, 0..1);
+                self.draw_split(
+                    &mut render_pass,
+                    "Texture",
+                    &self.texture_vertices,
+                    &self.texture_indices,
+                    0..self.texture_indices.len(),
+                );
             }
 
             // Color glyphs (emoji) drawn on top via the RGBA atlas + blit pipeline.
             self.draw_color_glyph_batch(&mut render_pass);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
 
         // Clear batches after flushing
         self.color_vertices.clear();
@@ -1117,240 +1171,131 @@ impl Renderer {
         self.texture_indices.clear();
         self.color_glyph_vertices.clear();
         self.color_glyph_indices.clear();
+        self.glyph_grid.clear();
         self.image_vertices.clear();
         self.image_indices.clear();
         self.image_runs.clear();
+        self.opacity_scopes.rebase();
         Ok(())
     }
 
-    /// Draw a textured quad from a filtered texture to the render target immediately.
-    /// This renders with a custom bind group, bypassing the batch system.
-    fn draw_filtered_texture_to(
-        &self,
-        texture_view: &wgpu::TextureView,
-        target: &wgpu::TextureView,
-        rect: Rect,
-    ) {
-        // Create bind group for this texture
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Filtered Texture Bind Group"),
-            layout: &self.texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.filter_sampler),
-                },
-            ],
-        });
+    /// Draw the lists that follow scrolled by `offset`: the list stays in
+    /// document coordinates and the whole of it is drawn inside one
+    /// translate by `-offset`, except a `position: fixed` run
+    /// (`PushViewportFixed` to `PopViewportFixed`), which is drawn inside
+    /// the opposite translate so it stays put in the window. Kept until
+    /// changed, like the viewport size; `(0, 0)` draws the list as it is.
+    ///
+    /// Before this, the engine built that list itself (`scrolled_commands`):
+    /// a copy of every command on every scrolled frame, 2.2M of them on
+    /// the Wikipedia portal.
+    pub fn set_scroll_offset(&mut self, offset: (f32, f32)) {
+        self.scroll_offset = offset;
+    }
 
-        // Create vertices for the quad - normalized tex coords to sample region
-        let x = rect.x;
-        let y = rect.y;
-        let w = rect.width;
-        let h = rect.height;
+    /// Address and length of the last list `execute` drew.
+    pub fn last_executed_list(&self) -> (*const DisplayCommand, usize) {
+        (self.last_list.0 as *const DisplayCommand, self.last_list.1)
+    }
 
-        // Calculate tex coords based on position in viewport
-        let (vw, vh) = self.viewport_size;
-        let u0 = rect.x / vw as f32;
-        let v0 = rect.y / vh as f32;
-        let u1 = (rect.x + rect.width) / vw as f32;
-        let v1 = (rect.y + rect.height) / vh as f32;
+    /// Counters of the last `execute` (see `FrameStats`).
+    pub fn last_frame_stats(&self) -> FrameStats {
+        self.stats
+    }
 
-        let white = [1.0, 1.0, 1.0, 1.0];
+    /// Turn on the costlier counters of `FrameStats` (overlap time,
+    /// off-screen quads). Off by default.
+    pub fn set_measure(&mut self, on: bool) {
+        self.measure = on;
+    }
 
-        let vertices = [
-            TextureVertex { position: [x, y], tex_coords: [u0, v0], color: white },
-            TextureVertex { position: [x + w, y], tex_coords: [u1, v0], color: white },
-            TextureVertex { position: [x + w, y + h], tex_coords: [u1, v1], color: white },
-            TextureVertex { position: [x, y + h], tex_coords: [u0, v1], color: white },
-        ];
-        let indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
+    /// True when `cmd` paints nothing inside the viewport where the current
+    /// transform puts it, so it can be skipped (see `cull`).
+    fn culled(&mut self, cmd: &DisplayCommand) -> bool {
+        let out = self.off_screen(cmd);
+        self.stats.culled += out as u64;
+        out
+    }
 
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Filtered Quad Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Filtered Quad Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Filtered Texture Encoder"),
-        });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Filtered Texture Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-
-            // Use blit_pipeline to properly sample RGBA texture
-            // (texture_pipeline treats red channel as alpha for glyph rendering)
-            render_pass.set_pipeline(&self.blit_pipeline);
-            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            render_pass.set_bind_group(1, &bind_group, &[]);
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..6, 0, 0..1);
+    /// `culled` without the count.
+    fn off_screen(&self, cmd: &DisplayCommand) -> bool {
+        #[cfg(test)]
+        if self.reference {
+            return false;
         }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    /// Create a bind group for backdrop filter compute shader operations.
-    fn create_filter_bind_group(
-        &self,
-        input_view: &wgpu::TextureView,
-        output_view: &wgpu::TextureView,
-    ) -> wgpu::BindGroup {
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Filter Bind Group"),
-            layout: &self.backdrop_filter_pipelines.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.backdrop_filter_pipelines.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(input_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(output_view),
-                },
-            ],
-        })
-    }
-
-    /// Run Gaussian blur on a texture using compute shaders.
-    /// Performs two passes: horizontal then vertical blur.
-    fn run_blur_compute(
-        &self,
-        source_view: &wgpu::TextureView,
-        intermediate_view: &wgpu::TextureView,
-        dest_view: &wgpu::TextureView,
-        width: u32,
-        height: u32,
-        blur_radius: f32,
-    ) {
-        // Update filter params uniform
-        let params = FilterParams {
-            blur_radius,
-            filter_type: 0, // Not used for blur
-            filter_amount: 1.0,
-            texture_width: width as f32,
-            texture_height: height as f32,
-            _padding0: 0.0,
-            _padding1: 0.0,
-            _padding2: 0.0,
+        let Some(bounds) = cull::paint_bounds(cmd) else {
+            return false;
         };
-        self.queue.write_buffer(
-            &self.backdrop_filter_pipelines.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[params]),
-        );
+        let (w, h) = (self.viewport_size.0 as f32, self.viewport_size.1 as f32);
+        cull::outside(self.current_transform(), bounds, w, h)
+    }
 
-        // Calculate workgroup counts (16x16 workgroups)
-        let workgroups_x = (width + 15) / 16;
-        let workgroups_y = (height + 15) / 16;
-
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Blur Compute Encoder"),
-        });
-
-        // Pass 1: Horizontal blur (source -> intermediate)
-        {
-            let bind_group = self.create_filter_bind_group(source_view, intermediate_view);
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Horizontal Blur Pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.backdrop_filter_pipelines.blur_h_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+    /// Whether `commands[i]` must wait for a flush to keep paint order
+    /// (`occludes_batched`), given whether it is culled.
+    ///
+    /// A text decoration is drawn with the batch of the text it follows,
+    /// under that text's glyphs: layout relies on it (an underline below
+    /// the descenders), and no flush ever falls between the two. So the
+    /// decorations after a `Text` are ordered against what was batched
+    /// before it, when the text comes up and whether or not the text itself
+    /// is culled, and not again at the decoration. A decoration that does
+    /// not follow text is ordered like any fill. Either way the answer
+    /// depends only on the list and on what is batched, never on which
+    /// other commands culling dropped.
+    fn order_flush_needed(&mut self, commands: &[DisplayCommand], i: usize, culled: bool) -> bool {
+        let cmd = &commands[i];
+        if is_decoration(cmd) && follows_text(commands, i) {
+            return false;
         }
-
-        // Pass 2: Vertical blur (intermediate -> dest)
-        {
-            let bind_group = self.create_filter_bind_group(intermediate_view, dest_view);
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Vertical Blur Pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.backdrop_filter_pipelines.blur_v_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+        if !culled && self.occludes_batched(cmd) {
+            return true;
         }
+        if matches!(cmd, DisplayCommand::Text { .. }) {
+            for d in commands[i + 1..].iter().take_while(|c| is_decoration(c)) {
+                if !self.off_screen(d) && self.occludes_batched(d) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 
+    fn submit(&self, encoder: wgpu::CommandEncoder) {
+        self.submits.bump();
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
-    /// Run a color filter (grayscale, sepia, brightness) on a texture.
-    fn run_color_filter_compute(
-        &self,
-        source_view: &wgpu::TextureView,
-        dest_view: &wgpu::TextureView,
-        width: u32,
-        height: u32,
-        filter_type: u32,
-        amount: f32,
-    ) {
-        // Update filter params uniform
-        let params = FilterParams {
-            blur_radius: 0.0,
-            filter_type,
-            filter_amount: amount,
-            texture_width: width as f32,
-            texture_height: height as f32,
-            _padding0: 0.0,
-            _padding1: 0.0,
-            _padding2: 0.0,
-        };
-        self.queue.write_buffer(
-            &self.backdrop_filter_pipelines.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[params]),
-        );
-
-        // Calculate workgroup counts
-        let workgroups_x = (width + 15) / 16;
-        let workgroups_y = (height + 15) / 16;
-
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Color Filter Compute Encoder"),
-        });
-
-        {
-            let bind_group = self.create_filter_bind_group(source_view, dest_view);
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Color Filter Pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.backdrop_filter_pipelines.color_filter_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+    /// Count a flush of the batches as they stand, before it clears them.
+    fn tally_flush(&mut self) {
+        if !self.has_batched() {
+            return;
         }
+        self.stats.batch_flushes += 1;
+        let quads = |n: usize| (n / 4) as u64;
+        self.stats.quads += quads(self.color_vertices.len())
+            + quads(self.texture_vertices.len())
+            + quads(self.color_glyph_vertices.len())
+            + quads(self.image_vertices.len());
+        if self.measure {
+            let (w, h) = (self.viewport_size.0 as f32, self.viewport_size.1 as f32);
+            use frame_stats::offscreen_quads as off;
+            let tex = |v: &TextureVertex| v.position;
+            self.stats.quads_offscreen += off(&self.color_vertices, |v| v.position, w, h)
+                + off(&self.texture_vertices, tex, w, h)
+                + off(&self.color_glyph_vertices, tex, w, h)
+                + off(&self.image_vertices, tex, w, h);
+        }
+    }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+    /// The translate a scrolled list is drawn in, as `set_scroll_offset`
+    /// describes it: `sign` -1 for the page, +1 for a fixed run.
+    fn scroll_translate(&mut self, sign: f32) {
+        let (x, y) = self.scroll_offset;
+        self.push_transform([1.0, 0.0, 0.0, 1.0, sign * x, sign * y], (0.0, 0.0));
+    }
+
+    fn scrolled(&self) -> bool {
+        self.scroll_offset != (0.0, 0.0)
     }
 
     /// Execute a display list and render to a target.
@@ -1359,8 +1304,20 @@ impl Renderer {
         commands: &[DisplayCommand],
         target: &wgpu::TextureView,
     ) -> Result<(), RendererError> {
+        self.last_list = (commands.as_ptr() as usize, commands.len());
+        #[cfg(test)]
+        {
+            self.glyph_grid.scan_only = self.reference;
+        }
+        self.stats = FrameStats {
+            commands: commands.len() as u64,
+            ..FrameStats::default()
+        };
+        self.submits.take();
         let resets = self.glyph_cache.resets();
-        self.execute_once(commands, target)?;
+        let drawn = self.execute_once(commands, target);
+        self.stats.submits = self.submits.take();
+        drawn?;
         if self.glyph_cache.resets() == resets {
             return Ok(());
         }
@@ -1369,8 +1326,15 @@ impl Renderer {
         // over its own since: "static" over a page opened after others.
         // Build the frame again: every glyph it needs is now placed after
         // the reset, as long as one frame's glyphs fit in the atlas.
+        // The stats describe the frame that is shown: the second pass.
+        self.stats = FrameStats {
+            commands: commands.len() as u64,
+            ..FrameStats::default()
+        };
         let resets = self.glyph_cache.resets();
-        self.execute_once(commands, target)?;
+        let drawn = self.execute_once(commands, target);
+        self.stats.submits = self.submits.take();
+        drawn?;
         if self.glyph_cache.resets() != resets {
             tracing::warn!(
                 commands = commands.len(),
@@ -1392,6 +1356,7 @@ impl Renderer {
         self.texture_indices.clear();
         self.color_glyph_vertices.clear();
         self.color_glyph_indices.clear();
+        self.glyph_grid.clear();
         self.image_vertices.clear();
         self.image_indices.clear();
         self.image_runs.clear();
@@ -1401,13 +1366,17 @@ impl Renderer {
         self.clip_stack.clear();
         self.stacking_contexts.clear();
         self.transform_stack.clear();
+        self.opacity_scopes.clear();
+        if self.scrolled() {
+            self.scroll_translate(-1.0);
+        }
 
-        // Check if there are any blur backdrop filters that need GPU processing
-        let has_blur_filters = commands.iter().any(|cmd| {
-            matches!(cmd, DisplayCommand::BackdropFilter {
-                filter: rustkit_css::BackdropFilter::Blur(r), ..
-            } if *r > 0.0)
-        });
+        // A `backdrop-filter` reads what is drawn under it, so the frame
+        // is drawn into a texture the renderer can sample (the target may
+        // only be a render attachment) and copied to the target at the end.
+        let has_backdrop = commands
+            .iter()
+            .any(|cmd| matches!(cmd, DisplayCommand::BackdropFilter { .. }));
 
         // Check if there are any GPU gradients that need z-order aware rendering
         let has_gpu_gradients = self.gpu_gradients_enabled && commands.iter().any(|cmd| {
@@ -1418,10 +1387,7 @@ impl Renderer {
             )
         });
 
-        if has_blur_filters {
-            // Use GPU blur path - render to intermediate texture with GPU blur processing
-            self.execute_with_gpu_blur(commands, target)?;
-        } else if has_gpu_gradients {
+        if has_gpu_gradients && !has_backdrop {
             // Use GPU gradient path - flush batches before each gradient for correct z-order
             self.execute_with_gpu_gradients(commands, target)?;
         } else {
@@ -1432,109 +1398,167 @@ impl Renderer {
             // painting above in-flow text per CSS 2.1 Appendix E — would be
             // drawn UNDER that text. Flush first so paint follows command
             // order (same discipline as the GPU-gradient path).
-            let mut flushed_mid_stream = false;
-            for cmd in commands {
-                if self.solid_fill_occludes_batched_glyphs(cmd) {
-                    self.flush_batches_to(target, !flushed_mid_stream)?;
-                    flushed_mid_stream = true;
+            //
+            // An opacity scope is drawn into a layer of its own and the
+            // layer is laid over what is under it, faded: the group is
+            // faded as one picture (CSS Color 4 §4), so a child over its
+            // parent's background does not show the background through.
+            // A filter group is a layer the same way, composited through its
+            // colour matrix. Opacity and filter scopes share the budget:
+            // past `MAX_OPACITY_LAYERS` of them in one list, all of them fall
+            // back to `process_command`, which applies each scope to the
+            // vertices batched inside it (see `OpacityScopes`).
+            let final_target = target;
+            let base = if has_backdrop {
+                self.ensure_intermediate_texture().clone()
+            } else {
+                target.clone()
+            };
+            let target = &base;
+            let layered = commands
+                .iter()
+                .filter(|cmd| {
+                    matches!(cmd, DisplayCommand::PushOpacity(_) | DisplayCommand::PushFilter(_))
+                })
+                .count()
+                <= MAX_OPACITY_LAYERS;
+            let mut cleared = false;
+            let mut layers: Vec<(wgpu::TextureView, LayerEffect)> = Vec::new();
+            for (i, cmd) in commands.iter().enumerate() {
+                if layered {
+                    match cmd {
+                        DisplayCommand::PushOpacity(alpha) => {
+                            let fade = LayerEffect::Fade(alpha.clamp(0.0, 1.0));
+                            self.begin_opacity_layer(target, &mut layers, fade, &mut cleared)?;
+                            continue;
+                        }
+                        DisplayCommand::PushFilter(matrix) => {
+                            let effect = LayerEffect::ColorMatrix(*matrix);
+                            self.begin_opacity_layer(target, &mut layers, effect, &mut cleared)?;
+                            continue;
+                        }
+                        DisplayCommand::PopOpacity | DisplayCommand::PopFilter => {
+                            self.end_opacity_layer(target, &mut layers, &mut cleared)?;
+                            continue;
+                        }
+                        _ => {}
+                    }
                 }
-                self.process_command(cmd);
+                if let DisplayCommand::BackdropFilter { rect, border_radius, steps, own_groups } = cmd {
+                    let own = if layered { *own_groups as usize } else { layers.len() };
+                    self.paint_backdrop(target, &layers, &mut cleared, *rect, *border_radius, steps, own)?;
+                    continue;
+                }
+                let culled = self.culled(cmd);
+                if self.order_flush_needed(commands, i, culled) {
+                    self.stats.overlap_flushes += 1;
+                    self.flush_mid_stream(target, &layers, &mut cleared)?;
+                } else if !culled && self.batches_full() && !is_decoration(cmd) {
+                    self.flush_mid_stream(target, &layers, &mut cleared)?;
+                }
+                if !culled {
+                    self.process_command(cmd);
+                }
             }
-            if flushed_mid_stream {
+            self.end_scroll_translate();
+            // A list that ends inside a scope still shows what it drew.
+            while !layers.is_empty() {
+                self.end_opacity_layer(target, &mut layers, &mut cleared)?;
+            }
+            if cleared {
                 self.flush_batches_to(target, false)?;
             } else {
                 self.flush_to(target)?;
             }
+            if has_backdrop {
+                self.copy_frame(&base, final_target);
+            }
         }
 
         Ok(())
     }
 
-    /// True when `cmd` is a solid fill whose rect overlaps a glyph quad
-    /// already sitting in the batch — the case where flush order (colors
-    /// before glyphs) would contradict command order. Batched glyph
-    /// positions are already transformed, so the rect's corners get the
-    /// same transform before the overlap test.
-    fn solid_fill_occludes_batched_glyphs(&self, cmd: &DisplayCommand) -> bool {
-        if self.texture_vertices.is_empty() && self.color_glyph_vertices.is_empty() {
+    /// The pop of the page translate `execute_once` pushed, after the
+    /// list's last command (where the old `scrolled_commands` list had it).
+    fn end_scroll_translate(&mut self) {
+        if self.scrolled() {
+            self.pop_transform();
+        }
+    }
+
+    /// True when `cmd` would be drawn under something batched before it
+    /// that it overlaps: a flush draws the color batch, then images, then
+    /// glyphs, then color glyphs, so a fill over batched text or an image,
+    /// or an image over batched text, has to wait for a flush to land on
+    /// top (CSS 2.1 Appendix E puts positioned boxes over in-flow text).
+    /// `cull::order_probe` says which batches count and where `cmd` paints.
+    /// Batched positions are already transformed, so the rect's corners get
+    /// the same transform before the overlap test.
+    ///
+    /// The batched quads are looked up in `glyph_grid` rather than scanned:
+    /// the scan compared every fill with every glyph batched since the last
+    /// flush, 1.3 billion comparisons and 10 s for a 20,000-command table
+    /// on lavapipe (`scroll_cost_tests`). The answer is the same.
+    fn occludes_batched(&mut self, cmd: &DisplayCommand) -> bool {
+        match cull::order_probe(cmd) {
+            Some((from, rect)) => self.probe_occludes_batched(from, rect),
+            None => false,
+        }
+    }
+
+    fn probe_occludes_batched(&mut self, from: glyph_grid::Batch, rect: Option<Rect>) -> bool {
+        if self.texture_vertices.is_empty()
+            && self.color_glyph_vertices.is_empty()
+            && self.image_vertices.is_empty()
+        {
             return false;
         }
-        let rect = match cmd {
-            DisplayCommand::SolidColor(color, rect) if color.a > 0.0 => rect,
-            DisplayCommand::RoundedRect { color, rect, .. } if color.a > 0.0 => rect,
-            _ => return false,
-        };
-        let (ax, ay) = self.transform_point(rect.x, rect.y);
-        let (bx, by) = self.transform_point(rect.x + rect.width, rect.y + rect.height);
-        let (rx0, rx1) = (ax.min(bx), ax.max(bx));
-        let (ry0, ry1) = (ay.min(by), ay.max(by));
-
-        let overlaps = |verts: &[TextureVertex]| {
-            verts.chunks_exact(4).any(|quad| {
-                let mut qx0 = f32::MAX;
-                let mut qy0 = f32::MAX;
-                let mut qx1 = f32::MIN;
-                let mut qy1 = f32::MIN;
-                for v in quad {
-                    qx0 = qx0.min(v.position[0]);
-                    qy0 = qy0.min(v.position[1]);
-                    qx1 = qx1.max(v.position[0]);
-                    qy1 = qy1.max(v.position[1]);
+        let started = self.measure.then(std::time::Instant::now);
+        use glyph_grid::Batch;
+        self.glyph_grid.extend(Batch::Image, &self.image_vertices, |v| v.position);
+        self.glyph_grid.extend(Batch::Glyph, &self.texture_vertices, |v| v.position);
+        self.glyph_grid.extend(Batch::ColorGlyph, &self.color_glyph_vertices, |v| v.position);
+        let mut compared = 0u64;
+        let hit = match rect {
+            Some(rect) => {
+                let m = self.current_transform();
+                let map = |x: f32, y: f32| (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]);
+                let (x1, y1) = (rect.x + rect.width, rect.y + rect.height);
+                let corners = [map(rect.x, rect.y), map(x1, rect.y), map(rect.x, y1), map(x1, y1)];
+                let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+                for (x, y) in corners {
+                    r = [r[0].min(x), r[1].min(y), r[2].max(x), r[3].max(y)];
                 }
-                rx0 < qx1 && rx1 > qx0 && ry0 < qy1 && ry1 > qy0
-            })
+                self.glyph_grid.overlaps(r, from, &mut compared)
+            }
+            None => self.glyph_grid.any_from(from),
         };
-        overlaps(&self.texture_vertices) || overlaps(&self.color_glyph_vertices)
+        self.stats.overlap_checks += 1;
+        self.stats.overlap_comparisons += compared;
+        if let Some(started) = started {
+            self.stats.overlap_ns += started.elapsed().as_nanos() as u64;
+        }
+        hit
     }
 
-    /// Execute commands with GPU blur support for backdrop filters.
-    fn execute_with_gpu_blur(
-        &mut self,
-        commands: &[DisplayCommand],
-        target: &wgpu::TextureView,
-    ) -> Result<(), RendererError> {
-        // Ensure intermediate texture exists
-        let _ = self.ensure_intermediate_texture();
-        let intermediate_view = self.intermediate_view.as_ref().unwrap().clone();
-
-        let mut is_first_flush = true;
-
-        for cmd in commands {
-            // Check if this is a blur backdrop filter
-            if let DisplayCommand::BackdropFilter {
-                rect,
-                border_radius: _,
-                filter: rustkit_css::BackdropFilter::Blur(radius),
-            } = cmd
-            {
-                if *radius > 0.0 {
-                    // Flush current batches to intermediate texture
-                    self.flush_batches_to(&intermediate_view, is_first_flush)?;
-                    is_first_flush = false;
-
-                    // Apply GPU blur
-                    self.apply_gpu_blur(&intermediate_view, *rect, *radius);
-
-                    continue;
-                }
-            }
-
-            // Process command normally (including non-blur backdrop filters)
-            self.process_command(cmd);
-        }
-
-        // Flush remaining batches to intermediate
-        if !self.color_vertices.is_empty()
-            || !self.texture_vertices.is_empty()
-            || !self.image_vertices.is_empty()
-        {
-            self.flush_batches_to(&intermediate_view, is_first_flush)?;
-        }
-
-        // Copy intermediate to final target
-        self.copy_texture_to_target(&intermediate_view, target);
-
-        Ok(())
+    /// True when a batch has grown to `max_batch_bytes`: the execute loops
+    /// flush it before the next command rather than build a buffer past
+    /// wgpu's limit (an 80,000-command text page used to panic in
+    /// `flush_to`). Never before a text decoration, which is drawn with
+    /// the batch of the text it follows (see `cull::order_probe`).
+    fn batches_full(&self) -> bool {
+        use std::mem::size_of;
+        let bytes = [
+            self.color_vertices.len() * size_of::<ColorVertex>(),
+            self.texture_vertices.len() * size_of::<TextureVertex>(),
+            self.color_glyph_vertices.len() * size_of::<TextureVertex>(),
+            self.image_vertices.len() * size_of::<TextureVertex>(),
+            self.color_indices.len() * size_of::<u32>(),
+            self.texture_indices.len() * size_of::<u32>(),
+            self.color_glyph_indices.len() * size_of::<u32>(),
+            self.image_indices.len() * size_of::<u32>(),
+        ];
+        bytes.iter().any(|&b| b as u64 >= self.max_batch_bytes)
     }
 
     /// Execute commands with GPU gradient support for correct z-order.
@@ -1548,7 +1572,7 @@ impl Renderer {
     ) -> Result<(), RendererError> {
         let mut is_first_flush = true;
 
-        for cmd in commands {
+        for (i, cmd) in commands.iter().enumerate() {
             // Check if this is a GPU gradient command
             let is_gpu_gradient = matches!(cmd,
                 DisplayCommand::LinearGradient { .. } |
@@ -1565,10 +1589,23 @@ impl Renderer {
                 // Render the gradient directly (inline, not queued)
                 self.render_gpu_gradient_inline(cmd, target);
             } else {
-                // Process command normally (batched)
-                self.process_command(cmd);
+                // Process command normally (batched), ordered as in the
+                // blur path.
+                let culled = self.culled(cmd);
+                if self.order_flush_needed(commands, i, culled) {
+                    self.stats.overlap_flushes += 1;
+                    self.flush_batches_for_gradient(target, is_first_flush)?;
+                    is_first_flush = false;
+                } else if !culled && self.batches_full() && !is_decoration(cmd) {
+                    self.flush_batches_for_gradient(target, is_first_flush)?;
+                    is_first_flush = false;
+                }
+                if !culled {
+                    self.process_command(cmd);
+                }
             }
         }
+        self.end_scroll_translate();
 
         // Flush any remaining batched content
         if !self.color_vertices.is_empty()
@@ -1887,21 +1924,368 @@ impl Renderer {
         (rx.max(0.001), ry.max(0.001))
     }
 
-    /// Blit from intermediate texture (surface format) to a filter texture (Rgba8Unorm).
-    /// This performs format conversion during the render pass.
-    fn blit_to_filter_texture(&self, dest_view: &wgpu::TextureView) {
-        let (vw, vh) = self.viewport_size;
+    fn has_batched(&self) -> bool {
+        !(self.color_vertices.is_empty()
+            && self.texture_vertices.is_empty()
+            && self.image_vertices.is_empty()
+            && self.color_glyph_vertices.is_empty())
+    }
 
-        // Create bind group for sampling the intermediate texture
+    /// Draw the batches now, into the innermost open opacity layer or, with
+    /// none open, into `base` (cleared to the page's white the first time).
+    fn flush_mid_stream(
+        &mut self,
+        base: &wgpu::TextureView,
+        layers: &[(wgpu::TextureView, LayerEffect)],
+        cleared: &mut bool,
+    ) -> Result<(), RendererError> {
+        match layers.last() {
+            Some((layer, _)) => {
+                let layer = layer.clone();
+                self.flush_batches_to(&layer, false)
+            }
+            None => {
+                let had = self.has_batched();
+                self.flush_batches_to(base, !*cleared)?;
+                *cleared |= had;
+                Ok(())
+            }
+        }
+    }
+
+    /// `PushOpacity` / `PushFilter`: what is batched belongs under the
+    /// group, so it is drawn first; then the group draws into a fresh
+    /// transparent layer.
+    fn begin_opacity_layer(
+        &mut self,
+        base: &wgpu::TextureView,
+        layers: &mut Vec<(wgpu::TextureView, LayerEffect)>,
+        effect: LayerEffect,
+        cleared: &mut bool,
+    ) -> Result<(), RendererError> {
+        self.flush_mid_stream(base, layers, cleared)?;
+        let layer = self.opacity_layer_view(layers.len());
+        self.clear_transparent(&layer);
+        layers.push((layer, effect));
+        Ok(())
+    }
+
+    /// `PopOpacity` / `PopFilter`: finish the group's layer and lay it,
+    /// faded or filtered, over the layer below it or over `base`.
+    fn end_opacity_layer(
+        &mut self,
+        base: &wgpu::TextureView,
+        layers: &mut Vec<(wgpu::TextureView, LayerEffect)>,
+        cleared: &mut bool,
+    ) -> Result<(), RendererError> {
+        let Some((layer, effect)) = layers.pop() else {
+            return Ok(());
+        };
+        self.flush_batches_to(&layer, false)?;
+        match layers.last() {
+            Some((below, _)) => self.composite_opacity_layer(&layer, below, effect, false),
+            None => {
+                self.composite_opacity_layer(&layer, base, effect, !*cleared);
+                *cleared = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// The layer texture for the opacity scope at nesting `depth`, the size
+    /// of the viewport and in the surface format so every pipeline draws
+    /// into it. Kept between frames; all are dropped when the size changes.
+    fn opacity_layer_view(&mut self, depth: usize) -> wgpu::TextureView {
+        if self.opacity_layer_size != self.viewport_size {
+            self.opacity_layer_pool.clear();
+            self.opacity_layer_size = self.viewport_size;
+        }
+        while self.opacity_layer_pool.len() <= depth {
+            let (width, height) = self.viewport_size;
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Opacity Layer Texture"),
+                size: wgpu::Extent3d {
+                    width: width.max(1),
+                    height: height.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.surface_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.opacity_layer_pool.push((texture, view));
+        }
+        self.opacity_layer_pool[depth].1.clone()
+    }
+
+    /// `backdrop-filter` (Filter Effects 2 §3): filter what is painted
+    /// under the box and draw it back inside the box's border box, before
+    /// the box paints. The backdrop is the group `own` levels below the
+    /// innermost open one (the box's own opacity/filter groups are skipped;
+    /// the group under them is the backdrop root) or, with no group that
+    /// deep, the frame. The result is drawn into the innermost group, so
+    /// the box's opacity fades it with the box, and it is drawn
+    /// premultiplied over what is there, so `opacity()` leaves the frame
+    /// as it was, both as in Chromium 143.
+    ///
+    /// Only the box's region is read and filtered: the steps run on a
+    /// scratch texture the size of the border box (cut to the viewport).
+    /// Blur samples past the region are mirrored back into it, so nothing
+    /// outside the box bleeds in (Chromium's edge mode). A box under a
+    /// rotation or skew is not filtered.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_backdrop(
+        &mut self,
+        base: &wgpu::TextureView,
+        layers: &[(wgpu::TextureView, LayerEffect)],
+        cleared: &mut bool,
+        rect: Rect,
+        radius: rustkit_layout::BorderRadius,
+        steps: &[rustkit_layout::FilterStep],
+        own: usize,
+    ) -> Result<(), RendererError> {
+        use rustkit_layout::FilterStep;
+        // What is batched is behind the box.
+        self.flush_mid_stream(base, layers, cleared)?;
+        let source = match layers.len().checked_sub(own + 1) {
+            Some(depth) => layers[depth].0.clone(),
+            None => {
+                if !*cleared {
+                    // A transparent target (CH3.A3c) starts from (0, 0, 0, 0), as the frame clear does.
+                    let color = if self.transparent { wgpu::Color::TRANSPARENT } else { self.clear_color };
+                    self.clear_view(base, color);
+                    *cleared = true;
+                }
+                base.clone()
+            }
+        };
+        let m = self.current_transform();
+        if steps.is_empty() || m[1] != 0.0 || m[2] != 0.0 {
+            return Ok(());
+        }
+        let (ax, ay) = self.transform_point(rect.x, rect.y);
+        let (bx, by) = self.transform_point(rect.x + rect.width, rect.y + rect.height);
+        let (x0, x1) = (ax.min(bx), ax.max(bx));
+        let (y0, y1) = (ay.min(by), ay.max(by));
+        let (vw, vh) = self.viewport_size;
+        let rx0 = x0.floor().max(0.0) as i32;
+        let ry0 = y0.floor().max(0.0) as i32;
+        let rx1 = (x1.ceil() as i32).min(vw as i32);
+        let ry1 = (y1.ceil() as i32).min(vh as i32);
+        if rx1 <= rx0 || ry1 <= ry0 {
+            return Ok(());
+        }
+        let (w, h) = ((rx1 - rx0) as u32, (ry1 - ry0) as u32);
+        let (tw, th) = self.ensure_backdrop_scratch(w, h);
+        let scratch = [
+            self.backdrop_scratch[0].1.clone(),
+            self.backdrop_scratch[1].1.clone(),
+        ];
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Backdrop Filter Encoder"),
+        });
+        // Where the current result is: `None` the source at the region's
+        // origin, `Some(i)` scratch `i` at (0, 0).
+        let mut current: Option<usize> = None;
+        for step in steps {
+            let (input, origin) = match current {
+                None => (&source, [rx0, ry0]),
+                Some(i) => (&scratch[i], [0, 0]),
+            };
+            let free = match current {
+                Some(i) => 1 - i,
+                None => 0,
+            };
+            let mut params = BackdropParams {
+                origin,
+                size: [w as i32, h as i32],
+                ..BackdropParams::default()
+            };
+            match *step {
+                FilterStep::Blur(sigma) => {
+                    params.sigma = sigma;
+                    // Out to 3 sigma, as Skia's Gaussian; no further than
+                    // the region reaches (mirroring folds the rest back).
+                    params.radius = ((3.0 * sigma).ceil() as i32).min(w.max(h) as i32 * 2).max(1);
+                    // Horizontal into the free scratch, vertical back.
+                    let pipes = &self.backdrop_filter_pipelines;
+                    self.backdrop_pass(&mut encoder, &pipes.blur_h_pipeline, &params, input, &scratch[free], w, h);
+                    let into = match current {
+                        Some(i) => i,
+                        None => 1,
+                    };
+                    params.origin = [0, 0];
+                    self.backdrop_pass(&mut encoder, &pipes.blur_v_pipeline, &params, &scratch[free], &scratch[into], w, h);
+                    current = Some(into);
+                }
+                FilterStep::ColorMatrix(mx) => {
+                    for row in 0..4 {
+                        params.rows[row].copy_from_slice(&mx[row * 5..row * 5 + 4]);
+                        params.rows[4][row] = mx[row * 5 + 4];
+                    }
+                    let pipes = &self.backdrop_filter_pipelines;
+                    self.backdrop_pass(&mut encoder, &pipes.color_matrix_pipeline, &params, input, &scratch[free], w, h);
+                    current = Some(free);
+                }
+            }
+        }
+        self.submit(encoder);
+        let Some(result) = current else {
+            return Ok(());
+        };
+
+        // Draw it back over the box's border box, cut by the open clips and
+        // the box's own corners.
+        let tex = [
+            (x0 - rx0 as f32) / tw as f32,
+            (y0 - ry0 as f32) / th as f32,
+            (x1 - rx0 as f32) / tw as f32,
+            (y1 - ry0 as f32) / th as f32,
+        ];
+        let rounded = !radius.is_zero();
+        if rounded {
+            self.push_clip_rounded(rect, radius);
+        } else {
+            self.push_clip(rect);
+        }
+        let pieces = self.textured_pieces(rect, tex);
+        self.pop_clip();
+        let mut vertices = Vec::with_capacity(pieces.len() * 4);
+        for (corners, t, coverage) in pieces {
+            let color = [coverage; 4];
+            let uv = [[t[0], t[1]], [t[2], t[1]], [t[2], t[3]], [t[0], t[3]]];
+            for k in 0..4 {
+                vertices.push(TextureVertex { position: corners[k], tex_coords: uv[k], color });
+            }
+        }
+        let dest = match layers.last() {
+            Some((layer, _)) => layer.clone(),
+            None => base.clone(),
+        };
+        self.draw_texture_quads(&self.color_glyph_pipeline, &scratch[result], &dest, &vertices);
+        Ok(())
+    }
+
+    /// One compute pass of `backdrop_filter.wgsl` over a `w` x `h` region.
+    #[allow(clippy::too_many_arguments)]
+    fn backdrop_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::ComputePipeline,
+        params: &BackdropParams,
+        input: &wgpu::TextureView,
+        output: &wgpu::TextureView,
+        w: u32,
+        h: u32,
+    ) {
+        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Backdrop Params"),
+            contents: bytemuck::bytes_of(params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Backdrop Filter Bind Group"),
+            layout: &self.backdrop_filter_pipelines.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(input),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(output),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("Backdrop Filter Pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
+    }
+
+    /// Two scratch textures at least `w` x `h`, kept between frames and
+    /// grown when a larger region comes; returns their size.
+    fn ensure_backdrop_scratch(&mut self, w: u32, h: u32) -> (u32, u32) {
+        let (cw, ch) = self.backdrop_scratch_size;
+        if self.backdrop_scratch.len() < 2 || cw < w || ch < h {
+            let size = (cw.max(w), ch.max(h));
+            self.backdrop_scratch = (0..2).map(|_| self.create_filter_texture(size.0, size.1)).collect();
+            self.backdrop_scratch_size = size;
+        }
+        self.backdrop_scratch_size
+    }
+
+    fn clear_view(&self, target: &wgpu::TextureView, color: wgpu::Color) {
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Clear Encoder"),
+        });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Clear Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+        self.submit(encoder);
+    }
+
+    /// The frame drawn into `frame` (a backdrop list's) copied to `target`
+    /// as it is (the blit pipeline replaces).
+    fn copy_frame(&self, frame: &wgpu::TextureView, target: &wgpu::TextureView) {
+        let (vw, vh) = (self.viewport_size.0 as f32, self.viewport_size.1 as f32);
+        let color = [1.0; 4];
+        let vertices = [
+            TextureVertex { position: [0.0, 0.0], tex_coords: [0.0, 0.0], color },
+            TextureVertex { position: [vw, 0.0], tex_coords: [1.0, 0.0], color },
+            TextureVertex { position: [vw, vh], tex_coords: [1.0, 1.0], color },
+            TextureVertex { position: [0.0, vh], tex_coords: [0.0, 1.0], color },
+        ];
+        self.draw_texture_quads(&self.blit_pipeline, frame, target, &vertices);
+    }
+
+    /// Quads (four vertices each) sampling `texture`, drawn into `target`
+    /// through `pipeline`, over what `target` holds.
+    fn draw_texture_quads(
+        &self,
+        pipeline: &wgpu::RenderPipeline,
+        texture: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        vertices: &[TextureVertex],
+    ) {
+        if vertices.is_empty() {
+            return;
+        }
+        let indices: Vec<u32> = (0..vertices.len() as u32 / 4)
+            .flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q * 4 + i))
+            .collect();
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blit Texture Bind Group"),
+            label: Some("Texture Quads Bind Group"),
             layout: &self.texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(
-                        self.intermediate_view.as_ref().unwrap(),
-                    ),
+                    resource: wgpu::BindingResource::TextureView(texture),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -1909,37 +2293,55 @@ impl Renderer {
                 },
             ],
         });
-
-        // Full-screen quad vertices
-        let vertices = [
-            TextureVertex { position: [0.0, 0.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            TextureVertex { position: [vw as f32, 0.0], tex_coords: [1.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            TextureVertex { position: [vw as f32, vh as f32], tex_coords: [1.0, 1.0], color: [1.0, 1.0, 1.0, 1.0] },
-            TextureVertex { position: [0.0, vh as f32], tex_coords: [0.0, 1.0], color: [1.0, 1.0, 1.0, 1.0] },
-        ];
-        let indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
-
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Blit Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Blit Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Blit to Filter Encoder"),
+            label: Some("Texture Quads Encoder"),
         });
-
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blit to Filter Pass"),
+                label: Some("Texture Quads Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: dest_view,
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            {
+                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Texture Quads Vertex Buffer"),
+                    contents: bytemuck::cast_slice(vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Texture Quads Index Buffer"),
+                    contents: bytemuck::cast_slice(&indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                render_pass.set_pipeline(pipeline);
+                render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                render_pass.set_bind_group(1, &bind_group, &[]);
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..indices.len() as u32, 0, 0..1);
+            }
+        }
+        self.submit(encoder);
+    }
+
+    fn clear_transparent(&self, target: &wgpu::TextureView) {
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Opacity Layer Clear Encoder"),
+        });
+        {
+            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Opacity Layer Clear Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -1950,67 +2352,55 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
-            // Use blit_pipeline_rgba for rendering to Rgba8Unorm target
-            // (properly samples all 4 RGBA channels, unlike texture_pipeline which treats R as alpha)
-            render_pass.set_pipeline(&self.blit_pipeline_rgba);
-            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            render_pass.set_bind_group(1, &bind_group, &[]);
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..6, 0, 0..1);
         }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
     }
 
-    /// Apply GPU Gaussian blur to a region of the intermediate texture.
-    fn apply_gpu_blur(
+    /// Lay `layer` over `target`, faded by `alpha` or through a filter's
+    /// colour matrix. Drawing source-over into a transparent layer leaves
+    /// premultiplied colour in it, so a faded layer goes through the
+    /// premultiplied pipeline with every channel scaled, and a filtered one
+    /// through the matrix pipeline, which unpremultiplies first.
+    fn composite_opacity_layer(
         &self,
-        render_target: &wgpu::TextureView,
-        rect: Rect,
-        blur_radius: f32,
-    ) {
-        let (vw, vh) = self.viewport_size;
-
-        // Create filter textures for the blur passes (full viewport size for simplicity)
-        let (_filter_tex_a, filter_view_a) = self.create_filter_texture(vw, vh);
-        let (_filter_tex_b, filter_view_b) = self.create_filter_texture(vw, vh);
-
-        // Blit from intermediate texture (Bgra8Unorm) to filter texture A (Rgba8Unorm)
-        // This performs format conversion via the blit_pipeline_rgba
-        self.blit_to_filter_texture(&filter_view_a);
-
-        // Run the blur compute passes: A -> B (horizontal), B -> A (vertical)
-        self.run_blur_compute(
-            &filter_view_a,
-            &filter_view_b,
-            &filter_view_a,
-            vw,
-            vh,
-            blur_radius,
-        );
-
-        // Draw the blurred result back to the render target at the specified rect
-        self.draw_filtered_texture_to(&filter_view_a, render_target, rect);
-    }
-
-    /// Copy the intermediate texture to the final target.
-    fn copy_texture_to_target(
-        &self,
-        source: &wgpu::TextureView,
+        layer: &wgpu::TextureView,
         target: &wgpu::TextureView,
+        effect: LayerEffect,
+        clear: bool,
     ) {
+        let (alpha, matrix_bind_group) = match effect {
+            LayerEffect::Fade(alpha) => (alpha, None),
+            LayerEffect::ColorMatrix(m) => {
+                // Rows of the first four columns, then the offsets column.
+                let mut packed = [0.0f32; 20];
+                for row in 0..4 {
+                    packed[row * 4..row * 4 + 4].copy_from_slice(&m[row * 5..row * 5 + 4]);
+                    packed[16 + row] = m[row * 5 + 4];
+                }
+                let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Filter Matrix Buffer"),
+                    contents: bytemuck::cast_slice(&packed),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+                let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Filter Matrix Bind Group"),
+                    layout: &self.filter_matrix_pipeline.matrix_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    }],
+                });
+                (1.0, Some(group))
+            }
+        };
         let (vw, vh) = self.viewport_size;
-
-        // Draw the entire intermediate texture to the target
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Copy Texture Bind Group"),
+            label: Some("Opacity Layer Bind Group"),
             layout: &self.texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source),
+                    resource: wgpu::BindingResource::TextureView(layer),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -2019,38 +2409,42 @@ impl Renderer {
             ],
         });
 
+        let color = [alpha; 4];
         let vertices = [
-            TextureVertex { position: [0.0, 0.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            TextureVertex { position: [vw as f32, 0.0], tex_coords: [1.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            TextureVertex { position: [vw as f32, vh as f32], tex_coords: [1.0, 1.0], color: [1.0, 1.0, 1.0, 1.0] },
-            TextureVertex { position: [0.0, vh as f32], tex_coords: [0.0, 1.0], color: [1.0, 1.0, 1.0, 1.0] },
+            TextureVertex { position: [0.0, 0.0], tex_coords: [0.0, 0.0], color },
+            TextureVertex { position: [vw as f32, 0.0], tex_coords: [1.0, 0.0], color },
+            TextureVertex { position: [vw as f32, vh as f32], tex_coords: [1.0, 1.0], color },
+            TextureVertex { position: [0.0, vh as f32], tex_coords: [0.0, 1.0], color },
         ];
         let indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
 
         let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Copy Vertex Buffer"),
+            label: Some("Opacity Layer Vertex Buffer"),
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-
         let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Copy Index Buffer"),
+            label: Some("Opacity Layer Index Buffer"),
             contents: bytemuck::cast_slice(&indices),
             usage: wgpu::BufferUsages::INDEX,
         });
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Copy to Target Encoder"),
+            label: Some("Opacity Layer Composite Encoder"),
         });
-
         {
+            let load = if clear {
+                wgpu::LoadOp::Clear(self.first_clear())
+            } else {
+                wgpu::LoadOp::Load
+            };
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Copy to Target Pass"),
+                label: Some("Opacity Layer Composite Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -2058,18 +2452,20 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
-            // Use blit_pipeline instead of texture_pipeline to properly sample RGBA
-            // (texture_pipeline treats red channel as alpha for glyph rendering)
-            render_pass.set_pipeline(&self.blit_pipeline);
+            match &matrix_bind_group {
+                Some(group) => {
+                    render_pass.set_pipeline(&self.filter_matrix_pipeline.pipeline);
+                    render_pass.set_bind_group(2, group, &[]);
+                }
+                None => render_pass.set_pipeline(&self.color_glyph_pipeline),
+            }
             render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             render_pass.set_bind_group(1, &bind_group, &[]);
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..6, 0, 0..1);
         }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
     }
 
     /// Process a single display command.
@@ -2219,9 +2615,9 @@ impl Renderer {
                 );
             }
 
-            DisplayCommand::BackdropFilter { rect, border_radius, filter } => {
-                self.apply_backdrop_filter(*rect, *border_radius, *filter);
-            }
+            // Drawn by the fast path, which holds the layers it reads
+            // (`paint_backdrop`); the GPU-gradient path does not filter.
+            DisplayCommand::BackdropFilter { .. } => {}
 
             DisplayCommand::LinearGradient { rect, direction, stops, repeating, border_radius } => {
                 self.draw_linear_gradient(*rect, *direction, stops, *repeating, *border_radius);
@@ -2251,6 +2647,7 @@ impl Renderer {
                 font_weight,
                 padding,
                 kind,
+                selection,
             } => {
                 self.draw_text_input(
                     *rect,
@@ -2268,6 +2665,7 @@ impl Renderer {
                     *font_weight,
                     *padding,
                     *kind,
+                    *selection,
                 );
             }
 
@@ -2393,7 +2791,13 @@ impl Renderer {
             }
 
             DisplayCommand::Line { x1, y1, x2, y2, color, width } => {
-                // Draw as thin rectangle
+                // Draw as thin rectangle, in screen space: the ends go
+                // through the transform on the stack (the page's scroll is
+                // one) and the width grows by its scale.
+                let m = self.current_transform();
+                let (x1, y1) = (m[0] * x1 + m[2] * y1 + m[4], m[1] * x1 + m[3] * y1 + m[5]);
+                let (x2, y2) = (m[0] * x2 + m[2] * y2 + m[4], m[1] * x2 + m[3] * y2 + m[5]);
+                let width = width * (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
                 let dx = x2 - x1;
                 let dy = y2 - y1;
                 let len = (dx * dx + dy * dy).sqrt();
@@ -2446,10 +2850,13 @@ impl Renderer {
                         color.a,
                     ];
                     
+                    // One matrix for the whole polygon: a path is flattened
+                    // into many of these.
+                    let m = self.current_transform();
                     let base = self.color_vertices.len() as u32;
                     for (x, y) in points {
                         self.color_vertices.push(ColorVertex {
-                            position: [*x, *y],
+                            position: [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]],
                             color: c,
                         });
                     }
@@ -2480,6 +2887,59 @@ impl Renderer {
 
             DisplayCommand::PopTransform => {
                 self.pop_transform();
+            }
+
+            // Reached only off the layered path: past `MAX_OPACITY_LAYERS`
+            // scopes, on the backdrop-blur path and on the GPU-gradient
+            // path. There the scope is applied to each vertex batched inside
+            // it (see `OpacityScopes`), a filter's matrix as well as a fade.
+            DisplayCommand::PushOpacity(alpha) => {
+                let lens = self.batch_lens();
+                self.opacity_scopes.push(LayerEffect::Fade(alpha.clamp(0.0, 1.0)), lens);
+            }
+
+            DisplayCommand::PushFilter(matrix) => {
+                let lens = self.batch_lens();
+                self.opacity_scopes.push(LayerEffect::ColorMatrix(*matrix), lens);
+            }
+
+            // A pop closes the innermost scope of either kind: the display
+            // list nests them, so the two never interleave.
+            DisplayCommand::PopOpacity | DisplayCommand::PopFilter => {
+                if let Some((effect, starts)) = self.opacity_scopes.pop() {
+                    self.apply_since(effect, starts);
+                }
+            }
+
+            // A fixed run undoes the page's scroll (`set_scroll_offset`);
+            // unscrolled, these are marks only.
+            DisplayCommand::PushViewportFixed => {
+                let around = self.window_sticky;
+                if self.scrolled() || around != (0.0, 0.0) {
+                    let (x, y) = self.scroll_offset;
+                    self.push_transform([1.0, 0.0, 0.0, 1.0, x - around.0, y - around.1], (0.0, 0.0));
+                }
+                self.window_sticky_outside_fixed = around;
+                self.window_sticky = (0.0, 0.0);
+            }
+            DisplayCommand::PopViewportFixed => {
+                let around = self.window_sticky_outside_fixed;
+                if self.scrolled() || around != (0.0, 0.0) {
+                    self.pop_transform();
+                }
+                self.window_sticky = around;
+            }
+
+            // Always a transform, so the pop needs no memory of the shift.
+            DisplayCommand::PushWindowSticky(rule) => {
+                let (x, y) = rule.shift(self.scroll_offset, self.window_sticky);
+                self.window_sticky_outer.push(self.window_sticky);
+                self.window_sticky = (self.window_sticky.0 + x, self.window_sticky.1 + y);
+                self.push_transform([1.0, 0.0, 0.0, 1.0, x, y], (0.0, 0.0));
+            }
+            DisplayCommand::PopWindowSticky => {
+                self.pop_transform();
+                self.window_sticky = self.window_sticky_outer.pop().unwrap_or((0.0, 0.0));
             }
 
             DisplayCommand::GradientText {
@@ -3300,139 +3760,6 @@ impl Renderer {
         .collect()
     }
 
-    /// Apply a backdrop filter (blur, grayscale, etc.) to pixels behind the element.
-    ///
-    /// ## GPU Infrastructure (Available)
-    ///
-    /// The following GPU compute pipeline infrastructure is in place:
-    /// - `backdrop_filter_pipelines`: Compute pipelines for blur (horizontal/vertical) and color filters
-    /// - `create_filter_texture()`: Creates storage textures for compute operations
-    /// - `run_blur_compute()`: Executes Gaussian blur via 2-pass separable filter
-    /// - `run_color_filter_compute()`: Executes grayscale/sepia/brightness filters
-    ///
-    /// ## Current Limitation
-    ///
-    /// Full GPU backdrop filter requires render-to-texture support:
-    /// 1. Rendering commands up to this point to an intermediate texture
-    /// 2. Copying the backdrop region
-    /// 3. Running compute shader passes
-    /// 4. Drawing the filtered result
-    ///
-    /// The current architecture batches all commands and renders once at the end of `execute()`,
-    /// making mid-frame capture non-trivial. For now, we use overlay approximations.
-    ///
-    /// ## Future Integration Path
-    ///
-    /// To enable true GPU filters:
-    /// 1. Modify `execute()` to split rendering at BackdropFilter commands
-    /// 2. Create intermediate render texture with `COPY_SRC` usage
-    /// 3. Flush batched commands before each backdrop filter
-    /// 4. Copy region, run compute, draw result, continue batching
-    fn apply_backdrop_filter(
-        &mut self,
-        rect: Rect,
-        border_radius: rustkit_layout::BorderRadius,
-        filter: rustkit_css::BackdropFilter,
-    ) {
-        use rustkit_css::BackdropFilter;
-
-        // Apply clipping
-        let rect = if let Some(clip) = self.current_clip() {
-            if let Some(clipped) = rect.intersect(&clip) {
-                clipped
-            } else {
-                return; // Fully clipped
-            }
-        } else {
-            rect
-        };
-
-        if rect.width <= 0.0 || rect.height <= 0.0 {
-            return;
-        }
-
-        match filter {
-            BackdropFilter::None => {}
-
-            BackdropFilter::Blur(radius) => {
-                // Proper backdrop blur requires render-to-texture and compute shaders.
-                // For now, we simulate it with a semi-transparent white/gray overlay
-                // which approximates the "frosted glass" effect.
-                if radius > 0.0 {
-                    // The heavier the blur, the more opaque the overlay (0.0-1.0 range)
-                    let opacity = (radius / 20.0).min(0.5) * 0.3;
-                    let overlay_color = Color::new(255, 255, 255, opacity);
-
-                    if border_radius.is_zero() {
-                        self.draw_solid_rect(rect, overlay_color);
-                    } else {
-                        self.draw_rounded_rect(rect, overlay_color, border_radius);
-                    }
-                }
-            }
-
-            BackdropFilter::Grayscale(amount) => {
-                // Approximate grayscale by drawing a gray overlay
-                // This isn't accurate but provides visual feedback
-                if amount > 0.0 {
-                    let gray_value = 128;
-                    // Alpha in 0.0-1.0 range
-                    let overlay_color = Color::new(gray_value, gray_value, gray_value, amount * 0.4);
-
-                    if border_radius.is_zero() {
-                        self.draw_solid_rect(rect, overlay_color);
-                    } else {
-                        self.draw_rounded_rect(rect, overlay_color, border_radius);
-                    }
-                }
-            }
-
-            BackdropFilter::Brightness(amount) => {
-                // Brightness > 1.0 = lighter, < 1.0 = darker
-                if amount != 1.0 {
-                    let color = if amount > 1.0 {
-                        // Lighten with white overlay (alpha in 0.0-1.0 range)
-                        let intensity = ((amount - 1.0) * 0.4).min(0.8);
-                        Color::new(255, 255, 255, intensity)
-                    } else {
-                        // Darken with black overlay (alpha in 0.0-1.0 range)
-                        let intensity = ((1.0 - amount) * 0.8).min(0.8);
-                        Color::new(0, 0, 0, intensity)
-                    };
-
-                    if border_radius.is_zero() {
-                        self.draw_solid_rect(rect, color);
-                    } else {
-                        self.draw_rounded_rect(rect, color, border_radius);
-                    }
-                }
-            }
-
-            BackdropFilter::Contrast(_) => {
-                // Contrast adjustment would require per-pixel operations
-                // No simple overlay approximation exists
-            }
-
-            BackdropFilter::Saturate(_) => {
-                // Saturation adjustment would require per-pixel color manipulation
-                // No simple overlay approximation exists
-            }
-
-            BackdropFilter::Sepia(amount) => {
-                // Approximate sepia with a brownish overlay (alpha in 0.0-1.0 range)
-                if amount > 0.0 {
-                    let sepia_color = Color::new(112, 66, 20, amount * 0.3);
-
-                    if border_radius.is_zero() {
-                        self.draw_solid_rect(rect, sepia_color);
-                    } else {
-                        self.draw_rounded_rect(rect, sepia_color, border_radius);
-                    }
-                }
-            }
-        }
-    }
-
     /// Render a linear gradient using the GPU shader.
     /// This method renders the gradient immediately using a separate render pass.
     /// Note: This may cause z-ordering issues with other content.
@@ -3563,7 +3890,7 @@ impl Renderer {
             render_pass.draw_indexed(0..6, 0, 0..1);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
     }
 
     /// Render a linear gradient using the GPU shader with optional clear.
@@ -3715,7 +4042,7 @@ impl Renderer {
             render_pass.draw_indexed(0..6, 0, 0..1);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
     }
 
     /// Render a radial gradient using the GPU shader.
@@ -3846,7 +4173,7 @@ impl Renderer {
             render_pass.draw_indexed(0..6, 0, 0..1);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
     }
 
     /// Render a conic gradient using the GPU shader.
@@ -3976,7 +4303,7 @@ impl Renderer {
             render_pass.draw_indexed(0..6, 0, 0..1);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
     }
 
     /// Draw a linear gradient with optional border-radius clipping.
@@ -4735,6 +5062,7 @@ impl Renderer {
         font_weight: u16,
         padding: [f32; 4],
         kind: rustkit_layout::TextControlKind,
+        selection: Option<(usize, usize)>,
     ) {
         let menu_list = kind == rustkit_layout::TextControlKind::MenuList;
 
@@ -4781,6 +5109,24 @@ impl Renderer {
 
         if menu_list {
             self.draw_menu_list_arrow(rect, text_color);
+        }
+
+        // The selected part of the value, behind the text, measured as the
+        // caret is so the highlight ends at it.
+        if let (true, Some((start, end))) = (focused && !value.is_empty(), selection) {
+            let measure = |t: &str| Self::measure_run_width(t, font_family, font_size);
+            let rects = rustkit_layout::forms::calculate_selection_rects(
+                value,
+                start,
+                end,
+                text_x,
+                text_top,
+                ascent + descent,
+                &measure,
+            );
+            for r in rects {
+                self.draw_solid_rect(r, rustkit_layout::SELECTION_COLOR);
+            }
         }
 
         if !display_text.is_empty() {
@@ -5836,10 +6182,6 @@ impl Renderer {
     }
 
     /// Get the current clip rectangle (screen space).
-    fn current_clip(&self) -> Option<Rect> {
-        self.clip_stack.last().map(|entry| entry.rect)
-    }
-
     /// A textured quad (glyph, image) cut to the current clip and taken to
     /// screen space: the four corner positions in emit order (top-left,
     /// top-right, bottom-right, bottom-left) and the texture coordinates of
@@ -5883,6 +6225,50 @@ impl Renderer {
             .collect()
     }
 
+
+    fn batch_lens(&self) -> BatchLens {
+        [
+            self.color_vertices.len(),
+            self.texture_vertices.len(),
+            self.color_glyph_vertices.len(),
+            self.image_vertices.len(),
+        ]
+    }
+
+    /// Apply `effect` to the vertices each batch has gained since `starts`.
+    /// The colour-glyph pipeline blends premultiplied; the others straight.
+    ///
+    /// A fade scales alpha. A filter's matrix runs on the colour of fills
+    /// and glyphs, the colour they paint; for images and colour glyphs the
+    /// vertex colour is a tint over the texture, so only the matrix's alpha
+    /// gain (`opacity()`) is applied there and their pixels stay unfiltered.
+    fn apply_since(&mut self, effect: LayerEffect, starts: BatchLens) {
+        match effect {
+            LayerEffect::Fade(alpha) => {
+                fade_straight(self.color_vertices.iter_mut().map(|v| &mut v.color), starts[0], alpha);
+                fade_straight(self.texture_vertices.iter_mut().map(|v| &mut v.color), starts[1], alpha);
+                fade_premultiplied(self.color_glyph_vertices.iter_mut().map(|v| &mut v.color), starts[2], alpha);
+                fade_straight(self.image_vertices.iter_mut().map(|v| &mut v.color), starts[3], alpha);
+            }
+            LayerEffect::ColorMatrix(m) => {
+                filter_straight(self.color_vertices.iter_mut().map(|v| &mut v.color), starts[0], &m);
+                filter_straight(self.texture_vertices.iter_mut().map(|v| &mut v.color), starts[1], &m);
+                let gain = m[18].clamp(0.0, 1.0);
+                fade_premultiplied(self.color_glyph_vertices.iter_mut().map(|v| &mut v.color), starts[2], gain);
+                fade_straight(self.image_vertices.iter_mut().map(|v| &mut v.color), starts[3], gain);
+            }
+        }
+    }
+
+    /// Apply what the open scopes have batched so far. Called before every
+    /// draw of the batches. Innermost first: a filter inside a filter runs
+    /// on the content before the outer one does.
+    fn settle_opacity(&mut self) {
+        let lens = self.batch_lens();
+        for (effect, starts) in self.opacity_scopes.settle(lens).into_iter().rev() {
+            self.apply_since(effect, starts);
+        }
+    }
 
     /// Push a 2D transform matrix onto the stack.
     fn push_transform(&mut self, matrix: [f32; 6], origin: (f32, f32)) {
@@ -5998,6 +6384,33 @@ impl Renderer {
             return;
         }
 
+        // image_pipeline, not texture_pipeline: the texture shader treats the
+        // sampled R channel as glyph-atlas alpha; the blit shader samples real
+        // RGBA. Not blit_pipeline either: its blend is REPLACE, which paints an
+        // image's transparent texels as their own colour (black, for most PNGs).
+        render_pass.set_pipeline(&self.image_pipeline);
+        render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+
+        if !self.fits_one_buffer(&self.image_vertices, &self.image_indices) {
+            // Past the buffer limit: each run in as many draws as it takes.
+            let mut start = 0usize;
+            for (url, count) in &self.image_runs {
+                let end = start + *count as usize;
+                if let Some(cached) = self.texture_cache.get(url) {
+                    render_pass.set_bind_group(1, &cached.bind_group, &[]);
+                    self.draw_split(
+                        render_pass,
+                        "Image",
+                        &self.image_vertices,
+                        &self.image_indices,
+                        start..end.min(self.image_indices.len()),
+                    );
+                }
+                start = end;
+            }
+            return;
+        }
+
         let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Image Vertex Buffer"),
             contents: bytemuck::cast_slice(&self.image_vertices),
@@ -6008,13 +6421,6 @@ impl Renderer {
             contents: bytemuck::cast_slice(&self.image_indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-
-        // image_pipeline, not texture_pipeline: the texture shader treats the
-        // sampled R channel as glyph-atlas alpha; the blit shader samples real
-        // RGBA. Not blit_pipeline either: its blend is REPLACE, which paints an
-        // image's transparent texels as their own colour (black, for most PNGs).
-        render_pass.set_pipeline(&self.image_pipeline);
-        render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
@@ -6028,6 +6434,78 @@ impl Renderer {
         }
     }
 
+    /// True when `verts` and `indices` each fit in one buffer of
+    /// `max_buffer_bytes`.
+    fn fits_one_buffer<V>(&self, verts: &[V], indices: &[u32]) -> bool {
+        let bytes = |n: usize, size: usize| (n as u64).saturating_mul(size as u64);
+        bytes(verts.len(), std::mem::size_of::<V>()) <= self.max_buffer_bytes
+            && bytes(indices.len(), 4) <= self.max_buffer_bytes
+    }
+
+    /// Draw the triangles `indices[range]` of a batch into `pass`, whose
+    /// pipeline and bind groups are set.
+    ///
+    /// A batch that fits takes one vertex and one index buffer. A larger
+    /// one (a page's worth of glyphs can pass 256 MB: 2.3 M characters on
+    /// one line, or 80k lines on screen) is drawn in as many draws as it
+    /// takes, each with buffers of its own slice of the vertices, so no
+    /// buffer passes the device's limit; wgpu would fail the frame with a
+    /// validation error, which panics. The draws go in batch order in the
+    /// same pass, so the pixels are those of one draw.
+    fn draw_split<V: bytemuck::Pod>(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        label: &str,
+        verts: &[V],
+        indices: &[u32],
+        range: std::ops::Range<usize>,
+    ) {
+        let cap = self.max_buffer_bytes as usize;
+        let max_verts = (cap / std::mem::size_of::<V>().max(1)).max(3);
+        let max_indices = (cap / 4 / 3 * 3).max(3);
+        let mut start = range.start;
+        while start + 3 <= range.end {
+            // As many whole triangles as fit, with the vertices they use.
+            let (mut lo, mut hi) = (u32::MAX, 0u32);
+            let mut end = start;
+            while end + 3 <= range.end && end - start < max_indices {
+                let tri = &indices[end..end + 3];
+                let tlo = lo.min(tri[0]).min(tri[1]).min(tri[2]);
+                let thi = hi.max(tri[0]).max(tri[1]).max(tri[2]);
+                if end > start && (thi - tlo) as usize >= max_verts {
+                    break;
+                }
+                (lo, hi) = (tlo, thi);
+                end += 3;
+            }
+            let first = (lo as usize).min(verts.len());
+            let last = (hi as usize).saturating_add(1).min(verts.len());
+            if first < last {
+                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("{label} Vertex Buffer")),
+                    contents: bytemuck::cast_slice(&verts[first..last]),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let rebased: Vec<u32>;
+                let chunk = if lo == 0 {
+                    &indices[start..end]
+                } else {
+                    rebased = indices[start..end].iter().map(|i| i - lo).collect();
+                    &rebased
+                };
+                let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("{label} Index Buffer")),
+                    contents: bytemuck::cast_slice(chunk),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..chunk.len() as u32, 0, 0..1);
+            }
+            start = end;
+        }
+    }
+
     /// Draw the color-glyph (emoji) batch: RGBA quads sampling the color atlas
     /// via the passthrough blit pipeline (blit samples real RGBA; the grayscale
     /// texture pipeline would treat R as alpha and mangle the artwork). Empty on
@@ -6036,22 +6514,16 @@ impl Renderer {
         if self.color_glyph_vertices.is_empty() {
             return;
         }
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Color Glyph Vertex Buffer"),
-            contents: bytemuck::cast_slice(&self.color_glyph_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Color Glyph Index Buffer"),
-            contents: bytemuck::cast_slice(&self.color_glyph_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
         render_pass.set_pipeline(&self.color_glyph_pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         render_pass.set_bind_group(1, self.glyph_cache.color_bind_group(), &[]);
-        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.draw_indexed(0..self.color_glyph_indices.len() as u32, 0, 0..1);
+        self.draw_split(
+            render_pass,
+            "Color Glyph",
+            &self.color_glyph_vertices,
+            &self.color_glyph_indices,
+            0..self.color_glyph_indices.len(),
+        );
     }
 
     fn flush_to(&mut self, target: &wgpu::TextureView) -> Result<(), RendererError> {
@@ -6069,14 +6541,10 @@ impl Renderer {
                 b: 1.0,
                 a: 1.0,
             }
+        } else if self.transparent {
+            wgpu::Color::TRANSPARENT
         } else {
-            // Normal white background
-            wgpu::Color {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0,
-            }
+            self.clear_color
         };
 
         // Clear gradient queues (safety measure - they should already be empty)
@@ -6084,6 +6552,9 @@ impl Renderer {
         self.gradient_queue.clear();
         self.radial_gradient_queue.clear();
         self.conic_gradient_queue.clear();
+
+        self.settle_opacity();
+        self.tally_flush();
 
         // Render batched content
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -6136,30 +6607,15 @@ impl Renderer {
 
             // Draw solid colors
             if !self.color_vertices.is_empty() {
-                // Validate buffer sizes before allocation
-                let vertex_size = (self.color_vertices.len() * std::mem::size_of::<ColorVertex>()) as u64;
-                let index_size = (self.color_indices.len() * std::mem::size_of::<u32>()) as u64;
-
-                self.validate_buffer_size(vertex_size, "Color Vertex Buffer")?;
-                self.validate_buffer_size(index_size, "Color Index Buffer")?;
-
-                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Color Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&self.color_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-
-                let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Color Index Buffer"),
-                    contents: bytemuck::cast_slice(&self.color_indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-
                 render_pass.set_pipeline(&self.color_pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..self.color_indices.len() as u32, 0, 0..1);
+                self.draw_split(
+                    &mut render_pass,
+                    "Color",
+                    &self.color_vertices,
+                    &self.color_indices,
+                    0..self.color_indices.len(),
+                );
             }
 
             // Draw images (own textures) between backgrounds and text
@@ -6167,31 +6623,23 @@ impl Renderer {
 
             // Draw textured quads (glyphs)
             if !self.texture_vertices.is_empty() {
-                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Texture Vertex Buffer"),
-                    contents: bytemuck::cast_slice(&self.texture_vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-
-                let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Texture Index Buffer"),
-                    contents: bytemuck::cast_slice(&self.texture_indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                });
-
                 render_pass.set_pipeline(&self.texture_pipeline);
                 render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 render_pass.set_bind_group(1, self.glyph_cache.bind_group(), &[]);
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..self.texture_indices.len() as u32, 0, 0..1);
+                self.draw_split(
+                    &mut render_pass,
+                    "Texture",
+                    &self.texture_vertices,
+                    &self.texture_indices,
+                    0..self.texture_indices.len(),
+                );
             }
 
             // Color glyphs (emoji) drawn on top via the RGBA atlas + blit pipeline.
             self.draw_color_glyph_batch(&mut render_pass);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit(encoder);
 
         // Note: GPU gradients are now rendered inline via execute_with_gpu_gradients()
         // for correct z-order (gradients render in DOM order, not all-at-end)
@@ -6252,6 +6700,112 @@ struct ClipEntry {
     /// Rounded constraints still in force, outermost first. A point must be
     /// inside every one of them.
     rounded: Vec<(Rect, rustkit_layout::BorderRadius)>,
+}
+
+/// The most opacity scopes one display list may hold and still have each
+/// drawn as a layer of its own: a layer costs a pass over the viewport and
+/// two flushes of the batches.
+const MAX_OPACITY_LAYERS: usize = 256;
+
+/// How many vertices each of the four batches holds, in the order colour,
+/// glyph, colour glyph, image.
+type BatchLens = [usize; 4];
+
+/// How an open layer is laid over what is under it when its scope closes.
+#[derive(Debug, Clone, Copy)]
+enum LayerEffect {
+    /// `PushOpacity`: every channel scaled by the factor.
+    Fade(f32),
+    /// `PushFilter`: a 4x5 row-major colour matrix on unpremultiplied
+    /// colour, clamped (Filter Effects 1 §13).
+    ColorMatrix([f32; 20]),
+}
+
+/// The open `PushOpacity` and `PushFilter` scopes, innermost last, when
+/// they are not drawn as layers.
+///
+/// Draw calls do not know about opacity or filters. A scope remembers where
+/// each batch stood when it opened, and the vertices added since are faded,
+/// or run through the filter's colour matrix, when it closes; scopes nest,
+/// so an inner scope's vertices are processed again by the outer one, which
+/// multiplies fades and composes matrices inner first. A batch flush in the
+/// middle of a scope applies what the scope has added so far
+/// ([`OpacityScopes::settle`]) and the scope carries on from the empty
+/// batches.
+///
+/// Per vertex is exact for opaque content that does not overlap. Where a
+/// translucent part overlaps another inside the group, the group would be
+/// processed as one picture by a layer, and per vertex is an approximation.
+///
+/// Pure for the same reason as [`clip_entry_for`]: no device is needed to
+/// test the bookkeeping.
+#[derive(Debug, Default)]
+struct OpacityScopes {
+    scopes: Vec<(LayerEffect, BatchLens)>,
+}
+
+impl OpacityScopes {
+    fn clear(&mut self) {
+        self.scopes.clear();
+    }
+
+    fn push(&mut self, effect: LayerEffect, lens: BatchLens) {
+        self.scopes.push((effect, lens));
+    }
+
+    /// Close the innermost scope: its effect and where its vertices start.
+    /// `None` for a pop without a push.
+    fn pop(&mut self) -> Option<(LayerEffect, BatchLens)> {
+        self.scopes.pop()
+    }
+
+    /// Before the batches are drawn: every open scope's effect and start,
+    /// outermost first, to be applied now (innermost first). Afterwards each
+    /// scope starts at `lens`, so a second call before the batches are
+    /// emptied applies nothing twice.
+    fn settle(&mut self, lens: BatchLens) -> Vec<(LayerEffect, BatchLens)> {
+        let due = self.scopes.clone();
+        for scope in &mut self.scopes {
+            scope.1 = lens;
+        }
+        due
+    }
+
+    /// After the batches are emptied: every open scope starts at zero.
+    fn rebase(&mut self) {
+        for scope in &mut self.scopes {
+            scope.1 = [0; 4];
+        }
+    }
+}
+
+/// Fade straight-alpha vertex colours from `start` on.
+fn fade_straight<'a>(colors: impl Iterator<Item = &'a mut [f32; 4]>, start: usize, alpha: f32) {
+    for color in colors.skip(start) {
+        color[3] *= alpha;
+    }
+}
+
+/// Run a filter's colour matrix on straight-alpha vertex colours from
+/// `start` on: the 4x5 row-major matrix on unpremultiplied RGBA, clamped,
+/// as `filter_matrix.wgsl` does per pixel (Filter Effects 1 §13).
+fn filter_straight<'a>(colors: impl Iterator<Item = &'a mut [f32; 4]>, start: usize, m: &[f32; 20]) {
+    for color in colors.skip(start) {
+        let c = *color;
+        for (row, out) in color.iter_mut().enumerate() {
+            let r = &m[row * 5..row * 5 + 5];
+            *out = (r[0] * c[0] + r[1] * c[1] + r[2] * c[2] + r[3] * c[3] + r[4]).clamp(0.0, 1.0);
+        }
+    }
+}
+
+/// Fade premultiplied vertex colours from `start` on: all four channels.
+fn fade_premultiplied<'a>(colors: impl Iterator<Item = &'a mut [f32; 4]>, start: usize, alpha: f32) {
+    for color in colors.skip(start) {
+        for channel in color.iter_mut() {
+            *channel *= alpha;
+        }
+    }
 }
 
 /// The clip entry a `PushClip`/`PushClipRounded` produces on top of `current`.
@@ -9426,5 +9980,164 @@ mod mask_layer_tests {
         );
         let quads: Vec<_> = quads.into_iter().map(|(r, t)| (xywh(r), t)).collect();
         assert_eq!(quads, vec![((0.0, 0.0, 12.0, 8.0), [0.25, 0.5, 1.0, 1.0])]);
+    }
+}
+
+#[cfg(test)]
+mod opacity_scope_tests {
+    //! `PushOpacity`/`PopOpacity` fade the vertices batched between them.
+    //! The four batches are stood in for by one list of colours; a flush is
+    //! `settle`, emptying the list, `rebase`.
+    use super::*;
+
+    const OPAQUE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+    fn alphas(batch: &[[f32; 4]]) -> Vec<f32> {
+        batch.iter().map(|c| c[3]).collect()
+    }
+
+    fn fade(alpha: f32) -> LayerEffect {
+        LayerEffect::Fade(alpha)
+    }
+
+    /// `Renderer::apply_since` for the colour batch.
+    fn apply(batch: &mut [[f32; 4]], effect: LayerEffect, start: usize) {
+        match effect {
+            LayerEffect::Fade(alpha) => fade_straight(batch.iter_mut(), start, alpha),
+            LayerEffect::ColorMatrix(m) => filter_straight(batch.iter_mut(), start, &m),
+        }
+    }
+
+    fn close(scopes: &mut OpacityScopes, batch: &mut [[f32; 4]]) {
+        let (effect, starts) = scopes.pop().expect("an open scope");
+        apply(batch, effect, starts[0]);
+    }
+
+    #[test]
+    fn a_scope_fades_what_was_batched_inside_it_only() {
+        let mut scopes = OpacityScopes::default();
+        let mut batch = vec![OPAQUE];
+        scopes.push(fade(0.5), [batch.len(); 4]);
+        batch.push(OPAQUE);
+        close(&mut scopes, &mut batch);
+        batch.push(OPAQUE);
+        assert_eq!(alphas(&batch), [1.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn nested_scopes_multiply() {
+        let mut scopes = OpacityScopes::default();
+        let mut batch = Vec::new();
+        scopes.push(fade(0.5), [0; 4]);
+        batch.push(OPAQUE);
+        scopes.push(fade(0.5), [batch.len(); 4]);
+        batch.push(OPAQUE);
+        close(&mut scopes, &mut batch);
+        close(&mut scopes, &mut batch);
+        assert_eq!(alphas(&batch), [0.5, 0.25]);
+    }
+
+    #[test]
+    fn a_flush_inside_a_scope_fades_both_halves_once() {
+        let mut scopes = OpacityScopes::default();
+        let mut batch = vec![OPAQUE];
+        scopes.push(fade(0.5), [batch.len(); 4]);
+        batch.push(OPAQUE);
+        scopes.push(fade(0.5), [batch.len(); 4]);
+        batch.push(OPAQUE);
+
+        // The flush: settle, a second settle before the draw (a flush that
+        // calls another), then the batches are emptied.
+        for _ in 0..2 {
+            let lens = [batch.len(); 4];
+            for (effect, starts) in scopes.settle(lens).into_iter().rev() {
+                apply(&mut batch, effect, starts[0]);
+            }
+        }
+        assert_eq!(alphas(&batch), [1.0, 0.5, 0.25], "what was drawn");
+        batch.clear();
+        scopes.rebase();
+
+        batch.push(OPAQUE);
+        close(&mut scopes, &mut batch);
+        batch.push(OPAQUE);
+        close(&mut scopes, &mut batch);
+        batch.push(OPAQUE);
+        assert_eq!(alphas(&batch), [0.25, 0.5, 1.0], "after the flush");
+    }
+
+    // invert(1) and grayscale(1) as `rustkit_layout::filter` builds them.
+    const INVERT: [f32; 20] = [
+        -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+    ];
+    const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+
+    /// #790 R1 nit 4: off the layered path (past `MAX_OPACITY_LAYERS`, or on
+    /// a page with `backdrop-filter: blur()`) a filter scope used to paint
+    /// its content unfiltered.
+    #[test]
+    fn a_filter_scope_runs_its_matrix_on_what_was_batched_inside_it_only() {
+        let mut scopes = OpacityScopes::default();
+        let mut batch = vec![RED];
+        scopes.push(LayerEffect::ColorMatrix(INVERT), [batch.len(); 4]);
+        batch.push(RED);
+        close(&mut scopes, &mut batch);
+        batch.push(RED);
+        assert_eq!(batch, [RED, [0.0, 1.0, 1.0, 1.0], RED]);
+    }
+
+    #[test]
+    fn nested_filters_apply_inner_first_across_a_flush() {
+        // grayscale-ish row sum then invert differs from invert then the row
+        // sum: a matrix that copies red into every channel, inside invert.
+        let red_everywhere: [f32; 20] = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        let mut scopes = OpacityScopes::default();
+        let mut batch = Vec::new();
+        scopes.push(LayerEffect::ColorMatrix(INVERT), [0; 4]);
+        scopes.push(LayerEffect::ColorMatrix(red_everywhere), [0; 4]);
+        scopes.push(fade(0.5), [0; 4]);
+        batch.push(RED);
+        // A flush in the middle: what was drawn is inner first.
+        for _ in 0..2 {
+            let lens = [batch.len(); 4];
+            for (effect, starts) in scopes.settle(lens).into_iter().rev() {
+                apply(&mut batch, effect, starts[0]);
+            }
+        }
+        // red -> fade .5 -> (1,1,1,.5) -> invert -> (0,0,0,.5).
+        assert_eq!(batch, [[0.0, 0.0, 0.0, 0.5]], "what was drawn");
+        batch.clear();
+        scopes.rebase();
+        batch.push(RED);
+        for _ in 0..3 {
+            close(&mut scopes, &mut batch);
+        }
+        assert_eq!(batch, [[0.0, 0.0, 0.0, 0.5]], "after the flush");
+    }
+
+    #[test]
+    fn a_filter_matrix_clamps() {
+        let mut batch = vec![[0.5, 0.5, 0.5, 1.0]];
+        // brightness(3)
+        let mut m = [0.0; 20];
+        for (i, gain) in [3.0, 3.0, 3.0, 1.0].into_iter().enumerate() {
+            m[i * 6] = gain;
+        }
+        filter_straight(batch.iter_mut(), 0, &m);
+        assert_eq!(batch, [[1.0, 1.0, 1.0, 1.0]]);
+    }
+
+    #[test]
+    fn a_pop_without_a_push_is_ignored() {
+        assert!(OpacityScopes::default().pop().is_none());
+    }
+
+    #[test]
+    fn premultiplied_colours_fade_on_every_channel() {
+        let mut batch = vec![OPAQUE, [0.8, 0.4, 0.2, 0.8]];
+        fade_premultiplied(batch.iter_mut(), 1, 0.5);
+        assert_eq!(batch, vec![OPAQUE, [0.4, 0.2, 0.1, 0.4]]);
     }
 }

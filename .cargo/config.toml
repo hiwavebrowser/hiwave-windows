@@ -1,3 +1,10 @@
+[env]
+# Threads that run page script need more than Rust's 2MB default: Boa
+# re-enters the VM on the native stack for every host callback. Threads
+# that run script also set 16MB themselves (rustkit_js::spawn_script_thread);
+# this covers the rest, test harness threads included. Same block as macOS.
+RUST_MIN_STACK = "8388608"
+
 # Windows: the PE default main-thread stack is 1 MB; macOS gives the main
 # thread 8 MB. RustKit lays out some real pages more than 1 MB deep in
 # recursion, so nine of the top-80 live sites (autotrader, kbb, carmax, walmart,

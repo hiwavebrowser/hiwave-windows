@@ -47,4 +47,6 @@ windows-numerics = "0.2"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# GPU device for the scroll-cost tests
+pollster = "0.4"
 

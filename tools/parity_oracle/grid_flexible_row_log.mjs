@@ -26,6 +26,14 @@ export const BOXES_XYWH = `Array.prototype.map.call(document.querySelectorAll('[
   return e.id + ':' + Math.round(r.left) + ':' + Math.round(r.top) + ':' + Math.round(r.width) + ':' + Math.round(r.height);
 }).join(' ')`;
 
+// "boxes": "xy" gets "id:x:y" (positioned_form_control_cases.json: where a
+// box is placed, apart from how big the engine draws it).
+export const BOXES_XY = `Array.prototype.map.call(document.querySelectorAll('[id]'), function (e) {
+  var r = e.getBoundingClientRect();
+  return e.id + ':' + Math.round(r.left) + ':' + Math.round(r.top);
+}).join(' ')`;
+const EXPR = { xywh: BOXES_XYWH, xy: BOXES_XY };
+
 const data = JSON.parse(readFileSync(FILE, 'utf8'));
 const [width, height] = data.viewport;
 const browser = await chromium.launch(getDeterministicLaunchOptions());
@@ -33,12 +41,14 @@ console.log('chrome ' + browser.version());
 for (const c of data.cases) {
   const page = await browser.newPage({ viewport: { width, height } });
   await page.setContent(c.html);
-  c.chrome_boxes = await page.evaluate(data.boxes === 'xywh' ? BOXES_XYWH : BOXES);
+  // A case file may name its own expression ("expr"), e.g. one that
+  // reads innerText rather than boxes (inner_text_style_cases.json).
+  c.chrome_boxes = await page.evaluate(data.expr || EXPR[data.boxes] || BOXES);
   console.log(c.name + '  ' + c.chrome_boxes);
   if (c.html_longhand) {
     // The same page with the shorthand written out as its longhands.
     await page.setContent(c.html_longhand);
-    c.chrome_boxes_longhand = await page.evaluate(data.boxes === 'xywh' ? BOXES_XYWH : BOXES);
+    c.chrome_boxes_longhand = await page.evaluate(EXPR[data.boxes] || BOXES);
     console.log('  longhands ' + (c.chrome_boxes_longhand === c.chrome_boxes ? 'the same' : c.chrome_boxes_longhand));
   }
   await page.close();

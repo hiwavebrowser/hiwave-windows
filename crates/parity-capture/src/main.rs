@@ -843,9 +843,10 @@ fn script_stats(log: &[ScriptRecord]) -> ScriptStats {
         match record.outcome {
             ScriptOutcome::Ran => stats.ran += 1,
             ScriptOutcome::Threw(_) => stats.threw += 1,
-            ScriptOutcome::Skipped(_) => stats.skipped += 1,
+            ScriptOutcome::Skipped(_) | ScriptOutcome::Nomodule => stats.skipped += 1,
             ScriptOutcome::FetchFailed(_) => stats.fetch_failed += 1,
             ScriptOutcome::OverBudget => stats.over_budget += 1,
+            ScriptOutcome::EngineFailed(_) => stats.threw += 1,
         }
         stats.bytes += record.bytes as u64;
         stats.elapsed_ms += record.elapsed_ms;
@@ -861,8 +862,14 @@ fn script_log_json(log: &[ScriptRecord]) -> serde_json::Value {
                 ScriptOutcome::Ran => ("ran", None),
                 ScriptOutcome::Threw(m) => ("threw", Some(m.clone())),
                 ScriptOutcome::Skipped(why) => ("skipped", Some(why.to_string())),
-                ScriptOutcome::FetchFailed(m) => ("fetch_failed", Some(m.clone())),
+                ScriptOutcome::Nomodule => (
+                    "skipped",
+                    Some("nomodule (skipped, as in module-capable browsers)".to_string()),
+                ),
+                ScriptOutcome::FetchFailed(m) => ("fetch_failed", Some(m.to_string())),
                 ScriptOutcome::OverBudget => ("over_budget", None),
+                // Reported as before the engine marked its own failures.
+                ScriptOutcome::EngineFailed(failure) => ("threw", Some(failure.to_string())),
             };
             serde_json::json!({
                 "source": r.source,

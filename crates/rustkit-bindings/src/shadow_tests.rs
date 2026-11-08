@@ -168,3 +168,87 @@ fn adopted_style_sheets_and_the_small_properties() {
     assert_eq!(thrown(&b, "Object.getOwnPropertyDescriptor(ShadowRoot.prototype, 'mode').get.call({});"), "TypeError");
 }
 
+
+// A shadow root's markup usually starts with its <style>. The template
+// parse behind ShadowRoot.innerHTML dropped `</style>` and put everything
+// after it inside the style.
+#[test]
+fn a_style_first_in_shadow_markup_ends_where_it_ends() {
+    let b = bound();
+    assert_eq!(
+        ev(&b, "var root = host.attachShadow({ mode: 'open' }); root.innerHTML = '<style>p{}</style><p id=in>x</p>'; [root.childNodes.length, root.innerHTML, root.getElementById('in').textContent].join('|')"),
+        "2|<style>p{}</style><p id=\"in\">x</p>|x"
+    );
+    assert_eq!(
+        ev(&b, "var t = document.createElement('template'); t.innerHTML = '<title>t</title><script>1</script><i></i>'; t.content.childNodes.length"),
+        "3"
+    );
+}
+
+fn bound_to(page: &str) -> DomBindings {
+    let b = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+    b.set_document(Rc::new(Document::parse_html(page).unwrap())).unwrap();
+    b
+}
+
+// HTML §4.12.3.1: a parsed <template shadowrootmode> becomes its parent's
+// shadow root; the template leaves the tree.
+#[test]
+fn a_declarative_shadow_root_is_attached_by_the_parser() {
+    let b = bound_to(
+        "<body><div id=h><template shadowrootmode=open><p id=in>in</p><slot></slot></template><b id=l>light</b></div>\
+         <x-c id=c><template shadowrootmode=closed><i></i></template></x-c>\
+         <a id=bad><template shadowrootmode=open><i></i></template></a></body>",
+    );
+    assert_eq!(
+        ev(&b, "var h = document.getElementById('h'), r = h.shadowRoot; [r instanceof ShadowRoot, r.mode, r.host === h, r.innerHTML, h.innerHTML, String(document.getElementById('in')), r.lastChild.assignedElements()[0].id].join('|')"),
+        "true|open|true|<p id=\"in\">in</p><slot></slot>|<b id=\"l\">light</b>|null|l"
+    );
+    // A closed one is attached but not reachable; an <a> cannot host one, so
+    // its template stays an ordinary template.
+    assert_eq!(ev(&b, "[String(document.getElementById('c').shadowRoot), document.getElementById('c').children.length, document.getElementById('bad').firstElementChild.localName].join()"), "null,0,template");
+    // A declarative root is taken over only in its own mode (DOM §4.2.14).
+    assert_eq!(thrown(&b, "document.getElementById('h').attachShadow({ mode: 'closed' });"), "NotSupportedError");
+    // The fragment parser (innerHTML) does not attach declarative roots.
+    assert_eq!(
+        ev(&b, "var p = document.createElement('div'); p.innerHTML = '<div><template shadowrootmode=open><i></i></template></div>'; [String(p.firstChild.shadowRoot), p.firstChild.firstChild.localName].join()"),
+        "null,template"
+    );
+    // Events from inside a declarative root are retargeted to the host.
+    b.evaluate("var log = []; document.addEventListener('ping', function (e) { log.push(e.target.id); }); document.getElementById('h').shadowRoot.getElementById('in').dispatchEvent(new Event('ping', { bubbles: true, composed: true }));").unwrap();
+    assert_eq!(ev(&b, "log.join()"), "h");
+}
+
+// DOM §4.2.3: a shadow root is never inserted, and a host cannot go into its
+// own shadow tree.
+#[test]
+fn a_shadow_root_is_not_insertable_and_a_host_not_into_its_own_shadow() {
+    let b = bound();
+    b.evaluate("var root = host.attachShadow({ mode: 'open' }); root.innerHTML = '<div id=in></div>';").unwrap();
+    assert_eq!(thrown(&b, "document.body.appendChild(root);"), "HierarchyRequestError");
+    assert_eq!(thrown(&b, "root.getElementById('in').appendChild(host);"), "HierarchyRequestError");
+    assert_eq!(thrown(&b, "root.appendChild(document.body);"), "HierarchyRequestError");
+    assert_eq!(ev(&b, "root.childNodes.length + ':' + host.parentNode.localName"), "1:body");
+}
+
+// Slot assignment follows the light tree as it changes.
+#[test]
+fn assignment_follows_slot_attribute_and_child_changes() {
+    let b = bound();
+    b.evaluate("var root = host.attachShadow({ mode: 'open' }); root.innerHTML = '<slot name=x id=sx></slot><slot id=sd></slot>'; var sx = root.getElementById('sx'), sd = root.getElementById('sd'); function ids(s) { return s.assignedElements().map(function (n) { return n.id; }).join('+'); }").unwrap();
+    assert_eq!(ev(&b, "ids(sx) + '|' + ids(sd)"), "a|b");
+    b.evaluate("document.getElementById('b').slot = 'x'; var n = document.createElement('i'); n.id = 'n'; host.insertBefore(n, host.firstChild); document.getElementById('a').remove();").unwrap();
+    assert_eq!(ev(&b, "ids(sx) + '|' + ids(sd) + '|' + (document.getElementById('b').assignedSlot === sx)"), "b|n|true");
+}
+
+// A custom element's constructor attaching its shadow root over the
+// declarative one the server rendered (DOM §4.2.14): no throw, same root.
+#[test]
+fn attach_shadow_over_a_declarative_root_returns_it_emptied() {
+    let b = bound_to("<body><x-el id=h><template shadowrootmode=open><i id=pre></i></template></x-el></body>");
+    assert_eq!(
+        ev(&b, "var h = document.getElementById('h'), before = h.shadowRoot, r = h.attachShadow({ mode: 'open' }); [r === before, r.childNodes.length].join()"),
+        "true,0"
+    );
+    assert_eq!(thrown(&b, "document.getElementById('h').attachShadow({ mode: 'open' });"), "NotSupportedError");
+}

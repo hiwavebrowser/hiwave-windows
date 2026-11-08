@@ -3,12 +3,14 @@
 //! The setter is exact: it replaces the element's children with the
 //! "rendered text fragment", Text nodes split by `<br>` elements.
 //!
-//! The getter runs the "rendered text collection steps", but it reads
-//! each element's display from the UA stylesheet defaults for its tag (and
-//! the `hidden` attribute), not from computed style: the bindings have no
-//! style access. Author CSS that hides an element or changes its display
-//! is not seen. That is the read the pin's §3.4 defers to the rung that
-//! adds a forced style/layout flush.
+//! The getter runs the "rendered text collection steps" on the computed
+//! `display` and `visibility` of the last layout (the caller forces one
+//! after a script write, as for geometry reads). An element the layout has
+//! no style for (no layout yet, or a node outside it) falls back to the UA
+//! stylesheet defaults for its tag and the `hidden` attribute. CH2.E13: the
+//! getter used only those defaults, so author CSS that hid an element or
+//! changed its display was not seen. `white-space` is still read from the
+//! tag (`PRESERVE`).
 
 use rustkit_dom::{Document, Node, NodeType};
 use std::rc::Rc;
@@ -75,18 +77,64 @@ const BLOCK: &[&str] = &[
 /// `pre-wrap` in the UA stylesheet).
 const PRESERVE: &[&str] = &["listing", "plaintext", "pre", "textarea", "xmp"];
 
-fn is_hidden(node: &Node) -> bool {
+/// What the last layout's computed style says about one element.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Computed {
+    /// The `display` keyword (`none`, `block`, `inline`, `flex`, ...).
+    pub display: String,
+    /// `visibility` is `visible`.
+    pub visible: bool,
+}
+
+impl Computed {
+    /// From the `name\tvalue` lines `DomBindings::set_computed_styles`
+    /// publishes. `None` when the lines carry no `display`.
+    pub(crate) fn from_lines(lines: &str) -> Option<Computed> {
+        let mut display = None;
+        let mut visible = true;
+        for line in lines.lines() {
+            match line.split_once('\t') {
+                Some(("display", v)) => display = Some(v.trim().to_string()),
+                Some(("visibility", v)) => visible = v.trim() == "visible",
+                _ => {}
+            }
+        }
+        Some(Computed { display: display?, visible })
+    }
+
+    /// Block-level, or `table-caption`: one required line break each side.
+    fn block_level(&self) -> bool {
+        matches!(
+            self.display.as_str(),
+            "block" | "list-item" | "flex" | "grid" | "table" | "flow-root" | "table-caption"
+        )
+    }
+}
+
+/// The computed style of an element, if the layout has one for it.
+pub(crate) type StyleOf<'a> = &'a dyn Fn(&Node) -> Option<Computed>;
+
+fn is_hidden(node: &Node, style: StyleOf) -> bool {
+    if let Some(c) = style(node) {
+        return c.display == "none";
+    }
     node.tag_name().is_some_and(|t| HIDDEN.contains(&t)) || node.get_attribute("hidden").is_some()
+}
+
+/// `visibility` of an element is `visible` (an element with no computed
+/// style is taken as visible).
+fn is_visible(node: &Node, style: StyleOf) -> bool {
+    style(node).is_none_or(|c| c.visible)
 }
 
 /// Is `node` in a document and outside every UA-hidden subtree? Anything
 /// else is "not being rendered", and its innerText is its textContent.
-fn is_rendered(node: &Rc<Node>) -> bool {
+fn is_rendered(node: &Rc<Node>, style: StyleOf) -> bool {
     let mut current = Some(node.clone());
     while let Some(n) = current {
         match n.node_type {
             NodeType::Document => return true,
-            NodeType::Element { .. } if is_hidden(&n) => return false,
+            NodeType::Element { .. } if is_hidden(&n, style) => return false,
             _ => {}
         }
         current = n.parent();
@@ -108,8 +156,8 @@ fn preserves_space(node: &Rc<Node>) -> bool {
 /// The rendered text, built as the collection steps walk the tree. White
 /// space collapses as it arrives: a run of collapsible spaces is held as
 /// one pending space, written only if more text follows on the same line.
-#[derive(Default)]
-struct Collector {
+struct Collector<'a> {
+    style: StyleOf<'a>,
     out: String,
     /// The required line break count waiting to be written (the largest of
     /// a run; dropped if no text follows).
@@ -117,7 +165,7 @@ struct Collector {
     space: bool,
 }
 
-impl Collector {
+impl Collector<'_> {
     fn flush_breaks(&mut self) {
         if self.breaks > 0 && !self.out.is_empty() {
             self.out.push_str(&"\n".repeat(self.breaks));
@@ -159,16 +207,32 @@ impl Collector {
 
     fn walk(&mut self, node: &Rc<Node>) {
         match &node.node_type {
-            NodeType::Text(data) => self.text(data, preserves_space(node)),
+            NodeType::Text(data) => {
+                // A text node's `visibility` is its parent's.
+                if node.parent().is_some_and(|p| !is_visible(&p, self.style)) {
+                    return;
+                }
+                self.text(data, preserves_space(node))
+            }
             NodeType::Element { tag_name, .. } => {
-                if is_hidden(node) {
+                if is_hidden(node, self.style) {
+                    return;
+                }
+                // Not `visible`: its children still count (one of them can
+                // be visible again), but nothing of its own does, not its
+                // line breaks, a `<br>` or a cell's tab.
+                if !is_visible(node, self.style) {
+                    for child in node.children() {
+                        self.walk(&child);
+                    }
                     return;
                 }
                 let tag = tag_name.as_str();
-                let before = match tag {
-                    "p" => 2,
-                    "tr" => 0,
-                    t if BLOCK.contains(&t) => 1,
+                let before = match (tag, (self.style)(node)) {
+                    ("p", _) => 2,
+                    ("tr", _) => 0,
+                    (_, Some(c)) => usize::from(c.block_level()),
+                    (t, None) if BLOCK.contains(&t) => 1,
                     _ => 0,
                 };
                 if tag == "br" {
@@ -231,12 +295,12 @@ fn next_row(row: &Rc<Node>) -> bool {
     }
 }
 
-/// The innerText getter.
-pub(crate) fn inner_text(element: &Rc<Node>) -> String {
-    if !is_rendered(element) {
+/// The innerText getter, on the computed style `style` gives.
+pub(crate) fn inner_text(element: &Rc<Node>, style: StyleOf) -> String {
+    if !is_rendered(element, style) {
         return element.text_content();
     }
-    let mut collector = Collector::default();
+    let mut collector = Collector { style, out: String::new(), breaks: 0, space: false };
     for child in element.children() {
         collector.walk(&child);
     }

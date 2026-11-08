@@ -160,6 +160,11 @@ pub trait TreeSink {
         self.append_child(parent, table);
     }
 
+    /// Add each of `attrs` that `target` does not already have (HTML
+    /// §13.2.6.4.7, a second `<html>` or `<body>` start tag). The existing
+    /// value wins. The default ignores them.
+    fn add_attrs_if_missing(&mut self, _target: Self::NodeId, _attrs: Vec<(String, String)>) {}
+
     /// Called when a parse error is encountered.
     /// The default implementation ignores errors.
     fn parse_error(&mut self, _error: &str) {

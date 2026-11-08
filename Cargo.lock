@@ -119,6 +119,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2fb6cfd47bf496ff64095c20eaba0c201404ee38714d4142fcfa1dc334fcc7a"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5c1865780388bfa186411ab5f247819487fc4864c6e9c3106611fa347586e1"
+dependencies = [
+ "alloc-no-stdlib",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -645,8 +660,6 @@ dependencies = [
 [[package]]
 name = "boa_engine"
 version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d6aaf7fdc4299df68adb67e1a5440a51d34630a1f5271b9698fd74bc97b60d9"
 dependencies = [
  "aligned-vec",
  "arrayvec",
@@ -771,6 +784,16 @@ dependencies = [
  "rustc-hash 2.1.3",
  "ryu-js",
  "static_assertions",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "6.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97d9071e5b45944c5a9c06baf13a7a65ffa2c88c204015967852c90869692c05"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
 ]
 
 [[package]]
@@ -5311,7 +5334,9 @@ name = "rustkit-bindings"
 version = "0.1.0"
 dependencies = [
  "num_cpus",
+ "rustkit-canvas",
  "rustkit-core",
+ "rustkit-css",
  "rustkit-dom",
  "rustkit-js",
  "serde",
@@ -5433,6 +5458,7 @@ dependencies = [
  "rustkit-core",
  "rustkit-css",
  "rustkit-dom",
+ "rustkit-http",
  "rustkit-image",
  "rustkit-js",
  "rustkit-layout",
@@ -5440,12 +5466,14 @@ dependencies = [
  "rustkit-renderer",
  "rustkit-svg",
  "rustkit-viewhost",
+ "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "url",
+ "wgpu 24.0.5",
  "windows 0.58.0",
 ]
 
@@ -5464,12 +5492,15 @@ name = "rustkit-http"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "brotli-decompressor",
  "bytes",
  "flate2",
  "futures",
  "h2",
  "http",
+ "httpdate",
  "native-tls",
+ "psl",
  "rustls",
  "rustls-native-certs",
  "thiserror 1.0.69",
@@ -5586,6 +5617,7 @@ dependencies = [
  "bytemuck",
  "hashbrown 0.14.5",
  "png",
+ "pollster",
  "rustkit-common",
  "rustkit-css",
  "rustkit-layout",
@@ -8335,11 +8367,3 @@ dependencies = [
  "syn 2.0.111",
  "winnow 0.7.14",
 ]
-
-[[patch.unused]]
-name = "boa_gc"
-version = "0.20.0"
-
-[[patch.unused]]
-name = "boa_parser"
-version = "0.20.0"

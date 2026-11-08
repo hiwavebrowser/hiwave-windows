@@ -1,0 +1,70 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "expr": "encodeURIComponent(document.getElementById('t').innerText)",
+ "cases": [
+  {
+   "name": "author-display-none-span-is-skipped",
+   "html": "<!doctype html><html><head><style>.h{display:none}</style></head><body><div id=t>a<span class=h>hidden</span>b</div></body></html>",
+   "chrome_boxes": "ab"
+  },
+  {
+   "name": "inline-style-display-none-block-is-skipped-with-its-breaks",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<div style=display:none>x</div>b</div></body></html>",
+   "chrome_boxes": "ab"
+  },
+  {
+   "name": "visibility-hidden-text-is-skipped",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<span style=visibility:hidden>x</span>b</div></body></html>",
+   "chrome_boxes": "ab"
+  },
+  {
+   "name": "visible-child-of-visibility-hidden-is-kept",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<span style=visibility:hidden>x<span style=visibility:visible>v</span>y</span>b</div></body></html>",
+   "chrome_boxes": "avb"
+  },
+  {
+   "name": "visibility-hidden-block-keeps-no-breaks-of-its-own",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<div style=visibility:hidden>x</div>b</div></body></html>",
+   "chrome_boxes": "ab"
+  },
+  {
+   "name": "visibility-collapse-is-hidden",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<span style=visibility:collapse>x</span>b</div></body></html>",
+   "chrome_boxes": "ab"
+  },
+  {
+   "name": "display-block-span-breaks-lines",
+   "html": "<!doctype html><html><head></head><body><div id=t><span style=display:block>a</span><span style=display:block>b</span></div></body></html>",
+   "chrome_boxes": "a%0Ab"
+  },
+  {
+   "name": "display-inline-div-does-not-break",
+   "html": "<!doctype html><html><head></head><body><div id=t><div style=display:inline>a</div><div style=display:inline>b</div></div></body></html>",
+   "chrome_boxes": "ab"
+  },
+  {
+   "name": "br-and-block-newlines",
+   "html": "<!doctype html><html><head></head><body><div id=t>one<br>two<div>three</div>four</div></body></html>",
+   "chrome_boxes": "one%0Atwo%0Athree%0Afour"
+  },
+  {
+   "name": "display-none-element-reads-its-text-content",
+   "html": "<!doctype html><html><head></head><body><div id=t style=display:none>a  <b>b</b>\n c</div></body></html>",
+   "chrome_boxes": "a%20%20b%0A%20c"
+  },
+  {
+   "name": "element-under-author-hidden-ancestor-reads-text-content",
+   "html": "<!doctype html><html><head><style>.h{display:none}</style></head><body><div class=h><p id=t>x  <i>y</i></p></div></body></html>",
+   "chrome_boxes": "x%20%20y"
+  },
+  {
+   "name": "class-toggled-hidden-by-script-before-the-read",
+   "html": "<!doctype html><html><head><style>.off{display:none}</style></head><body><div id=t>a<span id=s>x</span>b</div><script>document.getElementById('s').className='off'</script></body></html>",
+   "chrome_boxes": "ab"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

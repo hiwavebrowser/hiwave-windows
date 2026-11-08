@@ -232,7 +232,8 @@ fn author_css_beats_presentational_attributes() {
     );
     assert_eq!(tables(&root)[0].style.width, rustkit_css::Length::Px(200.0));
     let c = &cells(&root)[0].style;
-    assert_eq!(c.padding_top, rustkit_css::Length::Zero);
+    // An authored `0` is `0px` (CH2.B14), not the unset `Zero`.
+    assert_eq!(c.padding_top, rustkit_css::Length::Px(0.0));
     assert_eq!(c.background_color, rustkit_css::Color::from_rgb(0, 0, 255));
 }
 

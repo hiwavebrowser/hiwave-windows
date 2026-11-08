@@ -7,8 +7,9 @@
 //
 // Delivery: `__rkObserversTick()` computes every observer's records from the
 // geometry as it stands and calls the callbacks. It runs from a timer after
-// the first observe() (the initial notification), and the engine runs it after
-// a layout and after a scroll (`DomBindings::tick_observers`). Callbacks that
+// the first observe() (the initial notification) unless script has written to
+// the DOM since the last layout, and the engine runs it after a layout and
+// after a scroll (`DomBindings::tick_observers`). Callbacks that
 // observe or mutate during the tick are picked up by the next one (bounded).
 //
 // Stated limits: IntersectionObserver clips by the viewport (or the `root`
@@ -20,7 +21,7 @@
     if (!document || !g.Element) return;
 
     function report(e) {
-        try { if (g.__rustkit_errors) g.__rustkit_errors.push(String(e)); } catch (_) {}
+        try { __rk.reportError(e); } catch (_) {}
     }
     function requireCallback(ctor, cb) {
         if (typeof cb !== 'function') {
@@ -48,7 +49,15 @@
     function schedule() {
         if (scheduled || typeof g.setTimeout !== 'function') return;
         scheduled = true;
-        g.setTimeout(function () { scheduled = false; tick(); }, 0);
+        g.setTimeout(function () {
+            scheduled = false;
+            // Script wrote to the DOM and the engine has not laid it out yet:
+            // the geometry is stale, and an element inserted since has no box
+            // at all (it would read as an empty rectangle at the origin, "in
+            // view"). The engine reports after the layout the write is owed.
+            if (typeof g.__rustkit_dom_dirty === 'function' && g.__rustkit_dom_dirty()) return;
+            tick();
+        }, 0);
     }
     function track(o) { if (observers.indexOf(o) < 0) observers.push(o); }
     function untrackIfEmpty(o) {
@@ -122,7 +131,9 @@
     function area(r) { return Math.max(0, r.w) * Math.max(0, r.h); }
     function rootBounds(io) {
         var base;
-        if (io.root && io.root.nodeType === 1) {
+        // The root element scrolls with the viewport and is clipped by it:
+        // as a root it is the viewport, now that it has a box of its own.
+        if (io.root && io.root.nodeType === 1 && io.root !== document.documentElement) {
             var b = io.root.getBoundingClientRect();
             base = { x: b.left, y: b.top, w: b.width, h: b.height };
         } else {

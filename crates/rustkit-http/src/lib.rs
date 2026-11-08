@@ -25,6 +25,8 @@ use tracing::{debug, trace, warn};
 use url::Url;
 
 mod addr;
+pub mod cookies;
+pub use cookies::{CookieJar, CookieSource};
 pub use addr::{is_local_name, is_public_ip, AddressPolicy, Resolve, ResolveFuture, SystemResolver};
 
 /// HTTP client errors.
@@ -35,6 +37,12 @@ pub enum HttpError {
 
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
+
+    /// The host name did not resolve (or resolved to no address). The same
+    /// text as [`ConnectionFailed`](Self::ConnectionFailed); its own variant
+    /// so a caller tells the two apart without reading the text.
+    #[error("Connection failed: {0}")]
+    LookupFailed(String),
 
     #[error("TLS error: {0}")]
     TlsError(String),
@@ -74,6 +82,12 @@ pub struct Response {
     pub body: Bytes,
     /// Final URL (after redirects).
     pub url: Url,
+    /// Body bytes as they came over the wire, before any
+    /// `Content-Encoding` was undone (`body.len()` after).
+    pub encoded_body_size: u64,
+    /// The redirects followed to get here, in order: each URL that answered
+    /// with a redirect, and its status.
+    pub redirect_chain: Vec<(Url, StatusCode)>,
 }
 
 impl Response {
@@ -226,6 +240,9 @@ pub struct Client {
     address_policy: AddressPolicy,
     resolver: Arc<dyn Resolve>,
     max_body: Option<usize>,
+    /// Where `Set-Cookie` goes and `Cookie` comes from, at every hop; `None`
+    /// sends and keeps no cookies.
+    cookies: Option<Arc<CookieJar>>,
     #[cfg(not(feature = "native-tls"))]
     tls_connector: TlsConnector,
     #[cfg(feature = "native-tls")]
@@ -251,6 +268,7 @@ impl Client {
             address_policy: AddressPolicy::default(),
             resolver: Arc::new(SystemResolver),
             max_body: None,
+            cookies: None,
             tls_connector,
         })
     }
@@ -315,6 +333,7 @@ impl Client {
             address_policy: AddressPolicy::default(),
             resolver: Arc::new(SystemResolver),
             max_body: None,
+            cookies: None,
             tls_connector,
         })
     }
@@ -372,6 +391,17 @@ impl Client {
     pub fn with_follow_redirects(mut self, follow: bool) -> Self {
         self.config.follow_redirects = follow;
         self
+    }
+
+    /// The same client with this cookie jar, or with none.
+    pub fn with_cookies(mut self, jar: Option<Arc<CookieJar>>) -> Self {
+        self.cookies = jar;
+        self
+    }
+
+    /// The jar this client sends and keeps cookies with.
+    pub fn cookie_jar(&self) -> Option<&Arc<CookieJar>> {
+        self.cookies.as_ref()
     }
 
     /// The same client, refusing any response body (after decoding) larger
@@ -434,6 +464,16 @@ impl Client {
 
         debug!(method = %method, url = %url, "HTTP request");
 
+        // The jar's cookies for this hop; a caller's own Cookie header stands.
+        let mut headers = headers;
+        if let Some(jar) = &self.cookies {
+            if !headers.contains_key(http::header::COOKIE) {
+                if let Some(value) = jar.header_for(&url, false).and_then(|v| HeaderValue::from_str(&v).ok()) {
+                    headers.insert(http::header::COOKIE, value);
+                }
+            }
+        }
+
         // Connect with timeout
         let response = timeout(self.config.timeout, async {
             match scheme {
@@ -445,6 +485,15 @@ impl Client {
         .await
         .map_err(|_| HttpError::Timeout)??;
 
+        // Every hop's Set-Cookie is kept, a redirect's included.
+        if let Some(jar) = &self.cookies {
+            for value in response.headers.get_all(http::header::SET_COOKIE) {
+                if let Ok(value) = value.to_str() {
+                    jar.set(&url, value, CookieSource::Http);
+                }
+            }
+        }
+
         // Handle redirects
         if self.config.follow_redirects && response.status.is_redirection() {
             if let Some(location) = response.header("location") {
@@ -452,8 +501,11 @@ impl Client {
                     .join(location)
                     .map_err(|e| HttpError::InvalidUrl(e.to_string()))?;
                 debug!(from = %url, to = %redirect_url, "Following redirect");
-                return Box::pin(self.request_url(Method::GET, redirect_url, HeaderMap::new(), None, redirect_count + 1))
-                    .await;
+                let mut followed =
+                    Box::pin(self.request_url(Method::GET, redirect_url, HeaderMap::new(), None, redirect_count + 1))
+                        .await?;
+                followed.redirect_chain.insert(0, (url, response.status));
+                return Ok(followed);
             }
         }
 
@@ -463,6 +515,8 @@ impl Client {
             headers: response.headers,
             body: response.body,
             url,
+            encoded_body_size: response.encoded_len,
+            redirect_chain: Vec::new(),
         })
     }
 
@@ -571,6 +625,7 @@ impl Client {
             let _ = recv.flow_control().release_capacity(chunk.len());
         }
 
+        let encoded_len = collected.len() as u64;
         let body = decode_content_encoding_capped(Bytes::from(collected), &mut response_headers, self.max_body)?;
 
         Ok(RawResponse {
@@ -578,6 +633,7 @@ impl Client {
             version: Version::HTTP_2,
             headers: response_headers,
             body,
+            encoded_len,
         })
     }
 
@@ -742,6 +798,7 @@ image/avif,image/webp,*/*;q=0.8",
 
         // Read body
         let body = read_body(&mut reader, &response_headers, self.max_body).await?;
+        let encoded_len = body.len() as u64;
         let body = decode_content_encoding_capped(body, &mut response_headers, self.max_body)?;
 
         trace!(status = %status, body_len = body.len(), "Response received");
@@ -751,6 +808,7 @@ image/avif,image/webp,*/*;q=0.8",
             version,
             headers: response_headers,
             body,
+            encoded_len,
         })
     }
 }
@@ -767,6 +825,8 @@ struct RawResponse {
     version: Version,
     headers: HeaderMap,
     body: Bytes,
+    /// Body length before `Content-Encoding` was undone.
+    encoded_len: u64,
 }
 
 impl RawResponse {
@@ -779,6 +839,7 @@ impl RawResponse {
 /// Client builder for configuring HTTP client.
 pub struct ClientBuilder {
     config: ClientConfig2,
+    cookies: bool,
 }
 
 impl ClientBuilder {
@@ -786,6 +847,7 @@ impl ClientBuilder {
     pub fn new() -> Self {
         Self {
             config: ClientConfig2::default(),
+            cookies: false,
         }
     }
 
@@ -808,15 +870,16 @@ impl ClientBuilder {
         self
     }
 
-    /// Placeholder for cookie_store (not implemented in minimal client).
-    pub fn cookie_store(self, _enabled: bool) -> Self {
-        // Cookie support would require additional implementation
+    /// Keep and send cookies, in a jar of the client's own.
+    pub fn cookie_store(mut self, enabled: bool) -> Self {
+        self.cookies = enabled;
         self
     }
 
     /// Build the client.
     pub fn build(self) -> Result<Client, HttpError> {
-        Client::with_config(self.config)
+        let jar = self.cookies.then(|| Arc::new(CookieJar::new()));
+        Ok(Client::with_config(self.config)?.with_cookies(jar))
     }
 }
 
@@ -850,8 +913,9 @@ fn parse_status_line(line: &str) -> Result<(Version, StatusCode), HttpError> {
     Ok((version, status))
 }
 
-/// The `Accept-Encoding` sent on requests: what `decode_content_encoding`
-/// can undo.
+/// The `Accept-Encoding` sent on requests. `decode_content_encoding` can undo
+/// all of it, and `br` as well: brotli is decoded when a server sends it
+/// unasked, but asking for it would change what every server sends us.
 const ACCEPT_ENCODING: &str = "gzip, deflate";
 
 /// Connection-specific header fields (RFC 9113 §8.1.2) plus `host`
@@ -928,7 +992,7 @@ image/avif,image/webp,*/*;q=0.8",
 /// `Content-Length` (which described the encoded bytes).
 ///
 /// A body cut off mid-stream keeps what decoded, as a truncated chunked
-/// body does. An encoding we never advertised is passed through untouched.
+/// body does. An encoding we cannot undo is passed through untouched.
 #[cfg(test)]
 fn decode_content_encoding(body: Bytes, headers: &mut HeaderMap) -> Result<Bytes, HttpError> {
     decode_content_encoding_capped(body, headers, None)
@@ -967,6 +1031,8 @@ fn decode_content_encoding_capped(
             }
             Err(e) => Err(e),
         },
+        // Not in `ACCEPT_ENCODING`, and sent all the same by some servers.
+        "br" => brotli_decompressor::Decompressor::new(&body[..], 4096).take(limit).read_to_end(&mut out),
         other => {
             warn!(encoding = other, "Unsupported Content-Encoding; body left encoded");
             return Ok(body);
@@ -1336,6 +1402,32 @@ mod tests {
         assert!(!is_h2_illegal_request_header("x-custom"));
     }
 
+    /// #707: before this, `cookie_store(true)` was a no-op and
+    /// `document.cookie` / `Set-Cookie` stayed inert.
+    #[test]
+    fn cookie_store_true_installs_a_jar_and_false_leaves_none() {
+        let with = ClientBuilder::new()
+            .cookie_store(true)
+            .build()
+            .expect("client with jar");
+        assert!(with.cookie_jar().is_some(), "cookie_store(true) must install a jar");
+
+        let without = ClientBuilder::new()
+            .cookie_store(false)
+            .build()
+            .expect("client without jar");
+        assert!(
+            without.cookie_jar().is_none(),
+            "cookie_store(false) must leave the client jar-less"
+        );
+
+        let default = ClientBuilder::new().build().expect("default client");
+        assert!(
+            default.cookie_jar().is_none(),
+            "the builder default is off until cookie_store(true)"
+        );
+    }
+
     #[test]
     fn test_parse_status_line() {
         let (version, status) = parse_status_line("HTTP/1.1 200 OK\r\n").unwrap();
@@ -1423,6 +1515,8 @@ mod tests {
             headers,
             body: Bytes::from("Hello"),
             url: Url::parse("https://example.com").unwrap(),
+            encoded_body_size: 5,
+            redirect_chain: Vec::new(),
         };
 
         assert!(response.is_success());
@@ -1464,7 +1558,7 @@ mod tests {
         ));
     }
 
-    fn gzip(data: &[u8]) -> Vec<u8> {
+    pub(super) fn gzip(data: &[u8]) -> Vec<u8> {
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         std::io::Write::write_all(&mut enc, data).unwrap();
         enc.finish().unwrap()
@@ -1596,9 +1690,97 @@ mod tests {
         let partial = decode("gzip", cut).unwrap();
         assert!(!partial.is_empty() && big.starts_with(&partial));
 
-        // Never advertised: left alone.
-        assert_eq!(&decode("br", b"xyz".to_vec()).unwrap()[..], b"xyz");
+        // Cannot be undone here: left alone.
+        assert_eq!(&decode("zstd", b"xyz".to_vec()).unwrap()[..], b"xyz");
         assert!(decode("gzip", b"not gzip".to_vec()).is_err());
+    }
+
+    /// `"hello hello hello hello world"` fifty times (1450 bytes), as Node's
+    /// `zlib.brotliCompressSync` encodes it.
+    const BROTLI_HELLO: [u8; 26] = [
+        0x1b, 0xa9, 0x05, 0xe0, 0x8c, 0x94, 0x6e, 0xde, 0x44, 0x55, 0x86, 0x96, 0x6c, 0x20, 0x6f,
+        0x39, 0xc8, 0x3c, 0x86, 0xd5, 0x81, 0x13, 0xe2, 0x88, 0x8f, 0x1a,
+    ];
+
+    /// Some servers send `Content-Encoding: br` to a client that did not ask
+    /// for it (seen on web fonts in a hand test); the body must still reach
+    /// the caller as the resource's bytes.
+    #[test]
+    fn content_encoding_decodes_brotli_sent_unasked() {
+        let text = b"hello hello hello hello world".repeat(50);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("content-encoding", HeaderValue::from_static("br"));
+        headers.insert("content-length", HeaderValue::from_static("26"));
+        let decoded = decode_content_encoding(Bytes::from(BROTLI_HELLO.to_vec()), &mut headers).unwrap();
+        assert_eq!(&decoded[..], &text[..]);
+        assert!(headers.get("content-encoding").is_none());
+        assert!(headers.get("content-length").is_none());
+
+        // The size cap holds for brotli as for gzip: 26 bytes must not become
+        // more than the caller allows.
+        let mut headers = HeaderMap::new();
+        headers.insert("content-encoding", HeaderValue::from_static("br"));
+        let capped = decode_content_encoding_capped(Bytes::from(BROTLI_HELLO.to_vec()), &mut headers, Some(1000));
+        assert!(matches!(capped, Err(HttpError::BodyTooLarge(1000))));
+
+        // A body that is not brotli is an error, as for gzip, and so is one
+        // cut off before anything decoded.
+        let decode = |body: Vec<u8>| {
+            let mut headers = HeaderMap::new();
+            headers.insert("content-encoding", HeaderValue::from_static("br"));
+            decode_content_encoding(Bytes::from(body), &mut headers)
+        };
+        assert!(decode(vec![0xff; 16]).is_err());
+        assert!(decode(BROTLI_HELLO[..20].to_vec()).is_err());
+
+        // We still do not ask for it.
+        assert!(!ACCEPT_ENCODING.contains("br"));
+    }
+
+    /// The same over a socket: the request asks for gzip and deflate only,
+    /// the server answers in brotli, the caller gets the text.
+    #[test]
+    fn a_brotli_response_to_a_request_that_did_not_ask_is_decoded() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Encoding: br\r\nContent-Length: 26\r\n\r\n")
+                .unwrap();
+            stream.write_all(&BROTLI_HELLO).unwrap();
+            String::from_utf8_lossy(&request).to_ascii_lowercase()
+        });
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = Client::builder().build().unwrap();
+        let response = rt
+            .block_on(client.request(
+                Method::GET,
+                &format!("http://127.0.0.1:{port}/"),
+                HeaderMap::new(),
+                None,
+            ))
+            .unwrap();
+
+        let request = server.join().unwrap();
+        assert!(request.contains("\r\naccept-encoding: gzip, deflate\r\n"), "{request}");
+        assert_eq!(response.text().unwrap(), "hello hello hello hello world".repeat(50));
+        assert!(response.headers.get("content-encoding").is_none());
     }
 
     #[test]
@@ -1689,6 +1871,42 @@ mod governed_tests {
         assert_eq!(r.status.as_u16(), 302);
         assert_eq!(r.header("location"), Some(&format!("http://127.0.0.1:{target_port}/x")[..]));
         assert_eq!(target_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_followed_redirect_chain_and_the_encoded_size_are_kept() {
+        let body = super::tests::gzip(b"<p>the real page</p>");
+        let mut reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        reply.extend_from_slice(&body);
+        let (target_port, _) = serve(reply).await;
+        let hop = format!(
+            "HTTP/1.1 301 Moved Permanently\r\nLocation: http://127.0.0.1:{target_port}/end\r\nContent-Length: 0\r\n\r\n"
+        );
+        let (hop_port, _) = serve(hop.into_bytes()).await;
+        let first = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{hop_port}/hop\r\nContent-Length: 0\r\n\r\n"
+        );
+        let (port, _) = serve(first.into_bytes()).await;
+        let r = client().get(&format!("http://127.0.0.1:{port}/start")).await.unwrap();
+        assert_eq!(r.text().unwrap(), "<p>the real page</p>");
+        assert_eq!(r.encoded_body_size, body.len() as u64);
+        let chain: Vec<(String, u16)> = r
+            .redirect_chain
+            .iter()
+            .map(|(url, status)| (url.to_string(), status.as_u16()))
+            .collect();
+        assert_eq!(
+            chain,
+            vec![
+                (format!("http://127.0.0.1:{port}/start"), 302),
+                (format!("http://127.0.0.1:{hop_port}/hop"), 301),
+            ]
+        );
+        assert_eq!(r.url.as_str(), format!("http://127.0.0.1:{target_port}/end"));
     }
 
     #[tokio::test]

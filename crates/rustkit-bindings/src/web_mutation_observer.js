@@ -25,7 +25,7 @@
     var HTML_NS = 'http://www.w3.org/1999/xhtml';
 
     function report(e) {
-        try { if (g.__rustkit_errors) g.__rustkit_errors.push(String(e)); } catch (_) {}
+        try { __rk.reportError(e); } catch (_) {}
     }
     function slice(list) { return Array.prototype.slice.call(list); }
 

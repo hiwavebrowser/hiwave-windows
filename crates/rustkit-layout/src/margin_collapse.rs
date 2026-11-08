@@ -145,6 +145,11 @@ pub fn establishes_bfc(style: &ComputedStyle, float: Float) -> bool {
         return true;
     }
 
+    // A line-clamped -webkit-box is a flow-root (Chrome's computed display).
+    if style.line_clamp().is_some() {
+        return true;
+    }
+
     // display: inline-block creates BFC
     if style.display.is_inline_block() {
         return true;

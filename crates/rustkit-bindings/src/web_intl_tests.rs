@@ -580,3 +580,30 @@ fn intl_segmenter_grapheme_word_and_sentence() {
         "undefined,undefined"
     );
 }
+
+/// yahoo's locale helper runs `new Intl.Locale(lang)` and reads `language`
+/// and `region` while React renders the page; without `Intl.Locale` the
+/// render throws "not a constructor".
+#[test]
+fn intl_locale_parses_a_tag_its_keywords_and_options() {
+    let b = bindings();
+    assert_eq!(
+        ev(
+            &b,
+            "var r = [], L = Intl.Locale, a = new L('EN-us'); \
+             r.push(typeof L, Object.prototype.toString.call(a), String(a), a.language, a.region, \
+                    String(a.script), a.baseName, a.language.toLowerCase() + '-' + (a.region ?? 'x').toLowerCase()); \
+             var z = new L('zh-hant-tw-u-ca-chinese-hc-h12'); \
+             r.push(z.toString(), z.script, z.baseName, z.calendar, z.hourCycle, String(z.numeric)); \
+             var o = new L('en', { region: 'gb', calendar: 'gregory', numeric: true }); \
+             r.push(o.toString(), o.region, o.numeric, o.calendar); \
+             r.push(new L(a).toString(), new Intl.NumberFormat(a).resolvedOptions().locale); \
+             [function () { return new L('x'); }, function () { return new L(); }, function () { return L('en'); }] \
+                 .forEach(function (f) { try { f(); r.push('no throw'); } catch (e) { r.push(e.name); } }); \
+             r.join(',')"
+        ),
+        "function,[object Intl.Locale],en-US,en,US,undefined,en-US,en-us,\
+         zh-Hant-TW-u-ca-chinese-hc-h12,Hant,zh-Hant-TW,chinese,h12,false,\
+         en-GB-u-ca-gregory-kn,GB,true,gregory,en-US,en-US,RangeError,TypeError,TypeError"
+    );
+}

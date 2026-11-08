@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html><head><style>
+body { margin: 0; font: 16px sans-serif; }
+#cmp-frame { position: fixed; top: 0; left: 0; width: 100%; height: 100%; border: 0; z-index: 2147483647; }
+</style></head>
+<body>
+<article><h1>Headline</h1><p>Article text under the overlay.</p></article>
+<iframe id="cmp-frame" title="Consent" srcdoc="<!DOCTYPE html><body style='margin:0;background:rgba(0,0,0,0.5)'><div style='margin:200px auto;width:400px;padding:24px;background:#fff'><p>We use cookies.</p><button id=agree style='width:120px;height:40px' onclick='parent.postMessage(&quot;agree&quot;, &quot;*&quot;)'>Agree</button></div></body>"></iframe>
+<script>
+window.__heard = [];
+// The button is in the frame's document; the page hears the choice.
+window.__agree = null;
+window.addEventListener('message', function (e) {
+  if (e.data === 'agree') { __heard.push('message:agree'); document.getElementById('cmp-frame').remove(); }
+});
+</script>
+</body></html>

@@ -1455,6 +1455,24 @@ impl TextShaper {
     ) -> Result<ShapedRun, TextError> {
         use std::cell::RefCell;
 
+        // `font-size: 0`: no glyph, no advance, no extent. Core Text is not
+        // asked: it answers a size of 0 with its default size, so text that
+        // a page had hidden this way was measured about 12px tall.
+        if size <= 0.0 {
+            return Ok(ShapedRun {
+                text: text.to_string(),
+                glyphs: Vec::new(),
+                font_family: font_chain.primary.clone(),
+                font_weight: weight,
+                font_style: style,
+                font_stretch: stretch,
+                font_size: 0.0,
+                metrics: TextMetrics::with_font_size(0.0),
+                direction: TextDirection::Ltr,
+                face: None,
+            });
+        }
+
         type Key = (String, String, Vec<String>, u16, u8, u8, u32);
         struct Memo {
             generation: u64,

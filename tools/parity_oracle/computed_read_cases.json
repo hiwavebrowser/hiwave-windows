@@ -1,0 +1,2161 @@
+{
+ "oracle": "143.0.7499.4",
+ "families": {
+  "transform": [
+   {
+    "prop": "transform",
+    "value": "rotate(10deg)",
+    "chrome": "matrix(0.984808, 0.173648, -0.173648, 0.984808, 0, 0)"
+   },
+   {
+    "prop": "transform",
+    "value": "translate(10px,5px)",
+    "chrome": "matrix(1, 0, 0, 1, 10, 5)"
+   },
+   {
+    "prop": "transform",
+    "value": "scale(0.5)",
+    "chrome": "matrix(0.5, 0, 0, 0.5, 0, 0)"
+   },
+   {
+    "prop": "transform",
+    "value": "skew(10deg,20deg)",
+    "chrome": "matrix(1, 0.36397, 0.176327, 1, 0, 0)"
+   },
+   {
+    "prop": "transform",
+    "value": "matrix(1,2,3,4,5,6)",
+    "chrome": "matrix(1, 2, 3, 4, 5, 6)"
+   },
+   {
+    "prop": "transform",
+    "value": "translate(-50%,-50%)",
+    "chrome": "matrix(1, 0, 0, 1, -50, -25)"
+   },
+   {
+    "prop": "transform",
+    "value": "translateX(1em)",
+    "chrome": "matrix(1, 0, 0, 1, 16, 0)"
+   },
+   {
+    "prop": "transform",
+    "value": "rotate(45deg) translate(10px,0)",
+    "chrome": "matrix(0.707107, 0.707107, -0.707107, 0.707107, 7.07107, 7.07107)"
+   },
+   {
+    "prop": "transform",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "transform",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "transform",
+    "value": "rotate(10deg)",
+    "base": "display:inline",
+    "chrome": "matrix(0.984808, 0.173648, -0.173648, 0.984808, 0, 0)"
+   },
+   {
+    "prop": "transform-origin",
+    "value": "",
+    "base": "display:inline",
+    "chrome": "0px 0px"
+   },
+   {
+    "prop": "translate",
+    "value": "10px 5px",
+    "chrome": "10px 5px"
+   },
+   {
+    "prop": "translate",
+    "value": "10px",
+    "chrome": "10px"
+   },
+   {
+    "prop": "translate",
+    "value": "50% 5px",
+    "chrome": "50% 5px"
+   },
+   {
+    "prop": "rotate",
+    "value": "10deg",
+    "chrome": "10deg"
+   },
+   {
+    "prop": "scale",
+    "value": "0.5",
+    "chrome": "0.5"
+   },
+   {
+    "prop": "scale",
+    "value": "2 3",
+    "chrome": "2 3"
+   },
+   {
+    "prop": "translate",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "rotate",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "scale",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "transform-origin",
+    "value": "0 0",
+    "chrome": "0px 0px"
+   },
+   {
+    "prop": "transform-origin",
+    "value": "10px 20%",
+    "chrome": "10px 10px"
+   },
+   {
+    "prop": "transform-origin",
+    "value": "right bottom",
+    "chrome": "100px 50px"
+   },
+   {
+    "prop": "transform-origin",
+    "value": "",
+    "chrome": "50px 25px"
+   },
+   {
+    "prop": "transform",
+    "value": "translate3d(1px,2px,3px)",
+    "chrome": "matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 2, 3, 1)",
+    "gap": "3D is flattened on parse: reads matrix()"
+   }
+  ],
+  "clip": [
+   {
+    "prop": "clip-path",
+    "value": "circle(30px)",
+    "chrome": "circle(30px)"
+   },
+   {
+    "prop": "clip-path",
+    "value": "inset(10px)",
+    "chrome": "inset(10px)"
+   },
+   {
+    "prop": "clip-path",
+    "value": "polygon(0 0,100% 0,0 100%)",
+    "chrome": "polygon(0px 0px, 100% 0px, 0px 100%)"
+   },
+   {
+    "prop": "clip-path",
+    "value": "circle(50% at 10px 20px)",
+    "chrome": "circle(50% at 10px 20px)"
+   },
+   {
+    "prop": "clip-path",
+    "value": "ellipse(10px 20px at center)",
+    "chrome": "ellipse(10px 20px at 50% 50%)"
+   },
+   {
+    "prop": "clip-path",
+    "value": "inset(5px 10px round 4px)",
+    "chrome": "inset(5px 10px round 4px)"
+   },
+   {
+    "prop": "clip-path",
+    "value": "path('M0 0L10 10Z')",
+    "chrome": "path(\"M 0 0 L 10 10 Z\")"
+   },
+   {
+    "prop": "clip-path",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "clip-path",
+    "value": "url(#a)",
+    "chrome": "url(\"#a\")"
+   },
+   {
+    "prop": "clip-path",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "-webkit-clip-path",
+    "value": "inset(10px)",
+    "chrome": "inset(10px)"
+   }
+  ],
+  "filter": [
+   {
+    "prop": "filter",
+    "value": "blur(4px)",
+    "chrome": "blur(4px)"
+   },
+   {
+    "prop": "filter",
+    "value": "grayscale(1)",
+    "chrome": "grayscale(1)"
+   },
+   {
+    "prop": "filter",
+    "value": "drop-shadow(6px 6px 0 #00c)",
+    "chrome": "drop-shadow(rgb(0, 0, 204) 6px 6px 0px)"
+   },
+   {
+    "prop": "filter",
+    "value": "brightness(50%)",
+    "chrome": "brightness(0.5)"
+   },
+   {
+    "prop": "filter",
+    "value": "contrast(1.2) saturate(2)",
+    "chrome": "contrast(1.2) saturate(2)"
+   },
+   {
+    "prop": "filter",
+    "value": "hue-rotate(90deg)",
+    "chrome": "hue-rotate(90deg)"
+   },
+   {
+    "prop": "filter",
+    "value": "invert(1)",
+    "chrome": "invert(1)"
+   },
+   {
+    "prop": "filter",
+    "value": "opacity(.5)",
+    "chrome": "opacity(0.5)"
+   },
+   {
+    "prop": "filter",
+    "value": "sepia(100%)",
+    "chrome": "sepia(1)"
+   },
+   {
+    "prop": "filter",
+    "value": "blur(0.25em)",
+    "chrome": "blur(4px)"
+   },
+   {
+    "prop": "filter",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "filter",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "-webkit-filter",
+    "value": "blur(4px)",
+    "chrome": "blur(4px)"
+   }
+  ],
+  "backdrop_filter": [
+   {
+    "prop": "backdrop-filter",
+    "value": "blur(12px)",
+    "chrome": "blur(12px)"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "saturate(180%) blur(20px)",
+    "chrome": "saturate(1.8) blur(20px)"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "blur(0.25em)",
+    "chrome": "blur(4px)"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "brightness(50%) contrast(2)",
+    "chrome": "brightness(0.5) contrast(2)"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "opacity(.5)",
+    "chrome": "opacity(0.5)"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "grayscale()",
+    "chrome": "grayscale(1)"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "blur()",
+    "chrome": "blur(0px)"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "blur(2px) foo(1)",
+    "chrome": "none"
+   },
+   {
+    "prop": "backdrop-filter",
+    "value": "blur(-1px)",
+    "chrome": "none"
+   }
+  ],
+  "box_shadow": [
+   {
+    "prop": "box-shadow",
+    "value": "6px 6px 0 #00c",
+    "chrome": "rgb(0, 0, 204) 6px 6px 0px 0px"
+   },
+   {
+    "prop": "box-shadow",
+    "value": "inset 6px 6px 0 #00c",
+    "chrome": "rgb(0, 0, 204) 6px 6px 0px 0px inset"
+   },
+   {
+    "prop": "box-shadow",
+    "value": "1px 2px 3px 4px rgba(0,0,0,.5)",
+    "chrome": "rgba(0, 0, 0, 0.5) 1px 2px 3px 4px"
+   },
+   {
+    "prop": "box-shadow",
+    "value": "0 0 5px red",
+    "chrome": "rgb(255, 0, 0) 0px 0px 5px 0px"
+   },
+   {
+    "prop": "box-shadow",
+    "value": "0.5em 1em #000",
+    "chrome": "rgb(0, 0, 0) 8px 16px 0px 0px"
+   },
+   {
+    "prop": "box-shadow",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "box-shadow",
+    "value": "1px 1px #000, 2px 2px #111",
+    "chrome": "rgb(0, 0, 0) 1px 1px 0px 0px, rgb(17, 17, 17) 2px 2px 0px 0px",
+    "gap": "the parser reads a list as one shadow"
+   },
+   {
+    "prop": "box-shadow",
+    "value": "",
+    "chrome": "none"
+   }
+  ],
+  "text_decoration": [
+   {
+    "prop": "text-decoration",
+    "value": "underline",
+    "chrome": "underline"
+   },
+   {
+    "prop": "text-decoration",
+    "value": "line-through #c00",
+    "chrome": "line-through rgb(204, 0, 0)",
+    "gap": "the shorthand stores only the line"
+   },
+   {
+    "prop": "text-decoration",
+    "value": "underline dotted",
+    "chrome": "underline dotted",
+    "gap": "the shorthand stores only the line"
+   },
+   {
+    "prop": "text-decoration",
+    "value": "underline overline",
+    "chrome": "underline overline"
+   },
+   {
+    "prop": "text-decoration",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "text-decoration",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "text-decoration-line",
+    "value": "underline",
+    "chrome": "underline"
+   },
+   {
+    "prop": "text-decoration-line",
+    "value": "overline",
+    "chrome": "overline"
+   },
+   {
+    "prop": "text-decoration-line",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "text-decoration-style",
+    "value": "wavy",
+    "chrome": "wavy"
+   },
+   {
+    "prop": "text-decoration-style",
+    "value": "double",
+    "chrome": "double"
+   },
+   {
+    "prop": "text-decoration-style",
+    "value": "",
+    "chrome": "solid"
+   },
+   {
+    "prop": "text-decoration-color",
+    "value": "#c00",
+    "chrome": "rgb(204, 0, 0)"
+   },
+   {
+    "prop": "text-decoration-color",
+    "value": "",
+    "base": "color:#060",
+    "chrome": "rgb(0, 102, 0)"
+   },
+   {
+    "prop": "text-decoration-line",
+    "value": "underline",
+    "base": "color:#060",
+    "chrome": "underline"
+   },
+   {
+    "prop": "text-decoration",
+    "value": "underline",
+    "chrome": "underline",
+    "base": "color:#060"
+   }
+  ],
+  "text": [
+   {
+    "prop": "letter-spacing",
+    "value": "0.2em",
+    "chrome": "3.2px"
+   },
+   {
+    "prop": "letter-spacing",
+    "value": "2px",
+    "chrome": "2px"
+   },
+   {
+    "prop": "letter-spacing",
+    "value": "0",
+    "chrome": "normal"
+   },
+   {
+    "prop": "letter-spacing",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "letter-spacing",
+    "value": "0.1em",
+    "base": "font-size:20px",
+    "chrome": "2px"
+   },
+   {
+    "prop": "word-spacing",
+    "value": "20px",
+    "chrome": "20px"
+   },
+   {
+    "prop": "word-spacing",
+    "value": "1em",
+    "chrome": "16px"
+   },
+   {
+    "prop": "word-spacing",
+    "value": "",
+    "chrome": "0px"
+   },
+   {
+    "prop": "vertical-align",
+    "value": "top",
+    "chrome": "top"
+   },
+   {
+    "prop": "vertical-align",
+    "value": "10px",
+    "chrome": "10px",
+    "gap": "the parser drops a length"
+   },
+   {
+    "prop": "vertical-align",
+    "value": "super",
+    "chrome": "super"
+   },
+   {
+    "prop": "vertical-align",
+    "value": "text-bottom",
+    "chrome": "text-bottom"
+   },
+   {
+    "prop": "vertical-align",
+    "value": "middle",
+    "chrome": "middle"
+   },
+   {
+    "prop": "vertical-align",
+    "value": "",
+    "chrome": "baseline"
+   },
+   {
+    "prop": "vertical-align",
+    "value": "50%",
+    "chrome": "50%",
+    "gap": "the parser drops a percentage"
+   },
+   {
+    "prop": "text-overflow",
+    "value": "ellipsis",
+    "chrome": "ellipsis"
+   },
+   {
+    "prop": "text-overflow",
+    "value": "",
+    "chrome": "clip"
+   },
+   {
+    "prop": "word-break",
+    "value": "break-all",
+    "chrome": "break-all"
+   },
+   {
+    "prop": "word-break",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "overflow-wrap",
+    "value": "break-word",
+    "chrome": "break-word"
+   },
+   {
+    "prop": "overflow-wrap",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "word-wrap",
+    "value": "break-word",
+    "chrome": "break-word"
+   },
+   {
+    "prop": "word-wrap",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "line-break",
+    "value": "anywhere",
+    "chrome": "anywhere"
+   },
+   {
+    "prop": "line-break",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "-webkit-text-fill-color",
+    "value": "#c00",
+    "chrome": "rgb(204, 0, 0)"
+   },
+   {
+    "prop": "-webkit-text-fill-color",
+    "value": "",
+    "base": "color:#060",
+    "chrome": "rgb(0, 102, 0)"
+   },
+   {
+    "prop": "-webkit-line-clamp",
+    "value": "1",
+    "chrome": "1"
+   },
+   {
+    "prop": "-webkit-line-clamp",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "-webkit-box-orient",
+    "value": "vertical",
+    "chrome": "vertical"
+   },
+   {
+    "prop": "-webkit-box-orient",
+    "value": "",
+    "chrome": "horizontal"
+   }
+  ],
+  "background": [
+   {
+    "prop": "background-image",
+    "value": "linear-gradient(90deg,#c00,#00c)",
+    "chrome": "linear-gradient(90deg, rgb(204, 0, 0), rgb(0, 0, 204))"
+   },
+   {
+    "prop": "background-image",
+    "value": "radial-gradient(#c00,#00c)",
+    "chrome": "radial-gradient(rgb(204, 0, 0), rgb(0, 0, 204))"
+   },
+   {
+    "prop": "background-image",
+    "value": "linear-gradient(#c00,transparent)",
+    "chrome": "linear-gradient(rgb(204, 0, 0), rgba(0, 0, 0, 0))"
+   },
+   {
+    "prop": "background-image",
+    "value": "linear-gradient(to right,#c00 10%,#00c 90%)",
+    "chrome": "linear-gradient(to right, rgb(204, 0, 0) 10%, rgb(0, 0, 204) 90%)"
+   },
+   {
+    "prop": "background-image",
+    "value": "linear-gradient(180deg,#c00,#00c)",
+    "chrome": "linear-gradient(rgb(204, 0, 0), rgb(0, 0, 204))"
+   },
+   {
+    "prop": "background-image",
+    "value": "repeating-linear-gradient(45deg,#c00,#00c 10px)",
+    "chrome": "repeating-linear-gradient(45deg, rgb(204, 0, 0), rgb(0, 0, 204) 10px)"
+   },
+   {
+    "prop": "background-image",
+    "value": "conic-gradient(#c00,#00c)",
+    "chrome": "conic-gradient(rgb(204, 0, 0), rgb(0, 0, 204))"
+   },
+   {
+    "prop": "background-image",
+    "value": "radial-gradient(circle,#c00,#00c)",
+    "chrome": "radial-gradient(circle, rgb(204, 0, 0), rgb(0, 0, 204))"
+   },
+   {
+    "prop": "background-image",
+    "value": "radial-gradient(circle at 10% 20%,#c00,#00c)",
+    "chrome": "radial-gradient(circle at 10% 20%, rgb(204, 0, 0), rgb(0, 0, 204))"
+   },
+   {
+    "prop": "background-image",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "background-image",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "background-image",
+    "value": "linear-gradient(#c00,#00c),linear-gradient(#0c0,#000)",
+    "chrome": "linear-gradient(rgb(204, 0, 0), rgb(0, 0, 204)), linear-gradient(rgb(0, 204, 0), rgb(0, 0, 0))"
+   },
+   {
+    "prop": "background-size",
+    "value": "30px 30px",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "30px 30px"
+   },
+   {
+    "prop": "background-size",
+    "value": "cover",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "cover"
+   },
+   {
+    "prop": "background-size",
+    "value": "contain",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "contain"
+   },
+   {
+    "prop": "background-size",
+    "value": "50%",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "50%"
+   },
+   {
+    "prop": "background-size",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "background-position",
+    "value": "20px 10px",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "20px 10px"
+   },
+   {
+    "prop": "background-position",
+    "value": "center",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "50% 50%"
+   },
+   {
+    "prop": "background-position",
+    "value": "left top",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "0% 0%"
+   },
+   {
+    "prop": "background-position",
+    "value": "",
+    "chrome": "0% 0%"
+   },
+   {
+    "prop": "background-position-x",
+    "value": "20px",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "20px",
+    "gap": "no parser arm"
+   },
+   {
+    "prop": "background-position-y",
+    "value": "10px",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "10px",
+    "gap": "no parser arm"
+   },
+   {
+    "prop": "background-position-x",
+    "value": "",
+    "chrome": "0%"
+   },
+   {
+    "prop": "background-position-y",
+    "value": "",
+    "chrome": "0%"
+   },
+   {
+    "prop": "background-repeat",
+    "value": "no-repeat",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "no-repeat"
+   },
+   {
+    "prop": "background-repeat",
+    "value": "repeat-x",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "repeat-x"
+   },
+   {
+    "prop": "background-repeat",
+    "value": "",
+    "chrome": "repeat"
+   },
+   {
+    "prop": "background-origin",
+    "value": "content-box",
+    "base": "background-image:linear-gradient(#c00,#00c)",
+    "chrome": "content-box"
+   },
+   {
+    "prop": "background-origin",
+    "value": "",
+    "chrome": "padding-box"
+   },
+   {
+    "prop": "background-clip",
+    "value": "content-box",
+    "chrome": "content-box"
+   },
+   {
+    "prop": "background-clip",
+    "value": "text",
+    "chrome": "text"
+   },
+   {
+    "prop": "background-clip",
+    "value": "",
+    "chrome": "border-box"
+   },
+   {
+    "prop": "background",
+    "value": "#00c",
+    "chrome": "rgb(0, 0, 204) none repeat scroll 0% 0% / auto padding-box border-box"
+   },
+   {
+    "prop": "background",
+    "value": "linear-gradient(#c00,#00c)",
+    "chrome": "rgba(0, 0, 0, 0) linear-gradient(rgb(204, 0, 0), rgb(0, 0, 204)) repeat scroll 0% 0% / auto padding-box border-box"
+   },
+   {
+    "prop": "background",
+    "value": "",
+    "chrome": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box"
+   },
+   {
+    "prop": "background-image",
+    "value": "linear-gradient(to top right,#c00,#00c)",
+    "chrome": "linear-gradient(to right top, rgb(204, 0, 0), rgb(0, 0, 204))"
+   },
+   {
+    "prop": "background-size",
+    "value": "30px",
+    "chrome": "30px",
+    "gap": "kept per image layer: with no image it is dropped"
+   }
+  ],
+  "object": [
+   {
+    "prop": "object-fit",
+    "value": "cover",
+    "chrome": "cover"
+   },
+   {
+    "prop": "object-fit",
+    "value": "contain",
+    "chrome": "contain"
+   },
+   {
+    "prop": "object-fit",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "object-fit",
+    "value": "scale-down",
+    "chrome": "scale-down"
+   },
+   {
+    "prop": "object-fit",
+    "value": "",
+    "chrome": "fill"
+   },
+   {
+    "prop": "object-position",
+    "value": "left top",
+    "chrome": "0% 0%"
+   },
+   {
+    "prop": "object-position",
+    "value": "20px 10px",
+    "chrome": "20px 10px"
+   },
+   {
+    "prop": "object-position",
+    "value": "center",
+    "chrome": "50% 50%"
+   },
+   {
+    "prop": "object-position",
+    "value": "25% 75%",
+    "chrome": "25% 75%"
+   },
+   {
+    "prop": "object-position",
+    "value": "",
+    "chrome": "50% 50%"
+   }
+  ],
+  "transition": [
+   {
+    "prop": "transition-property",
+    "value": "opacity",
+    "chrome": "opacity"
+   },
+   {
+    "prop": "transition-property",
+    "value": "opacity, color",
+    "chrome": "opacity, color"
+   },
+   {
+    "prop": "transition-property",
+    "value": "",
+    "chrome": "all"
+   },
+   {
+    "prop": "transition-duration",
+    "value": "2s",
+    "chrome": "2s"
+   },
+   {
+    "prop": "transition-duration",
+    "value": "250ms",
+    "chrome": "0.25s"
+   },
+   {
+    "prop": "transition-duration",
+    "value": "",
+    "chrome": "0s"
+   },
+   {
+    "prop": "transition-delay",
+    "value": "1s",
+    "chrome": "1s"
+   },
+   {
+    "prop": "transition-delay",
+    "value": "",
+    "chrome": "0s"
+   },
+   {
+    "prop": "transition-timing-function",
+    "value": "linear",
+    "chrome": "linear"
+   },
+   {
+    "prop": "transition-timing-function",
+    "value": "ease-in-out",
+    "chrome": "ease-in-out"
+   },
+   {
+    "prop": "transition-timing-function",
+    "value": "cubic-bezier(0.1, 0.2, 0.3, 0.4)",
+    "chrome": "cubic-bezier(0.1, 0.2, 0.3, 0.4)"
+   },
+   {
+    "prop": "transition-timing-function",
+    "value": "steps(4, end)",
+    "chrome": "steps(4)"
+   },
+   {
+    "prop": "transition-timing-function",
+    "value": "step-start",
+    "chrome": "steps(1, start)"
+   },
+   {
+    "prop": "transition-timing-function",
+    "value": "",
+    "chrome": "ease"
+   },
+   {
+    "prop": "transition",
+    "value": "opacity 1s ease 0s",
+    "chrome": "opacity 1s"
+   },
+   {
+    "prop": "transition",
+    "value": "all 2s",
+    "chrome": "2s"
+   },
+   {
+    "prop": "transition",
+    "value": "opacity 0s ease 1s",
+    "chrome": "opacity 0s 1s"
+   },
+   {
+    "prop": "transition",
+    "value": "opacity 1s linear",
+    "chrome": "opacity 1s linear"
+   },
+   {
+    "prop": "transition",
+    "value": "all 0s linear",
+    "chrome": "linear"
+   },
+   {
+    "prop": "transition",
+    "value": "all 1s ease 2s",
+    "chrome": "1s 2s"
+   },
+   {
+    "prop": "transition",
+    "value": "",
+    "chrome": "all"
+   },
+   {
+    "prop": "transition",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "transition-property",
+    "value": "none",
+    "chrome": "none"
+   },
+   {
+    "prop": "transition",
+    "value": "opacity 1s, color 2s",
+    "chrome": "opacity 1s, color 2s",
+    "gap": "one transition is kept, not a list"
+   }
+  ],
+  "animation": [
+   {
+    "prop": "animation-name",
+    "value": "k",
+    "chrome": "k"
+   },
+   {
+    "prop": "animation-name",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "animation-duration",
+    "value": "2s",
+    "chrome": "2s"
+   },
+   {
+    "prop": "animation-duration",
+    "value": "",
+    "chrome": "0s"
+   },
+   {
+    "prop": "animation-delay",
+    "value": "1s",
+    "chrome": "1s"
+   },
+   {
+    "prop": "animation-delay",
+    "value": "",
+    "chrome": "0s"
+   },
+   {
+    "prop": "animation-iteration-count",
+    "value": "3",
+    "chrome": "3"
+   },
+   {
+    "prop": "animation-iteration-count",
+    "value": "infinite",
+    "chrome": "infinite"
+   },
+   {
+    "prop": "animation-iteration-count",
+    "value": "",
+    "chrome": "1"
+   },
+   {
+    "prop": "animation-direction",
+    "value": "reverse",
+    "chrome": "reverse"
+   },
+   {
+    "prop": "animation-direction",
+    "value": "alternate-reverse",
+    "chrome": "alternate-reverse"
+   },
+   {
+    "prop": "animation-direction",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "animation-fill-mode",
+    "value": "both",
+    "chrome": "both"
+   },
+   {
+    "prop": "animation-fill-mode",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "animation-play-state",
+    "value": "paused",
+    "chrome": "paused"
+   },
+   {
+    "prop": "animation-play-state",
+    "value": "",
+    "chrome": "running"
+   },
+   {
+    "prop": "animation-timing-function",
+    "value": "linear",
+    "chrome": "linear"
+   },
+   {
+    "prop": "animation-timing-function",
+    "value": "",
+    "chrome": "ease"
+   },
+   {
+    "prop": "animation",
+    "value": "k 2s linear 1s infinite",
+    "chrome": "2s linear 1s infinite normal none running k"
+   },
+   {
+    "prop": "animation",
+    "value": "k",
+    "chrome": "0s ease 0s 1 normal none running k"
+   },
+   {
+    "prop": "animation",
+    "value": "none 1s",
+    "chrome": "1s ease 0s 1 normal none running none"
+   },
+   {
+    "prop": "animation",
+    "value": "",
+    "chrome": "none 0s ease 0s 1 normal none running"
+   }
+  ],
+  "container": [
+   {
+    "prop": "container-type",
+    "value": "size",
+    "chrome": "size"
+   },
+   {
+    "prop": "container-type",
+    "value": "inline-size",
+    "chrome": "inline-size"
+   },
+   {
+    "prop": "container-type",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "container-name",
+    "value": "c",
+    "chrome": "c"
+   },
+   {
+    "prop": "container-name",
+    "value": "a b",
+    "chrome": "a b"
+   },
+   {
+    "prop": "container-name",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "container",
+    "value": "c / inline-size",
+    "chrome": "c / inline-size"
+   },
+   {
+    "prop": "container",
+    "value": "c",
+    "chrome": "c"
+   },
+   {
+    "prop": "container",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "container",
+    "value": "none / size",
+    "chrome": "none / size"
+   }
+  ],
+  "sizing": [
+   {
+    "prop": "min-width",
+    "value": "200px",
+    "chrome": "200px"
+   },
+   {
+    "prop": "min-width",
+    "value": "50%",
+    "chrome": "50%"
+   },
+   {
+    "prop": "min-width",
+    "value": "",
+    "chrome": "0px"
+   },
+   {
+    "prop": "min-height",
+    "value": "130px",
+    "chrome": "130px"
+   },
+   {
+    "prop": "min-height",
+    "value": "",
+    "chrome": "0px"
+   },
+   {
+    "prop": "max-width",
+    "value": "60px",
+    "chrome": "60px"
+   },
+   {
+    "prop": "max-width",
+    "value": "50%",
+    "chrome": "50%"
+   },
+   {
+    "prop": "max-width",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "max-height",
+    "value": "40px",
+    "chrome": "40px"
+   },
+   {
+    "prop": "max-height",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "aspect-ratio",
+    "value": "2 / 1",
+    "chrome": "2 / 1"
+   },
+   {
+    "prop": "aspect-ratio",
+    "value": "16/9",
+    "chrome": "16 / 9"
+   },
+   {
+    "prop": "aspect-ratio",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "clear",
+    "value": "left",
+    "chrome": "left"
+   },
+   {
+    "prop": "clear",
+    "value": "both",
+    "chrome": "both"
+   },
+   {
+    "prop": "clear",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "order",
+    "value": "5",
+    "chrome": "5"
+   },
+   {
+    "prop": "order",
+    "value": "",
+    "chrome": "0"
+   },
+   {
+    "prop": "column-count",
+    "value": "2",
+    "chrome": "2"
+   },
+   {
+    "prop": "column-count",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "border-collapse",
+    "value": "collapse",
+    "chrome": "collapse"
+   },
+   {
+    "prop": "border-collapse",
+    "value": "",
+    "chrome": "separate"
+   },
+   {
+    "prop": "border-spacing",
+    "value": "10px",
+    "chrome": "10px"
+   },
+   {
+    "prop": "border-spacing",
+    "value": "1px 2px",
+    "chrome": "1px 2px"
+   },
+   {
+    "prop": "border-spacing",
+    "value": "",
+    "chrome": "0px"
+   },
+   {
+    "prop": "aspect-ratio",
+    "value": "1.5",
+    "chrome": "1.5 / 1",
+    "gap": "one number kept: reads 3 / 2"
+   }
+  ],
+  "box_shorthands": [
+   {
+    "prop": "margin",
+    "value": "5px 10px",
+    "chrome": "5px 10px"
+   },
+   {
+    "prop": "margin",
+    "value": "",
+    "chrome": "0px"
+   },
+   {
+    "prop": "padding",
+    "value": "5px 10px",
+    "chrome": "5px 10px"
+   },
+   {
+    "prop": "padding",
+    "value": "1px 2px 3px 4px",
+    "chrome": "1px 2px 3px 4px"
+   },
+   {
+    "prop": "padding",
+    "value": "",
+    "chrome": "0px"
+   },
+   {
+    "prop": "inset",
+    "value": "20px",
+    "chrome": "20px"
+   },
+   {
+    "prop": "inset",
+    "value": "10px 30px",
+    "chrome": "10px 30px"
+   },
+   {
+    "prop": "inset",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "overflow",
+    "value": "hidden",
+    "chrome": "hidden"
+   },
+   {
+    "prop": "overflow",
+    "value": "hidden scroll",
+    "chrome": "hidden scroll",
+    "gap": "the parser drops the two-value form"
+   },
+   {
+    "prop": "overflow",
+    "value": "",
+    "chrome": "visible"
+   },
+   {
+    "prop": "margin-inline",
+    "value": "12px 24px",
+    "chrome": "12px 24px"
+   },
+   {
+    "prop": "margin-block",
+    "value": "12px 24px",
+    "chrome": "12px 24px"
+   },
+   {
+    "prop": "margin-inline-start",
+    "value": "12px",
+    "chrome": "12px"
+   },
+   {
+    "prop": "margin-inline-end",
+    "value": "12px",
+    "chrome": "12px"
+   },
+   {
+    "prop": "margin-block-start",
+    "value": "12px",
+    "chrome": "12px"
+   },
+   {
+    "prop": "margin-block-end",
+    "value": "12px",
+    "chrome": "12px"
+   },
+   {
+    "prop": "padding-inline",
+    "value": "12px 24px",
+    "chrome": "12px 24px"
+   },
+   {
+    "prop": "padding-block",
+    "value": "12px 24px",
+    "chrome": "12px 24px"
+   },
+   {
+    "prop": "padding-inline-start",
+    "value": "12px",
+    "chrome": "12px"
+   },
+   {
+    "prop": "padding-inline-end",
+    "value": "12px",
+    "chrome": "12px"
+   },
+   {
+    "prop": "padding-block-start",
+    "value": "12px",
+    "chrome": "12px"
+   },
+   {
+    "prop": "padding-block-end",
+    "value": "12px",
+    "chrome": "12px"
+   },
+   {
+    "prop": "inset-inline",
+    "value": "20px",
+    "chrome": "20px"
+   },
+   {
+    "prop": "inset-block",
+    "value": "20px",
+    "chrome": "20px"
+   },
+   {
+    "prop": "inset-inline-start",
+    "value": "20px",
+    "chrome": "20px"
+   },
+   {
+    "prop": "inset-inline-end",
+    "value": "20px",
+    "chrome": "20px"
+   },
+   {
+    "prop": "inset-block-start",
+    "value": "20px",
+    "chrome": "20px"
+   },
+   {
+    "prop": "inset-block-end",
+    "value": "20px",
+    "chrome": "20px"
+   }
+  ],
+  "border": [
+   {
+    "prop": "border",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border",
+    "value": "",
+    "chrome": "0px none rgb(0, 0, 0)"
+   },
+   {
+    "prop": "border-top",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-right",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-bottom",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-left",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-top",
+    "value": "",
+    "chrome": "0px none rgb(0, 0, 0)"
+   },
+   {
+    "prop": "border-style",
+    "value": "dashed",
+    "chrome": "dashed"
+   },
+   {
+    "prop": "border-style",
+    "value": "solid dashed",
+    "chrome": "solid dashed",
+    "gap": "a solid side with no width set lays out 0px wide, so its style reads none"
+   },
+   {
+    "prop": "border-style",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "border-width",
+    "value": "3px 6px",
+    "base": "border-style:solid",
+    "chrome": "3px 6px"
+   },
+   {
+    "prop": "border-width",
+    "value": "",
+    "chrome": "0px"
+   },
+   {
+    "prop": "border-color",
+    "value": "#00c",
+    "chrome": "rgb(0, 0, 204)"
+   },
+   {
+    "prop": "border-color",
+    "value": "#00c #c00",
+    "chrome": "rgb(0, 0, 204) rgb(204, 0, 0)",
+    "gap": "the parser keeps one colour only for all four sides"
+   },
+   {
+    "prop": "border-color",
+    "value": "",
+    "base": "color:#060",
+    "chrome": "rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-top-color",
+    "value": "#00c",
+    "chrome": "rgb(0, 0, 204)"
+   },
+   {
+    "prop": "border-right-color",
+    "value": "#00c",
+    "chrome": "rgb(0, 0, 204)"
+   },
+   {
+    "prop": "border-bottom-color",
+    "value": "#00c",
+    "chrome": "rgb(0, 0, 204)"
+   },
+   {
+    "prop": "border-left-color",
+    "value": "#00c",
+    "chrome": "rgb(0, 0, 204)"
+   },
+   {
+    "prop": "border-top-color",
+    "value": "",
+    "base": "color:#060",
+    "chrome": "rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-top-style",
+    "value": "dotted",
+    "chrome": "dotted"
+   },
+   {
+    "prop": "border-right-style",
+    "value": "dotted",
+    "chrome": "dotted"
+   },
+   {
+    "prop": "border-bottom-style",
+    "value": "dotted",
+    "chrome": "dotted"
+   },
+   {
+    "prop": "border-left-style",
+    "value": "dotted",
+    "chrome": "dotted"
+   },
+   {
+    "prop": "border-top-style",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "border-inline",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-block",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-inline-start",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-inline-end",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-block-start",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-block-end",
+    "value": "6px solid #060",
+    "chrome": "6px solid rgb(0, 102, 0)"
+   },
+   {
+    "prop": "border-start-start-radius",
+    "value": "30px",
+    "chrome": "30px"
+   },
+   {
+    "prop": "border-start-end-radius",
+    "value": "30px",
+    "chrome": "30px"
+   },
+   {
+    "prop": "border-end-start-radius",
+    "value": "30px",
+    "chrome": "30px"
+   },
+   {
+    "prop": "border-end-end-radius",
+    "value": "30px",
+    "chrome": "30px"
+   },
+   {
+    "prop": "border",
+    "value": "0 solid #000",
+    "chrome": "0px solid rgb(0, 0, 0)",
+    "gap": "an unset style is stored solid: zero width with solid reads none"
+   }
+  ],
+  "flex": [
+   {
+    "prop": "flex",
+    "value": "1",
+    "chrome": "1 1 0%"
+   },
+   {
+    "prop": "flex",
+    "value": "0 0 90px",
+    "chrome": "0 0 90px"
+   },
+   {
+    "prop": "flex",
+    "value": "1 1 0",
+    "chrome": "1 1 0px"
+   },
+   {
+    "prop": "flex",
+    "value": "",
+    "chrome": "0 1 auto"
+   },
+   {
+    "prop": "flex-grow",
+    "value": "1",
+    "chrome": "1"
+   },
+   {
+    "prop": "flex-grow",
+    "value": "",
+    "chrome": "0"
+   },
+   {
+    "prop": "flex-shrink",
+    "value": "0",
+    "chrome": "0"
+   },
+   {
+    "prop": "flex-shrink",
+    "value": "",
+    "chrome": "1"
+   },
+   {
+    "prop": "flex-basis",
+    "value": "90px",
+    "chrome": "90px"
+   },
+   {
+    "prop": "flex-basis",
+    "value": "50%",
+    "chrome": "50%"
+   },
+   {
+    "prop": "flex-basis",
+    "value": "content",
+    "chrome": "content"
+   },
+   {
+    "prop": "flex-basis",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "flex-wrap",
+    "value": "wrap",
+    "chrome": "wrap"
+   },
+   {
+    "prop": "flex-wrap",
+    "value": "",
+    "chrome": "nowrap"
+   },
+   {
+    "prop": "flex-flow",
+    "value": "column wrap",
+    "chrome": "column wrap",
+    "gap": "no parser arm"
+   },
+   {
+    "prop": "flex-flow",
+    "value": "",
+    "chrome": "row nowrap"
+   },
+   {
+    "prop": "justify-content",
+    "value": "center",
+    "chrome": "center"
+   },
+   {
+    "prop": "justify-content",
+    "value": "space-between",
+    "chrome": "space-between"
+   },
+   {
+    "prop": "justify-content",
+    "value": "flex-end",
+    "chrome": "flex-end"
+   },
+   {
+    "prop": "justify-content",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "align-items",
+    "value": "center",
+    "chrome": "center"
+   },
+   {
+    "prop": "align-items",
+    "value": "flex-end",
+    "chrome": "flex-end"
+   },
+   {
+    "prop": "align-items",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "align-content",
+    "value": "center",
+    "chrome": "center"
+   },
+   {
+    "prop": "align-content",
+    "value": "space-between",
+    "chrome": "space-between"
+   },
+   {
+    "prop": "align-content",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "align-self",
+    "value": "center",
+    "chrome": "center"
+   },
+   {
+    "prop": "align-self",
+    "value": "flex-end",
+    "chrome": "flex-end"
+   },
+   {
+    "prop": "align-self",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "justify-items",
+    "value": "center",
+    "chrome": "center"
+   },
+   {
+    "prop": "justify-items",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "justify-self",
+    "value": "center",
+    "chrome": "center"
+   },
+   {
+    "prop": "justify-self",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "place-content",
+    "value": "center",
+    "chrome": "center"
+   },
+   {
+    "prop": "place-items",
+    "value": "center",
+    "chrome": "center"
+   },
+   {
+    "prop": "place-self",
+    "value": "center",
+    "chrome": "center"
+   },
+   {
+    "prop": "gap",
+    "value": "10px",
+    "chrome": "10px"
+   },
+   {
+    "prop": "gap",
+    "value": "1px 2px",
+    "chrome": "1px 2px"
+   },
+   {
+    "prop": "gap",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "row-gap",
+    "value": "10px",
+    "chrome": "10px"
+   },
+   {
+    "prop": "row-gap",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "column-gap",
+    "value": "10px",
+    "chrome": "10px"
+   },
+   {
+    "prop": "column-gap",
+    "value": "",
+    "chrome": "normal"
+   },
+   {
+    "prop": "justify-content",
+    "value": "flex-start",
+    "chrome": "flex-start",
+    "gap": "the enum default: reads as unset, normal"
+   },
+   {
+    "prop": "align-items",
+    "value": "stretch",
+    "chrome": "stretch",
+    "gap": "the enum default: reads as unset, normal"
+   },
+   {
+    "prop": "gap",
+    "value": "0",
+    "chrome": "0px"
+   }
+  ],
+  "grid": [
+   {
+    "prop": "grid-template-columns",
+    "value": "repeat(3,50px)",
+    "base": "display:grid",
+    "chrome": "50px 50px 50px"
+   },
+   {
+    "prop": "grid-template-columns",
+    "value": "90px 40px",
+    "base": "display:grid",
+    "chrome": "90px 40px"
+   },
+   {
+    "prop": "grid-template-columns",
+    "value": "90px 1fr",
+    "base": "display:grid",
+    "chrome": "90px 10px",
+    "gap": "used grid tracks are not kept; reads empty"
+   },
+   {
+    "prop": "grid-template-columns",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "grid-template-rows",
+    "value": "80px 40px",
+    "base": "display:grid",
+    "chrome": "80px 40px"
+   },
+   {
+    "prop": "grid-template-rows",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "grid-template-areas",
+    "value": "\"a b\" \"c c\"",
+    "chrome": "\"a b\" \"c c\""
+   },
+   {
+    "prop": "grid-template-areas",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "grid-template",
+    "value": "40px 40px / 90px 90px",
+    "base": "display:grid",
+    "chrome": "40px 40px / 90px 90px"
+   },
+   {
+    "prop": "grid-template",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "grid-area",
+    "value": "2 / 2 / 3 / 4",
+    "chrome": "2 / 2 / 3 / 4"
+   },
+   {
+    "prop": "grid-area",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "grid-column",
+    "value": "2 / 4",
+    "chrome": "2 / 4"
+   },
+   {
+    "prop": "grid-column",
+    "value": "span 2",
+    "chrome": "span 2"
+   },
+   {
+    "prop": "grid-column",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "grid-row",
+    "value": "2 / 3",
+    "chrome": "2 / 3"
+   },
+   {
+    "prop": "grid-row",
+    "value": "span 2",
+    "chrome": "span 2"
+   },
+   {
+    "prop": "grid-row",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "grid-column-start",
+    "value": "2",
+    "chrome": "2"
+   },
+   {
+    "prop": "grid-column-start",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "grid-column-end",
+    "value": "span 2",
+    "chrome": "span 2"
+   },
+   {
+    "prop": "grid-column-end",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "grid-row-start",
+    "value": "2",
+    "chrome": "2"
+   },
+   {
+    "prop": "grid-row-start",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "grid-row-end",
+    "value": "span 2",
+    "chrome": "span 2"
+   },
+   {
+    "prop": "grid-row-end",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "grid-auto-columns",
+    "value": "70px",
+    "chrome": "70px"
+   },
+   {
+    "prop": "grid-auto-columns",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "grid-auto-rows",
+    "value": "70px",
+    "chrome": "70px"
+   },
+   {
+    "prop": "grid-auto-rows",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "grid-auto-flow",
+    "value": "column",
+    "chrome": "column"
+   },
+   {
+    "prop": "grid-auto-flow",
+    "value": "dense",
+    "chrome": "dense"
+   },
+   {
+    "prop": "grid-auto-flow",
+    "value": "",
+    "chrome": "row"
+   }
+  ],
+  "font": [
+   {
+    "prop": "font",
+    "value": "italic 700 24px/30px Georgia",
+    "chrome": "italic 700 24px / 30px Georgia"
+   },
+   {
+    "prop": "font",
+    "value": "20px Georgia",
+    "chrome": "20px Georgia"
+   },
+   {
+    "prop": "font",
+    "value": "",
+    "chrome": "16px Times"
+   }
+  ],
+  "inline": [
+   {
+    "prop": "transform",
+    "value": "rotate(10deg)",
+    "inline": true,
+    "chrome": "matrix(0.984808, 0.173648, -0.173648, 0.984808, 0, 0)"
+   },
+   {
+    "prop": "color",
+    "value": "#00c",
+    "inline": true,
+    "chrome": "rgb(0, 0, 204)"
+   },
+   {
+    "prop": "width",
+    "value": "50%",
+    "inline": true,
+    "chrome": "200px"
+   },
+   {
+    "prop": "margin",
+    "value": "5px",
+    "inline": true,
+    "chrome": "5px"
+   },
+   {
+    "prop": "background-color",
+    "value": "red",
+    "inline": true,
+    "chrome": "rgb(255, 0, 0)"
+   }
+  ],
+  "mask": [
+   {
+    "prop": "mask-image",
+    "value": "linear-gradient(#000,transparent)",
+    "chrome": "linear-gradient(rgb(0, 0, 0), rgba(0, 0, 0, 0))"
+   },
+   {
+    "prop": "mask-image",
+    "value": "",
+    "chrome": "none"
+   },
+   {
+    "prop": "-webkit-mask-image",
+    "value": "linear-gradient(#000,transparent)",
+    "chrome": "linear-gradient(rgb(0, 0, 0), rgba(0, 0, 0, 0))"
+   },
+   {
+    "prop": "mask-size",
+    "value": "50px 50px",
+    "chrome": "50px 50px"
+   },
+   {
+    "prop": "mask-size",
+    "value": "",
+    "chrome": "auto"
+   },
+   {
+    "prop": "mask-position",
+    "value": "20px 10px",
+    "chrome": "20px 10px"
+   },
+   {
+    "prop": "mask-position",
+    "value": "",
+    "chrome": "0% 0%"
+   },
+   {
+    "prop": "mask-repeat",
+    "value": "no-repeat",
+    "chrome": "no-repeat"
+   },
+   {
+    "prop": "mask-repeat",
+    "value": "",
+    "chrome": "repeat"
+   },
+   {
+    "prop": "mask-origin",
+    "value": "content-box",
+    "chrome": "content-box"
+   },
+   {
+    "prop": "mask-origin",
+    "value": "",
+    "chrome": "border-box"
+   },
+   {
+    "prop": "mask-clip",
+    "value": "content-box",
+    "chrome": "content-box"
+   },
+   {
+    "prop": "mask-clip",
+    "value": "",
+    "chrome": "border-box"
+   },
+   {
+    "prop": "mask",
+    "value": "linear-gradient(#000,transparent)",
+    "chrome": "linear-gradient(rgb(0, 0, 0), rgba(0, 0, 0, 0))"
+   },
+   {
+    "prop": "mask",
+    "value": "",
+    "chrome": "none"
+   }
+  ]
+ }
+}

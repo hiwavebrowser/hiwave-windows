@@ -42,7 +42,8 @@ pub fn column_geometry(style: &ComputedStyle, content_width: f32) -> Option<Colu
     };
     // `column-gap: normal` is 1em in a multi-column container. The initial
     // value is stored as Length::Zero (flex/grid read normal as 0), so an
-    // unauthored gap is told apart from an authored `0px` by its variant.
+    // unauthored gap is told apart from an authored `0` or `0px` by its
+    // variant: both of those parse to `Px(0.0)` (CH2.B14).
     let gap = match style.column_gap {
         Length::Zero => font_size,
         ref g => g.to_px(font_size, 16.0, content_width).max(0.0),

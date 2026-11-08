@@ -155,10 +155,15 @@
     str(H, 'lang', 'lang');
     str(H, 'accessKey', 'accesskey');
     str(H, 'nonce', 'nonce');
+    // HTMLOrSVGElement (HTML 3.2.2): the members an SVG element shares.
+    var SV = g.SVGElement.prototype;
+    Object.defineProperty(SV, 'dataset', Object.getOwnPropertyDescriptor(H, 'dataset'));
+    str(SV, 'nonce', 'nonce');
     enm(H, 'dir', 'dir', ['ltr', 'rtl', 'auto'], '', '');
     bool(H, 'hidden', 'hidden');
     bool(H, 'inert', 'inert');
     bool(H, 'autofocus', 'autofocus');
+    bool(SV, 'autofocus', 'autofocus');
     def(H, 'translate', function () { return this.getAttribute('translate') !== 'no'; }, function (v) { this.setAttribute('translate', v ? 'yes' : 'no'); });
     def(H, 'draggable', function () { return this.getAttribute('draggable') === 'true' || (this.getAttribute('draggable') === null && (this.localName === 'img' || (this.localName === 'a' && this.hasAttribute('href')))); },
         function (v) { this.setAttribute('draggable', v ? 'true' : 'false'); });
@@ -175,13 +180,15 @@
     });
     // tabIndex: the attribute, else 0 for the elements that are focusable by default, else -1.
     var FOCUSABLE = { a: 1, area: 1, button: 1, input: 1, select: 1, textarea: 1, iframe: 1, summary: 1, details: 0, object: 1, embed: 1 };
-    def(H, 'tabIndex', function () {
-        var n = parseInt(this.getAttribute('tabindex'), 10);
-        if (!isNaN(n)) return n;
-        var t = this.localName;
-        if ((t === 'a' || t === 'area') && !this.hasAttribute('href')) return -1;
-        return FOCUSABLE[t] ? 0 : -1;
-    }, function (v) { this.setAttribute('tabindex', String(Math.trunc(+v) || 0)); });
+    [H, SV].forEach(function (C) {
+        def(C, 'tabIndex', function () {
+            var n = parseInt(this.getAttribute('tabindex'), 10);
+            if (!isNaN(n)) return n;
+            var t = this.localName;
+            if ((t === 'a' || t === 'area') && !this.hasAttribute('href')) return -1;
+            return FOCUSABLE[t] ? 0 : -1;
+        }, function (v) { this.setAttribute('tabindex', String(Math.trunc(+v) || 0)); });
+    });
     def(g.Element.prototype, 'slot', function () { var v = this.getAttribute('slot'); return v === null ? '' : v; }, function (v) { this.setAttribute('slot', String(v)); });
 
     // ---- <link>

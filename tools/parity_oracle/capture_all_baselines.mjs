@@ -29,8 +29,13 @@ function argVal(name, dflt) {
 const FROM = resolve(REPO_ROOT, argVal('--from', 'baselines/chrome-120'));
 const TO = resolve(REPO_ROOT, argVal('--to', 'baselines/chrome-148'));
 
+// A builtin's fixture is its registry `html` when it has one: the Inspector
+// case is its page with a fixture dump injected, not the bare template.
+const REGISTRY = JSON.parse(readFileSync(join(REPO_ROOT, 'cases', 'registry.json'), 'utf8')).cases;
 const SOURCE_BY_TYPE = {
-  builtins: (c) => join(REPO_ROOT, 'crates', 'hiwave-app', 'src', 'ui', `${c}.html`),
+  builtins: (c) => REGISTRY[c]?.html
+    ? join(REPO_ROOT, REGISTRY[c].html)
+    : join(REPO_ROOT, 'crates', 'hiwave-app', 'src', 'ui', `${c}.html`),
   micro: (c) => join(REPO_ROOT, 'websuite', 'micro', c, 'index.html'),
   websuite: (c) => join(REPO_ROOT, 'websuite', 'cases', c, 'index.html'),
 };

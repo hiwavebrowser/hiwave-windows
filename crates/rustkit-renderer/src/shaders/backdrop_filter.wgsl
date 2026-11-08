@@ -1,19 +1,30 @@
-// Backdrop filter compute shader
-// Supports Gaussian blur (separable 2-pass) and color matrix filters
+// `backdrop-filter` steps (Filter Effects 2 §3), run on the region of the
+// backdrop under one box. Every pass reads `size` pixels of `input` starting
+// at `origin` and writes them to `output` at (0, 0). Colours are
+// premultiplied, as the layers and the frame hold them.
+//
+// The blur is a Gaussian of standard deviation `sigma` (the `blur()` length,
+// Filter Effects 1 §13), separable, out to 3 sigma. Samples past the region
+// are mirrored back into it: Chromium blurs a backdrop with mirrored edges at
+// the box, so nothing outside the box bleeds in.
 
-struct FilterParams {
-    blur_radius: f32,
-    filter_type: u32,  // 0=none, 1=grayscale, 2=sepia, 3=brightness
-    filter_amount: f32,
-    texture_width: f32,
-    texture_height: f32,
-    _padding0: f32,
-    _padding1: f32,
-    _padding2: f32,
+struct Params {
+    origin: vec2<i32>,
+    size: vec2<i32>,
+    sigma: f32,
+    radius: i32,
+    _pad0: f32,
+    _pad1: f32,
+    // The 4x5 matrix as rows of its first four columns, then the offsets.
+    row_r: vec4<f32>,
+    row_g: vec4<f32>,
+    row_b: vec4<f32>,
+    row_a: vec4<f32>,
+    offsets: vec4<f32>,
 };
 
 @group(0) @binding(0)
-var<uniform> params: FilterParams;
+var<uniform> params: Params;
 
 @group(0) @binding(1)
 var input_texture: texture_2d<f32>;
@@ -21,132 +32,74 @@ var input_texture: texture_2d<f32>;
 @group(0) @binding(2)
 var output_texture: texture_storage_2d<rgba8unorm, write>;
 
-// Gaussian weight function
-fn gaussian(x: f32, sigma: f32) -> f32 {
-    let sigma2 = sigma * sigma;
-    return exp(-(x * x) / (2.0 * sigma2)) / (sqrt(2.0 * 3.14159265) * sigma);
+fn mirror(i: i32, n: i32) -> i32 {
+    var j = i;
+    if (j < 0) {
+        j = -j - 1;
+    }
+    if (j >= n) {
+        j = 2 * n - j - 1;
+    }
+    return clamp(j, 0, n - 1);
 }
 
-// Horizontal blur pass
-@compute @workgroup_size(16, 16, 1)
-fn blur_horizontal(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let coords = vec2<i32>(global_id.xy);
-    let dims = vec2<i32>(i32(params.texture_width), i32(params.texture_height));
-
-    if (coords.x >= dims.x || coords.y >= dims.y) {
-        return;
+fn blur(coords: vec2<i32>, step: vec2<i32>) -> vec4<f32> {
+    let n = select(params.size.y, params.size.x, step.x != 0);
+    let along = select(coords.y, coords.x, step.x != 0);
+    let two_s2 = 2.0 * params.sigma * params.sigma;
+    var sum = vec4<f32>(0.0);
+    var weights = 0.0;
+    for (var i = -params.radius; i <= params.radius; i++) {
+        let k = mirror(along + i, n);
+        var at = coords;
+        if (step.x != 0) {
+            at.x = k;
+        } else {
+            at.y = k;
+        }
+        let w = exp(-f32(i * i) / two_s2);
+        sum += textureLoad(input_texture, params.origin + at, 0) * w;
+        weights += w;
     }
-
-    let radius = i32(params.blur_radius);
-    let sigma = params.blur_radius / 3.0;
-
-    if (radius <= 0) {
-        // No blur, just copy
-        let color = textureLoad(input_texture, coords, 0);
-        textureStore(output_texture, coords, color);
-        return;
-    }
-
-    var color_sum = vec4<f32>(0.0);
-    var weight_sum = 0.0;
-
-    // Sample along X axis
-    for (var i = -radius; i <= radius; i++) {
-        let sample_x = clamp(coords.x + i, 0, dims.x - 1);
-        let sample_coords = vec2<i32>(sample_x, coords.y);
-        let sample_color = textureLoad(input_texture, sample_coords, 0);
-
-        let weight = gaussian(f32(i), sigma);
-        color_sum += sample_color * weight;
-        weight_sum += weight;
-    }
-
-    let result = color_sum / weight_sum;
-    textureStore(output_texture, coords, result);
+    return sum / weights;
 }
 
-// Vertical blur pass
 @compute @workgroup_size(16, 16, 1)
-fn blur_vertical(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let coords = vec2<i32>(global_id.xy);
-    let dims = vec2<i32>(i32(params.texture_width), i32(params.texture_height));
-
-    if (coords.x >= dims.x || coords.y >= dims.y) {
+fn blur_horizontal(@builtin(global_invocation_id) id: vec3<u32>) {
+    let coords = vec2<i32>(id.xy);
+    if (coords.x >= params.size.x || coords.y >= params.size.y) {
         return;
     }
-
-    let radius = i32(params.blur_radius);
-    let sigma = params.blur_radius / 3.0;
-
-    if (radius <= 0) {
-        // No blur, just copy
-        let color = textureLoad(input_texture, coords, 0);
-        textureStore(output_texture, coords, color);
-        return;
-    }
-
-    var color_sum = vec4<f32>(0.0);
-    var weight_sum = 0.0;
-
-    // Sample along Y axis
-    for (var i = -radius; i <= radius; i++) {
-        let sample_y = clamp(coords.y + i, 0, dims.y - 1);
-        let sample_coords = vec2<i32>(coords.x, sample_y);
-        let sample_color = textureLoad(input_texture, sample_coords, 0);
-
-        let weight = gaussian(f32(i), sigma);
-        color_sum += sample_color * weight;
-        weight_sum += weight;
-    }
-
-    let result = color_sum / weight_sum;
-    textureStore(output_texture, coords, result);
+    textureStore(output_texture, coords, blur(coords, vec2<i32>(1, 0)));
 }
 
-// Color matrix filter pass
 @compute @workgroup_size(16, 16, 1)
-fn apply_color_filter(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let coords = vec2<i32>(global_id.xy);
-    let dims = vec2<i32>(i32(params.texture_width), i32(params.texture_height));
-
-    if (coords.x >= dims.x || coords.y >= dims.y) {
+fn blur_vertical(@builtin(global_invocation_id) id: vec3<u32>) {
+    let coords = vec2<i32>(id.xy);
+    if (coords.x >= params.size.x || coords.y >= params.size.y) {
         return;
     }
+    textureStore(output_texture, coords, blur(coords, vec2<i32>(0, 1)));
+}
 
-    var color = textureLoad(input_texture, coords, 0);
-    let amount = params.filter_amount;
-
-    // Apply color matrix based on filter type
-    switch (params.filter_type) {
-        case 0u: {
-            // None - pass through
-        }
-        case 1u: {
-            // Grayscale
-            let luma = color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722;
-            let gray = vec3<f32>(luma, luma, luma);
-            color = vec4<f32>(mix(color.rgb, gray, amount), color.a);
-        }
-        case 2u: {
-            // Sepia
-            let sepia_r = color.r * 0.393 + color.g * 0.769 + color.b * 0.189;
-            let sepia_g = color.r * 0.349 + color.g * 0.686 + color.b * 0.168;
-            let sepia_b = color.r * 0.272 + color.g * 0.534 + color.b * 0.131;
-            let sepia = vec3<f32>(
-                min(sepia_r, 1.0),
-                min(sepia_g, 1.0),
-                min(sepia_b, 1.0)
-            );
-            color = vec4<f32>(mix(color.rgb, sepia, amount), color.a);
-        }
-        case 3u: {
-            // Brightness
-            color = vec4<f32>(color.rgb * amount, color.a);
-        }
-        default: {
-            // Unknown - pass through
-        }
+// One colour function's matrix, on the unpremultiplied colour, clamped to
+// [0, 1] after (each function of a list clamps, as in Chromium).
+@compute @workgroup_size(16, 16, 1)
+fn color_matrix(@builtin(global_invocation_id) id: vec3<u32>) {
+    let coords = vec2<i32>(id.xy);
+    if (coords.x >= params.size.x || coords.y >= params.size.y) {
+        return;
     }
-
-    textureStore(output_texture, coords, color);
+    let p = textureLoad(input_texture, params.origin + coords, 0);
+    var c = vec4<f32>(0.0);
+    if (p.a > 0.0) {
+        c = vec4<f32>(p.rgb / p.a, p.a);
+    }
+    let out = clamp(
+        vec4<f32>(dot(params.row_r, c), dot(params.row_g, c), dot(params.row_b, c), dot(params.row_a, c))
+            + params.offsets,
+        vec4<f32>(0.0),
+        vec4<f32>(1.0),
+    );
+    textureStore(output_texture, coords, vec4<f32>(out.rgb * out.a, out.a));
 }

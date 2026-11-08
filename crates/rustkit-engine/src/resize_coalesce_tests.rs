@@ -109,3 +109,87 @@ fn resize_view_is_immediate_and_settles_pending_bounds() {
     assert!(!turn.relaid_out, "nothing pending after resize_view");
     assert_eq!(read(&mut engine, view, "resizes"), "1");
 }
+
+const WIDTH_PAGE: &str = "<html><body><script>\
+    window.resizes = 0; window.seen = ''; window.first = String(innerWidth);\
+    window.addEventListener('resize', function () {\
+      window.resizes += 1; window.seen += innerWidth + ',';\
+    });\
+    </script></body></html>";
+
+fn load_sized(
+    page: &str,
+    width: u32,
+    height: u32,
+) -> (Engine, EngineViewId, crate::script_net_tests::Server, tokio::runtime::Runtime) {
+    let server = serve_routes(vec![("/", "text/html", page.to_string())]);
+    let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+    let view = engine
+        .create_headless_view(Bounds { x: 0, y: 0, width, height })
+        .expect("view");
+    let url = Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let yielded = rt.block_on(engine.load_url_yielding(view, url)).expect("load");
+    assert_eq!(yielded, LoadYield::Complete, "a page with no inserted script does not yield");
+    (engine, view, server, rt)
+}
+
+/// A queued size the viewport has already left is not dispatched. The page
+/// keeps the width it read, and does not hear 1280 after it is already 1060.
+#[test]
+fn a_stale_queued_resize_is_not_dispatched() {
+    let (mut engine, view, _server, rt) = load_sized(WIDTH_PAGE, 1060, 700);
+    assert_eq!(read(&mut engine, view, "window.first"), "1060");
+    assert_eq!(read(&mut engine, view, "resizes"), "0");
+    {
+        let state = engine.views.get_mut(&view).unwrap();
+        state.pending_resize = Some(Bounds { x: 0, y: 0, width: 1280, height: 800 });
+    }
+    let turn = rt.block_on(engine.pump_live(view, 0));
+    assert!(!turn.relaid_out, "the stale size was not laid out");
+    assert_eq!(read(&mut engine, view, "resizes"), "0", "no resize at the stale width");
+    assert_eq!(read(&mut engine, view, "innerWidth"), "1060");
+    assert_eq!(read(&mut engine, view, "window.seen"), "");
+}
+
+/// The page reads the viewport it was loaded at. A later repeat of that
+/// size is not a resize. The next real size is one event, at that size.
+#[test]
+fn a_page_reads_its_width_before_the_sidebar_resize() {
+    let (mut engine, view, _server, rt) = load_sized(WIDTH_PAGE, 1280, 800);
+    assert_eq!(read(&mut engine, view, "window.first"), "1280");
+    assert_eq!(read(&mut engine, view, "resizes"), "0");
+
+    // Chrome's initial sync sends the closed width. The view is already
+    // that wide, so the page does not hear a resize at 1280.
+    engine
+        .set_view_bounds(view, Bounds { x: 0, y: 0, width: 1280, height: 800 })
+        .expect("same bounds");
+    let turn = rt.block_on(engine.pump_live(view, 0));
+    assert!(!turn.relaid_out);
+    assert_eq!(read(&mut engine, view, "resizes"), "0");
+
+    // The open sidebar, and a stale full-window size queued behind it in
+    // the same turn: one event, at the viewport the view ends on.
+    engine
+        .set_view_bounds(view, Bounds { x: 0, y: 0, width: 1280, height: 800 })
+        .expect("stale");
+    engine
+        .set_view_bounds(view, Bounds { x: 220, y: 0, width: 1060, height: 800 })
+        .expect("sidebar");
+    let turn = rt.block_on(engine.pump_live(view, 0));
+    assert!(turn.relaid_out);
+    assert_eq!(read(&mut engine, view, "resizes"), "1");
+    assert_eq!(read(&mut engine, view, "window.seen"), "1060,");
+    assert_eq!(read(&mut engine, view, "innerWidth"), "1060");
+}
+
+#[test]
+fn resize_dispatch_follows_the_current_viewport() {
+    let stored = Bounds { x: 10, y: 20, width: 1060, height: 700 };
+    let pending = Bounds { x: 0, y: 0, width: 1280, height: 800 };
+    let got = super::resize_dispatch_bounds(pending, stored, None);
+    assert_eq!((got.width, got.height), (1060, 700));
+    let got = super::resize_dispatch_bounds(pending, pending, Some((1060, 700)));
+    assert_eq!((got.x, got.y, got.width, got.height), (0, 0, 1060, 700));
+}
