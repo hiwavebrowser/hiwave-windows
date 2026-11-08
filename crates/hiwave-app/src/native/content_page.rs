@@ -157,6 +157,12 @@ impl ContentPage {
         self.surface.borrow().grab_keyboard();
     }
 
+    /// Run a script in the page. The answer arrives on the channel, a turn or more
+    /// later; the window never waits for it.
+    pub fn eval(&self, script: &str) -> oneshot::Receiver<Result<String, String>> {
+        self.thread.eval(script)
+    }
+
     /// Show or hide the page's window, and tell the page (a hidden page need not
     /// draw). A background tab keeps loading either way.
     pub fn set_visible(&self, visible: bool) {

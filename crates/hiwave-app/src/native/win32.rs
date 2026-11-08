@@ -147,6 +147,9 @@ pub struct NativeBrowser {
     /// content thread is on.
     page_tabs: Option<TabModel<u64>>,
     next_page_id: u64,
+    /// A find on the content thread whose answer has not come back yet, with the
+    /// query the chrome sent (the answer is echoed with that, never the page's).
+    pending_find: RefCell<Option<(tokio::sync::oneshot::Receiver<Result<String, String>>, String)>>,
     /// The page (not a chrome view) has the keyboard.
     page_focused: std::cell::Cell<bool>,
 }
@@ -201,6 +204,7 @@ impl NativeBrowser {
             pages: HashMap::new(),
             page_tabs: None,
             next_page_id: 1,
+            pending_find: RefCell::new(None),
             page_focused: std::cell::Cell::new(false),
         })
     }
@@ -988,13 +992,6 @@ impl NativeBrowser {
     /// Find `query` in the active page and tell the chrome's find bar how many
     /// matches there are. The helper highlights matches in the page itself.
     fn find_in_page(&self, query: &str, case_sensitive: bool, direction: &str) {
-        if self.page_tabs.is_some() {
-            debug!("find_in_page is not wired to the content thread yet");
-            return;
-        }
-        let Some(&content_id) = self.views.get(&ViewType::Content) else {
-            return;
-        };
         let payload = serde_json::json!({
             "query": query,
             "case_sensitive": case_sensitive,
@@ -1003,14 +1000,63 @@ impl NativeBrowser {
         let script = format!(
             "{FIND_IN_PAGE_HELPER}\n(() => {{ const r = window.__hiwaveFind && window.__hiwaveFind.run({payload}); return r ? JSON.stringify(r) : 'null'; }})();"
         );
+
+        // On the content thread the answer comes back later: remember the query and
+        // collect it in `poll_find`. A newer find replaces an older one still waiting.
+        //
+        // `page.eval` runs a script WE wrote (the bundled find helper plus the query
+        // as a JSON-escaped literal, never concatenated text) inside the page, the
+        // same as the engine's `execute_script` does for the window-thread path. No
+        // page-supplied text becomes code here; the page's ANSWER is the untrusted
+        // part, and `show_find_result` reduces it to two numbers before the chrome
+        // sees it.
+        if let Some(page) = self.page() {
+            *self.pending_find.borrow_mut() = Some((page.eval(&script), query.to_string()));
+            return;
+        }
+
+        let Some(&content_id) = self.views.get(&ViewType::Content) else {
+            return;
+        };
         let out = self.engine.borrow_mut().execute_script(content_id, &script);
-        // The helper ran in the PAGE, so its answer is page-controlled. Only numbers
-        // parsed out of it, and the query the chrome itself sent, reach the chrome.
-        match out.ok().and_then(|o| script_string(&o)).and_then(|raw| find_state_payload(&raw, query)) {
+        self.show_find_result(out.ok(), query);
+    }
+
+    /// Tell the find bar what the helper found. The helper ran in the PAGE, so its
+    /// answer is page-controlled: only numbers parsed out of it, and the query the
+    /// chrome itself sent, reach the chrome.
+    fn show_find_result(&self, answer: Option<String>, query: &str) {
+        match answer.and_then(|o| script_string(&o)).and_then(|raw| find_state_payload(&raw, query)) {
             Some(state) => self.run_chrome_script(&format!(
                 "if(window.hiwaveChrome) {{ hiwaveChrome.updateFindState({state}); }}"
             )),
             None => debug!("find_in_page produced no result"),
+        }
+    }
+
+    /// Collect a content-thread find's answer if it has arrived. Never waits.
+    fn poll_find(&self) {
+        use tokio::sync::oneshot::error::TryRecvError;
+        let outcome = {
+            let mut slot = self.pending_find.borrow_mut();
+            let Some((rx, query)) = slot.as_mut() else {
+                return;
+            };
+            match rx.try_recv() {
+                Ok(answer) => {
+                    let query = query.clone();
+                    *slot = None;
+                    Some((answer, query))
+                }
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Closed) => {
+                    *slot = None;
+                    None
+                }
+            }
+        };
+        if let Some((answer, query)) = outcome {
+            self.show_find_result(answer.ok(), &query);
         }
     }
 
@@ -1364,6 +1410,7 @@ impl NativeBrowser {
             for page in self.pages.values() {
                 page.pump();
             }
+            self.poll_find();
 
             // Keep the tab strip, address bar and nav buttons current
             self.sync_chrome();
