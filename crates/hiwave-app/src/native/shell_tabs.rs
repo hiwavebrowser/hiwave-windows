@@ -145,6 +145,35 @@ pub fn take_from_shelf(
     Some((item.url, workspace))
 }
 
+/// A tab in the shared model that this shell has no view for yet (restored from a
+/// previous session).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedTab {
+    pub id: u64,
+    pub url: String,
+}
+
+/// The tabs of `workspace` that are in the shared model but not owned by this shell, in the
+/// workspace's order, and the workspace's own active tab among them.
+pub fn unowned_tabs(
+    state: &AppState,
+    native: &HashSet<u64>,
+    workspace: hiwave_core::types::WorkspaceId,
+) -> (Vec<SavedTab>, Option<u64>) {
+    let Some(ws) = state.shell.get_workspace(workspace) else {
+        return (Vec::new(), None);
+    };
+    let tabs: Vec<SavedTab> = ws
+        .tabs
+        .iter()
+        .filter(|id| !native.contains(&id.0))
+        .filter_map(|id| state.shell.get_tab(*id))
+        .map(|tab| SavedTab { id: tab.id.0, url: tab.url.to_string() })
+        .collect();
+    let active = ws.active_tab.map(|t| t.0).filter(|id| tabs.iter().any(|t| t.id == *id));
+    (tabs, active)
+}
+
 /// The native tabs that belong to the active workspace, and which of them it last had
 /// active. The tab strip shows only these.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -290,6 +319,41 @@ mod tests {
         let (_, workspace) = take_from_shelf(&mut s, &item.id, Some(work)).unwrap();
         assert_eq!(workspace, work);
         assert_eq!(s.shell.get_active_workspace().map(|w| w.id), Some(work));
+    }
+
+    #[test]
+    fn saved_tabs_are_the_workspaces_tabs_this_shell_does_not_own() {
+        let mut s = state("saved");
+        let ws = s.shell.get_active_workspace().map(|w| w.id).unwrap();
+        let mut ids = Vec::new();
+        for url in ["https://one.test/", "https://two.test/"] {
+            let id = TabId::new();
+            ids.push(id);
+            s.shell
+                .create_tab(TabInfo {
+                    id,
+                    url: url::Url::parse(url).unwrap(),
+                    title: Some("T".into()),
+                    favicon: None,
+                    workspace_id: ws,
+                    suspended: false,
+                    loading: false,
+                    locked: false,
+                    last_visited: None,
+                })
+                .unwrap();
+        }
+        s.shell.set_active_tab(ids[1]).unwrap();
+
+        let (saved, active) = unowned_tabs(&s, &HashSet::new(), ws);
+        assert_eq!(saved.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://one.test/", "https://two.test/"]);
+        assert_eq!(active, Some(ids[1].0));
+
+        // Once the shell owns one, it is no longer "saved".
+        let owned: HashSet<u64> = [ids[0].0].into_iter().collect();
+        let (saved, _) = unowned_tabs(&s, &owned, ws);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, ids[1].0);
     }
 
     #[test]
