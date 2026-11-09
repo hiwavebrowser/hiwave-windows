@@ -983,6 +983,14 @@ impl NativeBrowser {
                         page.mouse_down(x, y, m.click_count.max(1), m.modifiers.shift);
                     }
                     MouseEventType::MouseUp if m.button == MouseButton::Primary => page.click(x, y),
+                    // Right-click: the page's own contextmenu handlers run (no native menu yet).
+                    MouseEventType::MouseDown if m.button == MouseButton::Secondary => {
+                        // A right-click focuses what it lands on, as a left click does.
+                        page.grab_keyboard();
+                        self.page_focused.set(true);
+                        page.secondary_down(x, y);
+                    }
+                    MouseEventType::MouseUp if m.button == MouseButton::Secondary => page.secondary_up(x, y),
                     MouseEventType::MouseMove | MouseEventType::MouseEnter => page.mouse_move(x, y),
                     MouseEventType::MouseLeave => page.mouse_leave(),
                     // ViewHost reports notches (120 native units); the page takes pixels.
