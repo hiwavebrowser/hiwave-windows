@@ -105,7 +105,13 @@ pub struct PageState {
 }
 
 /// One page on the content thread, with the window surface that shows it.
+/// Says whether an address must not be loaded (the user's blocklist). Asked on every load,
+/// so a link click, a form or a script navigation is covered as well as the address bar.
+pub type NavGuard = std::rc::Rc<dyn Fn(&str) -> bool>;
+
 pub struct ContentPage {
+    /// Asked before every navigation.
+    guard: NavGuard,
     thread: ContentThread,
     surface: RefCell<WindowSurface>,
     history: RefCell<NavHistory>,
@@ -127,11 +133,12 @@ pub struct ContentPage {
 impl ContentPage {
     /// Attach the window surface (here, on the window thread) and start the content
     /// thread (the engine is built on it).
-    pub fn spawn(parent: HWND, bounds: Bounds, builder: EngineBuilder) -> Result<Self, String> {
+    pub fn spawn(parent: HWND, bounds: Bounds, builder: EngineBuilder, guard: NavGuard) -> Result<Self, String> {
         let surface = WindowSurface::attach(parent, bounds).map_err(|e| format!("window surface: {e}"))?;
         let thread = ContentThread::spawn(builder, bounds).map_err(|e| format!("content thread: {e:?}"))?;
         info!("Content page started on the content thread");
         Ok(Self {
+            guard,
             thread,
             surface: RefCell::new(surface),
             history: RefCell::new(NavHistory::default()),
@@ -253,11 +260,21 @@ impl ContentPage {
 
     /// Load `url`, adding a history entry.
     pub fn navigate(&self, url: Url) {
+        if (self.guard)(url.as_str()) {
+            warn!(%url, "Navigation refused: the domain is on the user's blocklist");
+            return;
+        }
         self.history.borrow_mut().push(url.clone());
         self.load(url);
     }
 
     fn load(&self, url: Url) {
+        // Every navigation ends here (redirects, back, forward, reload, a page's own
+        // navigation), so this is the one place that covers all of them.
+        if (self.guard)(url.as_str()) {
+            warn!(%url, "Navigation refused: the domain is on the user's blocklist");
+            return;
+        }
         self.from_string.set(false);
         *self.url.borrow_mut() = shown_in_address_bar(&url).then(|| url.to_string());
         let nav_id = self.thread.navigate(url);

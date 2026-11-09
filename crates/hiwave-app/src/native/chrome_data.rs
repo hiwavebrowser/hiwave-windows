@@ -20,6 +20,21 @@ pub fn history_script(state: &AppState) -> String {
     chrome_call("updateHistory", &history)
 }
 
+/// Whether the user's blocklist covers `url`'s domain (a subdomain of a blocked domain
+/// counts). One predicate for every way a page can be reached: the address bar, a link
+/// click, a form, a script, and the content-thread page.
+pub fn url_is_blocked(state: &AppState, url: &str) -> bool {
+    state.user_blocklist.should_block(url)
+}
+
+/// The blocklist panel's data: the user's blocked domains, sorted so the list does not
+/// reorder itself between calls (the set has no order).
+pub fn blocklist_script(state: &AppState) -> String {
+    let mut domains: Vec<&String> = state.user_blocklist.domains.iter().collect();
+    domains.sort();
+    chrome_call("updateBlocklist", &serde_json::json!(domains))
+}
+
 /// The downloads panel's data and the count of active downloads.
 pub fn downloads_script(state: &AppState) -> String {
     let payload = serde_json::json!({
@@ -140,6 +155,24 @@ mod tests {
         assert!(!v.should_record(Some(1), "https://dead.test/", "A", true));
         // The address goes back to A when the load fails: A was already recorded.
         assert!(!v.should_record(Some(1), "https://a.test/", "A", false));
+    }
+
+    #[test]
+    fn a_blocked_domain_and_its_subdomains_are_blocked_everything_else_is_not() {
+        let dir = std::env::temp_dir().join(format!("hiwave_blocked_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::state::AppConfig::default();
+        config.data_dir = dir.clone();
+        config.download_dir = dir.join("downloads");
+        let mut s = AppState::new(config).expect("state");
+        s.block_domain("blocked.test".to_string()).unwrap();
+        assert!(url_is_blocked(&s, "http://blocked.test/"));
+        assert!(url_is_blocked(&s, "https://sub.blocked.test/page?x=1"));
+        assert!(!url_is_blocked(&s, "https://notblocked.test/"));
+        assert!(!url_is_blocked(&s, "https://example.com/blocked.test"));
+        assert!(!url_is_blocked(&s, "not a url"));
+        s.unblock_domain("blocked.test").unwrap();
+        assert!(!url_is_blocked(&s, "http://blocked.test/"));
     }
 
     #[test]

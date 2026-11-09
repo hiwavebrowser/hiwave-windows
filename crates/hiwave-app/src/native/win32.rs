@@ -277,7 +277,7 @@ impl NativeBrowser {
     fn spawn_page(&mut self) -> Result<u64, String> {
         let parent = self.viewhost.get_main_hwnd().ok_or("no main window")?;
         let bounds = to_bounds(self.layout().content);
-        let page = ContentPage::spawn(parent, bounds, engine_builder(&self.shield))?;
+        let page = ContentPage::spawn(parent, bounds, engine_builder(&self.shield), self.nav_guard())?;
         let id = self.next_page_id;
         self.next_page_id += 1;
         self.pages.insert(id, page);
@@ -326,7 +326,7 @@ impl NativeBrowser {
         // page is not an engine view of this engine: it runs on its own thread and
         // this window only shows what it publishes.
         let content_id = if content_page::enabled() {
-            let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield))?;
+            let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield), self.nav_guard())?;
             let id = self.next_page_id;
             self.next_page_id += 1;
             self.pages.insert(id, page);
@@ -514,6 +514,54 @@ impl NativeBrowser {
             "if(window.hiwaveChrome) { hiwaveChrome.setFocusMode(false); }".to_string()
         };
         self.run_chrome_script(&script);
+    }
+
+    /// Send the blocklist panel its domains.
+    fn sync_blocklist(&self) {
+        let script = match self.app_state.lock() {
+            Ok(state) => chrome_data::blocklist_script(&state),
+            Err(_) => return,
+        };
+        self.run_chrome_script(&script);
+    }
+
+    /// Whether the user has blocked this address's domain.
+    fn user_blocked(&self, url: &str) -> bool {
+        self.app_state.lock().map(|s| chrome_data::url_is_blocked(&s, url)).unwrap_or(false)
+    }
+
+    /// The blocklist check a content-thread page asks before each of its navigations.
+    fn nav_guard(&self) -> content_page::NavGuard {
+        let state = Arc::clone(&self.app_state);
+        std::rc::Rc::new(move |url: &str| state.lock().map(|s| chrome_data::url_is_blocked(&s, url)).unwrap_or(false))
+    }
+
+    /// Block the domain of the tab the chrome calls `id`, then close the tab. The
+    /// address comes from the rows the chrome was last told about.
+    fn block_and_close(&mut self, id: u64) {
+        let url = self
+            .chrome_synced
+            .as_ref()
+            .and_then(|s| s.tabs.iter().find(|t| t.id == id))
+            .map(|t| t.url.clone());
+        let Some(domain) = url.as_deref().and_then(crate::state::UserBlocklist::extract_domain) else {
+            warn!(id, "block_and_close: the tab has no domain to block");
+            return;
+        };
+        if let Ok(mut state) = self.app_state.lock() {
+            if let Err(e) = state.block_domain(domain.clone()) {
+                warn!(error = %e, "Failed to save the blocklist");
+            }
+        }
+        info!(%domain, id, "Blocked the domain and closed its tab");
+        // The last tab cannot be closed (the strip never empties), which would leave the
+        // blocked page on screen: replace it with a new tab first (Pollux's R1 note on #130).
+        let open_tabs = self.page_tabs.as_ref().map(|t| t.count()).or_else(|| self.tabs.as_ref().map(|t| t.count())).unwrap_or(0);
+        if open_tabs <= 1 {
+            self.new_tab();
+        }
+        self.close_tab_by_id(id);
+        self.sync_blocklist();
     }
 
     /// The peek: a taller chrome strip while the mouse is at the top in focus mode.
@@ -1441,6 +1489,10 @@ impl NativeBrowser {
             debug!(input = url, "Nothing to navigate to");
             return;
         };
+        if self.user_blocked(&url) {
+            warn!(url, "Navigation refused: the domain is on the user's blocklist");
+            return;
+        }
         if let Some(page) = self.page() {
             match url::Url::parse(&url) {
                 Ok(parsed) => page.navigate(parsed),
@@ -1454,6 +1506,12 @@ impl NativeBrowser {
     }
 
     fn navigate_view(&self, content_id: EngineViewId, url: &str) {
+        // Every engine-view navigation ends here: the address bar, a link click, a form
+        // submit and a script's location change.
+        if self.user_blocked(url) {
+            warn!(url, "Navigation refused: the domain is on the user's blocklist");
+            return;
+        }
         match url::Url::parse(url) {
             Ok(parsed) => {
                 let mut engine = self.engine.borrow_mut();
@@ -1707,6 +1765,22 @@ impl NativeBrowser {
                 self.run_chrome_script(&script);
             }
             "save_sidebar_width" => {}
+            "get_blocklist" => self.sync_blocklist(),
+            "unblock_domain" => {
+                if let Some(domain) = json.get("domain").and_then(|v| v.as_str()) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        if let Err(e) = state.unblock_domain(domain) {
+                            warn!(error = %e, "Failed to unblock the domain");
+                        }
+                    }
+                }
+                self.sync_blocklist();
+            }
+            "block_and_close" => {
+                if let Some(id) = tab_id_of(&json) {
+                    self.block_and_close(id);
+                }
+            }
             "enter_focus_mode" => self.set_focus_mode(Some(true)),
             "exit_focus_mode" => self.set_focus_mode(Some(false)),
             "toggle_focus_mode" => self.set_focus_mode(None),
