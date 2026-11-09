@@ -1,7 +1,7 @@
 //! The native shell's tabs, kept in the shared `BrowserShell`.
 //!
 //! The WebView2 shell (and macOS) keep every tab in `AppState.shell` (a `TabId`, a
-//! workspace, a lock flag, persistence through `workspace_state.json`). Workspaces and
+//! workspace, a lock flag, persistence through the native shell's own `workspace_state.native.json`). Workspaces and
 //! the shelf are views over that model, so the native shell's tabs have to live in it
 //! too. Rather than hook every create / close / activate path, the shell calls
 //! `reconcile` once a turn with the tabs it has; this module makes the shared model
@@ -181,6 +181,18 @@ pub fn unowned_tabs(
     (tabs, active)
 }
 
+/// Make the workspace that owns tab `id` the active one (the sidebar lists every workspace's
+/// tabs, so a click can name a tab that is not in the strip). True when it switched.
+pub fn switch_to_tab_workspace(state: &mut AppState, id: u64) -> bool {
+    let Some(owner) = state.shell.get_tab(TabId(id)).map(|t| t.workspace_id) else {
+        return false;
+    };
+    if state.shell.get_active_workspace().map(|w| w.id) == Some(owner) {
+        return false;
+    }
+    state.shell.set_active_workspace(owner).is_ok()
+}
+
 /// The native tabs that belong to the active workspace, and which of them it last had
 /// active. The tab strip shows only these.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -316,6 +328,22 @@ mod tests {
             !s.config.data_dir.join("workspace_state.json").exists(),
             "a native save must not create or touch the default build's file"
         );
+    }
+
+    #[test]
+    fn clicking_a_tab_of_another_workspace_switches_to_that_workspace() {
+        let mut s = state("click_other_ws");
+        let mut mirrored = HashSet::new();
+        let (a, b) = (alloc_tab_id(), alloc_tab_id());
+        reconcile(&mut s, &mut mirrored, &[tab(a, "https://a.test/", "A", false), tab(b, "https://b.test/", "B", true)]);
+        let work = s.shell.create_workspace("Work".to_string());
+        s.shell.move_tab_to_workspace(TabId(a), work).unwrap();
+
+        assert!(!switch_to_tab_workspace(&mut s, b), "b is already in the active workspace");
+        assert!(switch_to_tab_workspace(&mut s, a));
+        assert_eq!(s.shell.get_active_workspace().map(|w| w.id), Some(work));
+        assert_eq!(active_workspace_view(&s, &mirrored).visible, vec![a]);
+        assert!(!switch_to_tab_workspace(&mut s, 999_999), "an unknown tab changes nothing");
     }
 
     #[test]
