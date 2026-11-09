@@ -153,5 +153,130 @@ class TestChromeBoard(unittest.TestCase):
             self.assertEqual([h["property"] for h in info["pages"]["chrome"]["red"]], ["display"])
 
 
+def _row(pixel, geo, join=0, status="ok"):
+    return {"page": "shelf", "state": "default", "size": "1280x800", "width": 1280, "height": 800,
+            "status": status, "pixel_diff_pct": pixel, "geometry_diffs": geo, "join_failures": join,
+            "top": [], "notes": []}
+
+
+class GateTests(unittest.TestCase):
+    """Pete 2026-11-06: green at <= 0.5 % pixels, OR at 0 geometry diffs and
+    <= 1.5 % pixels. Geometry that matches Chrome leaves only rasterisation."""
+
+    def test_constants(self):
+        from scripts import chrome_board
+
+        self.assertEqual(chrome_board.PIXEL_GATE_PCT, 0.5)
+        self.assertEqual(chrome_board.GEOMETRY_PIXEL_GATE_PCT, 1.5)
+
+    def test_half_a_percent_is_green_whatever_the_geometry(self):
+        from scripts import chrome_board
+
+        self.assertTrue(chrome_board.row_is_green(_row(0.5, 40)))
+        self.assertEqual(chrome_board.green_rule(_row(0.5, 40)), "pixel")
+        self.assertTrue(chrome_board.row_is_green(_row(0.3, None)))
+
+    def test_zero_geometry_and_1_2_pct_is_green(self):
+        from scripts import chrome_board
+
+        self.assertTrue(chrome_board.row_is_green(_row(1.2, 0)))
+        self.assertEqual(chrome_board.green_rule(_row(1.2, 0)), "geometry")
+        self.assertTrue(chrome_board.row_is_green(_row(1.5, 0)), "1.5 % is inclusive")
+
+    def test_zero_geometry_and_1_6_pct_is_red(self):
+        from scripts import chrome_board
+
+        self.assertFalse(chrome_board.row_is_green(_row(1.6, 0)))
+        self.assertIsNone(chrome_board.green_rule(_row(1.6, 0)))
+
+    def test_three_geometry_diffs_and_1_pct_is_red(self):
+        from scripts import chrome_board
+
+        self.assertFalse(chrome_board.row_is_green(_row(1.0, 3)))
+
+    def test_geometry_not_run_and_1_pct_is_red(self):
+        from scripts import chrome_board
+
+        self.assertFalse(chrome_board.row_is_green(_row(1.0, None, join=None)))
+
+    def test_a_failed_join_is_not_matching_geometry(self):
+        from scripts import chrome_board
+
+        self.assertFalse(chrome_board.row_is_green(_row(1.0, 0, join=2)))
+        self.assertTrue(chrome_board.row_is_green(_row(0.4, 0, join=2)), "the pixel rule alone still holds")
+
+    def test_an_unscored_row_is_never_green(self):
+        from scripts import chrome_board
+
+        self.assertFalse(chrome_board.row_is_green(_row(None, None, join=None, status="rustkit_failed")))
+
+    def test_board_names_both_rules_and_the_rule_per_row(self):
+        from scripts import chrome_board
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            chrome_board.write_board(out, {
+                "run": {"at": "now", "sha": "feedface", "base": "0badf00d", "chromium": "143", "parity_capture": "pc",
+                        "gate_pct": 0.5, "gate_geometry_pixel_pct": 1.5},
+                "sizes": [], "states": {},
+                "rows": [_row(0.2, 5), _row(1.2, 0), _row(1.6, 0), _row(1.0, 3)],
+                "census": {},
+            })
+            md = (out / "BOARD.md").read_text(encoding="utf-8")
+            self.assertIn("**2/4 rows green**", md)
+            self.assertIn("0 geometry diffs and ≤ 1.5% pixel diff", md)
+            self.assertIn("| gate |", md)
+            body = [l for l in md.splitlines() if l.startswith("| shelf | default | 1280x800 |")]
+            gates = sorted(l.split("|")[6].strip() for l in body)
+            self.assertEqual(gates, ["geometry", "pixel", "red", "red"])
+
+    def test_board_json_records_the_geometry_pixel_gate(self):
+        from scripts import chrome_board
+
+        board = chrome_board.load_board(BOARD_PATH)
+        ok = {"status": "ok", "chromium": {"status": "ok"}, "rustkit": {"status": "ok"},
+              "pixels": {"diffPercent": 1.0, "top": []},
+              "geometry": {"geometry_failures": 0, "join_failures": 0, "worst_selectors": []}}
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = chrome_board.main(
+                ["--parity-capture", sys.executable, "--board", str(BOARD_PATH), "--only", "shelf",
+                 "--work", str(Path(tmp) / "work"), "--out", str(Path(tmp) / "out")],
+                capture=lambda *a, **k: ok,
+            )
+            self.assertEqual(rc, 0)
+            run = json.loads((Path(tmp) / "out" / "board.json").read_text(encoding="utf-8"))["run"]
+            self.assertEqual(run["gate_pct"], 0.5)
+            self.assertEqual(run["gate_geometry_pixel_pct"], 1.5)
+            md = (Path(tmp) / "out" / "BOARD.md").read_text(encoding="utf-8")
+            n = len(chrome_board.plan(board, REPO, Path(tmp) / "w2", only="shelf"))
+            self.assertIn(f"**{n}/{n} rows green**", md)
+
+    def test_rescore_reports_before_and_after_without_a_binary(self):
+        import contextlib
+        import io
+
+        from scripts import chrome_board
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "board.json"
+            src.write_text(json.dumps({"run": {"gate_pct": 0.5}, "rows": [_row(0.2, 5), _row(1.2, 0), _row(1.6, 0)]}),
+                           encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = chrome_board.main(["--rescore", str(src)])
+            self.assertEqual(rc, 0)
+            text = buf.getvalue()
+            self.assertIn("before 1/3", text)
+            self.assertIn("after 2/3", text)
+            self.assertIn("newly green: shelf default 1280x800 1.200% geo 0", text)
+
+
+class RealSiteGateTests(unittest.TestCase):
+    def test_looks_right_is_20_pct_for_now(self):
+        from scripts import realsite_board
+
+        self.assertEqual(realsite_board.LOOKS_RIGHT_MAX, 20.0)
+
+
 if __name__ == "__main__":
     unittest.main()

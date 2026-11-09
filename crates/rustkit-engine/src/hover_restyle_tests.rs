@@ -402,12 +402,9 @@ fn a_press_that_focuses_a_field_paints_its_caret() {
     assert!(!caret_drawn(&painted(&engine, view)));
     engine.mouse_down_at_point(view, FIELD.0, FIELD.1);
     assert!(engine.focused_node(view).is_some(), "the press focused the field");
-    assert_eq!(restyles(&engine, view), 1, "the sheet reads :active on the field");
-    assert_eq!(skipped(&engine, view), 0, "the focus moved since the last layout: the full path");
-    // Since the selection model (#895) the press that focuses the field places the
-    // caret and relayouts with the focus already in place, so the pointer restyle
-    // that follows is a paint-only hit, not a "focus moved" miss. The observable
-    // contract stays: one restyle, nothing skipped, caret painted.
+    // CH2.E22: two restyles, the press's focus (the UA's `:focus-visible`
+    // outline: a field the pointer focuses shows its ring) and `:active`.
+    assert_eq!(restyles(&engine, view), 2, "the sheet reads :active, the UA :focus-visible");
     let pressed = painted(&engine, view);
     assert!(caret_drawn(&pressed), "the field is painted focused, with its caret");
     assert_same(&pressed, &painted_by_a_full_relayout(&mut engine, view), "pressed");
@@ -418,22 +415,24 @@ fn a_hover_after_a_click_into_a_field_paints_the_focus() {
     let (mut engine, view) = field_page("");
     engine.click_at_point(view, FIELD.0, FIELD.1);
     assert!(engine.focused_node(view).is_some(), "the click focused the field");
-    // No rule read the click, so nothing was laid out for it: the focus is
-    // not painted until the next relayout (as on develop, where that
-    // relayout is always a full one).
-    assert_eq!(restyles(&engine, view), 0);
-    assert!(!caret_drawn(&painted(&engine, view)));
-    hover(&mut engine, view, BOX);
+    // CH2.E22: the UA's `:focus-visible` outline reads the focus, and a
+    // field the pointer focuses matches it: the click restyles on the short
+    // path, and the field is painted focused, with its ring and caret.
     assert_eq!(restyles(&engine, view), 1);
-    assert_eq!(skipped(&engine, view), 0, "the focus moved since the last layout: the full path");
-    assert_eq!(last_miss(), "focus moved");
+    assert_eq!(skipped(&engine, view), 1, "the focus restyle is paint only");
+    assert_eq!(last_miss(), "");
+    let clicked = painted(&engine, view);
+    assert!(caret_drawn(&clicked), "the click's restyle paints the caret");
+    assert_same(&clicked, &painted_by_a_full_relayout(&mut engine, view), "after the click");
+    hover(&mut engine, view, BOX);
+    assert_eq!(restyles(&engine, view), 2);
+    assert_eq!(skipped(&engine, view), 2, "the hover: paint only");
     let hovered = painted(&engine, view);
-    assert!(caret_drawn(&hovered), "the hover's relayout paints the focus and the caret");
+    assert!(caret_drawn(&hovered), "the hover's restyle paints the focus and the caret");
     assert_same(&hovered, &painted_by_a_full_relayout(&mut engine, view), "hovered after the click");
-    // That layout recorded the focus: the next paint-only move takes the
-    // short path and keeps the caret.
+    // The next paint-only move takes the short path and keeps the caret.
     hover(&mut engine, view, NOWHERE);
-    assert_eq!(skipped(&engine, view), 1);
+    assert_eq!(skipped(&engine, view), 3);
     let left = painted(&engine, view);
     assert!(caret_drawn(&left));
     assert_same(&left, &painted_by_a_full_relayout(&mut engine, view), "left the box");
@@ -447,8 +446,10 @@ fn a_press_elsewhere_blurs_the_field_in_paint() {
     assert!(caret_drawn(&painted(&engine, view)), "the focused field is laid out and painted");
     engine.mouse_down_at_point(view, BOX.0, BOX.1);
     assert_eq!(engine.focused_node(view), None, "a press on the box takes the focus away");
-    assert_eq!(skipped(&engine, view), 0, "the focus moved since the last layout: the full path");
-    assert_eq!(last_miss(), "focus moved");
+    // CH2.E22: the blurred field is built again on the short path (as the
+    // first press's focus was).
+    assert_eq!(skipped(&engine, view), 2, "the focus moved since the last layout: paint only");
+    assert_eq!(last_miss(), "");
     let blurred = painted(&engine, view);
     assert!(!caret_drawn(&blurred), "no caret on a field that lost the focus");
     assert_same(&blurred, &painted_by_a_full_relayout(&mut engine, view), "blurred");
@@ -456,21 +457,25 @@ fn a_press_elsewhere_blurs_the_field_in_paint() {
 
 #[test]
 fn focus_rules_after_a_click_paint_as_a_full_relayout_does() {
-    // `:focus`, `:focus-visible` and `:focus-within` are not matched by
-    // the engine yet (the same on develop): what is checked is that the
-    // short path never shows something a full relayout does not, with the
-    // caret, when a page has those rules.
+    // CH2.E22: `:focus`, `:focus-visible` and `:focus-within` are matched,
+    // and change paint only: the click's focus restyle and the hover after
+    // it both take the short path, and paint as a full relayout does.
     let (mut engine, view) = field_page(
         "#i:focus{background:yellow} #i:focus-visible{outline:2px solid blue} div:focus-within{background:pink}",
     );
+    let at_rest = painted(&engine, view);
     engine.click_at_point(view, FIELD.0, FIELD.1);
+    assert_eq!(skipped(&engine, view), 1, "the focus rules restyle the click: paint only");
+    let clicked = painted(&engine, view);
+    assert_ne!(clicked.0, at_rest.0, "the focus rules are painted");
+    assert_same(&clicked, &painted_by_a_full_relayout(&mut engine, view), "focus rules, clicked");
     hover(&mut engine, view, BOX);
-    assert_eq!(skipped(&engine, view), 0, "the focus moved: the full path");
+    assert_eq!(skipped(&engine, view), 2, "the hover: paint only");
     let hovered = painted(&engine, view);
     assert!(caret_drawn(&hovered));
     assert_same(&hovered, &painted_by_a_full_relayout(&mut engine, view), "focus rules, hovered");
     hover(&mut engine, view, NOWHERE);
-    assert_eq!(skipped(&engine, view), 1);
+    assert_eq!(skipped(&engine, view), 3);
     assert_same(&painted(&engine, view), &painted_by_a_full_relayout(&mut engine, view), "focus rules, left");
 }
 

@@ -53,12 +53,20 @@ mod flex_item_min_height_tests;
 #[cfg(test)]
 mod fit_content_width_tests;
 #[cfg(test)]
+mod element_scroll_extent_tests;
+#[cfg(test)]
+mod element_scroll_helper_tests;
+#[cfg(test)]
+mod relative_offset_unit_tests;
+#[cfg(test)]
 mod min_max_height_unit_tests;
 #[cfg(test)]
 mod abspos_image_reanchor_tests;
 
 #[cfg(test)]
 mod percent_height_definite_tests;
+#[cfg(test)]
+mod form_control_content_box_tests;
 
 #[cfg(test)]
 mod replaced_size_unit_tests;
@@ -74,6 +82,12 @@ mod sizing_equivalence_tests;
 
 #[cfg(test)]
 mod table_layout_tests;
+
+#[cfg(test)]
+mod own_context_collapse_tests;
+
+#[cfg(test)]
+mod clip_rect_unit_tests;
 
 pub use flex::{layout_flex_container, Axis, FlexItem, FlexLine};
 pub use forms::{
@@ -425,6 +439,22 @@ pub fn resolve_line_height(style: &ComputedStyle, font_size: f32) -> f32 {
         // Only `normal` needs the font; skip shaping entirely otherwise.
         rustkit_css::LineHeight::Normal => normal_line_height(style, font_size),
         other => other.to_px(font_size),
+    }
+}
+
+/// What closing the open line would advance the cursor by: the line box's
+/// height when a line is open (anything placed on it), else nothing.
+fn open_line_advance(
+    cursor_x: f32,
+    tallest: f32,
+    bottom_edge: f32,
+    extents: (f32, f32),
+    strut: (f32, f32),
+) -> f32 {
+    if cursor_x > 0.0 || tallest > 0.0 {
+        line_advance(tallest, bottom_edge, extents, strut)
+    } else {
+        0.0
     }
 }
 
@@ -1796,6 +1826,11 @@ pub struct LayoutBox {
     /// Whether the pointer is over this scroller's thumb
     /// (`::-webkit-scrollbar-thumb:hover`). Set by the engine.
     pub scrollbar_thumb_hovered: std::cell::Cell<bool>,
+    /// The engine's animation key of the `::before`/`::after` this box (or
+    /// the text run under it) was generated for, `None` for every other
+    /// box. A pseudo-element has no node of its own (`node_id` is `None`),
+    /// so a paint-only animation frame finds its boxes by this.
+    pub pseudo_animation_key: Option<usize>,
 }
 
 /// The scrollport each kind of box under a box answers to: an absolute box
@@ -1851,6 +1886,7 @@ impl LayoutBox {
             sticky_paths: std::cell::RefCell::new(Vec::new()),
             scrollbar_overflows: std::cell::Cell::new((false, false)),
             scrollbar_thumb_hovered: std::cell::Cell::new(false),
+            pseudo_animation_key: None,
         }
     }
 
@@ -4515,7 +4551,7 @@ impl LayoutBox {
     /// (an orthogonal flow), `hr` (`overflow: hidden` in Chromium's UA sheet),
     /// `fieldset`, `details` (its summary line), and replaced elements.
     /// Only collapse-through reads this; `establishes_bfc` is unchanged.
-    fn is_own_context_for_collapse(&self) -> bool {
+    pub(crate) fn is_own_context_for_collapse(&self) -> bool {
         let s = &self.style;
         s.display_modifier == rustkit_css::DisplayModifier::FlowRoot
             || s.contain_holds_fixed
@@ -5673,7 +5709,15 @@ impl LayoutBox {
             // by reanchor_absolute_children once this box is final.
             if child.position == Position::Absolute || child.position == Position::Fixed {
                 let mut cb = self.dimensions.clone();
-                cb.content.height = cursor_y;
+                // A block-level box would close the open line: its static
+                // position is below that line box (CH2.B25). One that was
+                // inline-level stays on the line, where it would have gone.
+                cb.content.height = if child.style.abspos_was_inline_level {
+                    cb.content.x += cursor_x;
+                    cursor_y
+                } else {
+                    cursor_y + open_line_advance(cursor_x, line_height, line_below_baseline, line_extents, strut)
+                };
                 child.layout_with_definite_height(&cb, cb.content.height);
                 continue;
             }
@@ -6671,16 +6715,39 @@ impl LayoutBox {
         for (i, child) in self.children.iter_mut().enumerate() {
             // Skip absolutely/fixed positioned children for flow layout
             if child.position == Position::Absolute || child.position == Position::Fixed {
-                let mut cb = self.dimensions.clone();
-                cb.content.height = cursor_y;
                 // Out-of-flow boxes do not participate in margin collapsing
-                // (CSS 2.1 §8.3.1). The static position must still land where
-                // the box would have been in flow — including the pending
-                // sibling margin — so the child gets a CLONE of the context to
-                // resolve against; the live context stays intact for the next
-                // in-flow sibling (an abspos box between two blocks must not
-                // swallow the margin between them).
-                let mut oof_margin_context = margin_context.clone();
+                // (CSS 2.1 §8.3.1). The static position is past the pending
+                // sibling margin, materialized here; the box's own top margin
+                // goes on top of it rather than collapsing with it (Chromium:
+                // `<p>` then `margin-top:50px` abspos sits 16 + 50 below the
+                // text, WPT clip-path-rectangle-ref; CH2.B24). A replaced box
+                // never reads a margin context, so it needs the cursor to
+                // carry the margin as well. The live context stays intact for
+                // the next in-flow sibling (an abspos box between two blocks
+                // must not swallow the margin between them).
+                //
+                // An abspos box is blockified, and a block-level box closes
+                // the open line: its static position is below that line box,
+                // not at its top (Chromium 148: after a 20px inline-block
+                // with `margin-bottom:15px`, 39 below the container top, not
+                // 0; CH2.B25). An open line has already taken the pending
+                // margin, so at most one of the two terms is non-zero.
+                //
+                // An abspos box that was inline-level before it was
+                // blockified keeps the place it would have had on the line:
+                // the line's top, after what the line holds so far (Chromium
+                // 148: `ab<span style=position:absolute>` at x 19, y 0, not
+                // below the line). The inline start ignores `text-align`
+                // and floats.
+                let mut cb = self.dimensions.clone();
+                cb.content.height = cursor_y + margin_context.resolve();
+                if child.style.abspos_was_inline_level {
+                    cb.content.x += cursor_x;
+                } else {
+                    cb.content.height +=
+                        open_line_advance(cursor_x, line_height, line_below_baseline, line_extents, strut);
+                }
+                let mut oof_margin_context = MarginCollapseContext::new();
                 child.layout_with_collapse_in(&cb, &mut oof_margin_context, float_context, None);
                 continue;
             }
@@ -10774,7 +10841,7 @@ impl DisplayList {
     /// A right side left of the left side (or bottom above top) clips all:
     /// `rect(0,0,0,0)` and `rect(1px,1px,1px,1px)` are the visually-hidden
     /// pattern on most large sites.
-    fn clip_rect_clip(&self, layout_box: &LayoutBox) -> Option<Rect> {
+    pub(crate) fn clip_rect_clip(&self, layout_box: &LayoutBox) -> Option<Rect> {
         let clip = layout_box.style.clip.as_ref()?;
         if !matches!(layout_box.position, Position::Absolute | Position::Fixed) {
             return None;
@@ -10807,14 +10874,63 @@ impl DisplayList {
     }
 
     fn clip_path_clip(&self, layout_box: &LayoutBox) -> Option<(Rect, BorderRadius)> {
+        // A non-replaced inline is one box at its first line fragment here,
+        // and Chrome clips a wrapped inline to that first fragment too (WPT
+        // clip-path-reference-box-004), so its own boxes are the reference.
         if !matches!(
             layout_box.box_type,
-            BoxType::Block | BoxType::Image { .. } | BoxType::FormControl(_)
+            BoxType::Block | BoxType::Inline | BoxType::Image { .. } | BoxType::FormControl(_)
         ) {
             return None;
         }
         let raw = layout_box.style.clip_path.trim().to_ascii_lowercase();
         if raw.is_empty() || raw == "none" {
+            return None;
+        }
+        let d = &layout_box.dimensions;
+        // A `<geometry-box>`; on an HTML box the SVG boxes fall back
+        // (css-masking-1 §8.1): `fill-box` to the content box, `stroke-box`
+        // and `view-box` to the border box.
+        let reference_box = |keyword: &str| -> Option<Rect> {
+            Some(match keyword {
+                "" | "border-box" | "stroke-box" | "view-box" => d.border_box(),
+                "padding-box" => d.padding_box(),
+                "content-box" | "fill-box" => d.content,
+                // An inline's vertical margins take no space in the line,
+                // so layout leaves them at zero, but its margin box still
+                // has them (WPT clip-path-inline-004). A percentage, of the
+                // containing block's width, is not known here and reads 0.
+                "margin-box" if matches!(layout_box.box_type, BoxType::Inline) => {
+                    let s = &layout_box.style;
+                    let font = match s.font_size {
+                        Length::Px(px) => px,
+                        _ => 16.0,
+                    };
+                    let v = |l: &Length| match l {
+                        Length::Percent(_) => 0.0,
+                        l => l.to_px(font, self.root_font_size, 0.0),
+                    };
+                    let m = d.margin_box();
+                    let (top, bottom) = (v(&s.margin_top), v(&s.margin_bottom));
+                    Rect::new(m.x, m.y - top, m.width, m.height + top + bottom)
+                }
+                "margin-box" => d.margin_box(),
+                _ => return None,
+            })
+        };
+        // A `<geometry-box>` alone clips to that box. Its rounding (the
+        // border radius, shrunk or grown to the box) is read only for the
+        // border box; a rounded element's other boxes keep the old path
+        // (unclipped) rather than clip square.
+        if !raw.contains('(') {
+            let rect = reference_box(&raw)?;
+            let radii = self.border_radius_px(layout_box);
+            if radii.is_zero() {
+                return Some((rect, BorderRadius::default()));
+            }
+            if matches!(raw.as_str(), "border-box" | "stroke-box" | "view-box") {
+                return Some((rect, radii.fitted(rect.width, rect.height)));
+            }
             return None;
         }
         let open = raw.find('(')?;
@@ -10835,14 +10951,7 @@ impl DisplayList {
             [k] => *k,
             _ => return None,
         };
-        let d = &layout_box.dimensions;
-        let reference = match keyword {
-            "" | "border-box" => d.border_box(),
-            "padding-box" => d.padding_box(),
-            "content-box" => d.content,
-            "margin-box" => d.margin_box(),
-            _ => return None,
-        };
+        let reference = reference_box(keyword)?;
         let font_size = match layout_box.style.font_size {
             Length::Px(px) => px,
             _ => 16.0,
@@ -10900,26 +11009,61 @@ impl DisplayList {
         };
 
         let (rect, radii) = match name {
-            "inset" => {
+            // `inset()`, and `rect()` / `xywh()` (css-shapes-1 §3.1), which
+            // are the same rectangle written from the top and left edges.
+            "inset" | "rect" | "xywh" => {
                 let (offsets, round) = match shape.find("round") {
                     Some(i) => (shape[..i].trim(), Some(shape[i + 5..].trim())),
                     None => (shape, None),
                 };
                 let o: Vec<&str> = offsets.split_whitespace().collect();
-                let (t, r, b, l) = match o.as_slice() {
-                    [a] => (*a, *a, *a, *a),
-                    [a, b] => (*a, *b, *a, *b),
-                    [a, b, c] => (*a, *b, *c, *b),
-                    [a, b, c, d] => (*a, *b, *c, *d),
-                    _ => return None,
+                let rect = match name {
+                    "inset" => {
+                        let (t, r, b, l) = match o.as_slice() {
+                            [a] => (*a, *a, *a, *a),
+                            [a, b] => (*a, *b, *a, *b),
+                            [a, b, c] => (*a, *b, *c, *b),
+                            [a, b, c, d] => (*a, *b, *c, *d),
+                            _ => return None,
+                        };
+                        let (t, r, b, l) = (px(t, h)?, px(r, w)?, px(b, h)?, px(l, w)?);
+                        Rect::new(
+                            reference.x + l,
+                            reference.y + t,
+                            (w - l - r).max(0.0),
+                            (h - t - b).max(0.0),
+                        )
+                    }
+                    "rect" => {
+                        // Each edge from the top or left side; `auto` is the
+                        // box's own edge. A right (bottom) edge before the
+                        // left (top) one is clamped to it.
+                        let [t, r, b, l] = o.as_slice() else {
+                            return None;
+                        };
+                        let edge = |v: &str, basis: f32, auto: f32| -> Option<f32> {
+                            if v == "auto" {
+                                Some(auto)
+                            } else {
+                                px(v, basis)
+                            }
+                        };
+                        let (t, l) = (edge(t, h, 0.0)?, edge(l, w, 0.0)?);
+                        let (r, b) = (edge(r, w, w)?.max(l), edge(b, h, h)?.max(t));
+                        Rect::new(reference.x + l, reference.y + t, r - l, b - t)
+                    }
+                    _ => {
+                        // `xywh(x y width height)`; a negative size is invalid.
+                        let [x, y, rw, rh] = o.as_slice() else {
+                            return None;
+                        };
+                        let (rw, rh) = (px(rw, w)?, px(rh, h)?);
+                        if rw < 0.0 || rh < 0.0 {
+                            return None;
+                        }
+                        Rect::new(reference.x + px(x, w)?, reference.y + px(y, h)?, rw, rh)
+                    }
                 };
-                let (t, r, b, l) = (px(t, h)?, px(r, w)?, px(b, h)?, px(l, w)?);
-                let rect = Rect::new(
-                    reference.x + l,
-                    reference.y + t,
-                    (w - l - r).max(0.0),
-                    (h - t - b).max(0.0),
-                );
                 let radii = match round {
                     None => BorderRadius::default(),
                     Some(round) => {
@@ -10942,8 +11086,11 @@ impl DisplayList {
                                 _ => return None,
                             })
                         };
-                        let hr = four(hs, rect.width)?;
-                        let vr = four(vs, rect.height)?;
+                        // A percentage is of the reference box, like the
+                        // offsets, not of the inset rectangle (css-shapes-1
+                        // §3.1; WPT clip-path-inset-round-percent).
+                        let hr = four(hs, w)?;
+                        let vr = four(vs, h)?;
                         let c = |i: usize| CornerRadius { h: hr[i], v: vr[i] };
                         BorderRadius {
                             top_left: c(0),
@@ -12223,8 +12370,38 @@ impl DisplayList {
         // The control's painted frame: 1px (the UA border stand-in) unless
         // the author removed it. `border: none` on a styled search box drew
         // a 1px frame anyway and seated the text 1px right of Chrome's
-        // (shelf's command input).
-        let border_width = if layout_box.style.border_top_style == rustkit_css::BorderStyle::None {
+        // (shelf's command input). An author width is the frame (CH2.B18c:
+        // `border: 40px solid` painted a 1px hairline; Chromium 143 paints
+        // 40). `Length::Zero` is the unset UA default, as in
+        // `content_box_control_extra`; an author `0px` paints none. Widths
+        // snap as Chromium's do (0 < w < 1 paints 1, else floor). The frame
+        // is one width for all four sides, so it follows the author only
+        // when the four sides agree; otherwise (e.g. `border-top: 0` on a
+        // bordered input) it keeps the old frame rather than painting the
+        // top side's width everywhere.
+        let style = &layout_box.style;
+        let side = |s: rustkit_css::BorderStyle, w: &Length| -> Option<f32> {
+            if s == rustkit_css::BorderStyle::None {
+                return Some(0.0);
+            }
+            match w {
+                Length::Zero => None,
+                Length::Percent(_) | Length::Auto => Some(1.0),
+                w => {
+                    let px = w.to_px(font_size, self.root_font_size, 0.0).max(0.0);
+                    Some(if px > 0.0 && px < 1.0 { 1.0 } else { px.floor() })
+                }
+            }
+        };
+        let sides = [
+            side(style.border_top_style, &style.border_top_width),
+            side(style.border_right_style, &style.border_right_width),
+            side(style.border_bottom_style, &style.border_bottom_width),
+            side(style.border_left_style, &style.border_left_width),
+        ];
+        let border_width = if sides.iter().all(|s| *s == sides[0]) {
+            sides[0].unwrap_or(1.0)
+        } else if style.border_top_style == rustkit_css::BorderStyle::None {
             0.0
         } else {
             1.0
@@ -15922,6 +16099,55 @@ mod tests {
         none.style.border_top_style = rustkit_css::BorderStyle::None;
         none.dimensions.content = Rect::new(0.0, 0.0, 149.0, 19.0);
         assert_eq!(frame(none), 0.0);
+    }
+
+    /// CH2.B18c: an author border width is the painted frame. Chromium 143
+    /// paints `<input style="border:40px solid red">` with a 40px ring; the
+    /// painter drew the 1px UA stand-in for any style but `none`, so the
+    /// real-window `e22_focus_ring` check counted a hairline.
+    #[test]
+    fn an_author_border_width_is_the_painted_control_frame() {
+        let solid = rustkit_css::BorderStyle::Solid;
+        // `border: <w> solid` sets all four sides; `top` then overrides the
+        // top side (`border-top: 0` after it) when given.
+        let sides = |w: Length, top: Option<Length>| {
+            let mut control = n53_text_input();
+            let s = &mut control.style;
+            s.border_top_width = top.unwrap_or_else(|| w.clone());
+            s.border_right_width = w.clone();
+            s.border_bottom_width = w.clone();
+            s.border_left_width = w;
+            s.border_top_style = solid;
+            s.border_right_style = solid;
+            s.border_bottom_style = solid;
+            s.border_left_style = solid;
+            control.dimensions.content = Rect::new(0.0, 0.0, 229.0, 99.0);
+            let list = DisplayList::build(&control);
+            list.commands
+                .iter()
+                .find_map(|c| match c {
+                    DisplayCommand::TextInput { border_width, .. } => Some(*border_width),
+                    _ => None,
+                })
+                .expect("a TextInput command")
+        };
+        let frame = |w: Length| sides(w, None);
+        // Chromium snaps a border width: 0 < w < 1 paints 1, else floor.
+        assert_eq!(frame(Length::Px(0.65)), 1.0, "border: 0.05em solid at 13px");
+        assert_eq!(frame(Length::Px(2.5)), 2.0, "border: 2.5px solid");
+        // Sides that disagree keep the old 1px frame (one width paints all
+        // four; the top side's 0 must not erase the other three).
+        assert_eq!(
+            sides(Length::Px(1.0), Some(Length::Px(0.0))),
+            1.0,
+            "border: 1px solid; border-top: 0"
+        );
+        assert_eq!(frame(Length::Px(40.0)), 40.0, "border: 40px solid");
+        assert_eq!(frame(Length::Px(3.0)), 3.0, "border: 3px solid");
+        // `border: 0` / `border-width: 0px`: no frame (unitless 0 parses to Px(0)).
+        assert_eq!(frame(Length::Px(0.0)), 0.0, "border-width: 0px");
+        // Unset (Length::Zero) keeps the 1px UA stand-in.
+        assert_eq!(frame(Length::Zero), 1.0, "UA default");
     }
 
     #[test]

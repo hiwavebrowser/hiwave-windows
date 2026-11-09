@@ -60,6 +60,7 @@ fn counting_forced(calls: Rc<Cell<u64>>) -> ForcedLayout {
         Some(ForcedGeometry {
             source: Box::new(|| (HashMap::new(), HashMap::new())),
             hit_tester: None,
+            computed_lines: None,
             max_scroll: (0.0, 0.0),
         })
     })

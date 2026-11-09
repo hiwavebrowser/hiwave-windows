@@ -121,6 +121,9 @@ families!(
     mask,
     font,
     inline,
+    // CH2.E14b: a `var()` with no value and no fallback is invalid at
+    // computed-value time and computes as `unset` (CSS Variables 1 §3).
+    var_unset,
 );
 
 /// A script's write to `style` is read back through the serializer, not as the

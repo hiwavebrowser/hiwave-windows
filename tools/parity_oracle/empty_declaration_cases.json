@@ -1,0 +1,72 @@
+{
+ "oracle": "148.0.7778.216",
+ "source": "CH2.E28: an empty declaration (`;;`) or one without a colon is skipped and the next declaration applies. Pages are synthetic; chrome is written by declaration_list_log.mjs --write.",
+ "cases": [
+  {
+   "name": "rule: empty declaration between two",
+   "html": "<!doctype html><style>body{margin:0}</style><body><style>#a{color:rgb(255, 0, 0);;background-color:rgb(0, 0, 255)}</style><div id=a>x</div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('color'),s.getPropertyValue('background-color')].join(' | ')})()",
+   "chrome": "rgb(255, 0, 0) | rgb(0, 0, 255)"
+  },
+  {
+   "name": "rule: leading empty declarations",
+   "html": "<!doctype html><style>body{margin:0}</style><body><style>#a{;;color:rgb(255, 0, 0)}</style><div id=a>x</div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('color')].join(' | ')})()",
+   "chrome": "rgb(255, 0, 0)"
+  },
+  {
+   "name": "rule: !important after an empty declaration",
+   "html": "<!doctype html><style>body{margin:0}</style><body><style>#a{color:rgb(255, 0, 0);;background-color:rgb(0, 0, 255) !important}#a{background-color:rgb(0, 128, 0)}</style><div id=a>x</div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('color'),s.getPropertyValue('background-color')].join(' | ')})()",
+   "chrome": "rgb(255, 0, 0) | rgb(0, 0, 255)"
+  },
+  {
+   "name": "rule: a declaration without a colon is skipped",
+   "html": "<!doctype html><style>body{margin:0}</style><body><style>#a{foo;color:rgb(255, 0, 0)}</style><div id=a>x</div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('color')].join(' | ')})()",
+   "chrome": "rgb(255, 0, 0)"
+  },
+  {
+   "name": "rule: trailing ;",
+   "html": "<!doctype html><style>body{margin:0}</style><body><style>#a{width:24px;}</style><div id=a>x</div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('width')].join(' | ')})()",
+   "chrome": "24px"
+  },
+  {
+   "name": "rule: empty after a data URL",
+   "html": "<!doctype html><style>body{margin:0}</style><body><style>#a{background-image:url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjQiIGZpbGw9ImdyZWVuIi8+PC9zdmc+);;width:10px}</style><div id=a>x</div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('background-image'),s.getPropertyValue('width')].join(' | ')})()",
+   "chrome": "url(\"data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPjxyZWN0IHdpZHRoPSI0IiBoZWlnaHQ9IjQiIGZpbGw9ImdyZWVuIi8+PC9zdmc+\") | 10px"
+  },
+  {
+   "name": "rule: ; inside a string then empty",
+   "html": "<!doctype html><style>body{margin:0}</style><body><style>#a{--s:\"a;b\";;width:12px}</style><div id=a>x</div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('--s'),s.getPropertyValue('width')].join(' | ')})()",
+   "chrome": "\"a;b\" | 12px"
+  },
+  {
+   "name": "rule: empty custom property then empty declaration",
+   "html": "<!doctype html><style>body{margin:0}</style><body><style>#a{--t: ;;width:14px}</style><div id=a>x</div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('width')].join(' | ')})()",
+   "chrome": "14px"
+  },
+  {
+   "name": "rule: empty declaration inside @media",
+   "html": "<!doctype html><style>body{margin:0}@media all{#a{color:rgb(255, 0, 0);;width:16px}}</style><body><div id=a>x</div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('color'),s.getPropertyValue('width')].join(' | ')})()",
+   "chrome": "rgb(255, 0, 0) | 16px"
+  },
+  {
+   "name": "rule: empty declaration before a nested rule",
+   "html": "<!doctype html><style>body{margin:0}#p{color:rgb(255, 0, 0);;& #a{width:18px}}</style><body><div id=p><div id=a>x</div></div>",
+   "expr": "(function(){var s=getComputedStyle(document.getElementById('a'));return [s.getPropertyValue('color'),s.getPropertyValue('width')].join(' | ')})()",
+   "chrome": "rgb(255, 0, 0) | 18px"
+  },
+  {
+   "name": "rule: a colonless declaration with a ; inside parens",
+   "html": "<!doctype html><style>body{margin:0}#a{f(;);color:rgb(255, 0, 0)}</style><body><div id=a>x</div>",
+   "expr": "getComputedStyle(document.getElementById('a')).getPropertyValue('color')",
+   "chrome": "rgb(255, 0, 0)"
+  }
+ ]
+}

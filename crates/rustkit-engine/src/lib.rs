@@ -289,6 +289,7 @@ mod inspector_glue;
 mod console_log;
 mod relayout_cause;
 mod selection;
+mod focus_pseudo;
 mod text_input;
 pub use text_input::{TextInputCaret, TextInputState};
 #[cfg(test)]
@@ -379,6 +380,7 @@ pub use inspector::{
 };
 pub use rustkit_bindings::MutationKind;
 mod script_net;
+mod module_prefetch;
 mod layout_ctx;
 mod svg_prepass;
 #[cfg(test)]
@@ -425,6 +427,8 @@ mod keyframes_opacity_tests;
 #[cfg(all(test, feature = "headless"))]
 mod float_margin_tests;
 #[cfg(all(test, feature = "headless"))]
+mod ua_em_margin_tests;
+#[cfg(all(test, feature = "headless"))]
 mod opacity_value_tests;
 #[cfg(test)]
 mod aspect_ratio_apply_tests;
@@ -434,14 +438,24 @@ mod color_shorthand_keep_tests;
 mod depth_perspective_refuse_tests;
 #[cfg(test)]
 mod outline_apply_tests;
+#[cfg(test)]
+mod computed_read_unit_tests;
+#[cfg(test)]
+mod redirect_url_tests;
+#[cfg(test)]
+mod late_sheet_slot_tests;
 #[cfg(all(test, feature = "headless"))]
 mod adopted_sheets_tests;
+#[cfg(all(test, feature = "headless"))]
+mod style_media_disabled_tests;
 #[cfg(all(test, feature = "headless"))]
 mod sheet_reuse_tests;
 #[cfg(all(test, feature = "headless"))]
 mod script_fresh_layout_tests;
 #[cfg(all(test, feature = "headless"))]
 mod load_geometry_read_tests;
+#[cfg(all(test, feature = "headless"))]
+mod forced_layout_cause_tests;
 #[cfg(all(test, feature = "headless"))]
 mod flex_item_paint_order_tests;
 #[cfg(all(test, feature = "headless"))]
@@ -460,11 +474,17 @@ mod computed_read;
 #[cfg(test)]
 mod computed_read_tests;
 #[cfg(test)]
+mod style_attr_declaration_tests;
+#[cfg(test)]
+mod style_string_brace_tests;
+#[cfg(test)]
 mod canvas_context_tests;
 #[cfg(test)]
 mod flex_percent_cross_tests;
 #[cfg(test)]
 mod flex_cross_size_tests;
+#[cfg(test)]
+mod empty_declaration_tests;
 #[cfg(test)]
 mod inner_text_style_tests;
 #[cfg(test)]
@@ -479,6 +499,14 @@ mod percent_height_chain_tests;
 mod computed_pseudo_tests;
 #[cfg(test)]
 mod css_display_apply_tests;
+#[cfg(test)]
+mod display_inherit_apply_tests;
+#[cfg(test)]
+mod border_medium_apply_tests;
+#[cfg(test)]
+mod transform_parse_pure_tests;
+#[cfg(test)]
+mod individual_translate_parse_tests;
 #[cfg(test)]
 mod author_svg_stroke_tests;
 #[cfg(test)]
@@ -524,10 +552,16 @@ mod css_animations_tests;
 #[cfg(all(test, feature = "headless"))]
 mod paint_only_animation_tests;
 #[cfg(all(test, feature = "headless"))]
+mod pseudo_animation_tests;
+#[cfg(all(test, feature = "headless"))]
+mod chrome_bridge_tests;
+#[cfg(all(test, feature = "headless"))]
 mod waapi_layer_tests;
 mod animations;
 #[cfg(test)]
 mod ancestor_attribute_tests;
+#[cfg(test)]
+mod attribute_flag_tests;
 #[cfg(test)]
 mod css_has_tests;
 #[cfg(test)]
@@ -575,7 +609,13 @@ mod fixed_under_scroll_tests;
 #[cfg(all(test, feature = "headless"))]
 mod render_no_clone_tests;
 #[cfg(all(test, feature = "headless"))]
+mod layer_frame_time_tests;
+#[cfg(all(test, feature = "headless"))]
 mod hover_restyle_tests;
+#[cfg(all(test, feature = "headless"))]
+mod svg_paint_state_tests;
+#[cfg(all(test, feature = "headless"))]
+mod focus_pseudo_tests;
 #[cfg(all(test, feature = "headless"))]
 mod hover_after_layout_tests;
 #[cfg(all(test, feature = "headless"))]
@@ -608,7 +648,13 @@ mod grid_item_min_max_tests;
 #[cfg(all(test, feature = "headless"))]
 mod unitless_zero_tests;
 #[cfg(all(test, feature = "headless"))]
+mod border_medium_tests;
+#[cfg(all(test, feature = "headless"))]
 mod float_percent_height_tests;
+#[cfg(all(test, feature = "headless"))]
+mod abspos_static_margin_tests;
+#[cfg(all(test, feature = "headless"))]
+mod abspos_static_rest_tests;
 #[cfg(test)]
 mod grid_in_flex_tests;
 #[cfg(all(test, feature = "headless"))]
@@ -651,10 +697,12 @@ mod sticky_scroll_tests;
 mod sticky_flex_grid_tests;
 #[cfg(all(test, feature = "headless"))]
 mod sticky_table_paint_tests;
-#[cfg(all(test, feature = "headless"))]
+#[cfg(test)]
 mod flex_shorthand_tests;
 #[cfg(all(test, feature = "headless"))]
 mod lazy_geometry_tests;
+#[cfg(all(test, feature = "headless"))]
+mod snapshot_stage_tests;
 #[cfg(all(test, feature = "headless"))]
 mod feed_fill_paint_tests;
 #[cfg(all(test, feature = "headless"))]
@@ -1130,6 +1178,15 @@ struct ViewState {
     last_dirty: Option<restyle_invalidation::DirtySet>,
     /// A chain a sheet reads has changed since the last build.
     pointer_restyle: bool,
+    /// CH2.E22: the last focus the user moved was moved by the pointer
+    /// (Chromium's last focus type): script's focus then matches
+    /// `:focus-visible` only on a control that takes typed text. False
+    /// until the first, and after a focus moved from the keyboard. Kept
+    /// across documents, as Chromium keeps it per page.
+    focus_by_pointer: bool,
+    /// CH2.E22: the focused button a Space keydown went to; its keyup
+    /// clicks it.
+    space_armed: Option<usize>,
     /// Set by `relayout` for the build it is about to run: nothing but a
     /// pointer restyle asked for it, so it may keep the laid-out tree
     /// (`Engine::repaint_restyled`).
@@ -1275,7 +1332,7 @@ impl ViewState {
             .map(relayout_cause::summary_url)
             .unwrap_or_default();
         info!(
-            "relayout summary url={} relayouts={} by_cause={} causes={} mutations={} trees_reused={} total_ms={:.1} layouts_skipped={} animation_frames_painted={} animation_paint_ms={:.1}",
+            "relayout summary url={} relayouts={} by_cause={} causes={} mutations={} trees_reused={} total_ms={:.1} layouts_skipped={} animation_frames_painted={} animation_paint_ms={:.1} forced_layouts={} forced_ms={:.1}",
             url,
             stats.relayouts,
             stats.by_first_cause,
@@ -1285,7 +1342,9 @@ impl ViewState {
             stats.total_ms,
             stats.layouts_skipped,
             stats.animation_frames_painted,
-            stats.animation_paint_ms
+            stats.animation_paint_ms,
+            stats.forced_layouts,
+            stats.forced_ms
         );
     }
 
@@ -1319,6 +1378,8 @@ impl ViewState {
         self.hovered_node = None;
         self.lay.hover_chain.borrow_mut().clear();
         self.lay.active_chain.borrow_mut().clear();
+        self.lay.focus_chain.borrow_mut().clear();
+        self.lay.focus_visible.set(false);
         self.lay.rule_reads.borrow_mut().take();
         self.pending_dirty = None;
         self.last_dirty = None;
@@ -2751,6 +2812,19 @@ fn resize_dispatch_bounds(_pending: Bounds, stored: Bounds, frame: Option<(u32, 
     }
 }
 
+impl Drop for Engine {
+    /// The last visit's hold summary (LAT1): the entries since the last
+    /// line, which no navigation or hundredth entry ended. The summary is
+    /// the dropping thread's (`wgate` keeps one per thread, and only the
+    /// content thread's entries are summarised): an engine dropped off the
+    /// thread that ran its entries leaves that thread's partial line
+    /// unlogged, and two engines on one thread share one summary, which
+    /// the first drop flushes.
+    fn drop(&mut self) {
+        wgate::end_visits();
+    }
+}
+
 impl Engine {
     /// Create a new browser engine.
     pub fn new(config: EngineConfig) -> Result<Self, EngineError> {
@@ -2917,6 +2991,8 @@ impl Engine {
             pending_dirty: None,
             last_dirty: None,
             pointer_restyle: false,
+            focus_by_pointer: false,
+            space_armed: None,
             restyle_only: false,
             laid_with: None,
             pointer_at: None,
@@ -3030,6 +3106,8 @@ impl Engine {
             pending_dirty: None,
             last_dirty: None,
             pointer_restyle: false,
+            focus_by_pointer: false,
+            space_armed: None,
             restyle_only: false,
             laid_with: None,
             pointer_at: None,
@@ -3160,6 +3238,8 @@ impl Engine {
             pending_dirty: None,
             last_dirty: None,
             pointer_restyle: false,
+            focus_by_pointer: false,
+            space_armed: None,
             restyle_only: false,
             laid_with: None,
             pointer_at: None,
@@ -3824,7 +3904,7 @@ impl Engine {
         // Resolve focusability against the DOM, not the layout box: a
         // FormControl box type would miss `contenteditable` and tabindex
         // later, and the tag name is what callers want reported.
-        let (control, labeled) = hit_node
+        let (control, labeled, pointed) = hit_node
             .and_then(|raw| {
                 let view = self.views.get(&id)?;
                 let doc = view.document.as_ref()?;
@@ -3836,9 +3916,12 @@ impl Engine {
                     Some(_) => None,
                     None => Self::labeled_control(doc, &node).as_ref().and_then(Self::form_control),
                 };
-                Some((control, labeled))
+                // CH2.E22: the page's focus also goes to a focusable
+                // element that takes no keys (a button, a link), as the
+                // oracle's Chrome focuses a clicked button.
+                Some((control, labeled, Self::pointer_focus_target(&node)))
             })
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
         let focusable = match why {
             PointFocus::Press => control,
             PointFocus::Click => control.or(labeled),
@@ -3850,11 +3933,23 @@ impl Engine {
         };
 
         self.set_focus(id, focusable.clone());
+        let target = match focusable.as_ref() {
+            Some((raw, _)) => Some(*raw),
+            None if matches!(why, PointFocus::Label) => None,
+            None => pointed,
+        };
+        // The pointer moved the focus: script's next focus shows the ring
+        // only on a control that takes typed text (CH2.E22).
+        if target.is_some() {
+            if let Some(view) = self.views.get_mut(&id) {
+                view.focus_by_pointer = true;
+            }
+        }
         // The page's focus follows, and has the last word: it refuses a
         // disabled control, and a `focus` or `blur` listener may move the
         // focus again.
         let told = self.views.get(&id).and_then(|v| v.bindings.as_ref()).map(|bindings| {
-            if let Err(e) = bindings.set_focus(focusable.as_ref().map(|(raw, _)| *raw)) {
+            if let Err(e) = bindings.set_focus(target) {
                 debug!(?id, error = %e, "focus listener threw");
             }
         });
@@ -3862,6 +3957,8 @@ impl Engine {
             if let Err(e) = self.flush_script_dom_writes(id, Some(RelayoutCause::HoverOrFocus)) {
                 debug!(?id, error = %e, "relayout after focus events failed");
             }
+        } else {
+            self.note_page_focus(id, target);
         }
         self.focused_tag(id)
     }
@@ -3949,7 +4046,9 @@ impl Engine {
         });
         let before = self.views.get(&id).and_then(|v| v.lay.focused_node.get());
         self.set_focus(id, control);
-        before != self.views.get(&id).and_then(|v| v.lay.focused_node.get())
+        // The cascade follows the page's focus, a button's too (CH2.E22).
+        let restyles = self.note_page_focus(id, moved);
+        restyles || before != self.views.get(&id).and_then(|v| v.lay.focused_node.get())
     }
 
     /// Make a form control (raw NodeId and tag) the focused node, or
@@ -5868,9 +5967,12 @@ impl Engine {
         if let Some(view) = self.views.get_mut(&id) {
             for (index, sheet) in late_sheets {
                 let Some(sheet) = sheet else { continue };
-                let at = view.external_sheet_slots.partition_point(|&slot| slot < index);
-                view.external_sheet_slots.insert(at, index);
-                Rc::make_mut(&mut view.external_stylesheets).insert(at, sheet);
+                insert_sheet_at_document_order(
+                    &mut view.external_sheet_slots,
+                    Rc::make_mut(&mut view.external_stylesheets),
+                    index,
+                    sheet,
+                );
                 sheets_arrived += 1;
             }
         }
@@ -5999,8 +6101,37 @@ impl Engine {
             return changed;
         }
 
+        // CH2.E22: Tab and Shift+Tab move the focus once the page let the
+        // keydown through (sequential focus navigation).
+        // The keydown goes to the page's focused element (a button or a
+        // link has no engine focus), as Chromium's goes to activeElement.
+        if key_code == 0x09 && !ctrl && !alt {
+            let at = self.page_focus(id);
+            if self.fire_key(id, at, "keydown", key_code, key, ctrl, shift, alt) {
+                self.sequential_focus(id, shift);
+            }
+            return true;
+        }
         let Some(focused) = self.views.get(&id).and_then(|v| v.lay.focused_node.get()) else {
-            return !self.fire_key(id, None, "keydown", key_code, key, ctrl, shift, alt);
+            let not_cancelled = self.fire_key(id, None, "keydown", key_code, key, ctrl, shift, alt);
+            // A focused button: Enter clicks it at the keydown; Space's
+            // keydown is taken (no scroll) and clicks it at the keyup
+            // (Chromium 143, CH2.E22).
+            if let Some(button) = self.page_focus(id).filter(|raw| self.is_key_activated_button(id, *raw)) {
+                if key_code == 0x0D && !ctrl && !alt {
+                    if not_cancelled {
+                        self.click_element(id, button, 0.0, 0.0);
+                    }
+                    return true;
+                }
+                if key == " " && !ctrl && !alt {
+                    if let Some(view) = self.views.get_mut(&id) {
+                        view.space_armed = not_cancelled.then_some(button);
+                    }
+                    return true;
+                }
+            }
+            return !not_cancelled;
         };
         // The page hears the key first; a cancelled keydown types nothing.
         // Enter's keydown is `submit_focused_form`'s, which the caller
@@ -6134,7 +6265,13 @@ impl Engine {
     ) {
         let _hold = wgate::hold("key_up");
         let focused = self.views.get(&id).and_then(|v| v.lay.focused_node.get()).map(|n| n.raw());
-        self.fire_key(id, focused, "keyup", key_code, key, ctrl, shift, alt);
+        let not_cancelled = self.fire_key(id, focused, "keyup", key_code, key, ctrl, shift, alt);
+        // The Space a focused button took at its keydown clicks it now
+        // (CH2.E22).
+        let armed = self.views.get_mut(&id).and_then(|v| v.space_armed.take());
+        if let Some(button) = armed.filter(|b| key == " " && not_cancelled && self.page_focus(id) == Some(*b)) {
+            self.click_element(id, button, 0.0, 0.0);
+        }
     }
 
     /// Build the submission for the form containing the focused control.
@@ -6527,12 +6664,25 @@ impl layout_ctx::LayoutCtx {
             };
             let hovered = lay.hover_chain.borrow().contains(&node_raw);
             let active = lay.active_chain.borrow().contains(&node_raw);
-            (checked, hovered, active)
+            // CH2.E22: the focused element (`:focus`, `:focus-visible`) and
+            // the elements above it (`:focus-within`).
+            let focus = {
+                let chain = lay.focus_chain.borrow();
+                match chain.iter().position(|raw| *raw == node_raw) {
+                    None => FocusMarks::default(),
+                    Some(at) => FocusMarks {
+                        focus: at == 0,
+                        within: true,
+                        visible: at == 0 && lay.focus_visible.get(),
+                    },
+                }
+            };
+            (checked, hovered, active, focus)
         });
-        let Some((checked, hovered, active)) = read else {
+        let Some((checked, hovered, active, focus)) = read else {
             return std::borrow::Cow::Borrowed(attributes);
         };
-        if checked.is_none() && !hovered && !active {
+        if checked.is_none() && !hovered && !active && !focus.within {
             return std::borrow::Cow::Borrowed(attributes);
         }
         let mut attributes = attributes.clone();
@@ -6551,8 +6701,25 @@ impl layout_ctx::LayoutCtx {
         if active {
             attributes.insert(ACTIVE_MARK.to_string(), String::new());
         }
+        for (on, mark) in [
+            (focus.focus, FOCUS_MARK),
+            (focus.within, FOCUS_WITHIN_MARK),
+            (focus.visible, FOCUS_VISIBLE_MARK),
+        ] {
+            if on {
+                attributes.insert(mark.to_string(), String::new());
+            }
+        }
         std::borrow::Cow::Owned(attributes)
     }
+}
+
+/// The focus pseudo-classes one element matches (CH2.E22).
+#[derive(Default, Clone, Copy)]
+struct FocusMarks {
+    focus: bool,
+    within: bool,
+    visible: bool,
 }
 
 impl Engine {
@@ -6700,7 +6867,7 @@ impl Engine {
         id: EngineViewId,
         base: &Url,
         policy: Option<Arc<FetchPolicy>>,
-    ) -> Option<futures::future::LocalBoxFuture<'static, Vec<FetchedScript>>> {
+    ) -> Option<futures::future::LocalBoxFuture<'static, (Vec<FetchedScript>, module_prefetch::ModulePrefetch)>> {
         let document = self.views.get(&id).and_then(|v| v.document.clone())?;
 
         // Collect in document order.
@@ -6711,9 +6878,18 @@ impl Engine {
         let mut entries: Vec<(String, usize, Result<(ScriptTiming, Body), ScriptOutcome>, bool, &'static str)> =
             Vec::new();
         let mut index = 0usize;
+        // Inline import maps, for resolving the module graph prefetch.
+        let mut import_maps: Vec<String> = Vec::new();
         document.traverse(|node| {
             if node.tag_name().map(|t| t.eq_ignore_ascii_case("script")) != Some(true) {
                 return;
+            }
+            if node.get_attribute("src").is_none()
+                && node
+                    .get_attribute("type")
+                    .is_some_and(|t| t.trim().eq_ignore_ascii_case("importmap"))
+            {
+                import_maps.push(node.text_content());
             }
             let Some(timing) = script_timing(node) else { return };
             index += 1;
@@ -6763,13 +6939,36 @@ impl Engine {
             futures::future::LocalBoxFuture<'static, Result<(String, String), ScriptOutcome>>,
         >;
         let mut module_fetches: HashMap<Url, SharedModuleFetch> = HashMap::new();
-        Some(
-            futures::stream::iter(entries.into_iter().map(move |(label, node_id, entry, is_module, kind)| {
+        // S15: each module script's static import graph is fetched as soon
+        // as the script's source is in hand, concurrently with the page's
+        // other script fetches (see `module_prefetch`). The walk stops when
+        // the scripts are all in; it never holds them. Boa takes the
+        // answers (or awaits the one still out) when it asks for those
+        // imports at run time.
+        let prefetch = module_prefetch::ModulePrefetch::default();
+        let (discovered, discoveries) = futures::channel::mpsc::unbounded::<module_prefetch::DiscoveredModule>();
+        let walker = match &policy {
+            Some(policy) if entries.iter().any(|(_, _, entry, is_module, _)| *is_module && entry.is_ok()) => {
+                Some(module_prefetch::walk(
+                    discoveries,
+                    prefetch.clone(),
+                    policy.clone(),
+                    loader.clone(),
+                    base.clone(),
+                    import_maps,
+                    tokio::time::Instant::now() + SCRIPT_NETWORK_CAP,
+                    inspector.clone(),
+                ))
+            }
+            _ => None,
+        };
+        let scripts = futures::stream::iter(entries.into_iter().map(move |(label, node_id, entry, is_module, kind)| {
                 let loader = loader.clone();
                 let referrer = referrer.clone();
                 let policy = policy.clone();
                 let base = base.clone();
                 let inspector = inspector.clone();
+                let discovered = discovered.clone();
                 let shared_module = match &entry {
                     Ok((_, Body::External(url))) if is_module => {
                         let shared = module_fetches.entry(url.clone()).or_insert_with(|| {
@@ -6811,6 +7010,10 @@ impl Engine {
                 async move {
                     let mut label = label;
                     let external = matches!(entry, Ok((_, Body::External(_))));
+                    let requested = match &entry {
+                        Ok((_, Body::External(url))) => Some(url.clone()),
+                        _ => None,
+                    };
                     let fetch_started = std::time::Instant::now();
                     let result = match entry {
                         Err(outcome) => Err(outcome),
@@ -6879,11 +7082,40 @@ impl Engine {
                         fetch: external.then(|| fetch_started.elapsed()),
                         arrived: external.then(std::time::Instant::now),
                     };
+                    // A module's source is in: its imports start now. An
+                    // external module's imports resolve against the URL it
+                    // was served from (its label), an inline one's against
+                    // the document.
+                    if let (true, Ok((_, text))) = (is_module, &result) {
+                        let base = match &requested {
+                            Some(_) => Url::parse(&label).ok(),
+                            None => Some(base.clone()),
+                        };
+                        if let Some(base) = base {
+                            let _ = discovered.unbounded_send(module_prefetch::DiscoveredModule {
+                                requested,
+                                base,
+                                source: text.clone(),
+                            });
+                        }
+                    }
                     (label, node_id, result, is_module, fetched)
                 }
             }))
-            .buffered(MAX_CONCURRENT_SCRIPT_LOADS)
-            .collect::<Vec<_>>()
+            .buffered(MAX_CONCURRENT_SCRIPT_LOADS);
+        Some(
+            async move {
+                // The stream (and with it every sender) is gone once
+                // collected, which is what lets the walker finish.
+                let collect = async move { scripts.collect::<Vec<_>>().await };
+                let walk = async move {
+                    if let Some(walker) = walker {
+                        walker.await;
+                    }
+                };
+                let (scripts, ()) = futures::join!(collect, walk);
+                (scripts, prefetch)
+            }
             .boxed_local(),
         )
     }
@@ -7021,6 +7253,7 @@ impl Engine {
         &mut self,
         id: EngineViewId,
         fetched: Vec<FetchedScript>,
+        prefetch: module_prefetch::ModulePrefetch,
         budget: std::time::Duration,
         policy: Option<Arc<FetchPolicy>>,
         watch: Option<&NavWatch>,
@@ -7049,6 +7282,7 @@ impl Engine {
         self.run_page_scripts_with(
             id,
             fetched,
+            &prefetch,
             budget,
             policy,
             &bindings,
@@ -7075,6 +7309,7 @@ impl Engine {
         &mut self,
         id: EngineViewId,
         fetched: Vec<FetchedScript>,
+        prefetch: &module_prefetch::ModulePrefetch,
         _budget: std::time::Duration,
         policy: Option<Arc<FetchPolicy>>,
         bindings: &DomBindings,
@@ -7324,6 +7559,7 @@ impl Engine {
                                         document,
                                         &mut count,
                                         &inspector,
+                                        Some(prefetch),
                                     ),
                                 )
                                 .await;
@@ -7830,6 +8066,7 @@ impl Engine {
     }
 
     pub async fn load_url(&mut self, id: EngineViewId, url: Url) -> Result<(), EngineError> {
+        wgate::begin_visit(id.raw(), url.host_str());
         let _hold = wgate::hold("load");
         self.load_url_with_disposition(id, url, false, false, None)
             .await
@@ -7854,6 +8091,7 @@ impl Engine {
         id: EngineViewId,
         url: Url,
     ) -> Result<LoadYield, EngineError> {
+        wgate::begin_visit(id.raw(), url.host_str());
         let _hold = wgate::hold("load");
         self.load_url_with_disposition(id, url, false, true, None)
             .await
@@ -7868,6 +8106,7 @@ impl Engine {
         url: Url,
         nav_id: u64,
     ) -> Result<LoadYield, EngineError> {
+        wgate::begin_visit(id.raw(), url.host_str());
         let _hold = wgate::hold("load");
         self.load_url_with_disposition(id, url, false, true, Some(nav_id))
             .await
@@ -8063,18 +8302,15 @@ impl Engine {
         // keeps the request's fragment when the last hop has none). Until
         // S1 the requested URL was committed, so every relative URL on
         // www.gmail.com's sign-in page was asked of www.gmail.com.
-        let url = if response.url != url && !response.redirect_chain.is_empty() {
-            let mut last = response.url.clone();
-            if last.fragment().is_none() {
-                last.set_fragment(url.fragment());
-            }
-            debug!(?id, from = %url, to = %last, "Navigation redirected");
-            if let Some(view) = self.views.get_mut(&id) {
-                view.navigation.redirected_to(last.clone());
+        let url = {
+            let last = url_after_redirects(&url, &response.url, !response.redirect_chain.is_empty());
+            if last != url {
+                debug!(?id, from = %url, to = %last, "Navigation redirected");
+                if let Some(view) = self.views.get_mut(&id) {
+                    view.navigation.redirected_to(last.clone());
+                }
             }
             last
-        } else {
-            url
         };
 
         let status = response.status;
@@ -8259,7 +8495,16 @@ impl Engine {
 
             let bindings =
                 DomBindings::new(js_runtime).map_err(|e| EngineError::JsError(e.to_string()))?;
-            bindings.set_selector_matcher(Rc::new(|node, selector, checked| {
+            // Script's `matches(':focus')` reads the view's focus as the
+            // cascade does (CH2.E22).
+            let lay = self.views.get(&id).map(|view| view.lay.clone());
+            bindings.set_selector_matcher(Rc::new(move |node, selector, checked| {
+                // Only a selector that names a focus pseudo-class reads it:
+                // a `querySelectorAll` of anything else clones nothing.
+                let _focus = lay
+                    .as_ref()
+                    .filter(|_| selector.contains(":focus"))
+                    .map(|lay| WalkFocusScope::enter(lay.focus_chain.borrow().clone(), lay.focus_visible.get()));
                 SelectorMatcher.node_matches(node, selector, checked)
             }));
             bindings.set_canvas_text_measurer(Some(canvas_paint::text_measurer()));
@@ -8435,11 +8680,12 @@ impl Engine {
         // The script budget is JavaScript time only. How long the fetches
         // took, including a fetch that outlasted the subresources, does
         // not spend it.
-        if let Some((fetched, _fetch_done)) = scripts {
+        if let Some(((fetched, prefetch), _fetch_done)) = scripts {
             let budget = std::time::Duration::from_millis(self.config.script_budget_ms);
             self.run_page_scripts(
                 id,
                 fetched,
+                prefetch,
                 budget,
                 script_policy,
                 Some(watch),
@@ -8595,6 +8841,7 @@ impl Engine {
         html: &str,
         preset_nav: Option<u64>,
     ) -> Result<(), EngineError> {
+        wgate::begin_visit(id.raw(), None);
         let _hold = wgate::hold("load_html");
         // A navigation of its own (M3b). Nothing in it awaits, so the only
         // cancel that can reach it is the interrupt word stopping a script.
@@ -8705,7 +8952,16 @@ impl Engine {
                 DomBindings::new(js_runtime)
             }
             .map_err(|e| EngineError::JsError(e.to_string()))?;
-            bindings.set_selector_matcher(Rc::new(|node, selector, checked| {
+            // Script's `matches(':focus')` reads the view's focus as the
+            // cascade does (CH2.E22).
+            let lay = self.views.get(&id).map(|view| view.lay.clone());
+            bindings.set_selector_matcher(Rc::new(move |node, selector, checked| {
+                // Only a selector that names a focus pseudo-class reads it:
+                // a `querySelectorAll` of anything else clones nothing.
+                let _focus = lay
+                    .as_ref()
+                    .filter(|_| selector.contains(":focus"))
+                    .map(|lay| WalkFocusScope::enter(lay.focus_chain.borrow().clone(), lay.focus_visible.get()));
                 SelectorMatcher.node_matches(node, selector, checked)
             }));
             bindings.set_canvas_text_measurer(Some(canvas_paint::text_measurer()));
@@ -9040,12 +9296,16 @@ impl Engine {
         // the build itself (`LayoutCtx::with_building`), so a forced
         // layout sees them too.
 
+        // The builds' sheet and custom-property extraction (LAT1): outside
+        // `build_ms`, so the line names it.
+        let extract_before = SheetExtract::totals().extract_us;
         let layout_skipped = self.relayout_uncounted(id)?;
         // A drop-down whose select left the document, lost the focus or
         // was disabled closes (Chrome).
         self.close_stale_select_popup(id);
 
         let took_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let extract_ms = SheetExtract::totals().extract_us.saturating_sub(extract_before) as f64 / 1000.0;
         let stages = relayout_cause::take_stage_ms();
         let tree_reused = relayout_cause::last_build_reused_tree();
         // What an incremental restyle would have done (PR 1: logged only).
@@ -9070,13 +9330,14 @@ impl Engine {
             .unwrap_or_default();
         info!(
             ?id,
-            "relayout cause={} causes={} mutations={} tree_reused={} took_ms={:.1} {} layout_skipped={} {}",
+            "relayout cause={} causes={} mutations={} tree_reused={} took_ms={:.1} {} extract_ms={:.1} layout_skipped={} {}",
             cause,
             causes.counts,
             causes.mutations,
             tree_reused,
             took_ms,
             stages,
+            extract_ms,
             layout_skipped,
             would
         );
@@ -9232,6 +9493,8 @@ impl Engine {
             hover: view.lay.hover_chain.borrow().clone(),
             active: view.lay.active_chain.borrow().clone(),
             focused: view.lay.focused_node.get().map(|node| node.raw()),
+            focus_chain: view.lay.focus_chain.borrow().clone(),
+            focus_visible: view.lay.focus_visible.get(),
             size: (bounds.width, bounds.height),
         });
         // Script reads of geometry (getBoundingClientRect, offsetWidth, ...)
@@ -9450,19 +9713,31 @@ impl Engine {
         if with.size != size {
             return miss("resized");
         }
-        // A press or a click moved the focus since the page was painted:
-        // both builds below would read the focus as it is now, and the
-        // patch copies paint properties only, so the caret and the focus
-        // state would never be drawn (or a blurred field would keep them).
-        if with.focused != view.lay.focused_node.get().map(|node| node.raw()) {
-            return miss("focus moved");
-        }
+        // CH2.E22: the focus moved since the page was painted. The builds
+        // below read it as it was and as it is (the control that has the
+        // keys, the chain the focus pseudo-classes match), and the old and
+        // the new focused control are built again: their caret is drawn
+        // from the patched boxes (`copy_changed_paint`).
+        let focus_before = Focused {
+            control: with.focused,
+            chain: with.focus_chain.clone(),
+            visible: with.focus_visible,
+        };
+        let focus_now = Focused {
+            control: view.lay.focused_node.get().map(|node| node.raw()),
+            chain: view.lay.focus_chain.borrow().clone(),
+            visible: view.lay.focus_visible.get(),
+        };
         let index = view.lay.rule_reads.borrow();
         let Some(reads) = index.as_ref().map(|index| &index.reads) else {
             return miss("no rule index");
         };
         if reads.hover.anywhere || reads.active.anywhere {
             return miss("a rule reads the pseudo-class where no compound shows it");
+        }
+        let focus_moved = focus_before != focus_now;
+        if focus_moved && (reads.focus.anywhere || reads.focus_within.anywhere || reads.focus_visible.anywhere) {
+            return miss("a rule reads a focus pseudo-class where no compound shows it");
         }
         let before = (with.hover.clone(), with.active.clone());
         let now = (view.lay.hover_chain.borrow().clone(), view.lay.active_chain.borrow().clone());
@@ -9478,6 +9753,17 @@ impl Engine {
                 .into_iter()
                 .flat_map(|raw| Self::pointer_changes(view, &reads.active, raw)),
         );
+        if focus_moved {
+            changed.extend(Self::focus_changes(
+                view,
+                reads,
+                (&focus_before.chain, focus_before.visible),
+                (&focus_now.chain, focus_now.visible),
+            ));
+            if focus_before.control != focus_now.control {
+                changed.extend([focus_before.control, focus_now.control].into_iter().flatten().map(|raw| (raw, 0)));
+            }
+        }
         drop(index);
         changed.sort_unstable();
         changed.dedup_by(|later, kept| {
@@ -9488,9 +9774,11 @@ impl Engine {
             same
         });
         if changed.is_empty() {
-            // The pointer went and came back between two layouts.
+            // The pointer went and came back between two layouts (or the
+            // focus moved where no rule sees it, and no control's caret).
             if let Some(with) = self.views.get_mut(&id).and_then(|view| view.laid_with.as_mut()) {
                 (with.hover, with.active) = now;
+                focus_now.store(with);
             }
             return Ok(true);
         }
@@ -9565,11 +9853,19 @@ impl Engine {
         let started = std::time::Instant::now();
         let mut built = Vec::with_capacity(2);
         let mut walked = 0;
-        for chains in [before, now.clone()] {
+        for (chains, focus) in [(before, &focus_before), (now.clone(), &focus_now)] {
             let _build_time = time_stage(Stage::Build);
             if let Some(view) = self.views.get_mut(&id) {
                 (*view.lay.hover_chain.borrow_mut(), *view.lay.active_chain.borrow_mut()) = chains;
+                view.lay.focused_node.set(focus.control.map(rustkit_dom::NodeId::new));
+                *view.lay.focus_chain.borrow_mut() = focus.chain.clone();
+                view.lay.focus_visible.set(focus.visible);
             }
+            // CH2.E19: the inline svgs' author paint follows the chains
+            // (`button:hover svg path`): the map and the parsed icons of
+            // this build's chains, kept by the pre-pass when unchanged.
+            self.cache_svg_paint_styles(document, id, Some((size.0 as f32, size.1 as f32)));
+            self.lctx.cache_inline_svgs(document);
             RESTYLE_BUILD.with(|build| {
                 *build.borrow_mut() = Some(RestyleBuild {
                     path: path.clone(),
@@ -9628,6 +9924,7 @@ impl Engine {
         view.layout = Some(laid);
         if let Some(with) = view.laid_with.as_mut() {
             (with.hover, with.active) = now;
+            focus_now.store(with);
         }
         // Script reads of computed style answer from the restyled boxes.
         if let (Some(bindings), Some(layout)) = (view.bindings.as_ref(), view.layout.as_ref()) {
@@ -10127,10 +10424,12 @@ impl Engine {
             return Ok(laid);
         };
         for event in &events {
+            // A pseudo-element's events go to its element (CH2.E16).
+            let (node, pseudo) = animations::split_key(event.node);
             let fired = if event.kind.starts_with("animation") {
-                bindings.fire_animation_event(event.node, event.kind, &event.name, event.elapsed_s)
+                bindings.fire_animation_event(node, pseudo, event.kind, &event.name, event.elapsed_s)
             } else {
-                bindings.fire_transition_event(event.node, event.kind, &event.property, event.elapsed_s)
+                bindings.fire_transition_event(node, pseudo, event.kind, &event.property, event.elapsed_s)
             };
             if let Err(e) = fired {
                 debug!(?id, error = %e, kind = event.kind, "animation event failed");
@@ -10213,6 +10512,23 @@ impl Engine {
                 return Ok(false);
             };
             apply_animation_frame(Rc::make_mut(&mut laid), &by_node);
+            // `getComputedStyle(el, '::before')` reads the frame (CH2.E16).
+            {
+                let mut pseudo_styles = view.lay.pseudo_styles.borrow_mut();
+                for change in &changes {
+                    let (node, Some(pseudo)) = animations::split_key(change.node) else {
+                        continue;
+                    };
+                    if let Some(style) = pseudo_styles.get_mut(&(node, pseudo)) {
+                        for (index, _, is) in &change.props {
+                            animations::set_prop_value(style, *index, is);
+                        }
+                        if let Some((_, settled)) = change.settled {
+                            style.animation_settled_opacity = settled;
+                        }
+                    }
+                }
+            }
             let display_list = self.display_list_for(id, &laid);
             let view = self.views.get_mut(&id).ok_or(EngineError::ViewNotFound(id))?;
             view.layout = Some(laid);
@@ -10227,8 +10543,14 @@ impl Engine {
         let view = self.views.get_mut(&id).ok_or(EngineError::ViewNotFound(id))?;
         // Script reads of computed style and `getAnimations()` answer from
         // the frame.
+        // LAT8: a frame that changed nothing keeps the geometry and styles
+        // script already read (the animations' state is still renewed).
         if let (Some(bindings), Some(layout)) = (view.bindings.as_ref(), view.layout.as_ref()) {
-            publish_geometry(bindings, layout, root_element_id(view), view.lay.clone());
+            if changes.is_empty() {
+                publish_animations(bindings, &view.lay);
+            } else {
+                publish_geometry(bindings, layout, root_element_id(view), view.lay.clone());
+            }
         }
         if !changes.is_empty() {
             if let Some(bindings) = self.views.get(&id).and_then(|v| v.bindings.as_ref()) {
@@ -10491,6 +10813,9 @@ impl layout_ctx::LayoutCtx {
             external_sheets: external_stylesheets.len(),
             viewport,
             focus: self.building_focus(),
+            page_focus: self
+                .building_lay()
+                .and_then(|lay| lay.focus_chain.borrow().first().map(|raw| (*raw, lay.focus_visible.get()))),
             hover: self.building_lay().and_then(|lay| lay.hover_chain.borrow().first().copied()),
             active: self.building_lay().and_then(|lay| lay.active_chain.borrow().first().copied()),
             fonts: self.web_font_count(),
@@ -11463,6 +11788,9 @@ impl layout_ctx::LayoutCtx {
                 if tag_lower == "html" && style.display == rustkit_css::Display::Contents {
                     style.display = rustkit_css::Display::Block;
                 }
+                // An inline-level abspos box keeps its static position on
+                // the line (CH2.B25), so layout is told what it was.
+                style.abspos_was_inline_level = out_of_flow && style.display.is_inline_level();
                 if is_item || out_of_flow || floated || tag_lower == "html" {
                     style.display = style.display.blockified();
                 }
@@ -12083,7 +12411,7 @@ impl layout_ctx::LayoutCtx {
                 }
 
                 // Check for ::before pseudo-element
-                let before_style = memoized_pseudo_style(node.id, Pseudo::Before, || {
+                let mut before_style = memoized_pseudo_style(node.id, Pseudo::Before, || {
                     self.pseudo_element_style(
                         &tag_lower,
                         attributes,
@@ -12095,10 +12423,17 @@ impl layout_ctx::LayoutCtx {
                         Some(&layout_box.style),
                     )
                 });
+                // CH2.E16: its transitions and animations, after the memo
+                // as the element's are.
+                let key = animations::pseudo_key(node.id.raw(), "::before");
+                if let Some(style) = before_style.as_mut() {
+                    self.animate_style(key, style, stylesheets);
+                }
                 self.note_pseudo_style(node.id.raw(), "::before", before_style.as_ref(), &layout_box.style);
                 if let Some(before_box) = before_style
                 .inspect(container_query::note_pseudo)
                 .and_then(Engine::pseudo_element_box)
+                .map(|b| Engine::mark_pseudo_box(b, key))
                 {
                     layout_box.children.push(before_box);
                 }
@@ -12391,7 +12726,7 @@ impl layout_ctx::LayoutCtx {
                 drop(host_scope);
 
                 // Check for ::after pseudo-element
-                let after_style = memoized_pseudo_style(node.id, Pseudo::After, || {
+                let mut after_style = memoized_pseudo_style(node.id, Pseudo::After, || {
                     self.pseudo_element_style(
                         &tag_lower,
                         attributes,
@@ -12403,10 +12738,17 @@ impl layout_ctx::LayoutCtx {
                         Some(&layout_box.style),
                     )
                 });
+                // CH2.E16: its transitions and animations, after the memo
+                // as the element's are.
+                let key = animations::pseudo_key(node.id.raw(), "::after");
+                if let Some(style) = after_style.as_mut() {
+                    self.animate_style(key, style, stylesheets);
+                }
                 self.note_pseudo_style(node.id.raw(), "::after", after_style.as_ref(), &layout_box.style);
                 if let Some(after_box) = after_style
                 .inspect(container_query::note_pseudo)
                 .and_then(Engine::pseudo_element_box)
+                .map(|b| Engine::mark_pseudo_box(b, key))
                 {
                     layout_box.children.push(after_box);
                 }
@@ -13007,6 +13349,7 @@ impl layout_ctx::LayoutCtx {
         // `compute_style_for_element` seeds them for a child element, plus
         // `line-height`. They started from the initial values, so pseudo
         // text was always black 16px in the default face.
+        let _border_style_declared = BorderStyleDeclaredScope::enter(pseudo);
         let mut pseudo_style = ComputedStyle::new();
         // `display` is not inherited, but its initial value is `inline`, not
         // `Display`'s Rust default (Block). A pseudo with no `display` was an
@@ -13150,6 +13493,10 @@ impl layout_ctx::LayoutCtx {
             other => other,
         };
 
+        // As for an element: no style (or `none`) on a side, no width.
+        zero_width_of_styleless_sides(&mut pseudo_style);
+        zero_width_of_borderless_sides(&mut pseudo_style);
+
         pseudo_style.settle_animation_opacity(stylesheets);
 
         pseudo_style.custom_properties = vars;
@@ -13161,6 +13508,17 @@ impl layout_ctx::LayoutCtx {
 }
 
 impl Engine {
+
+    /// CH2.E16: mark a `::before`/`::after` box and the text run under it
+    /// (which takes a copy of its style) with the pseudo-element's
+    /// animation key, so a paint-only frame finds them.
+    fn mark_pseudo_box(mut b: LayoutBox, key: usize) -> LayoutBox {
+        b.pseudo_animation_key = Some(key);
+        for child in &mut b.children {
+            child.pseudo_animation_key = Some(key);
+        }
+        b
+    }
 
     /// The box half of `create_pseudo_element`, from the cascaded style.
     fn pseudo_element_box(pseudo_style: ComputedStyle) -> Option<LayoutBox> {
@@ -13213,6 +13571,8 @@ impl layout_ctx::LayoutCtx {
         parent_style: Option<&ComputedStyle>,
     ) -> ComputedStyle {
         let _ancestor_filter = AncestorFilterScope::install(ancestors);
+        let _ua_control_border = UaControlBorderScope::enter(tag_name);
+        let _border_style_declared = BorderStyleDeclaredScope::enter(tag_name);
         let mut style = ComputedStyle::new();
         style.color = rustkit_css::Color::BLACK;
         // CSS Display 3: the initial value of `display` is `inline`.
@@ -13294,54 +13654,65 @@ impl layout_ctx::LayoutCtx {
                 style.margin_bottom = rustkit_css::Length::Px(8.0);
                 style.margin_left = rustkit_css::Length::Px(8.0);
             }
-            // Headings (Chrome uses em units, we convert to px assuming 16px base)
+            // Headings. Chromium's html.css writes the block margins of
+            // h1-h6, p, ul/ol/menu/dir, dl, blockquote, figure, pre/listing/
+            // xmp/plaintext and hr in `em`, and an em margin resolves against
+            // the element's OWN computed font-size — after the author's
+            // `font-size` has applied. They were px pre-multiplied at 16px
+            // (and at the UA heading size), so `.subtitle { font-size: .9rem }`
+            // on a <p> kept 16px margins where Chromium has 14.4px: settings
+            // and report shifted 1.6px below their header (chrome board
+            // re-rank 2026-11-07, ua_em_margin_tests). The 40px inline
+            // margins/paddings are px in html.css and stay px. Heading
+            // FONT-SIZES are still px here (2em/1.5em/… of the parent in
+            // Chromium) — a separate change.
             "h1" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(32.0); // 2em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(21.44); // 0.67em * 32px
-                style.margin_bottom = rustkit_css::Length::Px(21.44);
+                style.margin_top = rustkit_css::Length::Em(0.67);
+                style.margin_bottom = rustkit_css::Length::Em(0.67);
             }
             "h2" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(24.0); // 1.5em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(19.92); // 0.83em * 24px
-                style.margin_bottom = rustkit_css::Length::Px(19.92);
+                style.margin_top = rustkit_css::Length::Em(0.83);
+                style.margin_bottom = rustkit_css::Length::Em(0.83);
             }
             "h3" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(18.72); // 1.17em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(18.72); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(18.72);
+                style.margin_top = rustkit_css::Length::Em(1.0);
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
             }
             "h4" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(16.0); // 1em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(21.28); // 1.33em
-                style.margin_bottom = rustkit_css::Length::Px(21.28);
+                style.margin_top = rustkit_css::Length::Em(1.33); // 1.33em
+                style.margin_bottom = rustkit_css::Length::Em(1.33);
             }
             "h5" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(13.28); // 0.83em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(22.17); // 1.67em
-                style.margin_bottom = rustkit_css::Length::Px(22.17);
+                style.margin_top = rustkit_css::Length::Em(1.67); // 1.67em
+                style.margin_bottom = rustkit_css::Length::Em(1.67);
             }
             "h6" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_size = rustkit_css::Length::Px(10.72); // 0.67em
                 style.font_weight = rustkit_css::FontWeight::BOLD;
-                style.margin_top = rustkit_css::Length::Px(25.0); // 2.33em
-                style.margin_bottom = rustkit_css::Length::Px(25.0);
+                style.margin_top = rustkit_css::Length::Em(2.33); // 2.33em
+                style.margin_bottom = rustkit_css::Length::Em(2.33);
             }
             // Paragraphs and text blocks
             "p" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
             }
             "div" => {
                 style.display = rustkit_css::Display::Block;
@@ -13463,8 +13834,8 @@ impl layout_ctx::LayoutCtx {
             "pre" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_family = "monospace".to_string();
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 // HTML §15.3.9 UA sheet: `pre { white-space: pre }`. This
                 // was "(not implemented)" — every `<pre>` block without an
                 // author white-space rule collapsed its newlines and
@@ -13475,8 +13846,8 @@ impl layout_ctx::LayoutCtx {
             "listing" | "xmp" | "plaintext" => {
                 style.display = rustkit_css::Display::Block;
                 style.font_family = "monospace".to_string();
-                style.margin_top = rustkit_css::Length::Px(16.0);
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0);
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 style.white_space = rustkit_css::WhiteSpace::Pre;
             }
             "code" | "kbd" | "samp" | "tt" => {
@@ -13486,8 +13857,8 @@ impl layout_ctx::LayoutCtx {
             // Lists
             "ul" | "ol" | "menu" | "dir" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 style.padding_left = rustkit_css::Length::Px(40.0);
             }
             "li" => {
@@ -13498,8 +13869,8 @@ impl layout_ctx::LayoutCtx {
             }
             "dl" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0);
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0);
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
             }
             "dt" => {
                 style.display = rustkit_css::Display::Block;
@@ -13511,8 +13882,8 @@ impl layout_ctx::LayoutCtx {
             // Quotes
             "blockquote" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 style.margin_left = rustkit_css::Length::Px(40.0);
                 style.margin_right = rustkit_css::Length::Px(40.0);
             }
@@ -13522,11 +13893,24 @@ impl layout_ctx::LayoutCtx {
             }
             // Horizontal rule
             "hr" => {
+                // Chromium's UA `hr { border-style: inset; border-width: 1px;
+                // color: gray }`: 1px on EVERY side (a bare hr is 2px tall in
+                // Chromium 143). Only the top was set, so the other sides were
+                // unset and `hr { border-style: solid }` took medium there
+                // (CH2.B18 R1: 1/3/3/3, height 4). Inset paints as solid here.
                 style.display = rustkit_css::Display::Block;
-                style.border_top_width = rustkit_css::Length::Px(1.0);
-                style.border_top_color = rustkit_css::Color::new(128, 128, 128, 1.0);
-                style.margin_top = rustkit_css::Length::Px(8.0); // 0.5em
-                style.margin_bottom = rustkit_css::Length::Px(8.0);
+                let one = rustkit_css::Length::Px(1.0);
+                let gray = rustkit_css::Color::new(128, 128, 128, 1.0);
+                style.border_top_width = one.clone();
+                style.border_right_width = one.clone();
+                style.border_bottom_width = one.clone();
+                style.border_left_width = one;
+                style.border_top_color = gray;
+                style.border_right_color = gray;
+                style.border_bottom_color = gray;
+                style.border_left_color = gray;
+                style.margin_top = rustkit_css::Length::Em(0.5);
+                style.margin_bottom = rustkit_css::Length::Em(0.5);
             }
             // Sections
             "article" | "aside" | "footer" | "header" | "hgroup" | "main" | "nav" | "search"
@@ -13536,8 +13920,8 @@ impl layout_ctx::LayoutCtx {
             // Figure
             "figure" => {
                 style.display = rustkit_css::Display::Block;
-                style.margin_top = rustkit_css::Length::Px(16.0); // 1em
-                style.margin_bottom = rustkit_css::Length::Px(16.0);
+                style.margin_top = rustkit_css::Length::Em(1.0); // 1em
+                style.margin_bottom = rustkit_css::Length::Em(1.0);
                 style.margin_left = rustkit_css::Length::Px(40.0);
                 style.margin_right = rustkit_css::Length::Px(40.0);
             }
@@ -13688,6 +14072,20 @@ impl layout_ctx::LayoutCtx {
                 style.display = rustkit_css::Display::None;
             }
             _ => {}
+        }
+
+        // Chromium html.css: `:focus-visible { outline: auto 1px
+        // -webkit-focus-ring-color }`, a link's 1px out (CH2.E22; the
+        // oracle's colour, `tools/parity_oracle/focus_pseudo_log.mjs`). The
+        // focused control's ring was the renderer's own until then.
+        if attributes.contains_key(FOCUS_VISIBLE_MARK) {
+            let link = matches!(&*lower_tag(tag_name), "a" | "area") && attributes.contains_key("href");
+            style.outline = rustkit_css::Outline {
+                style: rustkit_css::OutlineStyle::Auto,
+                width: Some(rustkit_css::Length::Px(1.0)),
+                color: Some(rustkit_css::Color::new(0, 95, 204, 1.0)),
+                offset: if link { rustkit_css::Length::Px(1.0) } else { rustkit_css::Length::Zero },
+            };
         }
 
         // HTML rendering section / Chromium html.css, applied before the
@@ -13918,6 +14316,10 @@ impl layout_ctx::LayoutCtx {
             _ => matching_rules.as_slice(),
         };
 
+        // Every UA border width above comes with a UA border style
+        // (hr inset, fieldset groove, dialog/popover solid).
+        note_ua_border_sides(&style);
+
         // HTML presentational hints for tables (HTML §15.3.8): declarations
         // that sit above the UA defaults and below every author rule.
         let hints = table_presentational_hints(&lower_tag(tag_name), attributes);
@@ -13957,7 +14359,12 @@ impl layout_ctx::LayoutCtx {
             Some(p) => p.custom_properties.clone(),
             None => Arc::new(CustomProperties::from_map(css_vars.clone())),
         };
-        let inline_style = attributes.get("style");
+        // A `style` attribute is a declaration list: split it once, by the
+        // CSS tokenizer's rules, not at every `;` (CH2.E27).
+        let inline_decls: Vec<String> = attributes
+            .get("style")
+            .map(|s| rustkit_css::split_declaration_list(s))
+            .unwrap_or_default();
         let mut declared_vars: Vec<(&str, Option<&str>)> = Vec::new();
         for important_pass in [false, true] {
             for (rule, _, _) in rules_for(important_pass) {
@@ -13976,17 +14383,15 @@ impl layout_ctx::LayoutCtx {
                     }
                 }
             }
-            if let Some(style_attr) = inline_style {
-                for declaration in style_attr.split(';') {
-                    if let Some((property, value)) = declaration.split_once(':') {
-                        let property = property.trim();
-                        if !property.starts_with("--") {
-                            continue;
-                        }
-                        let (value, important) = split_important(value.trim());
-                        if important == important_pass {
-                            declared_vars.push((property, Some(value)));
-                        }
+            for declaration in &inline_decls {
+                if let Some((property, value)) = declaration.split_once(':') {
+                    let property = property.trim();
+                    if !property.starts_with("--") {
+                        continue;
+                    }
+                    let (value, important) = split_important(value.trim());
+                    if important == important_pass {
+                        declared_vars.push((property, Some(value)));
                     }
                 }
             }
@@ -14039,7 +14444,19 @@ impl layout_ctx::LayoutCtx {
                         // Already applied to `vars` above.
                         continue;
                     }
-                    let resolved_value = self.resolve_css_variables(&value_str, css_vars);
+                    // A `var()` with no value and no fallback: the declaration
+                    // still wins, as `unset` (CSS Variables 1 §3), so an
+                    // earlier `width: 50px` does not survive it (CH2.E14b).
+                    let Some(resolved_value) =
+                        self.resolve_css_variables_or_invalid(&value_str, css_vars)
+                    else {
+                        self.apply_invalid_at_computed_value_time(
+                            &mut style,
+                            parent_style,
+                            &decl.property,
+                        );
+                        continue;
+                    };
                     if value_str != resolved_value {
                         trace!(
                             property = decl.property.as_str(),
@@ -14094,7 +14511,9 @@ impl layout_ctx::LayoutCtx {
 
         // A `none`/`hidden` side has a zero used width, whichever of width
         // and style was declared last (`border: 5px solid; border-style: none`
-        // used to keep the 5px frame).
+        // used to keep the 5px frame). A side nothing gave a style is `none`
+        // too, whatever width was declared (`border-width: thick` alone).
+        zero_width_of_styleless_sides(&mut style);
         zero_width_of_borderless_sides(&mut style);
 
         // Needs all three line-clamp properties, whatever their order.
@@ -14147,11 +14566,7 @@ impl layout_ctx::LayoutCtx {
         order: &mut usize,
         important_pass: bool,
     ) {
-        for declaration in style_attr.split(';') {
-            let declaration = declaration.trim();
-            if declaration.is_empty() {
-                continue;
-            }
+        for declaration in rustkit_css::split_declaration_list(style_attr) {
             if let Some((property, value)) = declaration.split_once(':') {
                 let (value, important) = split_important(value.trim());
                 if important != important_pass {
@@ -14245,19 +14660,21 @@ impl layout_ctx::LayoutCtx {
         ch_pending: &mut ChPending,
         important_pass: bool,
     ) {
-        for declaration in style_attr.split(';') {
-            let declaration = declaration.trim();
-            if declaration.is_empty() {
-                continue;
-            }
+        for declaration in rustkit_css::split_declaration_list(style_attr) {
             if let Some((property, value)) = declaration.split_once(':') {
                 let property = property.trim().to_lowercase();
                 let (value, important) = split_important(value.trim());
-                if important != important_pass {
+                if important != important_pass || property.starts_with("--") {
+                    // `--*` are already in `css_vars` (the cascade's first pass).
                     continue;
                 }
-                // Resolve CSS variables in the value
-                let resolved_value = self.resolve_css_variables(value, css_vars);
+                // Resolve CSS variables in the value; an unresolvable `var()`
+                // makes the declaration `unset` (CSS Variables 1 §3).
+                let Some(resolved_value) = self.resolve_css_variables_or_invalid(value, css_vars)
+                else {
+                    self.apply_invalid_at_computed_value_time(style, parent_style, &property);
+                    continue;
+                };
                 ch_pending.note(&property, &resolved_value);
                 self.apply_cascaded(style, parent_style, &property, &resolved_value);
             }
@@ -14377,6 +14794,29 @@ impl Engine {
                 style.border_left_color = parent.border_left_color;
             }
             "border-top-color" => style.border_top_color = parent.border_top_color,
+            "border-style" => {
+                for side in ["border-top-style", "border-right-style", "border-bottom-style", "border-left-style"] {
+                    Engine::inherit_property(style, parent, side);
+                }
+            }
+            "border-top-style" | "border-right-style" | "border-bottom-style"
+            | "border-left-style" => {
+                let (side_style, parent_style, parent_width) = match property {
+                    "border-top-style" => (&mut style.border_top_style, parent.border_top_style, &parent.border_top_width),
+                    "border-right-style" => (&mut style.border_right_style, parent.border_right_style, &parent.border_right_width),
+                    "border-bottom-style" => (&mut style.border_bottom_style, parent.border_bottom_style, &parent.border_bottom_width),
+                    _ => (&mut style.border_left_style, parent.border_left_style, &parent.border_left_width),
+                };
+                *side_style = parent_style;
+                // A parent side that had no style ends with the initial
+                // `Solid` and an unset (`Length::Zero`) width: it is `none`,
+                // so the child's side stays undeclared too.
+                if !(parent_style == rustkit_css::BorderStyle::Solid
+                    && *parent_width == rustkit_css::Length::Zero)
+                {
+                    note_border_style(border_side_bit(property));
+                }
+            }
             // The shorthand leaves `outline-offset` alone.
             "outline" => {
                 style.outline.style = parent.outline.style;
@@ -14535,7 +14975,20 @@ impl layout_ctx::LayoutCtx {
                         }
                         layer
                     } else {
-                        parse_background_layer(layer_str)
+                        match parse_background_layer(layer_str) {
+                            // A bad url (`url(a(b.png)`) is an invalid value:
+                            // the declaration is dropped and the image the
+                            // cascade had stays, as in Chromium (CH2.E29). It
+                            // used to clear the layers, so a bad inline url
+                            // wiped a stylesheet's image.
+                            None if layer_str
+                                .get(..4)
+                                .is_some_and(|h| h.eq_ignore_ascii_case("url(")) =>
+                            {
+                                return;
+                            }
+                            layer => layer,
+                        }
                     };
                     layers.extend(layer);
                 }
@@ -14791,6 +15244,7 @@ impl layout_ctx::LayoutCtx {
                 // whole value to parse_length, so `border: 2px solid #333` was
                 // silently dropped and only a bare `border: 2px` ever applied.
                 if let Some((width, color)) = parse_border_shorthand(value) {
+                    note_border_style(BORDER_SIDES_ALL);
                     let border_style = border_style_keyword(value);
                     style.border_top_style = border_style;
                     style.border_right_style = border_style;
@@ -14847,25 +15301,33 @@ impl layout_ctx::LayoutCtx {
                     [a, b, c, d] => (a, b, c, d),
                     _ => return,
                 };
+                note_border_style(BORDER_SIDES_ALL);
                 style.border_top_style = t;
                 style.border_right_style = r;
                 style.border_bottom_style = b;
                 style.border_left_style = l;
+                medium_if_unset(&mut style.border_top_width, t);
+                medium_if_unset(&mut style.border_right_width, r);
+                medium_if_unset(&mut style.border_bottom_width, b);
+                medium_if_unset(&mut style.border_left_width, l);
             }
             "border-top-style" | "border-right-style" | "border-bottom-style"
             | "border-left-style" => {
                 if let Some(s) = rustkit_css::BorderStyle::from_keyword(value.trim()) {
-                    match property {
-                        "border-top-style" => style.border_top_style = s,
-                        "border-right-style" => style.border_right_style = s,
-                        "border-bottom-style" => style.border_bottom_style = s,
-                        _ => style.border_left_style = s,
-                    }
+                    let (side_style, width) = match property {
+                        "border-top-style" => (&mut style.border_top_style, &mut style.border_top_width),
+                        "border-right-style" => (&mut style.border_right_style, &mut style.border_right_width),
+                        "border-bottom-style" => (&mut style.border_bottom_style, &mut style.border_bottom_width),
+                        _ => (&mut style.border_left_style, &mut style.border_left_width),
+                    };
+                    note_border_style(border_side_bit(property));
+                    *side_style = s;
+                    medium_if_unset(width, s);
                 }
             }
             "border-width" => {
-                // 1–4 length values, standard sides expansion
-                if let Some((t, r, b, l)) = parse_shorthand_4(value) {
+                // 1–4 widths (lengths or thin/medium/thick), standard sides expansion
+                if let Some((t, r, b, l)) = parse_border_widths(value) {
                     style.border_top_width = t;
                     style.border_right_width = r;
                     style.border_bottom_width = b;
@@ -14874,6 +15336,7 @@ impl layout_ctx::LayoutCtx {
             }
             "border-top" => {
                 if let Some((width, color)) = parse_border_shorthand(value) {
+                    note_border_style(border_side_bit("border-top"));
                     style.border_top_style = border_style_keyword(value);
                     style.border_top_width = width;
                     if let Some(color) = color {
@@ -14883,6 +15346,7 @@ impl layout_ctx::LayoutCtx {
             }
             "border-right" => {
                 if let Some((width, color)) = parse_border_shorthand(value) {
+                    note_border_style(border_side_bit("border-right"));
                     style.border_right_style = border_style_keyword(value);
                     style.border_right_width = width;
                     if let Some(color) = color {
@@ -14892,6 +15356,7 @@ impl layout_ctx::LayoutCtx {
             }
             "border-bottom" => {
                 if let Some((width, color)) = parse_border_shorthand(value) {
+                    note_border_style(border_side_bit("border-bottom"));
                     style.border_bottom_style = border_style_keyword(value);
                     style.border_bottom_width = width;
                     if let Some(color) = color {
@@ -14901,6 +15366,7 @@ impl layout_ctx::LayoutCtx {
             }
             "border-left" => {
                 if let Some((width, color)) = parse_border_shorthand(value) {
+                    note_border_style(border_side_bit("border-left"));
                     style.border_left_style = border_style_keyword(value);
                     style.border_left_width = width;
                     if let Some(color) = color {
@@ -15679,22 +16145,22 @@ impl layout_ctx::LayoutCtx {
                 };
             }
             "border-top-width" => {
-                if let Some(length) = parse_length(value) {
+                if let Some(length) = parse_border_width(value) {
                     style.border_top_width = length;
                 }
             }
             "border-right-width" => {
-                if let Some(length) = parse_length(value) {
+                if let Some(length) = parse_border_width(value) {
                     style.border_right_width = length;
                 }
             }
             "border-bottom-width" => {
-                if let Some(length) = parse_length(value) {
+                if let Some(length) = parse_border_width(value) {
                     style.border_bottom_width = length;
                 }
             }
             "border-left-width" => {
-                if let Some(length) = parse_length(value) {
+                if let Some(length) = parse_border_width(value) {
                     style.border_left_width = length;
                 }
             }
@@ -16036,29 +16502,55 @@ impl layout_ctx::LayoutCtx {
             "font-style" => style.font_style = rustkit_css::FontStyle::Normal,
             "font-family" => style.font_family = rustkit_css::INITIAL_FONT_FAMILY.to_string(),
             "line-height" => style.line_height = rustkit_css::LineHeight::Normal,
-            "margin" | "margin-top" => style.margin_top = rustkit_css::Length::Zero,
+            // A shorthand resets all four sides (it reset only the top, so
+            // `padding: 5px; padding: var(--missing)` kept 5px on three).
+            "margin" | "padding" | "border-width" => {
+                for side in ["top", "right", "bottom", "left"] {
+                    let (prefix, suffix) = match property.split_once('-') {
+                        Some((p, s)) => (p, format!("-{s}")),
+                        None => (property, String::new()),
+                    };
+                    self.apply_initial_value(style, &format!("{prefix}-{side}{suffix}"));
+                }
+            }
+            "margin-top" => style.margin_top = rustkit_css::Length::Zero,
             "margin-right" => style.margin_right = rustkit_css::Length::Zero,
             "margin-bottom" => style.margin_bottom = rustkit_css::Length::Zero,
             "margin-left" => style.margin_left = rustkit_css::Length::Zero,
-            "padding" | "padding-top" => style.padding_top = rustkit_css::Length::Zero,
+            "padding-top" => style.padding_top = rustkit_css::Length::Zero,
             "padding-right" => style.padding_right = rustkit_css::Length::Zero,
             "padding-bottom" => style.padding_bottom = rustkit_css::Length::Zero,
             "padding-left" => style.padding_left = rustkit_css::Length::Zero,
-            "border-width" | "border-top-width" => {
-                style.border_top_width = rustkit_css::Length::Zero
+            // The initial width is `medium` on every side (the `border-width`
+            // shorthand reaches these through the four-side loop above); a side
+            // with no style is zeroed after the cascade (zero_width_of_styleless_sides).
+            "border-top-width" => style.border_top_width = rustkit_css::Length::Px(3.0),
+            "border-right-width" => style.border_right_width = rustkit_css::Length::Px(3.0),
+            "border-bottom-width" => style.border_bottom_width = rustkit_css::Length::Px(3.0),
+            "border-left-width" => style.border_left_width = rustkit_css::Length::Px(3.0),
+            // The initial style is `none`: a zero used width.
+            "border-style" => {
+                style.border_top_style = rustkit_css::BorderStyle::None;
+                style.border_right_style = rustkit_css::BorderStyle::None;
+                style.border_bottom_style = rustkit_css::BorderStyle::None;
+                style.border_left_style = rustkit_css::BorderStyle::None;
             }
-            "border-right-width" => style.border_right_width = rustkit_css::Length::Zero,
-            "border-bottom-width" => style.border_bottom_width = rustkit_css::Length::Zero,
-            "border-left-width" => style.border_left_width = rustkit_css::Length::Zero,
+            "border-top-style" => style.border_top_style = rustkit_css::BorderStyle::None,
+            "border-right-style" => style.border_right_style = rustkit_css::BorderStyle::None,
+            "border-bottom-style" => style.border_bottom_style = rustkit_css::BorderStyle::None,
+            "border-left-style" => style.border_left_style = rustkit_css::BorderStyle::None,
             "width" => style.width = rustkit_css::Length::Auto,
             "visibility" => style.visibility = rustkit_css::Visibility::Visible,
             "pointer-events" => style.pointer_events = rustkit_css::PointerEvents::Auto,
             "cursor" => style.cursor = rustkit_css::Cursor::Auto,
             "height" => style.height = rustkit_css::Length::Auto,
+            // The initial `display` is `inline` (CSS Display 3 §2); it read
+            // `block`, so `div { display: unset }` stayed a block.
             "display" => {
-                style.display = rustkit_css::Display::Block;
+                style.display = rustkit_css::Display::Inline;
                 style.display_modifier = rustkit_css::DisplayModifier::None;
                 style.webkit_box = None;
+                style.display_contents_declared = false;
             }
             "opacity" => style.opacity = 1.0,
             "clip-path" | "-webkit-clip-path" => style.clip_path.clear(),
@@ -16426,8 +16918,9 @@ impl Engine {
 
 impl layout_ctx::LayoutCtx {
     /// The parsed sheet of each `<style>` element the document has, in
-    /// tree order. Parsing is a function of the text alone (no base URL,
-    /// no `media` attribute, nothing from the element), so a sheet whose
+    /// tree order, less those script disabled. Parsing is a function of the
+    /// text alone (no base URL; a `media` attribute is folded into the text
+    /// by `style_sheet_text`), so a sheet whose
     /// text `view`'s cache has seen is taken from it instead of parsed
     /// again (`RUSTKIT_SHEET_CACHE`). A cached sheet is shared with the
     /// cache: callers that change it take a copy (`Rc::unwrap_or_clone`).
@@ -16442,14 +16935,13 @@ impl layout_ctx::LayoutCtx {
             if !sheet_element_counts(javascript_enabled, &style_el) {
                 continue;
             }
-            let mut css_text = String::new();
-            for child in style_el.children() {
-                if let NodeType::Text(text) = &child.node_type {
-                    css_text.push_str(text);
-                }
+            // `sheet.disabled = true` from script (CH2.E17).
+            if document.style_sheet_disabled(&style_el) {
+                continue;
             }
+            let css_text = rustkit_dom::style_element_text(&style_el);
             if !css_text.is_empty() {
-                texts.push(css_text);
+                texts.push(style_sheet_text(&style_el, css_text));
             }
         }
 
@@ -16473,6 +16965,117 @@ impl layout_ctx::LayoutCtx {
         self.with_building_lay(|lay| lay.sheet_cache.borrow_mut().take_parsed())
             .unwrap_or_else(|| ADHOC_SHEET_CACHE.with(|cache| cache.borrow_mut().take_parsed()))
     }
+}
+
+/// The CSS text a `<style>` element contributes: `css_text`, inside
+/// `@media <list> { ... }` when the element has a `media` attribute
+/// (HTML 4.2.6: the sheet applies only where the list matches). The list is
+/// serialized first, so a query Chrome rejects (`foo bar`) becomes
+/// `not all` and matches nothing; an empty list applies everywhere. The
+/// engine has no `@import`, so wrapping the text changes nothing else, and
+/// the wrapped rules carry the list as their outermost `@media` condition,
+/// which the cascade re-evaluates on every resize.
+pub(crate) fn style_sheet_text(element: &Node, css_text: String) -> String {
+    let media = match &element.node_type {
+        NodeType::Element { attributes, .. } => attributes.get("media"),
+        _ => None,
+    };
+    let list = media.map(|m| rustkit_css::media_query_list_serialize(m)).unwrap_or_default();
+    if list.is_empty() {
+        css_text
+    } else {
+        let css_text = drop_brace_broken_statements(&css_text);
+        format!("@media {list} {{\n{css_text}\n}}")
+    }
+}
+
+/// `css_text` less each top-level statement whose prelude holds a stray
+/// `}`. At the top level of a sheet that `}` is part of the statement's
+/// prelude, which then fails, so dropping the statement changes nothing
+/// there (CSS Syntax 3 "consume a qualified rule" / "consume an at-rule";
+/// Chromium drops it). Inside `@media <list> { ... }` the same `}` would
+/// close the wrapper and every rule after it would apply wherever the list
+/// does not match, so [`style_sheet_text`] drops the statement before
+/// wrapping. A qualified rule runs to the end of its `{}` block, an at-rule
+/// to its `;` or block; comments, strings, escapes and `()`/`[]` blocks are
+/// skipped, as the tokenizer does. Only ASCII bytes are compared, so every
+/// cut is on a char boundary.
+fn drop_brace_broken_statements(css_text: &str) -> std::borrow::Cow<'_, str> {
+    let b = css_text.as_bytes();
+    let mut cuts: Vec<(usize, usize)> = Vec::new();
+    let mut closers: Vec<u8> = Vec::new();
+    // The current top-level statement: where it starts, whether it is an
+    // at-rule, and whether its prelude met a stray `}`.
+    let mut start: Option<usize> = None;
+    let mut at_rule = false;
+    let mut broken = false;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            i = css_text[i + 2..].find("*/").map_or(b.len(), |n| i + 2 + n + 2);
+            continue;
+        }
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if closers.is_empty() && start.is_none() {
+            start = Some(i);
+            at_rule = c == b'@';
+            broken = false;
+        }
+        let mut end = None;
+        match c {
+            b'\\' => {
+                i += 2;
+                continue;
+            }
+            b'"' | b'\'' => {
+                i += 1;
+                while i < b.len() && b[i] != c && b[i] != b'\n' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+                continue;
+            }
+            b'{' => closers.push(b'}'),
+            b'(' => closers.push(b')'),
+            b'[' => closers.push(b']'),
+            _ if closers.last() == Some(&c) => {
+                closers.pop();
+                if c == b'}' && closers.is_empty() {
+                    end = Some(i + 1);
+                }
+            }
+            b'}' if closers.is_empty() => broken = true,
+            b';' if closers.is_empty() && at_rule => end = Some(i + 1),
+            _ => {}
+        }
+        if let Some(end) = end {
+            if broken {
+                cuts.push((start.unwrap_or(end), end));
+            }
+            start = None;
+        }
+        i += 1;
+    }
+    if broken {
+        if let Some(start) = start {
+            cuts.push((start, b.len()));
+        }
+    }
+    if cuts.is_empty() {
+        return std::borrow::Cow::Borrowed(css_text);
+    }
+    let mut out = String::with_capacity(css_text.len());
+    let mut at = 0;
+    for (from, to) in cuts {
+        out.push_str(&css_text[at..from]);
+        at = to;
+    }
+    out.push_str(&css_text[at..]);
+    std::borrow::Cow::Owned(out)
 }
 
 /// [`Engine::sheet_element_counts`] for a given scripting setting.
@@ -16758,18 +17361,41 @@ impl layout_ctx::LayoutCtx {
         // The map is a function of the document's tree (its `<style>` text
         // and adopted sheets included), the `<link>` sheets and the
         // viewport: kept while none of them changed (LAT4b).
+        // CH2.E19: the view's element state is part of the key when the
+        // paint rules read it. The rules last read stand for the ones the
+        // key is checked against: with the sheets the same (the rest of
+        // the key), they are the same rules.
+        let state = Self::svg_element_state(document, lay);
+        let reads_state = self
+            .svg_prepass
+            .borrow()
+            .paint_rules
+            .as_ref()
+            .is_none_or(|rules| rules.reads_state);
         let key = svg_prepass::PaintKey {
             gen: rustkit_dom::mutation_generation(),
             external: Rc::downgrade(external),
             viewport: viewport.map(|(w, h)| (w.to_bits(), h.to_bits())),
             javascript_enabled,
+            state: reads_state.then(|| state.clone()),
         };
         let kept = self.svg_prepass.borrow_mut().paint_for(document.root(), &key);
         if let Some(map) = kept {
             *self.svg_paint_styles.borrow_mut() = map;
             return;
         }
-        let map = self.svg_paint_styles_of(document, lay, external, javascript_enabled, viewport);
+        let map = self.svg_paint_styles_of(document, lay, external, javascript_enabled, viewport, &state);
+        // The rules read now decide whether the state is in the key.
+        let key = svg_prepass::PaintKey {
+            state: self
+                .svg_prepass
+                .borrow()
+                .paint_rules
+                .as_ref()
+                .is_none_or(|rules| rules.reads_state)
+                .then_some(state),
+            ..key
+        };
         // An unchanged map stays the same `Rc`, which is what the markup
         // keys check first.
         let map = match self.svg_paint_styles.borrow().clone() {
@@ -16780,6 +17406,25 @@ impl layout_ctx::LayoutCtx {
         *self.svg_paint_styles.borrow_mut() = map;
     }
 
+    /// CH2.E19: the element state `lay`'s view matches svg paint rules
+    /// against: checkedness, the hovered and pressed chains, and the
+    /// focused element with the elements above it.
+    fn svg_element_state(_document: &Document, lay: Option<&layout_ctx::ViewLayout>) -> SvgElementState {
+        let Some(lay) = lay else {
+            return SvgElementState::default();
+        };
+        // The page's focus, as the cascade matches it (CH2.E22).
+        let focus_within = lay.focus_chain.borrow().clone();
+        SvgElementState {
+            checked: lay.checked_states.borrow().clone(),
+            hover: lay.hover_chain.borrow().clone(),
+            active: lay.active_chain.borrow().clone(),
+            focus: focus_within.first().copied(),
+            focus_within,
+            focus_visible: lay.focus_visible.get(),
+        }
+    }
+
     /// `cache_svg_paint_styles`'s map, computed.
     fn svg_paint_styles_of(
         &self,
@@ -16788,6 +17433,7 @@ impl layout_ctx::LayoutCtx {
         external: &Rc<Vec<Stylesheet>>,
         javascript_enabled: bool,
         viewport: Option<(f32, f32)>,
+        state: &SvgElementState,
     ) -> HashMap<usize, SvgPaintStyle> {
         let inline = self.inline_sheets(document, lay, javascript_enabled);
         let rules = self.svg_paint_rules(inline, external, viewport);
@@ -16814,7 +17460,9 @@ impl layout_ctx::LayoutCtx {
                 walk(&child, f);
             }
         }
-        let no_checked = HashMap::new();
+        // The rules match against the view's element state (CH2.E19).
+        let _state = WalkCheckedScope::enter_for_svg_paint(state);
+        let checked = &state.checked;
         let compute = |n: &Rc<Node>| -> Option<SvgPaintStyle> {
             let NodeType::Element { tag_name, attributes, .. } = &n.node_type else { return None };
             let keyed = KeyedElement::of(tag_name, attributes);
@@ -16827,7 +17475,7 @@ impl layout_ctx::LayoutCtx {
                 }
                 let specificity = SelectorMatcher::split_top_level_commas(&rule.selector)
                     .into_iter()
-                    .filter(|member| SelectorMatcher.node_matches(n, member, &no_checked) == Some(true))
+                    .filter(|member| SelectorMatcher.node_matches(n, member, checked) == Some(true))
                     .map(|member| SelectorMatcher.selector_specificity(member))
                     .max();
                 let Some(specificity) = specificity else { continue };
@@ -16887,7 +17535,7 @@ impl layout_ctx::LayoutCtx {
                 let style = match rules.local {
                     // The rules read only the element and its ancestors:
                     // an element whose chain is unchanged keeps its answer.
-                    true => prepass.element_paint(n, &rules, &mut |n| compute(n)),
+                    true => prepass.element_paint(n, &rules, &|raw| state.mark_bits(raw), &mut |n| compute(n)),
                     false => compute(n),
                 };
                 if let Some(style) = style {
@@ -16961,6 +17609,17 @@ impl layout_ctx::LayoutCtx {
             };
             !NON_LOCAL.iter().any(|t| selector.contains(t))
         });
+        // CH2.E19: whether a paint rule reads element state, so the map
+        // follows the pointer, the focus and checkedness; conservative, by
+        // the selector text.
+        const STATE: &[&str] = &[":hover", ":active", ":focus", ":checked"];
+        let reads_state = paint.iter().any(|(_, source, index, _)| {
+            let selector = match *source {
+                SheetRef::Inline(i) => &inline[i].rules[*index].selector,
+                SheetRef::External(i) => &external[i].rules[*index].selector,
+            };
+            STATE.iter().any(|t| selector.contains(t))
+        });
         let rules = Rc::new(SvgPaintRules {
             inline,
             external: Rc::downgrade(external),
@@ -16968,6 +17627,7 @@ impl layout_ctx::LayoutCtx {
             paint,
             root_vars,
             local,
+            reads_state,
         });
         self.svg_prepass.borrow_mut().paint_rules = Some(rules.clone());
         rules
@@ -16992,6 +17652,8 @@ pub(crate) struct SvgPaintRules {
     root_vars: HashMap<String, String>,
     /// No paint rule reads more than the element and its ancestors.
     pub(crate) local: bool,
+    /// A paint rule reads element state (CH2.E19).
+    pub(crate) reads_state: bool,
 }
 
 impl Engine {
@@ -18354,6 +19016,9 @@ impl layout_ctx::LayoutCtx {
                 let prepared = SelectorMatcher.prepared_selector(rule.selector.trim());
                 ix.reads.hover.note(rule.selector.trim(), ":hover", HOVER_MARK);
                 ix.reads.active.note(rule.selector.trim(), ":active", ACTIVE_MARK);
+                ix.reads.focus.note(rule.selector.trim(), ":focus", FOCUS_MARK);
+                ix.reads.focus_within.note(rule.selector.trim(), ":focus-within", FOCUS_WITHIN_MARK);
+                ix.reads.focus_visible.note(rule.selector.trim(), ":focus-visible", FOCUS_VISIBLE_MARK);
                 ix.reads.invalidation.note_selector(rule.selector.trim());
                 let positional = ix.reads.note(&prepared);
                 ix.reads.positional.push(positional);
@@ -18591,7 +19256,8 @@ impl layout_ctx::LayoutCtx {
                 });
             }
             let tag_end = compound.find(stop).unwrap_or(compound.len());
-            let tag_part = &compound[..tag_end];
+            // `*:hover`, `*.a`: the universal selector names no tag (CH2.E22).
+            let tag_part = Some(&compound[..tag_end]).filter(|t| *t != "*").unwrap_or("");
             let rest = &compound[tag_end..];
             let class = rest.strip_prefix('.').map(|r| {
                 let end = r.find(stop).unwrap_or(r.len());
@@ -18725,7 +19391,16 @@ impl SelectorMatcher {
             }
             _ => None,
         };
-        let live_own = live(node.id.raw(), attributes);
+        let mut live_own = live(node.id.raw(), attributes);
+        // The element state of the scope (CH2.E19: the inline svg paint
+        // pass), as the build marks it (`live_attributes`).
+        let own_marks = walk_marks(node.id.raw());
+        if !own_marks.is_empty() {
+            let marked = live_own.get_or_insert_with(|| attributes.clone());
+            for mark in own_marks {
+                marked.insert(mark.to_string(), String::new());
+            }
+        }
         let attributes = live_own.as_ref().unwrap_or(attributes);
         let _relational = RelationalNodeScope::enter(Some(node.clone()));
         // A selector that reads neither the ancestors nor the siblings (`.a`,
@@ -18754,6 +19429,12 @@ impl SelectorMatcher {
                 .map(|c| c.split_whitespace().map(str::to_string).collect())
                 .unwrap_or_default()
         };
+        // An ancestor's or an earlier sibling's classes, with its marks.
+        let marked_classes = |raw: usize, attributes: &HashMap<String, String>| -> Vec<String> {
+            let mut out = classes(attributes);
+            out.extend(walk_marks(raw).into_iter().map(str::to_string));
+            out
+        };
 
         // ancestors[0] is the parent, as in the cascade.
         let mut ancestors = Vec::new();
@@ -18766,7 +19447,7 @@ impl SelectorMatcher {
             let root = n.parent().is_none_or(|p| !matches!(p.node_type, NodeType::Element { .. }));
             ancestors.push(Rc::new((
                 tag_name.to_lowercase(),
-                classes(attributes),
+                marked_classes(n.id.raw(), attributes),
                 attributes.get("id").cloned(),
                 root.then(|| Rc::new(attributes.clone())),
             )));
@@ -18798,7 +19479,7 @@ impl SelectorMatcher {
                     if before {
                         let live = live(c.id.raw(), attributes);
                         let state = ElementState::of(&t, live.as_ref().unwrap_or(attributes));
-                        siblings_before.push((t, classes(attributes), attributes.get("id").cloned(), state));
+                        siblings_before.push((t, marked_classes(c.id.raw(), attributes), attributes.get("id").cloned(), state));
                     }
                 }
                 SiblingContext {
@@ -19279,8 +19960,10 @@ impl SelectorMatcher {
         let tag_part = &remaining[..tag_end];
         remaining = &remaining[tag_end..];
 
-        // Check tag name (if specified)
-        if !tag_part.is_empty() && !tag_part.eq_ignore_ascii_case(tag_name) {
+        // Check tag name (if specified). The universal selector with more
+        // after it (`*:focus`, `*:hover`, `*.a`) names none: it matched no
+        // element at all (CH2.E22, an R1 hold on #954).
+        if !tag_part.is_empty() && tag_part != "*" && !tag_part.eq_ignore_ascii_case(tag_name) {
             return false;
         }
 
@@ -19364,26 +20047,65 @@ impl SelectorMatcher {
         }
     }
 
-    /// Checked in this order; the first one found splits name from value.
+    /// The operators, and the same with the `i` case flag (Selectors 4
+    /// §6.3: `[a="v" i]` compares ASCII case-insensitively).
     const ATTR_OPERATORS: [&'static str; 6] = ["~=", "|=", "^=", "$=", "*=", "="];
+    const ATTR_OPERATORS_I: [&'static str; 6] = ["~=i", "|=i", "^=i", "$=i", "*=i", "=i"];
+    /// The operator of a test with a flag other than `i`. Chromium 143 takes
+    /// no other (not even `s`): the selector is invalid, and this never passes.
+    const ATTR_INVALID_FLAG: &'static str = "!";
+
+    /// Where the operator of an `[...]` selector starts and which it is:
+    /// the first `=` and the one character before it. A name holds no `=`,
+    /// so an operator inside a quoted value (`[a="x~=y"]`) is not taken.
+    fn attr_operator(attr_selector: &str) -> Option<(usize, usize)> {
+        let eq = attr_selector.find('=')?;
+        match attr_selector[..eq].chars().next_back() {
+            Some('~' | '|' | '^' | '$' | '*') => Some((eq - 1, eq + 1)),
+            _ => Some((eq, eq + 1)),
+        }
+    }
 
     /// The operator of an `[...]` selector and the value it compares with
-    /// (trimmed, quotes removed). None for a bare `[name]`.
+    /// (trimmed, quotes removed); with an `i` flag after the value, the
+    /// operator is its `ATTR_OPERATORS_I` form. None for a bare `[name]`.
     fn attr_selector_test(attr_selector: &str) -> Option<(&'static str, &str)> {
-        Self::ATTR_OPERATORS.iter().find_map(|op| {
-            let pos = attr_selector.find(op)?;
-            let mut attr_value = attr_selector[pos + op.len()..].trim();
-            if (attr_value.starts_with('"') && attr_value.ends_with('"'))
-                || (attr_value.starts_with('\'') && attr_value.ends_with('\''))
-            {
-                attr_value = &attr_value[1..attr_value.len() - 1];
-            }
-            Some((*op, attr_value))
-        })
+        let (start, end) = Self::attr_operator(attr_selector)?;
+        let at = Self::ATTR_OPERATORS.iter().position(|op| *op == &attr_selector[start..end])?;
+        let rest = attr_selector[end..].trim();
+        let (attr_value, flag) = match rest.chars().next() {
+            Some(q @ ('"' | '\'')) => match rest[1..].find(q) {
+                Some(close) => (&rest[1..1 + close], rest[2 + close..].trim()),
+                // CSS Syntax: EOF closes a string.
+                None => (&rest[1..], ""),
+            },
+            _ => match rest.find(char::is_whitespace) {
+                Some(space) => (&rest[..space], rest[space..].trim()),
+                None => (rest, ""),
+            },
+        };
+        let op = match flag {
+            "" => Self::ATTR_OPERATORS[at],
+            "i" | "I" => Self::ATTR_OPERATORS_I[at],
+            _ => Self::ATTR_INVALID_FLAG,
+        };
+        Some((op, attr_value))
+    }
+
+    /// Whether an `[...]` selector's flag is one the engine takes.
+    fn attr_selector_is_valid(attr_selector: &str) -> bool {
+        Self::attr_selector_test(attr_selector).is_none_or(|(op, _)| op != Self::ATTR_INVALID_FLAG)
     }
 
     /// Whether the element's value `el_attr` passes `op` against `attr_value`.
     fn attr_test_passes(op: &str, attr_value: &str, el_attr: &str) -> bool {
+        if let Some(op) = op.strip_suffix('i') {
+            return Self::attr_test_passes(
+                op,
+                &attr_value.to_ascii_lowercase(),
+                &el_attr.to_ascii_lowercase(),
+            );
+        }
         match op {
             "=" => el_attr == attr_value,
             "~=" => el_attr.split_whitespace().any(|w| w == attr_value),
@@ -19404,10 +20126,8 @@ impl SelectorMatcher {
     /// without an operator, fails on an element that lacks it, which is
     /// what lets the rule index file attribute-first rules under it.
     fn attr_selector_name(attr_selector: &str) -> &str {
-        Self::ATTR_OPERATORS
-            .iter()
-            .find_map(|op| attr_selector.find(op))
-            .map_or(attr_selector, |pos| &attr_selector[..pos])
+        Self::attr_operator(attr_selector)
+            .map_or(attr_selector, |(start, _)| &attr_selector[..start])
             .trim()
     }
 
@@ -19563,6 +20283,7 @@ impl SelectorMatcher {
         let mut paren_depth: Vec<bool> = Vec::new(); // true = this paren is forgiving
         // Parallel to `paren_depth`: true = this paren is a `:has(`.
         let mut has_parens: Vec<bool> = Vec::new();
+        let mut bracket_start = 0;
         while i < chars.len() {
             let c = chars[i];
             if let Some(q) = quote {
@@ -19574,8 +20295,22 @@ impl SelectorMatcher {
             }
             match c {
                 '"' | '\'' => quote = Some(c),
-                '[' => in_brackets = true,
-                ']' => in_brackets = false,
+                '[' => {
+                    in_brackets = true;
+                    bracket_start = i + 1;
+                }
+                ']' => {
+                    // `[a="v" s]`: Chromium 143 takes no case flag but `i`.
+                    if in_brackets
+                        && forgiving_depth == 0
+                        && !Self::attr_selector_is_valid(
+                            &chars[bracket_start..i].iter().collect::<String>(),
+                        )
+                    {
+                        return false;
+                    }
+                    in_brackets = false;
+                }
                 '(' => {
                     paren_depth.push(false);
                     has_parens.push(false);
@@ -19789,6 +20524,11 @@ impl SelectorMatcher {
             // above it (`Engine::live_attributes`).
             "hover" => attributes.contains_key(HOVER_MARK),
             "active" => attributes.contains_key(ACTIVE_MARK),
+            // The focused element and its ancestors, as the build marks
+            // them (`live_attributes`, `WalkState::focus`; CH2.E19/E22).
+            "focus" => attributes.contains_key(FOCUS_MARK),
+            "focus-within" => attributes.contains_key(FOCUS_WITHIN_MARK),
+            "focus-visible" => attributes.contains_key(FOCUS_VISIBLE_MARK),
             n if SelectorMatcher::pseudo_class_is_static_false(n) => false,
             // Link pseudo-classes: an <a>/<area> with an href.
             "link" | "any-link" => matches!(tag, "a" | "area") && attributes.contains_key("href"),
@@ -21191,10 +21931,14 @@ impl Engine {
             self.note_relayout_cause(id, RelayoutCause::ObserverCallback);
             laid |= self.flush_script_dom_writes_once(id, None)?;
         }
-        // The focused control paints its caret, so a focus script moved is
-        // a relayout.
+        // The focused control paints its caret, and focus rules restyle,
+        // so a focus script moved is a restyle: a pointer one, which keeps
+        // the layout when only paint changed (CH2.E22).
         if self.follow_script_focus(id) {
-            self.relayout_for(id, RelayoutCause::HoverOrFocus)?;
+            if let Some(view) = self.views.get_mut(&id) {
+                view.pointer_restyle = true;
+            }
+            self.relayout(id)?;
             laid = true;
         }
         // A selection script moved is painted again over the same boxes.
@@ -21369,11 +22113,22 @@ impl Engine {
 
     /// The forced layouts of the script task that just settled: one log
     /// line per task that had any, and the view's running count.
+    /// Each line names the most frequent cause, `write:read` (what first
+    /// dirtied the layout, and the read that found it stale), every cause
+    /// with its count, and the layouts' time (LAT7).
     fn note_forced_layouts(id: EngineViewId, stats: &mut RelayoutStats, bindings: &DomBindings) {
-        let forced = bindings.take_forced_layouts();
-        if forced > 0 {
-            info!(?id, forced_layouts = forced, "Forced layouts in the script task");
-            stats.forced_layouts = stats.forced_layouts.saturating_add(forced);
+        let report = bindings.take_forced_report();
+        if report.count > 0 {
+            info!(
+                ?id,
+                forced_layouts = report.count,
+                ms = %format!("{:.1}", report.ms),
+                cause = %report.top_cause().unwrap_or_default(),
+                causes = %report.causes_field(),
+                "Forced layouts in the script task"
+            );
+            stats.forced_layouts = stats.forced_layouts.saturating_add(report.count);
+            stats.forced_ms += report.ms;
         }
     }
 
@@ -21448,22 +22203,21 @@ impl Engine {
             let max_scroll = (0.0, (content_height - bounds.1 as f32).max(0.0));
             let built = Rc::new(built);
             debug!(?id, ms = started.elapsed().as_secs_f64() * 1000.0, "Forced layout");
-            // The maps (with every element's computed style lines) are built
-            // on the first read that needs them, as `publish_geometry` does:
-            // a scrollTo after the write needs only `max_scroll`.
+            // The geometry is built on the first read that needs it, as
+            // `publish_geometry` does: a scrollTo after the write needs only
+            // `max_scroll`. Each element's computed style is formatted on
+            // its own first read (LAT8).
             let snapshot_of = built.clone();
             let styled = lay.clone();
+            let styles_of = built.clone();
             Some(rustkit_bindings::ForcedGeometry {
                 source: Box::new(move || {
                     let _snapshot_time = time_stage(Stage::Snapshot);
-                    geometry_with_root(
-                        &snapshot_of,
-                        root_element,
-                        &styled.boxless_styles.borrow(),
-                        &styled.pseudo_styles.borrow(),
-                    )
+                    set_root_font_for(&snapshot_of, root_element, &styled);
+                    geometry_only(&snapshot_of, root_element)
                 }),
                 hit_tester: Some(layout_hit_tester(move || Some(built.clone()), lay.element_scrolls.clone())),
+                computed_lines: Some(computed_lines_source(move || Some(styles_of.clone()), root_element, lay.clone())),
                 max_scroll,
             })
         }))
@@ -22669,13 +23423,13 @@ fn parse_background_layer(value: &str) -> Option<rustkit_css::BackgroundLayer> {
         return Some(layer);
     }
 
-    // Check for url()
-    if value.starts_with("url(") {
-        if let Some(end) = value.find(')') {
-            let url = value[4..end].trim().trim_matches(|c| c == '"' || c == '\'');
-            layer.image = rustkit_css::BackgroundImage::Url(url.to_string());
-            return Some(layer);
-        }
+    // Check for url(). `parse_css_url` is case-insensitive (`URL(...)`),
+    // keeps a `)` or `;` inside a quoted url, and rejects a bad url
+    // (`url(it's)`, `url(a(b.png)`) the way Chromium does (#972 R1).
+    if value.get(..4).is_some_and(|h| h.eq_ignore_ascii_case("url(")) {
+        let url = rustkit_css::mask::parse_css_url(value)?;
+        layer.image = rustkit_css::BackgroundImage::Url(url);
+        return Some(layer);
     }
 
     // Check if it's a color (these don't create image layers)
@@ -22793,10 +23547,7 @@ fn parse_background_shorthand_layer(
             }
             "left" | "right" | "top" | "bottom" | "center" => position.push(token),
             _ if lower.starts_with("url(") && token.ends_with(')') => {
-                let url = token[4..token.len() - 1]
-                    .trim()
-                    .trim_matches(|c| c == '"' || c == '\'');
-                layer.image = rustkit_css::BackgroundImage::Url(url.to_string());
+                layer.image = rustkit_css::BackgroundImage::Url(rustkit_css::mask::parse_css_url(token)?);
             }
             _ if numeric(&lower) || math(&lower) => position.push(token),
             _ => {
@@ -23107,6 +23858,162 @@ fn parse_outline_shorthand(value: &str) -> Option<rustkit_css::Outline> {
         }
     }
     (style || width || color).then_some(parsed)
+}
+
+/// A `border-*-width` value: a length or `thin`/`medium`/`thick`
+/// (1/3/5 px, as Chromium).
+fn parse_border_width(value: &str) -> Option<rustkit_css::Length> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "thin" => Some(rustkit_css::Length::Px(1.0)),
+        "medium" => Some(rustkit_css::Length::Px(3.0)),
+        "thick" => Some(rustkit_css::Length::Px(5.0)),
+        other => parse_length(other),
+    }
+}
+
+/// `border-width`: 1–4 [`parse_border_width`] values, sides expanded.
+fn parse_border_widths(
+    value: &str,
+) -> Option<(rustkit_css::Length, rustkit_css::Length, rustkit_css::Length, rustkit_css::Length)> {
+    let parts = value
+        .split_whitespace()
+        .map(parse_border_width)
+        .collect::<Option<Vec<_>>>()?;
+    match parts.as_slice() {
+        [a] => Some((a.clone(), a.clone(), a.clone(), a.clone())),
+        [a, b] => Some((a.clone(), b.clone(), a.clone(), b.clone())),
+        [a, b, c] => Some((a.clone(), b.clone(), c.clone(), b.clone())),
+        [a, b, c, d] => Some((a.clone(), b.clone(), c.clone(), d.clone())),
+        _ => None,
+    }
+}
+
+thread_local! {
+    /// Set while the element being cascaded is a form control whose UA
+    /// border lives in layout, not in its style (`medium_if_unset`).
+    static UA_CONTROL_BORDER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Holds `UA_CONTROL_BORDER` for one element's cascade and restores the
+/// previous value on drop (every return path, and a nested cascade).
+struct UaControlBorderScope(bool);
+
+impl UaControlBorderScope {
+    fn enter(tag_name: &str) -> Self {
+        let control = matches!(&*lower_tag(tag_name), "input" | "textarea" | "button" | "select");
+        Self(UA_CONTROL_BORDER.with(|c| c.replace(control)))
+    }
+}
+
+impl Drop for UaControlBorderScope {
+    fn drop(&mut self) {
+        UA_CONTROL_BORDER.with(|c| c.set(self.0));
+    }
+}
+
+const BORDER_SIDE_TOP: u8 = 1;
+const BORDER_SIDE_RIGHT: u8 = 2;
+const BORDER_SIDE_BOTTOM: u8 = 4;
+const BORDER_SIDE_LEFT: u8 = 8;
+const BORDER_SIDES_ALL: u8 = 15;
+
+thread_local! {
+    /// The sides (`BORDER_SIDE_*`) of the element being cascaded that some
+    /// origin gave a `border-style` (`zero_width_of_styleless_sides`).
+    static BORDER_STYLE_DECLARED: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Holds `BORDER_STYLE_DECLARED` for one element's (or pseudo-element's)
+/// cascade and restores the previous value on drop. A form control starts
+/// with every side declared: Chromium's UA sheet gives input, textarea,
+/// button and select a border style, so `border-width` alone applies there.
+struct BorderStyleDeclaredScope(u8);
+
+impl BorderStyleDeclaredScope {
+    fn enter(tag_name: &str) -> Self {
+        let control = matches!(&*lower_tag(tag_name), "input" | "textarea" | "button" | "select");
+        let start = if control { BORDER_SIDES_ALL } else { 0 };
+        Self(BORDER_STYLE_DECLARED.with(|c| c.replace(start)))
+    }
+}
+
+impl Drop for BorderStyleDeclaredScope {
+    fn drop(&mut self) {
+        BORDER_STYLE_DECLARED.with(|c| c.set(self.0));
+    }
+}
+
+/// Record that `sides` were given a border style in this cascade.
+fn note_border_style(sides: u8) {
+    BORDER_STYLE_DECLARED.with(|c| c.set(c.get() | sides));
+}
+
+/// The `BORDER_SIDE_*` bit of a `border-<side>[-style]` property name.
+fn border_side_bit(property: &str) -> u8 {
+    match property.strip_prefix("border-").and_then(|p| p.split('-').next()) {
+        Some("top") => BORDER_SIDE_TOP,
+        Some("right") => BORDER_SIDE_RIGHT,
+        Some("bottom") => BORDER_SIDE_BOTTOM,
+        _ => BORDER_SIDE_LEFT,
+    }
+}
+
+/// The UA arms of `compute_style_for_element` set border widths without a
+/// style field; each of those sides has a UA style in Chromium.
+fn note_ua_border_sides(style: &ComputedStyle) {
+    let zero = rustkit_css::Length::Zero;
+    for (bit, width) in [
+        (BORDER_SIDE_TOP, &style.border_top_width),
+        (BORDER_SIDE_RIGHT, &style.border_right_width),
+        (BORDER_SIDE_BOTTOM, &style.border_bottom_width),
+        (BORDER_SIDE_LEFT, &style.border_left_width),
+    ] {
+        if *width != zero {
+            note_border_style(bit);
+        }
+    }
+}
+
+/// CH2.B18 R1 hold 2: a side no origin gave a `border-style` is `none`
+/// (the initial value), so its used width is 0 whatever `border-width`
+/// said, a keyword or a length (CSS Backgrounds 3 §3.3; Chromium 143:
+/// `div { border-width: thick }` is 0px). RustKit's initial `BorderStyle`
+/// is `Solid`, so the cascade tracks which sides were declared instead.
+/// The `border` shorthands count as declaring a style (RustKit keeps
+/// `Solid` for one without a style keyword).
+fn zero_width_of_styleless_sides(style: &mut ComputedStyle) {
+    let declared = BORDER_STYLE_DECLARED.with(std::cell::Cell::get);
+    for (bit, width) in [
+        (BORDER_SIDE_TOP, &mut style.border_top_width),
+        (BORDER_SIDE_RIGHT, &mut style.border_right_width),
+        (BORDER_SIDE_BOTTOM, &mut style.border_bottom_width),
+        (BORDER_SIDE_LEFT, &mut style.border_left_width),
+    ] {
+        if declared & bit == 0 {
+            *width = rustkit_css::Length::Zero;
+        }
+    }
+}
+
+/// CH2.B18 (1): a side given a style keeps its width, or takes `medium`
+/// (3px, the initial `border-width`) when no width was declared. The
+/// initial `BorderStyle` is `Solid`, so the unset width (`Length::Zero`;
+/// an authored `0` is `Px(0.0)`) can't start at 3px itself. `none` sides
+/// are zeroed after the cascade (`zero_width_of_borderless_sides`).
+///
+/// Not on `input`, `textarea`, `button` or `select` (R1 hold on #950): their
+/// UA border (2/1/2/1 px in Chromium 143) is not in the style. Layout reads
+/// an unset width on a control as "the UA border"
+/// (`form_control_intrinsic_size`'s calibrated blobs,
+/// `content_box_control_extra`), so `border-style: solid` keeps it, as in
+/// Chromium, instead of adding 3px on top.
+fn medium_if_unset(width: &mut rustkit_css::Length, side_style: rustkit_css::BorderStyle) {
+    if UA_CONTROL_BORDER.with(std::cell::Cell::get) {
+        return;
+    }
+    if side_style != rustkit_css::BorderStyle::None && *width == rustkit_css::Length::Zero {
+        *width = rustkit_css::Length::Px(3.0);
+    }
 }
 
 /// Parse a `border` / `border-<side>` shorthand: `<width> || <style> || <color>`.
@@ -24847,6 +25754,34 @@ fn compose_affine(outer: [f32; 6], inner: [f32; 6]) -> [f32; 6] {
     ]
 }
 
+/// The document URL after a navigate response (HTML + Fetch fragment rule):
+/// the last hop wins when there was a redirect; the request's fragment is
+/// kept when the last hop has none. No redirect leaves the request alone.
+pub(crate) fn url_after_redirects(requested: &Url, response_url: &Url, had_redirects: bool) -> Url {
+    if response_url != requested && had_redirects {
+        let mut last = response_url.clone();
+        if last.fragment().is_none() {
+            last.set_fragment(requested.fragment());
+        }
+        last
+    } else {
+        requested.clone()
+    }
+}
+
+/// Insert a late external stylesheet at its document-order slot (Z row S6).
+/// `slots` and `sheets` stay the same length and the same order.
+pub(crate) fn insert_sheet_at_document_order<T>(
+    slots: &mut Vec<usize>,
+    sheets: &mut Vec<T>,
+    index: usize,
+    sheet: T,
+) {
+    let at = slots.partition_point(|&slot| slot < index);
+    slots.insert(at, index);
+    sheets.insert(at, sheet);
+}
+
 /// The list the window drew for a page scrolled by `scroll_offset`, until
 /// the renderer took the scroll as an offset (threads plan P3): the page's
 /// own list, which stays in document coordinates, inside one translate. A
@@ -25063,30 +25998,33 @@ fn publish_geometry(
     lay: Rc<layout_ctx::ViewLayout>,
 ) {
     bindings.share_element_scrolls(lay.element_scrolls.clone());
-    // The CSS animations as of this layout, for `getAnimations()`, and the
-    // properties they animate, for computed reads.
-    {
-        let anims = lay.animations.borrow();
-        let mut animated = lay.animated.borrow_mut();
-        animated.css = anims.describe();
-        animated.css_props = anims.animated_props();
-    }
-    bindings.share_animated_styles(lay.animated.clone());
+    publish_animations(bindings, &lay);
+    // LAT7: whether a write inside a hidden subtree can show it through a
+    // `:has()` rule. The rule index a build left, live (a forced layout
+    // rebuilds it); unknown counts as yes.
+    let reads = Rc::downgrade(&lay);
+    bindings.set_has_rules_probe(Some(Rc::new(move || {
+        reads.upgrade().is_none_or(|lay| {
+            lay.rule_reads
+                .try_borrow()
+                .ok()
+                .and_then(|index| index.as_ref().map(|ix| ix.reads.invalidation.has))
+                .unwrap_or(true)
+        })
+    })));
     let layout = Rc::downgrade(layout);
     let hit_layout = layout.clone();
     bindings.set_hit_tester(Some(layout_hit_tester(move || hit_layout.upgrade(), lay.element_scrolls.clone())));
+    let styles_layout = layout.clone();
+    let styles = computed_lines_source(move || styles_layout.upgrade(), root_element, lay.clone());
     bindings.set_geometry_source(Box::new(move || {
         let Some(layout) = layout.upgrade() else {
             return Default::default();
         };
         let _snapshot_time = time_stage(Stage::Snapshot);
         let started = std::time::Instant::now();
-        let snapshot = geometry_with_root(
-            &layout,
-            root_element,
-            &lay.boxless_styles.borrow(),
-            &lay.pseudo_styles.borrow(),
-        );
+        set_root_font_for(&layout, root_element, &lay);
+        let snapshot = geometry_only(&layout, root_element);
         debug!(
             elements = snapshot.0.len(),
             ms = started.elapsed().as_secs_f64() * 1000.0,
@@ -25094,6 +26032,30 @@ fn publish_geometry(
         );
         snapshot
     }));
+    // LAT8: each element's computed style is formatted on its first read.
+    bindings.set_computed_lines(Some(styles));
+}
+
+/// The CSS animations as of this frame, for `getAnimations()`, and the
+/// properties they animate, for computed reads.
+fn publish_animations(bindings: &DomBindings, lay: &layout_ctx::ViewLayout) {
+    {
+        let anims = lay.animations.borrow();
+        let mut animated = lay.animated.borrow_mut();
+        animated.css = anims.describe();
+        animated.css_props = anims.animated_props();
+    }
+    bindings.share_animated_styles(lay.animated.clone());
+}
+
+/// The root element's font size for `rem`, as `geometry_with_root` sets it.
+fn set_root_font_for(layout: &LayoutBox, root_element: Option<usize>, lay: &layout_ctx::ViewLayout) {
+    let boxless = lay.boxless_styles.borrow();
+    let root_style = root_element
+        .and_then(|n| boxless.get(&n))
+        .map(|b| &*b.box_.style)
+        .unwrap_or(&*layout.style);
+    computed_read::set_root_font(root_style);
 }
 
 /// How long after a wheel the next one still belongs to its gesture. macOS
@@ -25184,6 +26146,7 @@ fn layout_hit_tester(
     })
 }
 
+#[cfg(test)]
 /// `geometry_snapshot`, with the document element reported as the root box
 /// and the styles of `boxless` elements (`ViewLayout::boxless_styles`:
 /// display: contents or none, dropped empty boxes, the root) added. A node
@@ -25324,6 +26287,7 @@ impl layout_ctx::LayoutCtx {
     }
 }
 
+#[cfg(test)]
 /// Where the layout put every element, by DOM node, for script geometry reads
 /// (`DomBindings::set_geometry`). An element laid out as several boxes (a
 /// block split around anonymous boxes) reports the union of its boxes.
@@ -25333,6 +26297,16 @@ impl layout_ctx::LayoutCtx {
 /// chain, so a scroll does not cost a new snapshot.
 fn geometry_snapshot(
     root: &LayoutBox,
+) -> (HashMap<usize, rustkit_bindings::BoxGeometry>, HashMap<usize, String>) {
+    geometry_snapshot_with(root, true)
+}
+
+/// `geometry_snapshot`, with each element's computed-style rows only when
+/// `with_styles` (LAT8: script's reads format them per element instead,
+/// `computed_lines_source`).
+fn geometry_snapshot_with(
+    root: &LayoutBox,
+    with_styles: bool,
 ) -> (HashMap<usize, rustkit_bindings::BoxGeometry>, HashMap<usize, String>) {
     /// `parent_vars` is the custom-property set of the nearest element
     /// ancestor's box (anonymous boxes between do not count): an element
@@ -25357,7 +26331,7 @@ fn geometry_snapshot(
     fn walk(
         b: &LayoutBox,
         out: &mut HashMap<usize, rustkit_bindings::BoxGeometry>,
-        styles: &mut HashMap<usize, String>,
+        mut styles: Option<&mut HashMap<usize, String>>,
         parent_vars: Option<&Arc<rustkit_css::CustomProperties>>,
         scrollers: Scrollers,
     ) -> Option<(f32, f32, f32, f32)> {
@@ -25405,7 +26379,7 @@ fn geometry_snapshot(
             && parent_vars.is_none_or(|p| !Arc::ptr_eq(p, &b.style.custom_properties));
         let child_vars = if b.node_id.is_some() { Some(&b.style.custom_properties) } else { parent_vars };
         for child in &b.children {
-            if let Some(c) = walk(child, out, styles, child_vars, under) {
+            if let Some(c) = walk(child, out, styles.as_deref_mut(), child_vars, under) {
                 content = Some(match content {
                     Some(e) => (e.0.min(c.0), e.1.min(c.1), e.2.max(c.2), e.3.max(c.3)),
                     None => c,
@@ -25462,13 +26436,15 @@ fn geometry_snapshot(
                 sticky,
                 held,
             };
-            styles.entry(node).or_insert_with(|| {
-                let mut lines = computed_style_lines(b);
-                if own_vars {
-                    lines.push_str(&custom_property_lines(&b.style.custom_properties));
-                }
-                lines
-            });
+            if let Some(styles) = styles {
+                styles.entry(node).or_insert_with(|| {
+                    let mut lines = computed_style_lines(b);
+                    if own_vars {
+                        lines.push_str(&custom_property_lines(&b.style.custom_properties));
+                    }
+                    lines
+                });
+            }
             out.entry(node)
                 .and_modify(|g| {
                     // A second box of the same element: union.
@@ -25491,8 +26467,106 @@ fn geometry_snapshot(
     let mut out = HashMap::new();
     let mut styles = HashMap::new();
     let none = Scrollers { flow: None, absolute: None, fixed: None, held: false, holds_fixed: false };
-    walk(root, &mut out, &mut styles, None, none);
+    walk(root, &mut out, with_styles.then_some(&mut styles), None, none);
     (out, styles)
+}
+
+/// Where each element's computed style comes from in a layout, as
+/// `geometry_snapshot` picks it: the first of its boxes finished in a
+/// post-order walk (the path of child indices to it), and whether that box
+/// publishes its own custom-property set.
+fn style_box_index(root: &LayoutBox) -> HashMap<usize, (Vec<u32>, bool)> {
+    fn walk(
+        b: &LayoutBox,
+        path: &mut Vec<u32>,
+        parent_vars: Option<&Arc<rustkit_css::CustomProperties>>,
+        out: &mut HashMap<usize, (Vec<u32>, bool)>,
+    ) {
+        let own_vars = b.node_id.is_some()
+            && parent_vars.is_none_or(|p| !Arc::ptr_eq(p, &b.style.custom_properties));
+        let child_vars = if b.node_id.is_some() { Some(&b.style.custom_properties) } else { parent_vars };
+        for (i, child) in b.children.iter().enumerate() {
+            path.push(i as u32);
+            walk(child, path, child_vars, out);
+            path.pop();
+        }
+        if let Some(node) = b.node_id {
+            out.entry(node).or_insert_with(|| (path.clone(), own_vars));
+        }
+    }
+    let mut out = HashMap::new();
+    walk(root, &mut Vec::new(), None, &mut out);
+    out
+}
+
+/// LAT8: formats one element's computed style of `layout` on its first
+/// read, the rows `geometry_with_root` built for every element: the box's
+/// (or, without a box, the element's boxless style), its own custom
+/// properties, then its pseudo-elements'. The index of boxes is built on
+/// the first read; `layout` gives the layout while it is current.
+fn computed_lines_source(
+    layout: impl Fn() -> Option<Rc<LayoutBox>> + 'static,
+    root_element: Option<usize>,
+    lay: Rc<layout_ctx::ViewLayout>,
+) -> rustkit_bindings::ComputedLines {
+    let index: std::cell::OnceCell<HashMap<usize, (Vec<u32>, bool)>> = std::cell::OnceCell::new();
+    Rc::new(move |node| {
+        let layout = layout()?;
+        let _snapshot_time = time_stage(Stage::Snapshot);
+        let boxless = lay.boxless_styles.borrow();
+        let root_style = root_element
+            .and_then(|n| boxless.get(&n))
+            .map(|b| &*b.box_.style)
+            .unwrap_or(&*layout.style);
+        computed_read::set_root_font(root_style);
+        let index = index.get_or_init(|| style_box_index(&layout));
+        let mut lines = match index.get(&node) {
+            Some((path, own_vars)) => {
+                let mut b: &LayoutBox = &layout;
+                for i in path {
+                    b = b.children.get(*i as usize)?;
+                }
+                let mut lines = computed_style_lines(b);
+                if *own_vars {
+                    lines.push_str(&custom_property_lines(&b.style.custom_properties));
+                }
+                lines
+            }
+            None => {
+                let style = boxless.get(&node)?;
+                let mut lines = computed_style_lines(&style.box_);
+                if style.own_vars {
+                    lines.push_str(&custom_property_lines(&style.box_.style.custom_properties));
+                }
+                lines
+            }
+        };
+        for ((at, pseudo), style) in lay.pseudo_styles.borrow().iter() {
+            if *at != node {
+                continue;
+            }
+            for row in pseudo_style_lines(style).lines() {
+                lines.push_str(&format!("\n{pseudo} {row}"));
+            }
+            for row in custom_property_lines(&style.custom_properties).lines().skip(2) {
+                lines.push_str(&format!("\n{pseudo} {row}"));
+            }
+        }
+        Some(lines)
+    })
+}
+
+/// The geometry of every element of `layout`, with the root element's
+/// (LAT8: the styles are `computed_lines_source`'s).
+fn geometry_only(
+    layout: &LayoutBox,
+    root_element: Option<usize>,
+) -> (HashMap<usize, rustkit_bindings::BoxGeometry>, HashMap<usize, String>) {
+    let mut snapshot = geometry_snapshot_with(layout, false);
+    if let Some(root) = root_element {
+        snapshot.0.entry(root).or_insert_with(|| root_element_geometry(layout));
+    }
+    snapshot
 }
 
 /// The custom properties in effect on an element, as rows after its
@@ -25667,12 +26741,26 @@ fn border_radius_shorthand(corners: &[(String, String); 4]) -> String {
     }
 }
 
+thread_local! {
+    /// How many elements' computed-style rows this thread formatted for
+    /// script reads (LAT8), never reset.
+    static STYLE_ROWS_FORMATTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// LAT8's counters on this thread: element style rows formatted for the
+/// snapshot, and the snapshot stage's ms.
+#[cfg(test)]
+pub(crate) fn snapshot_counters() -> (u64, f64) {
+    (STYLE_ROWS_FORMATTED.with(|c| c.get()), relayout_cause::snapshot_total_ms())
+}
+
 /// The computed style of one box as `name\tvalue` lines, for the properties
 /// the engine models and script commonly reads. Sizes and box edges are the
 /// used values from the laid-out box (what `getComputedStyle` reports for
 /// `width`, `height`, `margin-*`, `padding-*`, `border-*-width`); `display`
 /// is the engine's own set, so `li` reads `block`, not `list-item`.
 fn computed_style_lines(b: &LayoutBox) -> String {
+    STYLE_ROWS_FORMATTED.with(|c| c.set(c.get() + 1));
     let s = &*b.style;
     let d = &b.dimensions;
     // The border widths as CSS reports them. A styled scrollbar's space
@@ -33772,9 +34860,11 @@ mod node_identity_tests {
         let outcome = engine.click_at_point(id, 12.0, 92.0);
         assert_eq!(outcome.focused.as_deref(), Some("input"));
         assert_eq!(engine.focused_node(id), Some(q));
+        // The press focuses the button first, as the oracle's Chrome does
+        // (CH2.E22; Chromium 143 logs exactly this).
         assert_eq!(
             js(&mut engine, id, "log.join(' ')"),
-            js_string("click:find focus:q focusin:q")
+            js_string("focus:find focusin:find click:find blur:find focusout:find focus:q focusin:q")
         );
         assert!(engine.handle_text_key(id, 0, "c", false, false, false));
         assert_eq!(js(&mut engine, id, "$('q').value"), js_string("ac"));
@@ -37820,7 +38910,9 @@ document.currentScript.remove();
         };
         let (engine, view, took) = load_timed(config, port);
         assert!(
-            took < std::time::Duration::from_millis(2_500),
+            // 3.5 s, not 2.5 s: a hosted CPU-adapter runner under load took 2.83 s. The
+            // point is that the network client's 30 s timeout is not waited out.
+            took < std::time::Duration::from_millis(3_500),
             "waited for the stalled subresources: {took:?}"
         );
         // The sheet that did arrive still applies — and it must be the fast
@@ -38449,7 +39541,10 @@ impl SubjectCompound {
 
         let is_delim = |c| c == '.' || c == '#' || c == ':' || c == '[';
         let tag_end = selector.find(is_delim).unwrap_or(selector.len());
-        let tag = selector[..tag_end].to_string();
+        // `*:focus`, `*:hover`, `*.a`: the universal selector names no tag;
+        // kept as the tag `*`, it matched no element (CH2.E22, an R1 hold
+        // on #954).
+        let tag = Some(&selector[..tag_end]).filter(|t| *t != "*").unwrap_or("").to_string();
         let mut remaining = &selector[tag_end..];
         let mut parts = Vec::new();
         while !remaining.is_empty() {
@@ -38560,6 +39655,16 @@ impl SubjectCompound {
 /// class or an attribute name, and then styles that element as hovered.
 const HOVER_MARK: &str = "\u{1}hover";
 const ACTIVE_MARK: &str = "\u{1}active";
+/// The focused element (`:focus`) and it and its ancestors
+/// (`:focus-within`), marked like the two above: by the build
+/// (`live_attributes`, CH2.E22) and the inline svg paint pass
+/// (`WalkState::focus`, CH2.E19).
+const FOCUS_MARK: &str = "\u{1}focus";
+const FOCUS_WITHIN_MARK: &str = "\u{1}focus-within";
+/// CH2.E22: the focused element when it matches `:focus-visible`.
+const FOCUS_VISIBLE_MARK: &str = "\u{1}focus-visible";
+/// Every element-state mark.
+const STATE_MARKS: [&str; 5] = [HOVER_MARK, ACTIVE_MARK, FOCUS_MARK, FOCUS_WITHIN_MARK, FOCUS_VISIBLE_MARK];
 
 thread_local! {
     /// The DOM element the compound under test is matched against, for
@@ -38611,6 +39716,13 @@ struct WalkState {
     /// classes as one from the build does (`.a:hover ~ .b .c`, S22).
     hover: Vec<usize>,
     active: Vec<usize>,
+    /// The focused element and the elements above it: the build's
+    /// (`WalkFocusScope`, CH2.E22) and the inline svg paint pass's
+    /// (`WalkCheckedScope::enter_for_svg_paint`, CH2.E19).
+    focus: Option<usize>,
+    focus_within: Vec<usize>,
+    /// The focused element matches `:focus-visible` (CH2.E22).
+    focus_visible: bool,
     /// `nearest_earlier_sibling_matching` by (compound address, raw NodeId
     /// it looks back from, inclusive): the nearest element at or before it
     /// that matches. Valid for one scope: the DOM, checkedness and the
@@ -38637,8 +39749,85 @@ impl WalkCheckedScope {
                 let w = w.borrow();
                 (w.hover.clone(), w.active.clone())
             });
-            w.replace(WalkState { checked, hover, active, memo: Some(HashMap::new()) })
+            let (focus, focus_within, focus_visible) = {
+                let w = w.borrow();
+                (w.focus, w.focus_within.clone(), w.focus_visible)
+            };
+            w.replace(WalkState {
+                checked,
+                hover,
+                active,
+                focus,
+                focus_within,
+                focus_visible,
+                memo: Some(HashMap::new()),
+            })
         }))
+    }
+
+    /// CH2.E19: the scope of the inline svg paint pass, with the view's
+    /// element state: checkedness, the pointer chains and the focus.
+    pub(crate) fn enter_for_svg_paint(state: &SvgElementState) -> Self {
+        WalkCheckedScope(WALK.with(|w| {
+            w.replace(WalkState {
+                checked: state.checked.clone(),
+                hover: state.hover.clone(),
+                active: state.active.clone(),
+                focus: state.focus,
+                focus_within: state.focus_within.clone(),
+                focus_visible: state.focus_visible,
+                memo: Some(HashMap::new()),
+            })
+        }))
+    }
+}
+
+/// The marks the scope's element state puts on element `raw`.
+fn walk_marks(raw: usize) -> Vec<&'static str> {
+    WALK.with(|w| {
+        let w = w.borrow();
+        let mut marks = Vec::new();
+        if w.hover.contains(&raw) {
+            marks.push(HOVER_MARK);
+        }
+        if w.active.contains(&raw) {
+            marks.push(ACTIVE_MARK);
+        }
+        if w.focus == Some(raw) {
+            marks.push(FOCUS_MARK);
+        }
+        if w.focus_within.contains(&raw) {
+            marks.push(FOCUS_WITHIN_MARK);
+        }
+        if w.focus_visible && w.focus == Some(raw) {
+            marks.push(FOCUS_VISIBLE_MARK);
+        }
+        marks
+    })
+}
+
+/// CH2.E19: a view's element state as the inline svg paint pass matches
+/// its rules against it (`cache_svg_paint_styles`).
+#[derive(Default, Clone, PartialEq, Debug)]
+pub(crate) struct SvgElementState {
+    pub(crate) checked: HashMap<usize, bool>,
+    pub(crate) hover: Vec<usize>,
+    pub(crate) active: Vec<usize>,
+    pub(crate) focus: Option<usize>,
+    /// The focused element and the elements above it.
+    pub(crate) focus_within: Vec<usize>,
+    /// The focused element matches `:focus-visible` (CH2.E22).
+    pub(crate) focus_visible: bool,
+}
+
+impl SvgElementState {
+    /// The marks this state puts on element `raw`, as bits.
+    pub(crate) fn mark_bits(&self, raw: usize) -> u8 {
+        u8::from(self.hover.contains(&raw))
+            | u8::from(self.active.contains(&raw)) << 1
+            | u8::from(self.focus == Some(raw)) << 2
+            | u8::from(self.focus_within.contains(&raw)) << 3
+            | u8::from(self.focus_visible && self.focus == Some(raw)) << 4
     }
 }
 
@@ -38646,6 +39835,34 @@ impl Drop for WalkCheckedScope {
     fn drop(&mut self) {
         let previous = std::mem::take(&mut self.0);
         WALK.with(|w| *w.borrow_mut() = previous);
+    }
+}
+
+/// CH2.E22: sets the focus of [`WALK`] for a view's build (its
+/// `focus_chain`, innermost first, and whether the focused element matches
+/// `:focus-visible`), and puts the previous focus back.
+pub(crate) struct WalkFocusScope(Option<usize>, Vec<usize>, bool);
+
+impl WalkFocusScope {
+    pub(crate) fn enter(chain: Vec<usize>, visible: bool) -> Self {
+        WALK.with(|w| {
+            let mut w = w.borrow_mut();
+            let focus = std::mem::replace(&mut w.focus, chain.first().copied());
+            let within = std::mem::replace(&mut w.focus_within, chain);
+            let was_visible = std::mem::replace(&mut w.focus_visible, visible);
+            WalkFocusScope(focus, within, was_visible)
+        })
+    }
+}
+
+impl Drop for WalkFocusScope {
+    fn drop(&mut self) {
+        WALK.with(|w| {
+            let mut w = w.borrow_mut();
+            w.focus = self.0;
+            w.focus_within = std::mem::take(&mut self.1);
+            w.focus_visible = self.2;
+        });
     }
 }
 
@@ -38684,14 +39901,11 @@ fn dom_sibling_key(node: &Rc<Node>) -> Option<SiblingKey> {
         _ => ElementState::of(&tag, attributes),
     };
     let mut classes = element_classes(attributes);
-    WALK.with(|w| {
-        let w = w.borrow();
-        for (chain, mark) in [(&w.hover, HOVER_MARK), (&w.active, ACTIVE_MARK)] {
-            if chain.contains(&node.id.raw()) {
-                classes.push(mark.to_string());
-            }
+    for mark in walk_marks(node.id.raw()) {
+        if !classes.iter().any(|c| c == mark) {
+            classes.push(mark.to_string());
         }
-    });
+    }
     Some((tag, classes, attributes.get("id").cloned(), state))
 }
 
@@ -38893,21 +40107,15 @@ fn has_compound_matches(node: &Rc<Node>, compound: &str) -> bool {
     let prepared = SelectorMatcher.prepared_selector(compound);
     // The hovered and pressed elements carry their marks here as they do
     // in the build (`live_attributes`): `.post:has(.btn:hover)` (LAT3).
-    let (hovered, active) = WALK.with(|w| {
-        let w = w.borrow();
-        let raw = node.id.raw();
-        (w.hover.contains(&raw), w.active.contains(&raw))
-    });
+    // The focus marks likewise (CH2.E22: `form:has(input:focus)`).
+    let marks = walk_marks(node.id.raw());
     let marked;
-    let attributes = match (hovered, active) {
-        (false, false) => attributes,
-        _ => {
+    let attributes = match marks.is_empty() {
+        true => attributes,
+        false => {
             let mut live = attributes.clone();
-            if hovered {
-                live.insert(HOVER_MARK.to_string(), String::new());
-            }
-            if active {
-                live.insert(ACTIVE_MARK.to_string(), String::new());
+            for mark in marks {
+                live.insert(mark.to_string(), String::new());
             }
             marked = live;
             &marked
@@ -38977,7 +40185,7 @@ fn element_classes(attributes: &HashMap<String, String>) -> Vec<String> {
         .get("class")
         .map(|c| c.split_whitespace().map(|s| s.to_string()).collect())
         .unwrap_or_default();
-    for mark in [HOVER_MARK, ACTIVE_MARK] {
+    for mark in STATE_MARKS {
         if attributes.contains_key(mark) {
             classes.push(mark.to_string());
         }
@@ -39095,8 +40303,10 @@ impl AncestorCompound {
             let at_end = i == chars.len();
             if at_end || is_delimiter(chars[i]) {
                 // Tag name at the start
+                // `*` names no tag (`*:hover`: the pointer index filed it
+                // under the tag `*`, which no element is; CH2.E22).
                 if i > current_start && current_start == 0 && chars[0] != '.' && chars[0] != '#' {
-                    out.tag = Some(text(0, i));
+                    out.tag = Some(text(0, i)).filter(|t| t != "*");
                 }
 
                 if !at_end {
@@ -39238,6 +40448,9 @@ impl AncestorCompound {
                             // mark among its classes (`element_classes`).
                             ("hover", None) => out.classes.push(HOVER_MARK.to_string()),
                             ("active", None) => out.classes.push(ACTIVE_MARK.to_string()),
+                            ("focus", None) => out.classes.push(FOCUS_MARK.to_string()),
+                            ("focus-within", None) => out.classes.push(FOCUS_WITHIN_MARK.to_string()),
+                            ("focus-visible", None) => out.classes.push(FOCUS_VISIBLE_MARK.to_string()),
                             // The root of an HTML document is its `html`
                             // element, and the chain holds it by that tag.
                             ("root", None) if out.tag.is_none() => out.tag = Some("html".to_string()),
@@ -39456,7 +40669,7 @@ fn key_attributes(classes: &[String], id: Option<&String>) -> HashMap<String, St
     let mut attributes = HashMap::new();
     let mut class = String::new();
     for c in classes {
-        if c == HOVER_MARK || c == ACTIVE_MARK {
+        if STATE_MARKS.contains(&c.as_str()) {
             attributes.insert(c.clone(), String::new());
             continue;
         }
@@ -39826,7 +41039,6 @@ impl SheetExtract {
     }
 
     /// The totals of this thread's builds so far.
-    #[cfg(test)]
     pub(crate) fn totals() -> SheetExtract {
         SHEET_EXTRACT_TOTALS.with(Cell::get)
     }
@@ -40481,6 +41693,11 @@ struct SelectorReads {
     /// Where the sheets read `:hover` and `:active`.
     hover: PointerReads,
     active: PointerReads,
+    /// Where they read `:focus`, `:focus-within` and `:focus-visible`
+    /// (CH2.E22), filed the same way.
+    focus: PointerReads,
+    focus_within: PointerReads,
+    focus_visible: PointerReads,
     /// Where each class, id, attribute and pseudo-class is read, for the
     /// script writes' dirty set (incremental restyle).
     invalidation: restyle_invalidation::InvalidationIndex,
@@ -40525,11 +41742,26 @@ struct HasPointer {
 
 /// The pseudo-class a mark stands for (`HOVER_MARK` is `:hover`).
 fn pointer_mark_name(mark: &str) -> &'static str {
-    if mark == ACTIVE_MARK {
-        ":active"
-    } else {
-        ":hover"
+    match mark {
+        ACTIVE_MARK => ":active",
+        FOCUS_MARK => ":focus",
+        FOCUS_WITHIN_MARK => ":focus-within",
+        FOCUS_VISIBLE_MARK => ":focus-visible",
+        _ => ":hover",
     }
+}
+
+/// How many times `text` names the pseudo-class `name` (`":focus"`): not
+/// counting a longer name it starts (`:focus-within`, `:hovered`).
+fn pseudo_named(text: &str, name: &str) -> usize {
+    text.match_indices(name)
+        .filter(|(at, _)| {
+            !text[at + name.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c == '-' || c == '_' || c.is_ascii_alphanumeric())
+        })
+        .count()
 }
 
 /// One compound a pointer pseudo-class is read on (S22, reddit: one
@@ -40548,12 +41780,12 @@ impl PointerReads {
     /// Record where `selector` reads `name` (`":hover"`), which the
     /// compound parser turns into the class `mark`.
     fn note(&mut self, selector: &str, name: &str, mark: &str) {
-        if !selector.contains(name) {
+        if pseudo_named(selector, name) == 0 {
             return;
         }
         for member in SelectorMatcher::split_top_level_commas(selector) {
             let member = member.trim();
-            let named = member.matches(name).count();
+            let named = pseudo_named(member, name);
             if named == 0 {
                 continue;
             }
@@ -40627,7 +41859,7 @@ impl PointerReads {
         // read like a complex `:is()` member, from its own compounds (the
         // element is not merged into them: a wider set of elements).
         let name = pointer_mark_name(mark);
-        for member in compound.not_dropped.iter().filter(|m| m.contains(name)) {
+        for member in compound.not_dropped.iter().filter(|m| pseudo_named(m, name) > 0) {
             found += self.note_prepared(&SelectorMatcher.prepared_selector(member), mark, reach);
         }
         if compound.none_of.is_empty() && compound.any_of.is_empty() {
@@ -40662,7 +41894,7 @@ impl PointerReads {
         let mut found = 0;
         for member in SelectorMatcher::split_top_level_commas(arg) {
             let member = member.trim();
-            let named = member.matches(name).count();
+            let named = pseudo_named(member, name);
             if named == 0 {
                 continue;
             }
@@ -40692,7 +41924,7 @@ impl PointerReads {
     fn merged(outer: Option<&AncestorCompound>, inner: &AncestorCompound) -> AncestorCompound {
         let mut classes: Vec<String> = Vec::new();
         for c in outer.map_or(&[][..], |o| &o.classes).iter().chain(&inner.classes) {
-            if !matches!(c.as_str(), HOVER_MARK | ACTIVE_MARK) && !classes.contains(c) {
+            if !STATE_MARKS.contains(&c.as_str()) && !classes.contains(c) {
                 classes.push(c.clone());
             }
         }
@@ -41359,6 +42591,12 @@ fn animation_repaint_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("RUSTKIT_ANIMATION_REPAINT").is_none_or(|v| v != "0"))
 }
 
+/// The animation key of a box: its element's raw NodeId, or the key of
+/// the `::before`/`::after` it was generated for (CH2.E16).
+fn animation_key_of(b: &LayoutBox) -> Option<usize> {
+    b.node_id.or(b.pseudo_animation_key)
+}
+
 /// Whether a box is an element's own (not a text run, an anonymous box or
 /// the box of another element).
 fn element_box_of_other(b: &LayoutBox, node: usize) -> bool {
@@ -41396,7 +42634,7 @@ fn check_animation_frame(
     changes: &HashMap<usize, &layout_ctx::FrameChange>,
     found: &mut std::collections::HashSet<usize>,
 ) -> Result<(), String> {
-    if let Some(change) = b.node_id.and_then(|node| changes.get(&node)) {
+    if let Some(change) = animation_key_of(b).and_then(|key| changes.get(&key)) {
         found.insert(change.node);
         for (index, was, is) in &change.props {
             if animations::prop_value(&b.style, *index) != *was {
@@ -41451,7 +42689,7 @@ fn inherits_colour_elsewhere(b: &LayoutBox, node: usize, old: &rustkit_css::Colo
 /// LAT2: copy an animation frame's values onto the laid-out tree
 /// (checked by `check_animation_frame`).
 fn apply_animation_frame(b: &mut LayoutBox, changes: &HashMap<usize, &layout_ctx::FrameChange>) {
-    if let Some(change) = b.node_id.and_then(|node| changes.get(&node)) {
+    if let Some(change) = animation_key_of(b).and_then(|key| changes.get(&key)) {
         for (index, was, is) in &change.props {
             animations::set_prop_value(&mut b.style, *index, is);
             if animations::prop_name(*index) == "color" {
@@ -41501,8 +42739,28 @@ struct LaidWith {
     /// moves the focus with no relayout of its own, and the next relayout
     /// must paint the caret and the focus state.
     focused: Option<usize>,
+    /// The page's focus chain and `:focus-visible` at that build (CH2.E22).
+    focus_chain: Vec<usize>,
+    focus_visible: bool,
     /// The view's width and height at that layout.
     size: (u32, u32),
+}
+
+/// The focus a build reads (CH2.E22): the control with the keys, and the
+/// page's focus chain with its `:focus-visible`.
+#[derive(Clone, PartialEq)]
+struct Focused {
+    control: Option<usize>,
+    chain: Vec<usize>,
+    visible: bool,
+}
+
+impl Focused {
+    fn store(&self, with: &mut LaidWith) {
+        with.focused = self.control;
+        with.focus_chain = self.chain.clone();
+        with.focus_visible = self.visible;
+    }
 }
 
 /// A build of only the subtrees under `roots` (raw NodeIds), reached by
@@ -41683,11 +42941,20 @@ fn box_of_node_mut(tree: &mut LayoutBox, raw: usize) -> Option<&mut LayoutBox> {
 
 /// What the build gives a box besides its style and its children.
 fn built_alike(a: &LayoutBox, b: &LayoutBox) -> bool {
+    // CH2.E19: an inline svg whose markup changed only in author paint
+    // (another key, the same natural size) is the same box: the new icon
+    // is a paint change (`copy_changed_paint` takes its key).
+    let box_type = |x: &LayoutBox| match &x.box_type {
+        BoxType::Image { url, natural_width, natural_height } if url.starts_with("inline-svg:") => {
+            format!("InlineSvg {natural_width:?} {natural_height:?}")
+        }
+        other => format!("{other:?}"),
+    };
     let rest = |x: &LayoutBox| {
         format!(
             "{:?}",
             (
-                &x.box_type,
+                box_type(x),
                 &x.offsets,
                 &x.stacking_context,
                 &x.root_element_height,
@@ -41704,8 +42971,8 @@ fn built_alike(a: &LayoutBox, b: &LayoutBox) -> bool {
         && a.element_id == b.element_id
         && a.identity == b.identity
         && a.link_href == b.link_href
-        && a.focused_caret == b.focused_caret
-        && a.focused_selection == b.focused_selection
+        // The caret and selection of a focused control are painted, not
+        // laid out (CH2.E22): `copy_changed_paint` takes them.
         && a.text_sources == b.text_sources
         && rest(a) == rest(b)
 }
@@ -41758,11 +43025,21 @@ fn same_shape(laid: &LayoutBox, fresh: &LayoutBox) -> bool {
 /// custom property set. Layout writes resolved values into a laid-out
 /// box's style, so the style is not replaced whole.
 fn copy_changed_paint(laid: &mut LayoutBox, kept: &LayoutBox, fresh: &LayoutBox) {
+    // An inline svg painted from another key (CH2.E19, `built_alike`).
+    if let (BoxType::Image { url: was, .. }, BoxType::Image { url: is, .. }) = (&kept.box_type, &fresh.box_type) {
+        if was != is {
+            if let BoxType::Image { url, .. } = &mut laid.box_type {
+                *url = is.clone();
+            }
+        }
+    }
     if kept.style.same_paint(&fresh.style) {
         laid.style.custom_properties = fresh.style.custom_properties.clone();
     } else {
         laid.style.copy_paint_only(&fresh.style);
     }
+    laid.focused_caret = fresh.focused_caret;
+    laid.focused_selection = fresh.focused_selection.clone();
     for ((laid, kept), fresh) in laid.children.iter_mut().zip(&kept.children).zip(&fresh.children) {
         copy_changed_paint(laid, kept, fresh);
     }
@@ -41811,6 +43088,10 @@ struct StyleMemoKey {
     external_sheets: usize,
     viewport: Option<(f32, f32)>,
     focus: Option<rustkit_dom::NodeId>,
+    /// CH2.E22: the page's focused element and whether it matches
+    /// `:focus-visible`: the focus pseudo-classes style it and the
+    /// elements above it.
+    page_focus: Option<(usize, bool)>,
     /// The hovered and the pressed element: `:hover` and `:active` style
     /// them and the elements above them.
     hover: Option<usize>,
@@ -42696,6 +43977,7 @@ mod incremental_restyle_tests {
                 external_sheets: 0,
                 viewport: None,
                 focus: None,
+                page_focus: None,
                 hover: None,
                 active: None,
                 fonts: 0,
@@ -42723,6 +44005,7 @@ mod incremental_restyle_tests {
         assert_restarts("focus", |key| {
             key.focus = Some(rustkit_dom::NodeId::new(1))
         });
+        assert_restarts("page focus", |key| key.page_focus = Some((1, false)));
         assert_restarts("hover", |key| key.hover = Some(1));
         assert_restarts("active", |key| key.active = Some(1));
         assert_restarts("web fonts", |key| key.fonts = 1);
@@ -42981,6 +44264,7 @@ mod incremental_restyle_tests {
             external_sheets: 0,
             viewport: None,
             focus: None,
+            page_focus: None,
             hover: None,
             active: None,
             fonts: 0,
@@ -43038,6 +44322,7 @@ mod incremental_restyle_tests {
                 external_sheets: 0,
                 viewport: None,
                 focus: None,
+                page_focus: None,
                 hover: None,
                 active: None,
                 fonts: 0,
@@ -48293,6 +49578,250 @@ mod clip_path_pins {
                 "`{style}`:\n{}",
                 lines.join("\n")
             );
+        }
+    }
+
+    /// `rect()` and `xywh()` (css-shapes-1 §3.1), both `inset()` rectangles
+    /// written from the reference box's top and left edges. They had no arm,
+    /// so the box painted unclipped (WPT clip-path-rect-002, clip-path-xywh-001).
+    /// Chrome for Testing 148, the same 140px border box at the origin: the
+    /// painted bounds of each style are the rect pinned here; `rect(10px
+    /// 20px 90px 100px)` (right left of left) paints nothing; the `round`
+    /// forms leave the box's corner pixel white.
+    #[test]
+    fn clip_path_rect_and_xywh_clip_to_their_rectangle() {
+        let e = engine();
+        let page = |style: &str| {
+            dl(&e, &format!(
+                r#"<!DOCTYPE html><html><body style="margin:0"><div style="width:100px;height:100px;border:20px solid red;background:green;{style}"></div></body></html>"#
+            ))
+        };
+        let cases: [(&str, &str, &str, Option<&str>); 8] = [
+            ("clip-path:rect(10px 100px 90px 20px)", "PushClip(", "x: 20.0, y: 10.0, width: 80.0, height: 80.0", None),
+            // `auto` is the reference box's own edge: top/left 0%, right/bottom 100%.
+            ("clip-path:rect(auto auto 50% 25%)", "PushClip(", "x: 35.0, y: 0.0, width: 105.0, height: 70.0", None),
+            ("-webkit-clip-path:rect(10px 100px 90px 20px) content-box", "PushClip(", "x: 40.0, y: 30.0, width: 80.0, height: 80.0", None),
+            // A right edge left of the left edge is the left edge: nothing shows.
+            ("clip-path:rect(10px 20px 90px 100px)", "PushClip(", "width: 0.0, height: 80.0", None),
+            ("clip-path:rect(0 100% 100% 0 round 20px / 10px)", "PushClipRounded", "x: 0.0, y: 0.0, width: 140.0, height: 140.0", Some("CornerRadius { h: 20.0, v: 10.0 }")),
+            ("clip-path:xywh(10px 20px 50% 30px)", "PushClip(", "x: 10.0, y: 20.0, width: 70.0, height: 30.0", None),
+            ("clip-path:xywh(-10px -10px 200px 200px)", "PushClip(", "x: -10.0, y: -10.0, width: 200.0, height: 200.0", None),
+            ("clip-path:xywh(0 0 100% 100% round 10px)", "PushClipRounded", "x: 0.0, y: 0.0, width: 140.0, height: 140.0", Some("CornerRadius { h: 10.0, v: 10.0 }")),
+        ];
+        for (style, kind, rect, corner) in cases {
+            let lines = page(style);
+            let all = lines.join("\n");
+            let push = lines
+                .iter()
+                .position(|c| c.starts_with("PushClip"))
+                .unwrap_or_else(|| panic!("`{style}` opened no clip:\n{all}"));
+            assert!(lines[push].starts_with(kind), "`{style}`: {}", lines[push]);
+            assert!(lines[push].contains(rect), "`{style}`: {}", lines[push]);
+            if let Some(corner) = corner {
+                assert_eq!(lines[push].matches(corner).count(), 4, "`{style}`: {}", lines[push]);
+            }
+            for (i, c) in lines.iter().enumerate().skip(push + 1) {
+                if !c.starts_with("PushClip") && !c.starts_with("PopClip") {
+                    assert!(depth_at(&lines, i) >= 1, "`{style}` paints `{c}` unclipped:\n{all}");
+                }
+            }
+        }
+        // A malformed one is ignored, as Chrome ignores the declaration.
+        for style in ["clip-path:rect(10px 20px)", "clip-path:xywh(10px 20px 30px)", "clip-path:xywh(0 0 -1px 10px)"] {
+            let lines = page(style);
+            assert!(!lines.iter().any(|c| c.starts_with("PushClip")), "`{style}`:\n{}", lines.join("\n"));
+        }
+    }
+
+    /// `round <percent>` in `inset()` / `rect()` / `xywh()` resolves against
+    /// the reference box, like the offsets, not against the inset rectangle
+    /// (css-shapes-1 §3.1; WPT clip-path-inset-round-percent, 66 px off).
+    /// The radii were taken of the inset rect, so `inset(80% 0 0 round 8%)`
+    /// on a 100px box rounded 8px by 1.6px. Chrome for Testing 148 paints
+    /// `inset(80% 0 0 round 8%)` on 100x100 exactly as `inset(80px 0 0
+    /// round 8px)`, and `inset(50% 0 0 round 10%)` on 200x100 exactly as
+    /// `inset(50px 0 0 round 20px / 10px)` (172 px away from `20px / 5px`);
+    /// the `/ 20%` and `xywh()` rows match their px forms there too (0 px).
+    #[test]
+    fn clip_path_inset_round_percent_resolves_against_the_reference_box() {
+        let e = engine();
+        let page = |size: &str, style: &str| {
+            dl(&e, &format!(
+                r#"<!DOCTYPE html><html><body style="margin:0"><div style="{size};background:green;{style}"></div></body></html>"#
+            ))
+        };
+        let cases = [
+            ("width:100px;height:100px", "clip-path:inset(80% 0 0 round 8%)", "x: 0.0, y: 80.0, width: 100.0, height: 20.0", "CornerRadius { h: 8.0, v: 8.0 }"),
+            ("width:200px;height:100px", "clip-path:inset(50% 0 0 round 10%)", "x: 0.0, y: 50.0, width: 200.0, height: 50.0", "CornerRadius { h: 20.0, v: 10.0 }"),
+            ("width:200px;height:100px", "clip-path:inset(50% 0 0 round 10% / 20%)", "x: 0.0, y: 50.0, width: 200.0, height: 50.0", "CornerRadius { h: 20.0, v: 20.0 }"),
+            ("width:200px;height:100px", "clip-path:xywh(0 50% 100% 50% round 10%)", "x: 0.0, y: 50.0, width: 200.0, height: 50.0", "CornerRadius { h: 20.0, v: 10.0 }"),
+        ];
+        for (size, style, rect, corner) in cases {
+            let lines = page(size, style);
+            let all = lines.join("\n");
+            let push = lines
+                .iter()
+                .position(|c| c.starts_with("PushClipRounded"))
+                .unwrap_or_else(|| panic!("`{style}` opened no rounded clip:\n{all}"));
+            assert!(lines[push].contains(rect), "`{style}`: {}", lines[push]);
+            assert_eq!(lines[push].matches(corner).count(), 4, "`{style}`: {}", lines[push]);
+        }
+    }
+
+    /// `clip-path` on a non-replaced inline (WPT clip-path-reference-box-004,
+    /// clip-path-inline-006). Only block, image and form-control boxes read
+    /// it, so an inline painted unclipped. RustKit's inline is one box at its
+    /// first line fragment; Chrome for Testing 148 clips a wrapped inline to
+    /// that first fragment too: `<span style="clip-path:inset(0)">XXX XXX</span>`
+    /// in a 50px `font:20px/40px monospace` block paints 36x23 at (0,8), the
+    /// first line only (1656 px green without the clip, 828 with it), and
+    /// `inset(0 10px)` on a one-line inline with 10px side padding paints the
+    /// 36px text and none of the padding.
+    #[test]
+    fn clip_path_clips_an_inline_box_and_its_text() {
+        let e = engine();
+        let lines = dl(
+            &e,
+            r#"<!DOCTYPE html><html><body style="margin:0"><div style="width:50px;font:20px/40px monospace"><span style="background:green;color:green;clip-path:inset(0)">XXX XXX</span></div></body></html>"#,
+        );
+        let all = lines.join("\n");
+        // Font-independent: the clip is read against the inline's own
+        // background rect, not against one platform's monospace metrics.
+        let num = |line: &str, key: &str| -> f32 {
+            line.split(&format!("{key}: "))
+                .nth(1)
+                .and_then(|s| s.split(|c: char| c != '.' && c != '-' && !c.is_ascii_digit()).next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| panic!("no {key} in {line}"))
+        };
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        let push = lines
+            .iter()
+            .position(|c| c.starts_with("PushClip"))
+            .unwrap_or_else(|| panic!("the inline opened no clip:\n{all}"));
+        let clip = &lines[push];
+        let bg = lines
+            .iter()
+            .find(|c| c.starts_with("SolidColor(Color { r: 0, g: 128"))
+            .unwrap_or_else(|| panic!("no background:\n{all}"));
+        // `inset(0)` is the inline's border box at its first fragment: one
+        // line tall, so the second line's text is outside it.
+        for key in ["x", "y", "width", "height"] {
+            assert!(near(num(clip, key), num(bg, key)), "{key}: {clip}\n{bg}");
+        }
+        let height = num(clip, "height");
+        assert!(height > 0.0 && height <= 40.0, "first fragment only: {clip}");
+        let texts: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.starts_with("Text"))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(!texts.is_empty(), "no text:\n{all}");
+        for i in texts {
+            assert!(depth_at(&lines, i) >= 1, "text paints unclipped:\n{all}");
+        }
+
+        // A one-line inline: `inset(0 10px)` takes the side padding away.
+        let lines = dl(
+            &e,
+            r#"<!DOCTYPE html><html><body style="margin:0"><div style="font:20px/40px monospace">ab <span style="background:green;padding:0 10px;clip-path:inset(0 10px)">XXX</span></div></body></html>"#,
+        );
+        let all = lines.join("\n");
+        let push = lines
+            .iter()
+            .position(|c| c.starts_with("PushClip"))
+            .unwrap_or_else(|| panic!("the inline opened no clip:\n{all}"));
+        let bg = lines
+            .iter()
+            .position(|c| c.starts_with("SolidColor(Color { r: 0, g: 128"))
+            .unwrap_or_else(|| panic!("no background:\n{all}"));
+        let (clip, bg_line) = (&lines[push], &lines[bg]);
+        assert!(near(num(clip, "x"), num(bg_line, "x") + 10.0), "{clip}\n{bg_line}");
+        assert!(near(num(clip, "width"), num(bg_line, "width") - 20.0), "{clip}\n{bg_line}");
+        assert!(bg > push && depth_at(&lines, bg) >= 1, "background unclipped:\n{all}");
+    }
+
+    /// `margin-box` on an inline includes its vertical margins, which take
+    /// no space in the line (WPT clip-path-inline-004: `circle(25%)
+    /// margin-box` on a 100px Ahem `X` with `margin: 50px` is the 50px
+    /// circle `circle(50%)` cuts from the border box; Chrome for Testing
+    /// 148 paints the two pages the same, 7716 green px each). RustKit
+    /// lays an inline out with its vertical margins at zero, so its margin
+    /// box was only the horizontal margins wider than the border box.
+    #[test]
+    fn clip_path_margin_box_on_an_inline_includes_its_vertical_margins() {
+        let e = engine();
+        let lines = dl(
+            &e,
+            r#"<!DOCTYPE html><html><body style="margin:0"><div style="font:20px/40px monospace;padding:50px">ab <span style="background:green;margin:20px 10px;clip-path:inset(0) margin-box">XXX</span></div></body></html>"#,
+        );
+        let all = lines.join("\n");
+        let num = |line: &str, key: &str| -> f32 {
+            line.split(&format!("{key}: "))
+                .nth(1)
+                .and_then(|s| s.split(|c: char| c != '.' && c != '-' && !c.is_ascii_digit()).next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| panic!("no {key} in {line}"))
+        };
+        let bg = lines
+            .iter()
+            .find(|c| c.starts_with("SolidColor(Color { r: 0, g: 128"))
+            .unwrap_or_else(|| panic!("no background:\n{all}"));
+        let clip = lines
+            .iter()
+            .find(|c| c.starts_with("PushClip"))
+            .unwrap_or_else(|| panic!("no clip:\n{all}"));
+        assert!((num(clip, "x") - (num(bg, "x") - 10.0)).abs() < 0.01, "{clip}\n{bg}");
+        assert!((num(clip, "width") - (num(bg, "width") + 20.0)).abs() < 0.01, "{clip}\n{bg}");
+        assert!((num(clip, "y") - (num(bg, "y") - 20.0)).abs() < 0.01, "{clip}\n{bg}");
+        assert!((num(clip, "height") - (num(bg, "height") + 40.0)).abs() < 0.01, "{clip}\n{bg}");
+    }
+
+    /// `fill-box`, `stroke-box` and `view-box` on an HTML box (css-masking-1
+    /// §8.1, WPT clip-path-polygon-010/012): the content box and the border
+    /// box. A `<geometry-box>` alone clips to that box. All of them were
+    /// unknown keywords, so the box painted unclipped. Chrome for Testing 148
+    /// on the 140px border box: the painted bounds are the rects pinned here.
+    #[test]
+    fn clip_path_svg_reference_boxes_and_a_lone_box_clip_on_an_html_box() {
+        let e = engine();
+        let page = |style: &str| {
+            dl(&e, &format!(
+                r#"<!DOCTYPE html><html><body style="margin:0"><div style="width:100px;height:100px;border:20px solid red;background:green;{style}"></div></body></html>"#
+            ))
+        };
+        let cases: [(&str, &str, &str, Option<&str>); 7] = [
+            ("clip-path:inset(10px) fill-box", "PushClip(", "x: 30.0, y: 30.0, width: 80.0, height: 80.0", None),
+            ("clip-path:inset(10px) stroke-box", "PushClip(", "x: 10.0, y: 10.0, width: 120.0, height: 120.0", None),
+            ("clip-path:view-box inset(10px)", "PushClip(", "x: 10.0, y: 10.0, width: 120.0, height: 120.0", None),
+            ("clip-path:polygon(0 0, 100% 0, 100% 100%, 0 100%) view-box", "PushClip(", "x: 0.0, y: 0.0, width: 140.0, height: 140.0", None),
+            ("clip-path:circle(50%) fill-box", "PushClipRounded", "x: 20.0, y: 20.0, width: 100.0, height: 100.0", Some("CornerRadius { h: 50.0, v: 50.0 }")),
+            ("clip-path:fill-box", "PushClip(", "x: 20.0, y: 20.0, width: 100.0, height: 100.0", None),
+            ("clip-path:stroke-box", "PushClip(", "x: 0.0, y: 0.0, width: 140.0, height: 140.0", None),
+        ];
+        for (style, kind, rect, corner) in cases {
+            let lines = page(style);
+            let all = lines.join("\n");
+            let push = lines
+                .iter()
+                .position(|c| c.starts_with("PushClip"))
+                .unwrap_or_else(|| panic!("`{style}` opened no clip:\n{all}"));
+            assert!(lines[push].starts_with(kind), "`{style}`: {}", lines[push]);
+            assert!(lines[push].contains(rect), "`{style}`: {}", lines[push]);
+            if let Some(corner) = corner {
+                assert_eq!(lines[push].matches(corner).count(), 4, "`{style}`: {}", lines[push]);
+            }
+            for (i, c) in lines.iter().enumerate().skip(push + 1) {
+                if !c.starts_with("PushClip") && !c.starts_with("PopClip") {
+                    assert!(depth_at(&lines, i) >= 1, "`{style}` paints `{c}` unclipped:\n{all}");
+                }
+            }
+        }
+        // Two boxes, or a word that is not one, is invalid: no clip.
+        for style in ["clip-path:fill-box stroke-box", "clip-path:inset(10px) bogus-box"] {
+            let lines = page(style);
+            assert!(!lines.iter().any(|c| c.starts_with("PushClip")), "`{style}`:\n{}", lines.join("\n"));
         }
     }
 }

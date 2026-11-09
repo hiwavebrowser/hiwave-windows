@@ -44,7 +44,7 @@ pub(crate) fn install(
         "__rustkit_scroll_state",
         0,
         Box::new(move |_| {
-            DomHost::force_layout_if_written(&h, &d);
+            DomHost::force_layout_if_written(&h, &d, "window_scroll");
             let s = s.borrow();
             JsValue::String(format!("{} {} {} {}", s.x, s.y, s.max_x, s.max_y))
         }),
@@ -56,7 +56,7 @@ pub(crate) fn install(
         "__rustkit_scroll_to",
         2,
         Box::new(move |args| {
-            DomHost::force_layout_if_written(&h, &d);
+            DomHost::force_layout_if_written(&h, &d, "scroll_to");
             let mut s = s.borrow_mut();
             let x = number(args, 0).unwrap_or(s.x).clamp(0.0, s.max_x.max(0.0));
             let y = number(args, 1).unwrap_or(s.y).clamp(0.0, s.max_y.max(0.0));

@@ -380,6 +380,35 @@ fn interpolate(a: &AnimValue, b: &AnimValue, t: f32) -> Option<AnimValue> {
     })
 }
 
+/// CH2.E16: a `::before` or `::after` animates under its own key, the
+/// originating element's raw NodeId with the pseudo-element in the top
+/// two bits (raw ids never reach them). Every map of this module is keyed
+/// by it, so a pseudo-element's transitions and animations live, end and
+/// are cancelled on their own, as the element's do.
+const PSEUDO_SHIFT: u32 = usize::BITS - 2;
+
+/// The animation key of `node`'s `pseudo` (`::before` or `::after`).
+pub(crate) fn pseudo_key(node: usize, pseudo: &str) -> usize {
+    let tag: usize = match pseudo {
+        "::before" => 1,
+        "::after" => 2,
+        _ => 0,
+    };
+    debug_assert!(tag != 0 && node >> PSEUDO_SHIFT == 0, "{pseudo} of {node}");
+    node | (tag << PSEUDO_SHIFT)
+}
+
+/// The originating element's raw NodeId and the pseudo-element (`None`
+/// for the element itself) of an animation key.
+pub(crate) fn split_key(key: usize) -> (usize, Option<&'static str>) {
+    let node = key & ((1usize << PSEUDO_SHIFT) - 1);
+    match key >> PSEUDO_SHIFT {
+        1 => (node, Some("::before")),
+        2 => (node, Some("::after")),
+        _ => (node, None),
+    }
+}
+
 /// One running transition (css-transitions-1 §3).
 #[derive(Clone, Debug)]
 struct Transition {
@@ -674,6 +703,8 @@ impl Animations {
     /// the document (css-transitions-1 §3: an element removed from the
     /// document ends its transitions with `transitioncancel`).
     pub(crate) fn prune(&mut self, alive: impl Fn(usize) -> bool) {
+        // A pseudo-element's records live with its element.
+        let alive = |key: usize| alive(split_key(key).0);
         let now = self.clock_ms;
         let mut gone = Vec::new();
         self.transitions.retain(|t| {
@@ -1569,7 +1600,8 @@ impl Animations {
         for t in &self.transitions {
             out.push(CssAnimationInfo {
                 id: t.id,
-                node: t.node,
+                node: split_key(t.node).0,
+                pseudo: split_key(t.node).1,
                 kind: "transition",
                 index: t.prop,
                 name: PROPS[t.prop].name.to_string(),
@@ -1587,7 +1619,8 @@ impl Animations {
         for a in self.css.iter().filter(|a| !a.cancelled) {
             out.push(CssAnimationInfo {
                 id: a.id,
-                node: a.node,
+                node: split_key(a.node).0,
+                pseudo: split_key(a.node).1,
                 kind: "animation",
                 index: a.index,
                 name: a.name.clone(),
@@ -1619,12 +1652,14 @@ impl Animations {
     /// element (what a computed read keeps the published row for).
     pub(crate) fn animated_props(&self) -> HashMap<usize, Vec<String>> {
         let mut out: HashMap<usize, Vec<String>> = HashMap::new();
-        for t in &self.transitions {
+        // A pseudo-element's are not its element's (its reads come from
+        // the pseudo styles, which the frames keep).
+        for t in self.transitions.iter().filter(|t| split_key(t.node).1.is_none()) {
             out.entry(t.node)
                 .or_default()
                 .push(PROPS[t.prop].name.to_string());
         }
-        for a in self.css.iter().filter(|a| !a.cancelled) {
+        for a in self.css.iter().filter(|a| !a.cancelled && split_key(a.node).1.is_none()) {
             let props = out.entry(a.node).or_default();
             for prop in a.props() {
                 props.push(PROPS[prop].name.to_string());

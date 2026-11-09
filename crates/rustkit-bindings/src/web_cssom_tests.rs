@@ -130,8 +130,8 @@ fn text_written_by_script_reparses_and_rule_style_writes_reach_the_text() {
     assert_eq!(
         ev(
             &b,
-            "var s = document.getElementById('s2'), sh = s.sheet, r = [sh.cssRules.length]; \
-             s.textContent = 'a{color:red} b{color:blue}'; r.push(sh.cssRules.length, s.sheet === sh); \
+            "var s = document.getElementById('s2'), old = s.sheet, r = [old.cssRules.length]; \
+             s.textContent = 'a{color:red} b{color:blue}'; var sh = s.sheet; r.push(old.cssRules.length, sh === old); \
              var st = sh.cssRules[1].style; st.setProperty('margin-top', '2px', 'important'); \
              st.color = 'green'; r.push(st.color, st.marginTop, st.getPropertyPriority('margin-top')); \
              r.push(s.textContent.indexOf('margin-top: 2px !important') > 0, st.removeProperty('color'), \
@@ -139,7 +139,10 @@ fn text_written_by_script_reparses_and_rule_style_writes_reach_the_text() {
              sh.cssRules[0].selectorText = 'i'; r.push(s.textContent.indexOf('i {') === 0); \
              r.join('|')"
         ),
-        "0|2|true|green|2px|important|true|green|b { margin-top: 2px !important; }|true"
+        // New text is a new sheet object; the old one keeps its (zero)
+        // rules (Chromium 148: `0|0|false|...`). The text write-backs after
+        // it are the engine's own CSSOM mechanism, not Chromium's.
+        "0|0|false|green|2px|important|true|green|b { margin-top: 2px !important; }|true"
     );
 }
 
