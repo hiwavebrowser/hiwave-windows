@@ -138,8 +138,6 @@ pub struct NativeBrowser {
     /// The active tab is not one the active workspace shows: settle on the next tick,
     /// once the model has caught up with a closed tab.
     needs_settle: bool,
-    /// The tabs last recorded in `native_session.json`, so it is rewritten only on change.
-    last_native_session: Vec<shell_tabs::SavedTab>,
     /// The workspaces script the chrome was last sent, so it is sent again only when it changes.
     last_workspaces: String,
     /// The view that last had the keyboard focus. Win32 can leave focus on the
@@ -187,18 +185,13 @@ impl NativeBrowser {
             .map_err(|e| format!("Failed to create engine: {}", e))?;
 
         // Initialize app state
-        let mut state = AppState::with_defaults()
+        // The native shell keeps its own workspace file: it cannot restore the default build's
+        // tabs, and must not delete them either.
+        let mut state = AppState::with_workspace_state_file(shell_tabs::NATIVE_STATE_FILE)
             .map_err(|e| format!("Failed to initialize app state: {}", e))?;
-        // Tabs an earlier NATIVE session saved cannot be reopened here, so they are dropped
-        // instead of piling up in workspace_state.json every run. Only those: the file is
-        // shared with the default build, whose tabs are not ours to delete.
-        let saved = shell_tabs::read_native_session(&state);
-        let dropped = shell_tabs::drop_native_saved_tabs(&mut state, &saved);
-        if !saved.is_empty() {
-            if let Err(e) = shell_tabs::write_native_session(&state, &[]) {
-                warn!(error = %e, "Failed to clear the native session record");
-            }
-        }
+        // Tabs an earlier native session saved cannot be reopened here: drop them instead of
+        // letting them pile up in the file every run.
+        let dropped = shell_tabs::drop_unreopenable_tabs(&mut state);
         if dropped > 0 {
             info!(dropped, "Dropped tabs saved by an earlier native session");
             if let Err(e) = state.save_workspace_state() {
@@ -229,7 +222,6 @@ impl NativeBrowser {
             focus_bar: None,
             mirrored_tabs: std::collections::HashSet::new(),
             needs_settle: false,
-            last_native_session: Vec::new(),
             last_workspaces: String::new(),
             last_focus: std::cell::Cell::new(None),
             chrome_ready: false,
@@ -1592,15 +1584,6 @@ impl NativeBrowser {
         }
         // The strip shows the active workspace's tabs only.
         let view = shell_tabs::active_workspace_view(&state, &self.mirrored_tabs);
-        // Record which saved tabs are ours (a workspace move changes it too), so the next
-        // native start can drop exactly those.
-        let session = shell_tabs::native_session(&state, &self.mirrored_tabs);
-        if session != self.last_native_session {
-            if let Err(e) = shell_tabs::write_native_session(&state, &session) {
-                warn!(error = %e, "Failed to record the native session");
-            }
-            self.last_native_session = session;
-        }
         drop(state);
         // Whatever closed or switched a tab (Ctrl+W, block-and-close, a workspace delete),
         // the visible page must belong to the workspace the strip shows.

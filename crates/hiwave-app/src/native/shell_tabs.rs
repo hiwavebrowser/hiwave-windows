@@ -112,71 +112,20 @@ pub fn reconcile(state: &mut AppState, mirrored: &mut HashSet<u64>, tabs: &[Nati
     out
 }
 
-/// A tab this shell saved: the workspace's name and the tab's url.
-pub type SavedTab = (String, String);
+/// The file the native shell keeps its workspaces and tabs in. Not `workspace_state.json`:
+/// that is the default (WebView2) build's session, which the native shell can neither
+/// restore nor has any business deleting.
+pub const NATIVE_STATE_FILE: &str = "workspace_state.native.json";
 
-/// The tabs this shell owns, as they sit in the shared model.
-pub fn native_session(state: &AppState, mirrored: &HashSet<u64>) -> Vec<SavedTab> {
-    let mut out = Vec::new();
-    for ws in state.shell.list_workspaces() {
-        for id in &ws.tabs {
-            if !mirrored.contains(&id.0) {
-                continue;
-            }
-            if let Some(tab) = state.shell.get_tab(*id) {
-                out.push((ws.name.clone(), tab.url.to_string()));
-            }
-        }
+/// Forget every tab the model has. The native shell starts with one fresh tab and cannot
+/// reopen tabs saved by an earlier native session; left in the model they were saved and
+/// reloaded forever. Returns how many were dropped.
+pub fn drop_unreopenable_tabs(state: &mut AppState) -> usize {
+    let ids: Vec<TabId> = state.shell.list_tabs(None).iter().map(|t| t.id).collect();
+    for id in &ids {
+        let _ = state.shell.close_tab(*id);
     }
-    out
-}
-
-/// Where the native shell records which saved tabs are its own. `workspace_state.json` is
-/// shared with the default (WebView2) build, whose tabs must never be touched from here.
-pub fn native_session_path(state: &AppState) -> std::path::PathBuf {
-    state.config.data_dir.join("native_session.json")
-}
-
-/// The tabs the last native session saved (empty when there is no record).
-pub fn read_native_session(state: &AppState) -> Vec<SavedTab> {
-    std::fs::read_to_string(native_session_path(state))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
-}
-
-pub fn write_native_session(state: &AppState, tabs: &[SavedTab]) -> std::io::Result<()> {
-    let path = native_session_path(state);
-    if tabs.is_empty() {
-        return match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        };
-    }
-    let raw = serde_json::to_string(tabs).map_err(std::io::Error::other)?;
-    std::fs::write(path, raw)
-}
-
-/// Drop the tabs an earlier native session saved. The native shell starts with one fresh
-/// tab and cannot reopen them; left in the model they were saved and reloaded forever.
-/// Only tabs in `saved` go (each entry matches one tab, same workspace and url): tabs the
-/// default build saved in the same file are left alone. Returns how many were dropped.
-pub fn drop_native_saved_tabs(state: &mut AppState, saved: &[SavedTab]) -> usize {
-    let mut dropped = 0;
-    for (workspace, url) in saved {
-        let found = state
-            .shell
-            .list_workspaces()
-            .iter()
-            .filter(|ws| &ws.name == workspace)
-            .flat_map(|ws| ws.tabs.iter().copied())
-            .find(|id| state.shell.get_tab(*id).is_some_and(|t| t.url.as_str() == url));
-        if let Some(id) = found {
-            let _ = state.shell.close_tab(id);
-            dropped += 1;
-        }
-    }
-    dropped
+    ids.len()
 }
 
 /// The native tabs that belong to the active workspace, and which of them it last had
@@ -280,54 +229,28 @@ mod tests {
     }
 
     #[test]
-    fn a_native_session_drops_its_own_saved_tabs_and_not_the_webview2_builds() {
-        let mut s = state("drop_native_saved");
-        // The default (WebView2) build saved this one in the shared file.
-        let theirs = saved_tab(&mut s, "https://webview2.test/");
-        // The native shell owns this one, and saves a record of it.
-        let mut mirrored = HashSet::new();
-        let ours = alloc_tab_id();
-        reconcile(&mut s, &mut mirrored, &[tab(ours, "https://native.test/", "N", true)]);
-        let record = native_session(&s, &mirrored);
-        assert_eq!(record, vec![("Default".to_string(), "https://native.test/".to_string())]);
-        write_native_session(&s, &record).unwrap();
-
-        // Next native start: only the recorded tab goes.
-        let read = read_native_session(&s);
-        assert_eq!(read, record);
-        assert_eq!(drop_native_saved_tabs(&mut s, &read), 1);
-        assert!(s.shell.get_tab(theirs).is_some(), "the WebView2 build's tab survives a native start");
-        assert!(s.shell.get_tab(TabId(ours)).is_none());
-        assert_eq!(drop_native_saved_tabs(&mut s, &read), 0, "nothing left to drop");
-
-        write_native_session(&s, &[]).unwrap();
-        assert!(read_native_session(&s).is_empty());
+    fn startup_drops_every_tab_of_the_native_file_and_leaves_no_workspace_entry() {
+        let mut s = state("drop_native_file");
+        for n in 0..3 {
+            saved_tab(&mut s, &format!("https://old{n}.test/"));
+        }
+        assert_eq!(drop_unreopenable_tabs(&mut s), 3);
+        assert!(s.shell.list_tabs(None).is_empty());
+        assert!(s.shell.get_active_workspace().unwrap().tabs.is_empty());
+        assert_eq!(drop_unreopenable_tabs(&mut s), 0);
     }
 
     #[test]
-    fn a_saved_entry_matches_one_tab_in_its_own_workspace_only() {
-        let mut s = state("drop_one");
-        saved_tab(&mut s, "https://same.test/");
-        saved_tab(&mut s, "https://same.test/");
-        let other = s.shell.create_workspace("Other".to_string());
-        let kept = TabId::new();
-        s.shell
-            .create_tab(TabInfo {
-                id: kept,
-                url: url::Url::parse("https://same.test/").unwrap(),
-                title: None,
-                favicon: None,
-                workspace_id: other,
-                suspended: true,
-                loading: false,
-                locked: false,
-                last_visited: None,
-            })
-            .unwrap();
-        let saved = vec![("Default".to_string(), "https://same.test/".to_string())];
-        assert_eq!(drop_native_saved_tabs(&mut s, &saved), 1, "one entry, one tab");
-        assert!(s.shell.get_tab(kept).is_some(), "another workspace's tab is not touched");
-        assert_eq!(s.shell.list_tabs(None).len(), 2);
+    fn the_native_state_file_is_not_the_default_builds() {
+        let mut s = state("own_file");
+        s.workspace_state_file = NATIVE_STATE_FILE.to_string();
+        saved_tab(&mut s, "https://native.test/");
+        s.save_workspace_state().unwrap();
+        assert!(s.config.data_dir.join(NATIVE_STATE_FILE).exists());
+        assert!(
+            !s.config.data_dir.join("workspace_state.json").exists(),
+            "a native save must not create or touch the default build's file"
+        );
     }
 
     #[test]

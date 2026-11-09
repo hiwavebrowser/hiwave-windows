@@ -556,6 +556,10 @@ pub struct AppState {
     /// Focus mode configuration (persisted)
     pub focus_mode_config: FocusModeConfig,
 
+    /// File name (in the data dir) the workspace state is saved to. The native shell uses its
+    /// own file so it never reads or rewrites the default build's session.
+    pub workspace_state_file: String,
+
     /// Shelved tabs by workspace name
     pub shelves: HashMap<String, Vec<ShelfItem>>,
 
@@ -644,6 +648,7 @@ impl AppState {
             user_settings,
             focus_mode,
             focus_mode_config,
+            workspace_state_file: "workspace_state.json".to_string(),
             shelves: HashMap::new(),
             cellar: Vec::new(),
             downloads: Vec::new(),
@@ -1055,6 +1060,21 @@ impl AppState {
         Ok(state)
     }
 
+    /// Like `with_defaults`, but the workspace state lives in `file` instead of
+    /// `workspace_state.json`, so a shell that cannot restore the default build's tabs does
+    /// not share (or delete) them.
+    pub fn with_workspace_state_file(file: &str) -> HiWaveResult<Self> {
+        let mut state = Self::new(AppConfig::default())?;
+        state.workspace_state_file = file.to_string();
+        if let Err(err) = state.load_workspace_state() {
+            tracing::warn!("Failed to load workspace state: {}", err);
+        }
+        if let Err(err) = state.load_visit_history() {
+            tracing::warn!("Failed to load visit history: {}", err);
+        }
+        Ok(state)
+    }
+
     pub fn load_workspace_state(&mut self) -> HiWaveResult<bool> {
         let path = self.workspace_state_path();
         if !path.exists() {
@@ -1106,7 +1126,7 @@ impl AppState {
     }
 
     fn workspace_state_path(&self) -> PathBuf {
-        self.config.data_dir.join("workspace_state.json")
+        self.config.data_dir.join(&self.workspace_state_file)
     }
 
     fn ensure_download_dir(&self) {
