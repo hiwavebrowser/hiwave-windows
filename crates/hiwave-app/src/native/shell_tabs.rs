@@ -189,6 +189,19 @@ pub fn take_from_shelf(
 /// restore nor has any business deleting.
 pub const NATIVE_STATE_FILE: &str = "workspace_state.native.json";
 
+/// The content-thread path (HIWAVE_CONTENT_THREAD=1) restores no tabs, so it keeps its own file:
+/// it can neither reopen the engine-view session nor erase it.
+pub const NATIVE_CT_STATE_FILE: &str = "workspace_state.native-ct.json";
+
+/// The state file for this run of the native shell.
+pub fn state_file(content_thread: bool) -> &'static str {
+    if content_thread {
+        NATIVE_CT_STATE_FILE
+    } else {
+        NATIVE_STATE_FILE
+    }
+}
+
 /// Forget every tab the model has. The content-thread path (HIWAVE_CONTENT_THREAD=1) cannot
 /// reopen saved tabs but still saves its own, so without this each such session would add its
 /// tabs to the native file for ever. Returns how many were dropped.
@@ -387,6 +400,79 @@ mod tests {
         for nothing in ["about:blank", "data:text/html,hi", "javascript:alert(1)", "hiwave://settings", "not a url", ""] {
             assert_eq!(restore_action(nothing), Restore::Nothing, "{nothing:?}");
         }
+    }
+
+    #[test]
+    fn the_content_thread_path_never_touches_the_engine_view_session_file() {
+        assert_ne!(state_file(true), state_file(false));
+        assert_ne!(state_file(true), "workspace_state.json");
+        let mut s = state("ct_file");
+        s.workspace_state_file = state_file(false).to_string();
+        saved_tab(&mut s, "https://kept.test/");
+        s.save_workspace_state().unwrap();
+        let kept = std::fs::read(s.config.data_dir.join(state_file(false))).unwrap();
+        // A content-thread run drops its own tabs and saves to its own file.
+        s.workspace_state_file = state_file(true).to_string();
+        assert!(drop_unreopenable_tabs(&mut s) >= 1);
+        s.save_workspace_state().unwrap();
+        assert_eq!(std::fs::read(s.config.data_dir.join(state_file(false))).unwrap(), kept);
+    }
+
+    #[test]
+    fn a_saved_session_round_trips_and_nothing_is_wiped_before_it_is_adopted() {
+        let dir = std::env::temp_dir().join(format!("hiwave_shell_tabs_roundtrip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cfg = || {
+            let mut c = AppConfig::default();
+            c.data_dir = dir.clone();
+            c.download_dir = dir.join("downloads");
+            c
+        };
+        let mut first = AppState::new(cfg()).unwrap();
+        first.workspace_state_file = NATIVE_STATE_FILE.to_string();
+        let mut mirrored = HashSet::new();
+        let (a, b, c) = (alloc_tab_id(), alloc_tab_id(), alloc_tab_id());
+        reconcile(&mut first, &mut mirrored, &[tab(a, "https://a.test/", "A", false), tab(b, "https://b.test/", "B", true)]);
+        let default_ws = first.shell.get_active_workspace().map(|w| w.id).unwrap();
+        let work = first.shell.create_workspace("Work".to_string());
+        first.shell.set_active_workspace(work).unwrap();
+        reconcile(&mut first, &mut mirrored, &[tab(a, "https://a.test/", "A", false), tab(b, "https://b.test/", "B", false), tab(c, "https://c.test/", "C", true)]);
+        first.save_workspace_state().unwrap();
+
+        // The next run loads the file.
+        let mut next = AppState::new(cfg()).unwrap();
+        next.workspace_state_file = NATIVE_STATE_FILE.to_string();
+        assert!(next.load_workspace_state().unwrap(), "the file loads");
+        let names: Vec<String> = next.shell.list_workspaces().iter().map(|w| w.name.clone()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        let ws_of = |s: &AppState, n: &str| s.shell.list_workspaces().iter().find(|w| w.name == n).map(|w| w.id).unwrap();
+        let (d2, w2) = (ws_of(&next, "Default"), ws_of(&next, "Work"));
+        let _ = default_ws;
+
+        let none = HashSet::new();
+        let (saved, active) = unowned_tabs(&next, &none, d2);
+        assert_eq!(saved.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://a.test/", "https://b.test/"]);
+        assert_eq!(active, saved.get(1).map(|t| t.id), "the active tab comes back active");
+        let (saved_w, _) = unowned_tabs(&next, &none, w2);
+        assert_eq!(saved_w.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://c.test/"]);
+
+        // Nothing is wiped before it is adopted: a shell that owns none of them reconciles an
+        // empty (or start-page-only) strip and every saved tab is still there to save back.
+        let mut mirrored = HashSet::new();
+        let start = alloc_tab_id();
+        reconcile(&mut next, &mut mirrored, &[tab(start, "about:blank", "New Tab", true)]);
+        next.save_workspace_state().unwrap();
+        assert_eq!(unowned_tabs(&next, &mirrored, d2).0.len(), 2);
+        assert_eq!(unowned_tabs(&next, &mirrored, w2).0.len(), 1);
+
+        // Adopting a tab and then closing it is a user close; its siblings are untouched.
+        let adopted = unowned_tabs(&next, &mirrored, d2).0[0].id;
+        mirrored.insert(adopted);
+        reconcile(&mut next, &mut mirrored, &[tab(start, "about:blank", "New Tab", true)]);
+        assert!(next.shell.get_tab(TabId(adopted)).is_none(), "the adopted-then-closed tab is gone");
+        assert_eq!(unowned_tabs(&next, &mirrored, d2).0.len(), 1, "its sibling stays saved");
+        assert_eq!(unowned_tabs(&next, &mirrored, w2).0.len(), 1, "the other workspace stays saved");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

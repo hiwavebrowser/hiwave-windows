@@ -192,7 +192,7 @@ impl NativeBrowser {
         // Initialize app state
         // The native shell keeps its own workspace file: it cannot restore the default build's
         // tabs, and must not delete them either.
-        let mut state = AppState::with_workspace_state_file(shell_tabs::NATIVE_STATE_FILE)
+        let mut state = AppState::with_workspace_state_file(shell_tabs::state_file(content_page::enabled()))
             .map_err(|e| format!("Failed to initialize app state: {}", e))?;
         // Tabs an earlier native session saved are reopened by `restore_session` once the
         // views exist (their pages load when first shown). The content-thread path (an
@@ -638,9 +638,11 @@ impl NativeBrowser {
         // The workspace is active now. Tabs it kept from an earlier session get their views
         // first (they load when shown), so the restore never leaves one blank behind it.
         self.adopt_workspace_tabs(workspace);
-        // The new tab lands in it on the next turn.
-        self.new_tab();
-        if kind == shell_tabs::RestoreKind::Page {
+        // The new tab lands in it on the next turn. When no view was made, navigating would
+        // load the page over whichever tab is showing.
+        if self.open_tab().is_none() && self.page_tabs.is_none() {
+            warn!(url, "Shelf restore could not open a tab; the page was not opened");
+        } else if kind == shell_tabs::RestoreKind::Page {
             self.navigate(&url);
         }
         self.save_and_sync_workspaces();
@@ -845,6 +847,13 @@ impl NativeBrowser {
 
     /// Open a new tab and select it.
     fn new_tab(&mut self) {
+        self.open_tab();
+    }
+
+    /// Open a new tab and select it; the view it created. `None` when no view was made
+    /// (the content-thread path has no engine view, and a creation can fail): callers that
+    /// label or navigate the new tab must not do it to whatever tab was already active.
+    fn open_tab(&mut self) -> Option<EngineViewId> {
         if self.page_tabs.is_some() {
             match self.spawn_page() {
                 Ok(id) => {
@@ -857,11 +866,11 @@ impl NativeBrowser {
                 }
                 Err(e) => error!(error = %e, "Failed to start a page for the new tab"),
             }
-            return;
+            return None;
         }
         let Some(parent) = self.viewhost.get_main_hwnd() else {
             warn!("No main window — cannot open a tab");
-            return;
+            return None;
         };
         let bounds = to_bounds(self.layout().content);
         let created = self.engine.borrow_mut().create_view(parent, bounds);
@@ -872,17 +881,18 @@ impl NativeBrowser {
             Ok(v) => v,
             Err(e) => {
                 error!(error = %e, "Failed to create a view for the new tab");
-                return;
+                return None;
             }
         };
         let Some(tabs) = self.tabs.as_mut() else {
             warn!("Tab model not initialised — cannot open a tab");
-            return;
+            return None;
         };
         let switch = tabs.push(view);
         let count = tabs.count();
         self.apply_switch(switch);
         info!(?view, count, "New tab");
+        Some(view)
     }
 
     /// Close the active tab.
@@ -1484,8 +1494,10 @@ impl NativeBrowser {
             Err(_) => return None,
         };
         for tab in &saved {
-            self.new_tab();
-            let Some(view) = self.tabs.as_ref().map(|t| t.active_view()) else {
+            // No view made (a failed creation): this tab stays in the model, unowned, and is
+            // saved back untouched. Labelling the active view would hand it this saved id.
+            let Some(view) = self.open_tab() else {
+                warn!(id = tab.id, "Could not open a view for a saved tab; it stays saved");
                 break;
             };
             self.tab_ids.insert(view, tab.id);
