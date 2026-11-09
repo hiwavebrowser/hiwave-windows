@@ -63,6 +63,31 @@ pub fn workspaces_json(state: &AppState) -> serde_json::Value {
     serde_json::Value::Array(workspaces)
 }
 
+/// The shelf's data for `scope` (`"all"` or `"workspace"`, the active workspace's), in the
+/// shape `renderShelf` reads (the same one `main.rs` builds for the WebView2 shell).
+pub fn shelf_payload(state: &AppState, scope: &str) -> serde_json::Value {
+    let all = scope == "all";
+    let (items, workspace) = if all {
+        (state.shelf_items_all(), None)
+    } else {
+        (
+            state.shelf_items_for_active_workspace(),
+            state.shell.get_active_workspace().map(|w| w.name.clone()),
+        )
+    };
+    serde_json::json!({
+        "scope": if all { "all" } else { "workspace" },
+        "workspace": workspace,
+        "items": items,
+        "global_count": state.shelf_count_all(),
+    })
+}
+
+/// The script that hands the sidebar its shelf.
+pub fn shelf_script(state: &AppState, scope: &str) -> String {
+    chrome_call("renderShelf", &shelf_payload(state, scope))
+}
+
 /// The script that hands the sidebar its workspaces.
 pub fn workspaces_script(state: &AppState) -> String {
     chrome_call("renderWorkspaces", &workspaces_json(state))
@@ -294,6 +319,35 @@ mod tests {
         assert!(!url_is_blocked(&s, "not a url"));
         s.unblock_domain("blocked.test").unwrap();
         assert!(!url_is_blocked(&s, "http://blocked.test/"));
+    }
+
+    #[test]
+    fn the_shelf_payload_follows_the_scope() {
+        let mut s = temp_state("shelf");
+        let work = s.shell.create_workspace("Work".to_string());
+        s.ensure_workspace_shelf("Work");
+        let mut mirrored = std::collections::HashSet::new();
+        let id = super::super::shell_tabs::alloc_tab_id();
+        super::super::shell_tabs::reconcile(
+            &mut s,
+            &mut mirrored,
+            &[super::super::shell_tabs::NativeTab { id, url: "https://a.test/".into(), title: "A".into(), active: true }],
+        );
+        s.add_to_shelf(hiwave_core::types::TabId(id)).unwrap().expect("shelved");
+
+        let here = shelf_payload(&s, "workspace");
+        assert_eq!(here["scope"], "workspace");
+        assert_eq!(here["workspace"], "Default");
+        assert_eq!(here["items"].as_array().unwrap().len(), 1);
+        assert_eq!(here["global_count"], 1);
+
+        s.shell.set_active_workspace(work).unwrap();
+        let there = shelf_payload(&s, "workspace");
+        assert_eq!(there["items"].as_array().unwrap().len(), 0, "the other workspace's shelf is empty");
+        assert_eq!(shelf_payload(&s, "all")["items"].as_array().unwrap().len(), 1);
+        // Anything but "all" is the workspace scope.
+        assert_eq!(shelf_payload(&s, "bogus")["scope"], "workspace");
+        assert!(shelf_script(&s, "all").starts_with("if(window.hiwaveChrome) { hiwaveChrome.renderShelf({"));
     }
 
     #[test]

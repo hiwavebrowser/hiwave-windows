@@ -112,6 +112,78 @@ pub fn reconcile(state: &mut AppState, mirrored: &mut HashSet<u64>, tabs: &[Nati
     out
 }
 
+/// What reopening a shelved page will do.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RestoreKind {
+    /// Load this address in the new tab.
+    Page,
+    /// The app's own start page: the new tab already is it.
+    StartPage,
+    /// The domain is on the user's blocklist: nothing opens.
+    Blocked,
+    /// The address is not something the shell can load.
+    Unopenable,
+}
+
+/// Decide, before touching the shelf, whether `url` can be reopened.
+pub fn restore_kind(state: &AppState, url: &str) -> RestoreKind {
+    if url.starts_with("hiwave://about") || url == "about:blank" {
+        return RestoreKind::StartPage;
+    }
+    if super::chrome_data::url_is_blocked(state, url) {
+        return RestoreKind::Blocked;
+    }
+    if super::address::resolve(url).is_none() {
+        return RestoreKind::Unopenable;
+    }
+    RestoreKind::Page
+}
+
+/// A shelved item, without taking it off the shelf: its address and the workspace a restore
+/// opens it in (the target, else the workspace it was shelved from, else the active one).
+pub fn peek_shelf_item(
+    state: &AppState,
+    id: &str,
+    target: Option<hiwave_core::types::WorkspaceId>,
+) -> Option<(String, hiwave_core::types::WorkspaceId)> {
+    let (source, item) = state
+        .shelves
+        .iter()
+        .find_map(|(workspace, items)| items.iter().find(|item| item.id == id).map(|item| (workspace.clone(), item)))?;
+    let workspace = target.or_else(|| {
+        let name = if source.is_empty() { item.workspace.clone() } else { source };
+        state
+            .shell
+            .list_workspaces()
+            .iter()
+            .find(|ws| ws.name == name)
+            .map(|ws| ws.id)
+            .or_else(|| state.shell.get_active_workspace().map(|ws| ws.id))
+    })?;
+    Some((item.url.clone(), workspace))
+}
+
+/// Take an item off the shelf for the native shell to reopen. Unlike
+/// `AppState::restore_from_shelf` this does not add a tab to the shared model: the native
+/// shell opens the page itself and `reconcile` adds it. It does make the target the active
+/// workspace, as the shared restore does. Returns the address and the workspace. Call it only
+/// once the page is going to open (see `restore_kind`): a refused restore must keep the item.
+pub fn take_from_shelf(
+    state: &mut AppState,
+    id: &str,
+    target: Option<hiwave_core::types::WorkspaceId>,
+) -> Option<(String, hiwave_core::types::WorkspaceId)> {
+    let (url, workspace) = peek_shelf_item(state, id, target)?;
+    for items in state.shelves.values_mut() {
+        if let Some(index) = items.iter().position(|item| item.id == id) {
+            items.remove(index);
+            break;
+        }
+    }
+    let _ = state.shell.set_active_workspace(workspace);
+    Some((url, workspace))
+}
+
 /// The file the native shell keeps its workspaces and tabs in. Not `workspace_state.json`:
 /// that is the default (WebView2) build's session, which the native shell can neither
 /// restore nor has any business deleting.
@@ -331,6 +403,43 @@ mod tests {
     }
 
     #[test]
+    fn a_restore_that_would_be_refused_leaves_the_item_on_the_shelf() {
+        let mut s = state("refused_restore");
+        let mut mirrored = HashSet::new();
+        let (blocked, ok, start) = (alloc_tab_id(), alloc_tab_id(), alloc_tab_id());
+        reconcile(
+            &mut s,
+            &mut mirrored,
+            &[
+                tab(blocked, "https://blocked.test/", "B", false),
+                tab(ok, "https://fine.test/", "F", false),
+                tab(start, "hiwave://about", "About", true),
+            ],
+        );
+        let ids: Vec<String> = [blocked, ok, start]
+            .iter()
+            .map(|id| s.add_to_shelf(TabId(*id)).unwrap().expect("shelved").id)
+            .collect();
+        s.block_domain("blocked.test".to_string()).unwrap();
+
+        // Blocked: classified before anything leaves the shelf.
+        let (url, _) = peek_shelf_item(&s, &ids[0], None).expect("still there");
+        assert_eq!(restore_kind(&s, &url), RestoreKind::Blocked);
+        assert!(peek_shelf_item(&s, &ids[0], None).is_some(), "a peek takes nothing");
+        // The start page and an ordinary page are openable.
+        let (url, _) = peek_shelf_item(&s, &ids[2], None).unwrap();
+        assert_eq!(restore_kind(&s, &url), RestoreKind::StartPage);
+        let (url, _) = peek_shelf_item(&s, &ids[1], None).unwrap();
+        assert_eq!(restore_kind(&s, &url), RestoreKind::Page);
+
+        // Only the take removes it, and only the one asked for.
+        assert!(take_from_shelf(&mut s, &ids[1], None).is_some());
+        assert!(peek_shelf_item(&s, &ids[1], None).is_none());
+        assert!(peek_shelf_item(&s, &ids[0], None).is_some(), "the blocked item is still shelved");
+        assert!(peek_shelf_item(&s, &ids[2], None).is_some());
+    }
+
+    #[test]
     fn clicking_a_tab_of_another_workspace_switches_to_that_workspace() {
         let mut s = state("click_other_ws");
         let mut mirrored = HashSet::new();
@@ -411,6 +520,40 @@ mod tests {
         let (saved, _) = unowned_tabs(&s, &owned, ws);
         assert_eq!(saved.len(), 1);
         assert_eq!(saved[0].id, ids[1].0);
+    }
+
+    #[test]
+    fn taking_an_item_off_the_shelf_returns_its_page_and_activates_its_workspace() {
+        let mut s = state("shelf_take");
+        let mut mirrored = HashSet::new();
+        let id = alloc_tab_id();
+        reconcile(&mut s, &mut mirrored, &[tab(id, "https://a.test/page", "A", true)]);
+        let item = s.add_to_shelf(TabId(id)).unwrap().expect("shelved");
+        let work = s.shell.create_workspace("Work".to_string());
+        s.shell.set_active_workspace(work).unwrap();
+
+        let (url, workspace) = take_from_shelf(&mut s, &item.id, None).expect("on the shelf");
+        assert_eq!(url, "https://a.test/page");
+        // It goes back to the workspace it was shelved from, and that becomes active.
+        assert_eq!(s.shell.get_workspace(workspace).map(|w| w.name.as_str()), Some("Default"));
+        assert_eq!(s.shell.get_active_workspace().map(|w| w.id), Some(workspace));
+        assert_eq!(s.shelf_count_all(), 0, "it is off the shelf");
+        // And the shared model got no tab out of it: the native shell opens the page.
+        assert!(s.shell.list_tabs(Some(workspace)).is_empty());
+        assert!(take_from_shelf(&mut s, &item.id, None).is_none(), "a second take finds nothing");
+    }
+
+    #[test]
+    fn an_explicit_target_workspace_wins() {
+        let mut s = state("shelf_target");
+        let mut mirrored = HashSet::new();
+        let id = alloc_tab_id();
+        reconcile(&mut s, &mut mirrored, &[tab(id, "https://a.test/", "A", true)]);
+        let item = s.add_to_shelf(TabId(id)).unwrap().unwrap();
+        let work = s.shell.create_workspace("Work".to_string());
+        let (_, workspace) = take_from_shelf(&mut s, &item.id, Some(work)).unwrap();
+        assert_eq!(workspace, work);
+        assert_eq!(s.shell.get_active_workspace().map(|w| w.id), Some(work));
     }
 
     #[test]
