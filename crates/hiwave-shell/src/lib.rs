@@ -727,33 +727,52 @@ mod tab_order_tests {
 
     #[test]
     fn deleting_a_workspace_activates_the_lowest_id_and_clears_its_tabs_from_the_order() {
-        let mut shell = BrowserShell::new();
-        let first = shell.get_active_workspace().unwrap().id;
-        let second = shell.create_workspace("Second".to_string());
-        let third = shell.create_workspace("Third".to_string());
-        let fourth = shell.create_workspace("Fourth".to_string());
-        let keep_a = shell.create_tab(tab(first, 0)).unwrap();
-        let gone_a = shell.create_tab(tab(third, 1)).unwrap();
-        let keep_b = shell.create_tab(tab(second, 2)).unwrap();
-        let gone_b = shell.create_tab(tab(third, 3)).unwrap();
-        let keep_c = shell.create_tab(tab(fourth, 4)).unwrap();
+        // `keys().next()` on a HashMap picks an arbitrary survivor, and each shell has its own
+        // random hasher. With six survivors one shell would pass by luck about one time in six,
+        // so many fresh shells are tried: a regression to an arbitrary pick fails some of them.
+        for round in 0..64 {
+            let mut shell = BrowserShell::new();
+            let mut workspaces = vec![shell.get_active_workspace().unwrap().id];
+            for n in 1..8 {
+                workspaces.push(shell.create_workspace(format!("W{n}")));
+            }
+            // Two tabs in every workspace, opened workspace by workspace.
+            let mut tabs: Vec<(WorkspaceId, TabId)> = Vec::new();
+            for (n, ws) in workspaces.iter().enumerate() {
+                for k in 0..2 {
+                    tabs.push((*ws, shell.create_tab(tab(*ws, n * 2 + k)).unwrap()));
+                }
+            }
+            let victim = workspaces[3];
+            shell.set_active_workspace(victim).unwrap();
+            shell.delete_workspace(victim).unwrap();
 
-        shell.set_active_workspace(third).unwrap();
-        shell.delete_workspace(third).unwrap();
+            // The lowest id survives as the active workspace, not an arbitrary one.
+            let lowest = workspaces.iter().filter(|ws| **ws != victim).min_by_key(|ws| ws.0).copied().unwrap();
+            assert_eq!(shell.get_active_workspace().unwrap().id, lowest, "round {round}");
+            // The deleted workspace's tabs are gone from the map and from the order; the
+            // other tabs keep their places.
+            let survivors: Vec<TabId> = tabs.iter().filter(|(ws, _)| *ws != victim).map(|(_, id)| *id).collect();
+            for (ws, id) in &tabs {
+                assert_eq!(shell.get_tab(*id).is_none(), *ws == victim, "round {round}");
+            }
+            assert_eq!(ids(shell.list_tabs(None)), survivors, "round {round}");
+            assert_eq!(shell.tab_order, survivors, "round {round}: no stale entry for a deleted tab");
 
-        // Not an arbitrary survivor: the lowest id, every time.
-        assert_eq!(shell.get_active_workspace().unwrap().id, first);
-        // Its tabs are gone from the map and from the order, and the rest keep their places.
-        assert!(shell.get_tab(gone_a).is_none() && shell.get_tab(gone_b).is_none());
-        assert_eq!(ids(shell.list_tabs(None)), vec![keep_a, keep_b, keep_c]);
-        assert_eq!(shell.tab_order, vec![keep_a, keep_b, keep_c], "no stale entry for a deleted tab");
-        // And again with the lowest workspace gone: the next lowest is chosen.
-        shell.set_active_workspace(fourth).unwrap();
-        shell.delete_workspace(first).unwrap();
-        shell.set_active_workspace(fourth).unwrap();
-        shell.delete_workspace(fourth).unwrap();
-        assert_eq!(shell.get_active_workspace().unwrap().id, second);
-        assert_eq!(shell.tab_order, vec![keep_b]);
+            // Delete the active (lowest) workspace as well: with six survivors left, the next
+            // lowest id is chosen, again and not by luck.
+            shell.delete_workspace(lowest).unwrap();
+            let next = workspaces
+                .iter()
+                .filter(|ws| **ws != victim && **ws != lowest)
+                .min_by_key(|ws| ws.0)
+                .copied()
+                .unwrap();
+            assert_eq!(shell.get_active_workspace().unwrap().id, next, "round {round}, second delete");
+            assert_eq!(shell.list_workspaces().len(), 6);
+            let left: Vec<TabId> = tabs.iter().filter(|(ws, _)| *ws != victim && *ws != lowest).map(|(_, id)| *id).collect();
+            assert_eq!(shell.tab_order, left, "round {round}, second delete");
+        }
     }
 
     #[test]
