@@ -45,6 +45,8 @@ use crate::state::AppState;
 // Chrome UI constants
 const CHROME_HEIGHT_DEFAULT: u32 = 104;
 const CHROME_HEIGHT_EXPANDED: u32 = 460;
+/// A small expansion: the tab actions panel (the WebView2 shell uses 148 too).
+const CHROME_HEIGHT_SMALL: u32 = 148;
 const SHELF_HEIGHT_DEFAULT: u32 = 0;
 const SHELF_HEIGHT_EXPANDED: u32 = 280;
 const SIDEBAR_WIDTH: u32 = 220;
@@ -62,6 +64,8 @@ const ABOUT_TITLE: &str = "About HiWave";
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TabRow {
     id: u64,
+    /// Pinned against tab decay (lock_page / unlock_page).
+    locked: bool,
     title: String,
     url: String,
     active: bool,
@@ -128,6 +132,8 @@ pub struct NativeBrowser {
     right_panel_open: bool,
     /// Focus mode's chrome strip (see `LayoutInput::focus_bar`); None when not in focus mode.
     focus_bar: Option<u32>,
+    /// Tabs the user locked (pinned against decay), by the id the chrome knows them by.
+    locked_tabs: std::collections::HashSet<u64>,
     /// The view that last had the keyboard focus. Win32 can leave focus on the
     /// bare main window (activation, a click on the frame); the main window
     /// ignores keys, so the shell hands focus back to this view.
@@ -200,6 +206,7 @@ impl NativeBrowser {
             sidebar_width: 0,
             right_panel_open: false,
             focus_bar: None,
+            locked_tabs: std::collections::HashSet::new(),
             last_focus: std::cell::Cell::new(None),
             chrome_ready: false,
             next_tab_id: 1,
@@ -586,6 +593,12 @@ impl NativeBrowser {
         self.update_layout();
     }
 
+    /// Expand the chrome a little, for the tab actions panel.
+    pub fn expand_chrome_small(&mut self) {
+        self.chrome_height = CHROME_HEIGHT_SMALL;
+        self.update_layout();
+    }
+
     /// Collapse the Chrome UI to default height.
     pub fn collapse_chrome(&mut self) {
         self.chrome_height = CHROME_HEIGHT_DEFAULT;
@@ -864,6 +877,21 @@ impl NativeBrowser {
                     continue;
                 }
             }
+            // The engine's own mouse handling ignores the secondary button: the shell
+            // asks for the `contextmenu` sequence itself (this is what opens the tab
+            // actions panel, the chrome's menus and a page's own contextmenu handlers).
+            if let ViewEvent::Input {
+                event: InputEvent::Mouse(mouse),
+                ..
+            } = &event
+            {
+                if mouse.button == MouseButton::Secondary
+                    && matches!(mouse.event_type, MouseEventType::MouseDown | MouseEventType::MouseUp)
+                    && self.secondary_click(mouse)
+                {
+                    continue;
+                }
+            }
             // A click gives the view it landed on the keyboard focus. Win32 sends
             // key messages only to the focused window, and nothing moved focus off
             // the page at startup, so typing in the chrome (the address bar) went
@@ -906,6 +934,40 @@ impl NativeBrowser {
                     .iter()
                     .any(|kind| self.views.get(kind) == Some(&focused))
             })
+    }
+
+    /// A secondary-button press or release on an engine view. Returns true when it was
+    /// delivered. The view is the window under the cursor (the viewhost ids on events do
+    /// not resolve in this shell's engine; see `engine_view_for_hwnd`).
+    fn secondary_click(&self, mouse: &rustkit_core::MouseEvent) -> bool {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, WindowFromPoint};
+
+        let mut pt = POINT::default();
+        // SAFETY: `pt` is a valid out-pointer.
+        if unsafe { GetCursorPos(&mut pt) }.is_err() {
+            return false;
+        }
+        // SAFETY: plain query by screen point.
+        let Some(id) = self.engine_view_for_hwnd(unsafe { WindowFromPoint(pt) }) else {
+            return false;
+        };
+        let (x, y) = (mouse.position.x as f32, mouse.position.y as f32);
+        // A right-click focuses what it lands on, as in Chrome (a text field takes the
+        // caret), so the keyboard goes there too.
+        if mouse.event_type == MouseEventType::MouseDown {
+            self.focus_clicked_view();
+        }
+        let mut engine = self.engine.borrow_mut();
+        if mouse.event_type == MouseEventType::MouseDown {
+            // `true` means no listener cancelled the contextmenu event: the browser should
+            // show its own menu. There is no native menu yet, so it is dropped here. This
+            // is where one would be opened.
+            let _show_browser_menu = engine.context_menu_at_point(id, x, y);
+        } else {
+            engine.context_menu_release(id, x, y);
+        }
+        true
     }
 
     /// Deliver mouse and key input from the content-thread page's window to the page.
@@ -1320,6 +1382,7 @@ impl NativeBrowser {
                 .filter_map(|id| self.pages.get(id).map(|page| (*id, page.state())))
                 .map(|(id, state)| TabRow {
                     id,
+                    locked: self.locked_tabs.contains(&id),
                     title: state.title.clone().unwrap_or_else(|| "New Tab".to_string()),
                     url: state.url.clone().unwrap_or_default(),
                     active: id == active,
@@ -1377,11 +1440,15 @@ impl NativeBrowser {
         }
         let rows: Vec<TabRow> = rows
             .into_iter()
-            .map(|(view, title, url)| TabRow {
-                id: self.tab_id_for(view),
-                title,
-                url,
-                active: view == active,
+            .map(|(view, title, url)| {
+                let id = self.tab_id_for(view);
+                TabRow {
+                    id,
+                    locked: self.locked_tabs.contains(&id),
+                    title,
+                    url,
+                    active: view == active,
+                }
             })
             .collect();
 
@@ -1417,7 +1484,7 @@ impl NativeBrowser {
                         "title": r.title,
                         "url": r.url,
                         "is_active": r.active,
-                        "locked": false,
+                        "locked": r.locked,
                         "last_visited": 0,
                         "decay_level": 0
                     })
@@ -1765,6 +1832,18 @@ impl NativeBrowser {
                 self.run_chrome_script(&script);
             }
             "save_sidebar_width" => {}
+            "expand_chrome_small" => self.expand_chrome_small(),
+            // The mode selector's choice is not acted on yet (the WebView2 shell only logs it).
+            "set_mode" => debug!(mode = json.get("mode").and_then(|v| v.as_str()), "Mode selected"),
+            "lock_page" | "unlock_page" => {
+                if let Some(id) = tab_ref_of(&json) {
+                    if cmd == "lock_page" {
+                        self.locked_tabs.insert(id);
+                    } else {
+                        self.locked_tabs.remove(&id);
+                    }
+                }
+            }
             "get_blocklist" => self.sync_blocklist(),
             "unblock_domain" => {
                 if let Some(domain) = json.get("domain").and_then(|v| v.as_str()) {
@@ -1930,6 +2009,12 @@ fn engine_builder(shield: &Arc<crate::shield_adapter::ShieldInterceptHandler>) -
         .script_budget_ms(script_budget_ms())
         .interrupt_scripts_at_budget(true)
         .request_interceptor(interceptor)
+}
+
+/// The tab a tab-actions command names (`tab_id`; the tab strip's own commands use `id`).
+fn tab_ref_of(json: &serde_json::Value) -> Option<u64> {
+    let id = json.get("tab_id")?;
+    id.as_u64().or_else(|| id.as_str().and_then(|s| s.parse().ok()))
 }
 
 /// The tab id in a chrome message. The page sends it as a number or a string.
@@ -2250,7 +2335,7 @@ fn chrono_lite_timestamp() -> String {
 
 #[cfg(test)]
 mod chrome_message_tests {
-    use super::{find_state_payload, key_action, parse_budget, tab_id_of, KeyAction};
+    use super::{find_state_payload, key_action, parse_budget, tab_id_of, tab_ref_of, KeyAction};
     use rustkit_core::input::{KeyCode, KeyEvent, KeyEventType, Modifiers};
     use serde_json::json;
 
@@ -2258,6 +2343,15 @@ mod chrome_message_tests {
     fn a_tab_id_may_be_a_number_or_a_string() {
         assert_eq!(tab_id_of(&json!({"cmd": "close_tab", "id": 7})), Some(7));
         assert_eq!(tab_id_of(&json!({"cmd": "close_tab", "id": "12"})), Some(12));
+    }
+
+    #[test]
+    fn the_tab_actions_name_their_tab_with_tab_id() {
+        assert_eq!(tab_ref_of(&json!({"cmd": "lock_page", "tab_id": "4"})), Some(4));
+        assert_eq!(tab_ref_of(&json!({"cmd": "lock_page", "tab_id": 9})), Some(9));
+        // The tab strip's own commands use `id`; the two must not be confused.
+        assert_eq!(tab_ref_of(&json!({"cmd": "close_tab", "id": 4})), None);
+        assert_eq!(tab_ref_of(&json!({"tab_id": "x"})), None);
     }
 
     #[test]
