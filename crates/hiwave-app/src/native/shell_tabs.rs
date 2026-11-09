@@ -117,15 +117,33 @@ pub fn reconcile(state: &mut AppState, mirrored: &mut HashSet<u64>, tabs: &[Nati
 /// restore nor has any business deleting.
 pub const NATIVE_STATE_FILE: &str = "workspace_state.native.json";
 
-/// Forget every tab the model has. The native shell starts with one fresh tab and cannot
-/// reopen tabs saved by an earlier native session; left in the model they were saved and
-/// reloaded forever. Returns how many were dropped.
-pub fn drop_unreopenable_tabs(state: &mut AppState) -> usize {
-    let ids: Vec<TabId> = state.shell.list_tabs(None).iter().map(|t| t.id).collect();
-    for id in &ids {
-        let _ = state.shell.close_tab(*id);
-    }
-    ids.len()
+/// A tab in the shared model that this shell has no view for yet (restored from a
+/// previous session).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedTab {
+    pub id: u64,
+    pub url: String,
+}
+
+/// The tabs of `workspace` that are in the shared model but not owned by this shell, in the
+/// workspace's order, and the workspace's own active tab among them.
+pub fn unowned_tabs(
+    state: &AppState,
+    native: &HashSet<u64>,
+    workspace: hiwave_core::types::WorkspaceId,
+) -> (Vec<SavedTab>, Option<u64>) {
+    let Some(ws) = state.shell.get_workspace(workspace) else {
+        return (Vec::new(), None);
+    };
+    let tabs: Vec<SavedTab> = ws
+        .tabs
+        .iter()
+        .filter(|id| !native.contains(&id.0))
+        .filter_map(|id| state.shell.get_tab(*id))
+        .map(|tab| SavedTab { id: tab.id.0, url: tab.url.to_string() })
+        .collect();
+    let active = ws.active_tab.map(|t| t.0).filter(|id| tabs.iter().any(|t| t.id == *id));
+    (tabs, active)
 }
 
 /// The native tabs that belong to the active workspace, and which of them it last had
@@ -229,18 +247,6 @@ mod tests {
     }
 
     #[test]
-    fn startup_drops_every_tab_of_the_native_file_and_leaves_no_workspace_entry() {
-        let mut s = state("drop_native_file");
-        for n in 0..3 {
-            saved_tab(&mut s, &format!("https://old{n}.test/"));
-        }
-        assert_eq!(drop_unreopenable_tabs(&mut s), 3);
-        assert!(s.shell.list_tabs(None).is_empty());
-        assert!(s.shell.get_active_workspace().unwrap().tabs.is_empty());
-        assert_eq!(drop_unreopenable_tabs(&mut s), 0);
-    }
-
-    #[test]
     fn the_native_state_file_is_not_the_default_builds() {
         let mut s = state("own_file");
         s.workspace_state_file = NATIVE_STATE_FILE.to_string();
@@ -283,6 +289,41 @@ mod tests {
         let no_active = WorkspaceView { visible: vec![4, 5], active: None };
         assert_eq!(after_switch(&no_active, None), AfterSwitch::Activate(4));
         assert_eq!(after_switch(&WorkspaceView::default(), Some(9)), AfterSwitch::NewTab);
+    }
+
+    #[test]
+    fn saved_tabs_are_the_workspaces_tabs_this_shell_does_not_own() {
+        let mut s = state("saved");
+        let ws = s.shell.get_active_workspace().map(|w| w.id).unwrap();
+        let mut ids = Vec::new();
+        for url in ["https://one.test/", "https://two.test/"] {
+            let id = TabId::new();
+            ids.push(id);
+            s.shell
+                .create_tab(TabInfo {
+                    id,
+                    url: url::Url::parse(url).unwrap(),
+                    title: Some("T".into()),
+                    favicon: None,
+                    workspace_id: ws,
+                    suspended: false,
+                    loading: false,
+                    locked: false,
+                    last_visited: None,
+                })
+                .unwrap();
+        }
+        s.shell.set_active_tab(ids[1]).unwrap();
+
+        let (saved, active) = unowned_tabs(&s, &HashSet::new(), ws);
+        assert_eq!(saved.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://one.test/", "https://two.test/"]);
+        assert_eq!(active, Some(ids[1].0));
+
+        // Once the shell owns one, it is no longer "saved".
+        let owned: HashSet<u64> = [ids[0].0].into_iter().collect();
+        let (saved, _) = unowned_tabs(&s, &owned, ws);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, ids[1].0);
     }
 
     #[test]
