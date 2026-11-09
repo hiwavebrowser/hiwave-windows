@@ -1693,6 +1693,12 @@ impl NativeBrowser {
         self.mirror_tabs(&mut now.tabs);
         if std::mem::take(&mut self.needs_settle) {
             self.settle_workspace();
+            // The strip was filtered to the new workspace before the settle: mark its active
+            // tab now, or it draws one tick with no active tab.
+            let active = self.active_native_id();
+            for row in now.tabs.iter_mut() {
+                row.active = Some(row.id) == active;
+            }
         }
         self.record_visit_if_new(active_tab, &now.url, &now.title, now.loading);
         if self.chrome_synced.as_ref() == Some(&now) {
@@ -2038,8 +2044,18 @@ impl NativeBrowser {
             },
             "activate_tab" => match tab_id_of(&json) {
                 Some(id) => {
+                    // The sidebar lists every workspace's tabs: a click on one under another
+                    // workspace goes to that workspace first.
+                    let switched = self
+                        .app_state
+                        .lock()
+                        .map(|mut state| shell_tabs::switch_to_tab_workspace(&mut state, id))
+                        .unwrap_or(false);
                     if let Some(index) = self.tab_index_for_id(id) {
                         self.activate_tab_by_index(index);
+                    }
+                    if switched {
+                        self.save_and_sync_workspaces();
                     }
                 }
                 None => warn!("activate_tab without an id"),

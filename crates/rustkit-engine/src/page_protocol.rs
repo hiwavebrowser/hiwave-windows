@@ -13,6 +13,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use rustkit_viewhost::Bounds;
@@ -380,9 +381,17 @@ pub struct PageHandle {
 
 /// The page side. Owns the engine for `view`.
 pub struct PageEndpoint {
+    engine: Engine,
+    side: EndpointSide,
+}
+
+/// Everything the page side keeps besides its engine. Split from the
+/// engine so a load that holds the engine can lend it back to this half
+/// at its safe points (LAT15): the commands are read and applied here,
+/// with the engine the load passes in.
+pub(crate) struct EndpointSide {
     rx: Receiver<PageCmd>,
     events: Sender<PageEvent>,
-    engine: Engine,
     engine_events: Option<tokio::sync::mpsc::UnboundedReceiver<EngineEvent>>,
     view: EngineViewId,
     /// Navigation, generation and scroll of the last [`PageEvent::Commit`]
@@ -414,6 +423,13 @@ pub struct PageEndpoint {
     failed_nav: u64,
     /// What devtools costs this page (`devtools_service`).
     devtools_counters: Arc<DevtoolsCounters>,
+    /// Commands read at a load's safe point that may not run there (a
+    /// navigation, Stop, Close, a live turn) and every command after
+    /// the first of them, in order. Read before the channel.
+    deferred: VecDeque<PageCmd>,
+    /// A command served at a safe point asked to leave the page (a
+    /// followed link, a submit, a script navigation).
+    asked_to_leave: std::cell::Cell<bool>,
 }
 
 /// Pair a handle with the endpoint that applies its commands.
@@ -425,25 +441,28 @@ pub(crate) fn adopt(
 ) -> PageEndpoint {
     let engine_events = engine.take_event_receiver();
     PageEndpoint {
-        rx,
-        events,
         engine,
-        engine_events,
-        view,
-        last_commit: None,
-        visible: true,
-        settle_keys: false,
-        wake_window: false,
-        cmd_wake: None,
-        last_focused: None,
-        last_text_input: None,
-        failed_nav: 0,
-        devtools_counters: Arc::default(),
+        side: EndpointSide {
+            rx,
+            events,
+            engine_events,
+            view,
+            last_commit: None,
+            visible: true,
+            settle_keys: false,
+            wake_window: false,
+            cmd_wake: None,
+            last_focused: None,
+            last_text_input: None,
+            failed_nav: 0,
+            devtools_counters: Arc::default(),
+            deferred: VecDeque::new(),
+            asked_to_leave: std::cell::Cell::new(false),
+        },
     }
 }
 
-pub fn connect(mut engine: Engine, view: EngineViewId) -> (PageHandle, PageEndpoint) {
-    let engine_events = engine.take_event_receiver();
+pub fn connect(engine: Engine, view: EngineViewId) -> (PageHandle, PageEndpoint) {
     let control = engine
         .view_control(view)
         .unwrap_or_else(|| panic!("page protocol: view {view:?} is not in the engine"));
@@ -458,22 +477,7 @@ pub fn connect(mut engine: Engine, view: EngineViewId) -> (PageHandle, PageEndpo
         view,
         last_sent_nav_id: AtomicU64::new(0),
     };
-    let endpoint = PageEndpoint {
-        rx,
-        events: ev_tx,
-        engine,
-        engine_events,
-        view,
-        last_commit: None,
-        visible: true,
-        settle_keys: false,
-        wake_window: false,
-        cmd_wake: None,
-        last_focused: None,
-        last_text_input: None,
-        failed_nav: 0,
-        devtools_counters: Arc::default(),
-    };
+    let endpoint = adopt(engine, view, rx, ev_tx);
     (handle, endpoint)
 }
 
@@ -516,56 +520,58 @@ impl PageHandle {
     }
 }
 
-impl PageEndpoint {
+impl EndpointSide {
     /// Apply every command queued so far, on this thread.
     ///
     /// `live` is the runtime the live loop already uses. A navigation builds
     /// its own runtime, as the view did before this protocol.
-    pub fn drain(&mut self, live: Option<&tokio::runtime::Runtime>) {
+    pub fn drain(&mut self, engine: &mut Engine, live: Option<&tokio::runtime::Runtime>) {
         loop {
             match self.rx.try_recv() {
-                Ok(cmd) => self.apply(cmd, live),
+                Ok(cmd) => self.apply(engine, cmd, live),
                 Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
             }
         }
     }
 
-    fn apply(&mut self, cmd: PageCmd, live: Option<&tokio::runtime::Runtime>) {
+    fn apply(&mut self, engine: &mut Engine, cmd: PageCmd, live: Option<&tokio::runtime::Runtime>) {
         match cmd {
             PageCmd::Navigate { url, nav_id } => {
-                self.load_url(url, nav_id);
+                self.load_url(engine, url, nav_id);
             }
             PageCmd::LoadHtml { html, nav_id, reply } => {
-                let result = self.load_html_cmd(&html, nav_id);
+                let result = self.load_html_cmd(engine, &html, nav_id);
                 let _ = reply.send(result);
-                self.after_page_change();
+                self.after_page_change(engine);
             }
             PageCmd::Stop { reply } => {
-                let stopped = self.engine.stop(self.view);
+                let stopped = engine.stop(self.view);
                 // `stop_all` left ALL in the word so the script that was
                 // running could unwind. That script has returned by the time
                 // this command runs. Lift ALL so the next script on this
                 // document can run; a turn id left in the word names a turn
                 // that has already ended.
-                if let Some(control) = self.engine.view_control(self.view) {
+                if let Some(control) = engine.view_control(self.view) {
                     control.clear_all();
                 }
+                // A load cancelled before the word was lowered could not
+                // settle its document; it reads `complete` now (LAT15 R1).
+                engine.settle_ready_state(self.view);
                 let _ = reply.send(stopped);
             }
             PageCmd::Reload { reply, .. } => {
-                let result = match self.engine.get_url(self.view) {
+                let result = match engine.get_url(self.view) {
                     Some(url) => {
-                        self.load_url(url, 0);
+                        self.load_url(engine, url, 0);
                         Ok(())
                     }
                     None => Err("No URL to reload".to_string()),
                 };
                 let _ = reply.send(result);
             }
-            PageCmd::Input(input) => self.apply_input(input),
+            PageCmd::Input(input) => self.apply_input(engine, input),
             PageCmd::Resize { bounds, reply, .. } => {
-                let result = self
-                    .engine
+                let result = engine
                     .set_view_bounds(self.view, bounds)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
@@ -577,70 +583,68 @@ impl PageEndpoint {
                 let _ = reply.send(Err(EVAL_CANCELLED.to_string()));
             }
             PageCmd::DevtoolsEval { script, reply, .. } | PageCmd::Eval { script, reply } => {
-                let result = self
-                    .engine
+                let result = engine
                     .execute_script(self.view, &script)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
-                self.publish_commit();
-                self.report_focus();
+                self.publish_commit(engine);
+                self.report_focus(engine);
                 // `location.href =` and `link.click()` from this script.
                 // The same-thread window asks with TakeNavigation instead.
-                self.report_script_navigation();
+                self.report_script_navigation(engine);
                 // What the script posted on `window.ipc` goes now, not
                 // after the next live turn (CH3.A9: the chrome's
                 // `sendIpc('create_tab')` for Cmd+T).
-                self.report_ipc();
+                self.report_ipc(engine);
             }
             PageCmd::SetVisible { visible } => {
                 self.visible = visible;
             }
             PageCmd::Close => {
-                if let Err(e) = self.engine.destroy_view(self.view) {
+                if let Err(e) = engine.destroy_view(self.view) {
                     tracing::warn!(error = %e, "Failed to destroy RustKit view");
                 }
                 self.emit(PageEvent::Closed);
             }
             PageCmd::PumpLive { elapsed_ms, reply } => {
                 let turn = match live {
-                    Some(runtime) => runtime.block_on(self.engine.pump_live(self.view, elapsed_ms)),
+                    Some(runtime) => runtime.block_on(engine.pump_live(self.view, elapsed_ms)),
                     None => LivePump::default(),
                 };
                 let _ = reply.send(turn);
-                self.after_page_change();
+                self.after_page_change(engine);
             }
             PageCmd::Render { every } => {
-                if let Err(e) = self.engine.flush_pending_resize(self.view) {
+                if let Err(e) = engine.flush_pending_resize(self.view) {
                     tracing::debug!(error = %e, "layout after a resize failed");
                 }
                 if every {
-                    self.engine.render_all_views();
+                    engine.render_all_views();
                 } else {
-                    self.engine.render_changed_views();
+                    engine.render_changed_views();
                 }
-                self.publish_commit();
+                self.publish_commit(engine);
             }
             PageCmd::NoteInput { at, seq, kind } => {
-                self.engine.note_input(self.view, InputMark { at, seq, kind });
+                engine.note_input(self.view, InputMark { at, seq, kind });
             }
             PageCmd::GrabKeyboard => {
-                self.engine.grab_keyboard(self.view);
+                engine.grab_keyboard(self.view);
             }
             PageCmd::Relayout => {
-                if let Err(e) = self.engine.relayout_for(self.view, crate::RelayoutCause::Input) {
+                if let Err(e) = engine.relayout_for(self.view, crate::RelayoutCause::Input) {
                     tracing::debug!(error = %e, "relayout after edit failed");
                 }
-                self.publish_commit();
+                self.publish_commit(engine);
             }
             PageCmd::SetHostReentry { limit } => {
-                self.engine.set_host_reentry_limit(limit);
+                engine.set_host_reentry_limit(limit);
             }
             PageCmd::SetAppOwned { owned } => {
-                self.engine.set_app_owned(self.view, owned);
+                engine.set_app_owned(self.view, owned);
             }
             PageCmd::InstallReentryProbe { reply } => {
-                let result = self
-                    .engine
+                let result = engine
                     .install_reentry_probe(self.view)
                     .map_err(|e| e.to_string());
                 let _ = reply.send(result);
@@ -650,19 +654,19 @@ impl PageEndpoint {
                 // The window watches at once when it can reach the page's
                 // Inspector; while the page boots or holds its endpoint it
                 // cannot, so the page watches too (#803 review (2)).
-                if let (DevtoolsQuery::Attach(on), Some(inspector)) = (&query, self.engine.inspector(self.view)) {
+                if let (DevtoolsQuery::Attach(on), Some(inspector)) = (&query, engine.inspector(self.view)) {
                     crate::devtools_service::watch(&inspector, &self.devtools_counters, *on);
                 }
-                let (answer, frame_changed) = devtools_answer(&mut self.engine, self.view, query);
+                let (answer, frame_changed) = devtools_answer(engine, self.view, query);
                 let wake = devtools_wakes_window(&answer, frame_changed);
                 let _ = reply.send(answer);
                 if frame_changed {
                     // On the page's own thread there is no presenter: this
                     // publishes the outlined frame for the window to draw.
-                    if let Err(e) = self.engine.render_view(self.view) {
+                    if let Err(e) = engine.render_view(self.view) {
                         tracing::debug!(error = %e, "devtools outline frame failed");
                     }
-                    self.after_page_change();
+                    self.after_page_change(engine);
                 }
                 // No event carries the answer: wake the content thread's
                 // window so it reads it now, when there is something to read.
@@ -675,14 +679,14 @@ impl PageEndpoint {
             PageCmd::Block(ms) => std::thread::sleep(std::time::Duration::from_millis(ms)),
             #[cfg(test)]
             PageCmd::PanicHoldingInspector => {
-                if let Some(inspector) = self.engine.inspector(self.view) {
+                if let Some(inspector) = engine.inspector(self.view) {
                     inspector.panic_holding_lock();
                 }
             }
         }
     }
 
-    fn apply_input(&mut self, input: PageInput) {
+    fn apply_input(&mut self, engine: &mut Engine, input: PageInput) {
         let view = self.view;
         // What the pointer is over may change: the window is told its
         // cursor and tooltip after these (CH2.E4).
@@ -707,12 +711,12 @@ impl PageEndpoint {
                 reply,
             } => {
                 let submitted = if key_code == 0x0D {
-                    self.engine.submit_focused_form(view)
+                    engine.submit_focused_form(view)
                 } else {
                     None
                 };
                 if let Some(url) = submitted {
-                    let nav_id = self.engine.nav_id(view).unwrap_or(0);
+                    let nav_id = engine.nav_id(view).unwrap_or(0);
                     self.emit(PageEvent::NavigateRequested {
                         url,
                         replace: false,
@@ -721,57 +725,56 @@ impl PageEndpoint {
                     });
                     let _ = reply.send(true);
                 } else {
-                    let focused_before = self.engine.focused_node(view);
-                    let consumed = self
-                        .engine
+                    let focused_before = engine.focused_node(view);
+                    let consumed = engine
                         .handle_text_key(view, key_code, &key, ctrl, shift, alt);
                     if self.settle_keys && !consumed && focused_before.is_none() {
                         if let Some(dy) = scroll_dy_for_unhandled_key(key_code, &key) {
-                            let _ = self.engine.scroll_view(view, 0.0, dy);
+                            let _ = engine.scroll_view(view, 0.0, dy);
                         }
                     }
                     let _ = reply.send(consumed || self.settle_keys);
                 }
             }
             PageInput::CommandKey { key_code, key, shift, alt, token } => {
-                let claimed = self.engine.handle_command_key(view, key_code, &key, shift, alt);
+                let claimed = engine.handle_command_key(view, key_code, &key, shift, alt);
                 self.emit(PageEvent::KeyEquivalentDone { token, claimed });
             }
             PageInput::Ime(input) => {
                 use rustkit_viewhost::ImeInput;
                 match input {
                     ImeInput::SetMarked(text) => {
-                        self.engine.set_marked_text(view, &text);
+                        engine.set_marked_text(view, &text);
                     }
                     ImeInput::Insert { text, replace } => {
-                        self.engine.insert_text_replacing(view, &text, replace);
+                        engine.insert_text_replacing(view, &text, replace);
                     }
                     ImeInput::Unmark => {
-                        self.engine.unmark_text(view);
+                        engine.unmark_text(view);
                     }
                 }
             }
             PageInput::Edit(command) => {
-                self.engine.run_edit_command(view, &command);
+                engine.run_edit_command(view, &command);
             }
             PageInput::KeyUp { key_code, key, ctrl, shift, alt } => {
-                self.engine.handle_key_up(view, key_code, &key, ctrl, shift, alt);
+                engine.handle_key_up(view, key_code, &key, ctrl, shift, alt);
             }
             PageInput::MouseDown { x, y, clicks, shift } => {
-                self.engine.mouse_down_with(view, x, y, clicks.max(1), shift);
+                engine.mouse_down_with(view, x, y, clicks.max(1), shift);
             }
             PageInput::SecondaryDown { x, y } => {
-                if self.engine.context_menu_at_point(view, x, y) {
+                if engine.context_menu_at_point(view, x, y) {
                     self.emit(PageEvent::ContextMenu { x, y });
                 }
             }
-            PageInput::SecondaryUp { x, y } => self.engine.context_menu_release(view, x, y),
-            PageInput::MouseMove { x, y } => self.engine.mouse_move_at_point(view, x, y),
-            PageInput::MouseLeave => self.engine.mouse_leave(view),
+            PageInput::SecondaryUp { x, y } => engine.context_menu_release(view, x, y),
+            PageInput::MouseMove { x, y } => engine.mouse_move_at_point(view, x, y),
+            PageInput::MouseLeave => engine.mouse_leave(view),
             PageInput::Click { x, y, reply } => {
-                let outcome = self.engine.click_at_point(view, x, y);
+                let outcome = engine.click_at_point(view, x, y);
                 if let Some(url) = outcome.navigate.clone() {
-                    let nav_id = self.engine.nav_id(view).unwrap_or(0);
+                    let nav_id = engine.nav_id(view).unwrap_or(0);
                     self.emit(PageEvent::NavigateRequested {
                         url,
                         replace: false,
@@ -782,16 +785,16 @@ impl PageEndpoint {
                 let _ = reply.send(outcome);
             }
             PageInput::FocusAt { x, y, reply } => {
-                let tag = self.engine.focus_at_point(view, x, y);
-                self.emit_focus();
+                let tag = engine.focus_at_point(view, x, y);
+                self.emit_focus(engine);
                 let _ = reply.send(tag);
             }
             PageInput::LinkAt { x, y, reply } => {
-                let url = self.engine.link_at_point(view, x, y);
+                let url = engine.link_at_point(view, x, y);
                 let _ = reply.send(url);
             }
             PageInput::Scroll { dx, dy, reply } => {
-                let changed = match self.engine.scroll_view(view, dx, dy) {
+                let changed = match engine.scroll_view(view, dx, dy) {
                     Ok(changed) => changed,
                     Err(e) => {
                         tracing::debug!(error = %e, "scroll_by failed");
@@ -799,18 +802,18 @@ impl PageEndpoint {
                     }
                 };
                 let _ = reply.send(changed);
-                self.publish_commit();
+                self.publish_commit(engine);
             }
             PageInput::ScrollAt { x, y, dx, dy } => {
-                if let Err(e) = self.engine.scroll_at(view, x, y, dx, dy) {
+                if let Err(e) = engine.scroll_at(view, x, y, dx, dy) {
                     tracing::debug!(error = %e, "scroll_at failed");
                 }
-                self.publish_commit();
+                self.publish_commit(engine);
             }
             PageInput::FormSubmit { reply } => {
-                let url = self.engine.submit_focused_form(view);
+                let url = engine.submit_focused_form(view);
                 if let Some(url) = url.clone() {
-                    let nav_id = self.engine.nav_id(view).unwrap_or(0);
+                    let nav_id = engine.nav_id(view).unwrap_or(0);
                     self.emit(PageEvent::NavigateRequested {
                         url,
                         replace: false,
@@ -821,9 +824,9 @@ impl PageEndpoint {
                 let _ = reply.send(url);
             }
             PageInput::TakeNavigation { reply } => {
-                let taken = self.engine.take_script_navigation_with_replace(view);
+                let taken = engine.take_script_navigation_with_replace(view);
                 if let Some((url, replace)) = taken.clone() {
-                    let nav_id = self.engine.nav_id(view).unwrap_or(0);
+                    let nav_id = engine.nav_id(view).unwrap_or(0);
                     self.emit(PageEvent::NavigateRequested {
                         url,
                         replace,
@@ -834,35 +837,35 @@ impl PageEndpoint {
                 let _ = reply.send(taken);
             }
             PageInput::HasFocus { reply } => {
-                let (focused, _) = self.emit_focus();
+                let (focused, _) = self.emit_focus(engine);
                 let _ = reply.send(focused);
             }
             PageInput::HasTextFocus { reply } => {
-                let (_, text) = self.emit_focus();
+                let (_, text) = self.emit_focus(engine);
                 let _ = reply.send(text);
             }
         }
-        self.publish_commit();
-        self.report_focus();
+        self.publish_commit(engine);
+        self.report_focus(engine);
         if pointer {
-            self.report_hover();
+            self.report_hover(engine);
         }
         // A listener's `location.href =` or `link.click()` is not the
         // click's own default action. The content thread reports it; the
         // same-thread window still pulls with TakeNavigation.
-        self.report_script_navigation();
+        self.report_script_navigation(engine);
     }
 
-    fn load_html_cmd(&mut self, html: &str, nav_id: u64) -> Result<(), String> {
+    fn load_html_cmd(&mut self, engine: &mut Engine, html: &str, nav_id: u64) -> Result<(), String> {
         let loaded = if nav_id == 0 {
-            self.engine.load_html(self.view, html)
+            engine.load_html(self.view, html)
         } else {
-            self.engine.load_html_as(self.view, html, Some(nav_id))
+            engine.load_html_as(self.view, html, Some(nav_id))
         };
         loaded.map_err(|e| e.to_string())
     }
 
-    fn load_url(&mut self, url: Url, nav_id: u64) {
+    fn load_url(&mut self, engine: &mut Engine, url: Url, nav_id: u64) {
         let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -873,8 +876,8 @@ impl PageEndpoint {
                 return;
             }
         };
-        rt.block_on(self.load_yielding(url, nav_id));
-        self.after_page_change();
+        rt.block_on(self.load_yielding(engine, url, nav_id, false));
+        self.after_page_change(engine);
     }
 
     /// Yield after DOMContentLoaded while inserted scripts are still
@@ -885,48 +888,102 @@ impl PageEndpoint {
     /// every couple of milliseconds, including a frame the load published
     /// after layout. The load future borrows only the engine, so the event
     /// channel can be read while it is pending.
-    async fn load_yielding(&mut self, url: Url, nav_id: u64) {
+    ///
+    /// With `serve` (the content thread's own loop, LAT15) the load lends
+    /// the engine back at its safe points, and the commands that may run
+    /// there are applied ([`EndpointSide::serve_mid_load`]). Without it
+    /// (the same-thread window, a drain) nothing is read until the load
+    /// returns, as before.
+    async fn load_yielding(&mut self, engine: &mut Engine, url: Url, nav_id: u64, serve: bool) {
         let view = self.view;
         let wake = self.wake_window;
-        let engine = &mut self.engine;
-        let engine_events = &mut self.engine_events;
-        let tx = &self.events;
-        let last_commit = &mut self.last_commit;
-        let failed_nav = &mut self.failed_nav;
-        let mut load = Box::pin(async move {
-            if nav_id == 0 {
-                engine.load_url_yielding(view, url).await
-            } else {
-                engine.load_url_yielding_as(view, url, nav_id).await
-            }
-        });
-        loop {
-            // Polled on the runtime's waker via the sleep below: a fetch
-            // that completes during the sleep is observed on the next poll.
-            // `yield_now` inside the load returns Pending on the first poll
-            // and Ready on the next, so a frame sent before that yield is
-            // forwarded before the load continues into scripts.
-            let polled = std::future::Future::poll(
-                load.as_mut(),
-                &mut std::task::Context::from_waker(futures::task::noop_waker_ref()),
-            );
-            match polled {
-                std::task::Poll::Ready(result) => {
-                    let failed = result.as_ref().err().map(|e| e.to_string());
-                    if let Some(e) = &failed {
-                        tracing::error!(error = %e, "Failed to load URL");
+        let failed = {
+            // The load borrows the engine; this half is shared between the
+            // safe points (inside a poll) and the loop below (between
+            // polls), never both at once.
+            let side = std::cell::RefCell::new(&mut *self);
+            let mut lend = |engine: &mut Engine| side.borrow_mut().serve_mid_load(engine);
+            let lend: Option<&mut crate::ServeFn<'_>> = if serve { Some(&mut lend) } else { None };
+            let mut load = Box::pin(async {
+                let nav_id = (nav_id != 0).then_some(nav_id);
+                engine.load_url_serving(view, url, nav_id, lend).await
+            });
+            let forward = |side: &std::cell::RefCell<&mut EndpointSide>| {
+                let mut side = side.borrow_mut();
+                let side = &mut **side;
+                forward_events(&mut side.engine_events, &side.events, &mut side.last_commit, &mut side.failed_nav, nav_id, wake);
+            };
+            loop {
+                // Polled on the runtime's waker via the sleep below: a fetch
+                // that completes during the sleep is observed on the next poll.
+                // `yield_now` inside the load returns Pending on the first poll
+                // and Ready on the next, so a frame sent before that yield is
+                // forwarded before the load continues into scripts.
+                let polled = std::future::Future::poll(
+                    load.as_mut(),
+                    &mut std::task::Context::from_waker(futures::task::noop_waker_ref()),
+                );
+                match polled {
+                    std::task::Poll::Ready(result) => {
+                        let failed = result.as_ref().err().map(|e| e.to_string());
+                        if let Some(e) = &failed {
+                            tracing::error!(error = %e, "Failed to load URL");
+                        }
+                        forward(&side);
+                        break failed;
                     }
-                    forward_events(engine_events, tx, last_commit, failed_nav, nav_id, wake);
-                    drop(load);
-                    self.end_uncommitted_nav(nav_id, failed);
-                    return;
+                    std::task::Poll::Pending => {
+                        forward(&side);
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    }
                 }
-                std::task::Poll::Pending => {
-                    forward_events(engine_events, tx, last_commit, failed_nav, nav_id, wake);
-                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-                }
+            }
+        };
+        self.end_uncommitted_nav(engine, nav_id, failed);
+    }
+
+    /// A load's safe point (LAT15): apply what the window sent that may run
+    /// while the load holds the engine. Input, resizes, renders, evals and
+    /// devtools reads run, in order. The first command of any other kind
+    /// (a navigation, Stop, Close, a reload, a live turn) and everything
+    /// after it stay queued for after the load, in order; while one heads
+    /// the queue, nothing is applied here. Reports whether anything ran, and
+    /// whether a command that ran asked to leave the page.
+    fn serve_mid_load(&mut self, engine: &mut Engine) -> crate::Served {
+        let mut served = crate::Served::default();
+        for _ in 0..64 {
+            match self.rx.try_recv() {
+                Ok(cmd) => self.deferred.push_back(cmd),
+                Err(_) => break,
             }
         }
+        if !self.deferred.front().is_some_and(runs_mid_load) {
+            return served;
+        }
+        // `deferred` holds only what the window has sent: commands move
+        // here from the channel and leave in order once the load returns,
+        // so it is bounded by what the channel carried meanwhile.
+        let queued: Vec<PageCmd> = self.deferred.drain(..).collect();
+        self.deferred = coalesce(queued).into();
+        self.asked_to_leave.set(false);
+        while self.deferred.front().is_some_and(runs_mid_load) {
+            let Some(cmd) = self.deferred.pop_front() else { break };
+            served.ran = true;
+            self.apply(engine, cmd, None);
+        }
+        if served.ran {
+            // A resize is laid out here, as a live turn would at its start:
+            // the page reads its new size before the load's next phase.
+            if let Err(e) = engine.flush_pending_resize(self.view) {
+                tracing::debug!(error = %e, "layout after a resize at a safe point failed");
+            }
+            self.publish_commit(engine);
+            self.report_focus(engine);
+            self.report_script_navigation(engine);
+            self.report_ipc(engine);
+        }
+        served.leave = self.asked_to_leave.replace(false);
+        served
     }
 
     /// A navigation that ended without committing a document: a refused
@@ -938,11 +995,11 @@ impl PageEndpoint {
     /// its timers, clicks and keys. Tell the window the load is over, so
     /// it stops showing the page as loading: Failed once for an error,
     /// Complete for a load that ended Ok with nothing to commit (a 204).
-    fn end_uncommitted_nav(&mut self, nav_id: u64, failed: Option<String>) {
+    fn end_uncommitted_nav(&mut self, engine: &mut Engine, nav_id: u64, failed: Option<String>) {
         if nav_id == 0 {
             return;
         }
-        let Some(control) = self.engine.view_control(self.view) else {
+        let Some(control) = engine.view_control(self.view) else {
             return;
         };
         if !control.end_uncommitted(nav_id) {
@@ -950,7 +1007,7 @@ impl PageEndpoint {
         }
         // The address bar went to the URL that failed. The document on
         // screen is still the committed one; show its URL again.
-        if let Some(url) = self.engine.get_url(self.view) {
+        if let Some(url) = engine.get_url(self.view) {
             let _ = self.events.send(PageEvent::Url { url, nav_id });
         }
         // A load that ended Ok without a commit (a 204) is not a failure:
@@ -975,43 +1032,43 @@ impl PageEndpoint {
     /// Load `url` as [`PageCmd::Navigate`] does, as a future the window
     /// thread polls a slice at a time (#743). It holds the endpoint until
     /// the load ends or yields after `DOMContentLoaded`.
-    pub async fn navigate(&mut self, url: Url, nav_id: u64) {
-        self.load_yielding(url, nav_id).await;
-        self.after_page_change();
+    pub async fn navigate(&mut self, engine: &mut Engine, url: Url, nav_id: u64) {
+        self.load_yielding(engine, url, nav_id, false).await;
+        self.after_page_change(engine);
     }
 
     /// Cancels this view's navigations without the endpoint (M3b).
-    pub fn nav_canceller(&self) -> Option<crate::NavCanceller> {
-        self.engine.nav_canceller(self.view)
+    pub fn nav_canceller(&self, engine: &Engine) -> Option<crate::NavCanceller> {
+        engine.nav_canceller(self.view)
     }
 
     /// Whether a yielded load is parked on the view; see
     /// [`Engine::load_tail_open`].
-    pub fn load_tail_open(&self) -> bool {
-        self.engine.load_tail_open(self.view)
+    pub fn load_tail_open(&self, engine: &Engine) -> bool {
+        engine.load_tail_open(self.view)
     }
 
-    fn after_page_change(&mut self) {
-        self.translate_engine_events();
-        self.publish_commit();
-        self.report_focus();
-        self.report_text_input();
-        self.report_script_navigation();
-        self.report_ipc();
+    fn after_page_change(&mut self, engine: &mut Engine) {
+        self.translate_engine_events(engine);
+        self.publish_commit(engine);
+        self.report_focus(engine);
+        self.report_text_input(engine);
+        self.report_script_navigation(engine);
+        self.report_ipc(engine);
     }
 
     /// Send the window what the page posted on `window.ipc` (CH2.E9).
     /// Only the content thread reports it; the queue is Rust-side, so an
     /// empty one costs no script.
-    fn report_ipc(&mut self) {
+    fn report_ipc(&mut self, engine: &mut Engine) {
         if !self.wake_window {
             return;
         }
-        let messages = self.engine.drain_view_ipc(self.view);
+        let messages = engine.drain_view_ipc(self.view);
         if messages.is_empty() {
             return;
         }
-        let nav_id = self.engine.nav_id(self.view).unwrap_or(0);
+        let nav_id = engine.nav_id(self.view).unwrap_or(0);
         for message in messages {
             self.emit(PageEvent::Ipc { payload: message.payload, nav_id });
         }
@@ -1021,24 +1078,24 @@ impl PageEndpoint {
     /// its own: a script's `focus()` or `blur()`, a timer, a new document
     /// with nothing focused. Only the content thread reports it; the
     /// same-thread window asks with [`PageInput::HasFocus`].
-    fn report_focus(&mut self) {
+    fn report_focus(&mut self, engine: &mut Engine) {
         if !self.wake_window {
             return;
         }
-        if self.last_focused == Some(self.focus_state()) {
+        if self.last_focused == Some(self.focus_state(engine)) {
             return;
         }
-        self.emit_focus();
+        self.emit_focus(engine);
     }
 
     /// Tell the content thread's window the focused text field's
     /// text-input state when it changed (CH2.E3), after the frame it was
     /// painted in, so the caret is the one on screen.
-    fn report_text_input(&mut self) {
+    fn report_text_input(&mut self, engine: &mut Engine) {
         if !self.wake_window {
             return;
         }
-        let state = self.engine.text_input_state(self.view);
+        let state = engine.text_input_state(self.view);
         if self.last_text_input == Some(state) {
             return;
         }
@@ -1049,8 +1106,8 @@ impl PageEndpoint {
     /// Tell the window the cursor and tooltip under the pointer when they
     /// changed (CH2.E4). A pointer that left the view gets `default` and
     /// no tooltip.
-    fn report_hover(&mut self) {
-        let Some(now) = self.engine.take_hover_change(self.view) else {
+    fn report_hover(&mut self, engine: &mut Engine) {
+        let Some(now) = engine.take_hover_change(self.view) else {
             return;
         };
         let (cursor, title) = match now {
@@ -1062,16 +1119,16 @@ impl PageEndpoint {
     }
 
     /// (anything focused, a text field focused) in the page now.
-    fn focus_state(&self) -> (bool, bool) {
+    fn focus_state(&self, engine: &Engine) -> (bool, bool) {
         (
-            self.engine.focused_node(self.view).is_some(),
-            self.engine.focused_is_text_control(self.view),
+            engine.focused_node(self.view).is_some(),
+            engine.focused_is_text_control(self.view),
         )
     }
 
     /// Report the page's focus to the window (`Focused`, `TextFocused`).
-    fn emit_focus(&mut self) -> (bool, bool) {
-        let state = self.focus_state();
+    fn emit_focus(&mut self, engine: &mut Engine) -> (bool, bool) {
+        let state = self.focus_state(engine);
         self.last_focused = Some(state);
         self.emit(PageEvent::Focused(state.0));
         self.emit(PageEvent::TextFocused(state.1));
@@ -1083,14 +1140,14 @@ impl PageEndpoint {
     /// the document that asked. Only the content thread reports it here.
     /// The same-thread window sends [`PageInput::TakeNavigation`] and
     /// would otherwise see an empty queue.
-    fn report_script_navigation(&mut self) {
+    fn report_script_navigation(&mut self, engine: &mut Engine) {
         if !self.wake_window {
             return;
         }
-        let Some((url, replace)) = self.engine.take_script_navigation_with_replace(self.view) else {
+        let Some((url, replace)) = engine.take_script_navigation_with_replace(self.view) else {
             return;
         };
-        let nav_id = self.engine.nav_id(self.view).unwrap_or(0);
+        let nav_id = engine.nav_id(self.view).unwrap_or(0);
         self.emit(PageEvent::NavigateRequested {
             url,
             replace,
@@ -1099,8 +1156,8 @@ impl PageEndpoint {
         });
     }
 
-    fn translate_engine_events(&mut self) {
-        let nav_id = self.engine.nav_id(self.view).unwrap_or(0);
+    fn translate_engine_events(&mut self, engine: &mut Engine) {
+        let nav_id = engine.nav_id(self.view).unwrap_or(0);
         let wake = self.wake_window;
         forward_events(
             &mut self.engine_events,
@@ -1112,8 +1169,8 @@ impl PageEndpoint {
         );
     }
 
-    fn publish_commit(&mut self) {
-        let Some(commit) = self.engine.latest_commit(self.view).cloned() else {
+    fn publish_commit(&mut self, engine: &mut Engine) {
+        let Some(commit) = engine.latest_commit(self.view).cloned() else {
             return;
         };
         // A commit from before this document was laid out has no display
@@ -1131,6 +1188,9 @@ impl PageEndpoint {
     }
 
     fn emit(&self, event: PageEvent) {
+        if matches!(event, PageEvent::NavigateRequested { .. }) {
+            self.asked_to_leave.set(true);
+        }
         let _ = self.events.send(event);
         if self.wake_window {
             crate::script_net::poke_live_turn();
@@ -1156,14 +1216,15 @@ impl PageEndpoint {
 
     /// The page's Inspector, for reads the page need not answer
     /// (`devtools_service`).
-    pub fn inspector(&self) -> Option<Arc<crate::inspector::Inspector>> {
-        self.engine.inspector(self.view)
+    pub fn inspector(&self, engine: &Engine) -> Option<Arc<crate::inspector::Inspector>> {
+        engine.inspector(self.view)
     }
 
-    /// Commands waiting on the channel, with adjacent resizes, renders and
-    /// live turns collapsed. Clicks and keys keep their order.
-    pub(crate) fn drain_coalesced(&self) -> Vec<PageCmd> {
-        let mut batch = Vec::new();
+    /// Commands waiting: those a load's safe point kept, then the channel,
+    /// with adjacent resizes, renders and live turns collapsed. Clicks and
+    /// keys keep their order.
+    pub(crate) fn drain_coalesced(&mut self) -> Vec<PageCmd> {
+        let mut batch: Vec<PageCmd> = self.deferred.drain(..).collect();
         for _ in 0..64 {
             match self.rx.try_recv() {
                 Ok(cmd) => batch.push(cmd),
@@ -1175,15 +1236,15 @@ impl PageEndpoint {
 
     /// The content thread's loop. One current-thread runtime, already
     /// entered by the caller: timers and fetches progress on every idle wait.
-    pub(crate) async fn run(mut self) {
+    pub(crate) async fn run(&mut self, engine: &mut Engine) {
         let mut clock = tokio::time::Instant::now();
         loop {
             let mut cmds = self.drain_coalesced();
             if cmds.is_empty() {
                 let elapsed = clock.elapsed().as_millis() as u64;
                 clock = tokio::time::Instant::now();
-                let turn = self.engine.pump_live(self.view, elapsed).await;
-                self.after_page_change();
+                let turn = engine.pump_live(self.view, elapsed).await;
+                self.after_page_change(engine);
                 // A resize (or any other command) that arrived during the
                 // turn is applied before the next timer slice. The frame
                 // yield returns between timer tasks; the bounds message is
@@ -1206,9 +1267,13 @@ impl PageEndpoint {
                     continue;
                 }
             }
-            for cmd in cmds {
+            // Queued on this half, not held in a local: a load among them
+            // serves the commands behind it at its safe points, and only in
+            // order (LAT15).
+            self.deferred.extend(cmds);
+            while let Some(cmd) = self.deferred.pop_front() {
                 let close = matches!(cmd, PageCmd::Close);
-                self.apply_async(cmd).await;
+                self.apply_async(engine, cmd).await;
                 if close {
                     return;
                 }
@@ -1216,35 +1281,122 @@ impl PageEndpoint {
         }
     }
 
-    async fn apply_async(&mut self, cmd: PageCmd) {
+    async fn apply_async(&mut self, engine: &mut Engine, cmd: PageCmd) {
         match cmd {
             PageCmd::Navigate { url, nav_id } => {
-                self.load_yielding(url, nav_id).await;
-                self.after_page_change();
+                self.load_yielding(engine, url, nav_id, true).await;
+                self.after_page_change(engine);
             }
             PageCmd::Reload { reply, nav_id } => {
-                let result = match self.engine.get_url(self.view) {
+                let result = match engine.get_url(self.view) {
                     Some(url) => {
-                        self.load_yielding(url, nav_id).await;
+                        self.load_yielding(engine, url, nav_id, true).await;
                         Ok(())
                     }
                     None => Err("No URL to reload".to_string()),
                 };
                 let _ = reply.send(result);
-                self.after_page_change();
+                self.after_page_change(engine);
             }
             PageCmd::PumpLive { elapsed_ms, reply } => {
-                let turn = self.engine.pump_live(self.view, elapsed_ms).await;
+                let turn = engine.pump_live(self.view, elapsed_ms).await;
                 let _ = reply.send(turn);
-                self.after_page_change();
+                self.after_page_change(engine);
             }
             PageCmd::LoadHtml { html, nav_id, reply } => {
-                let result = self.load_html_cmd(&html, nav_id);
+                let result = self.load_html_cmd(engine, &html, nav_id);
                 let _ = reply.send(result);
-                self.after_page_change();
+                self.after_page_change(engine);
             }
-            other => self.apply(other, None),
+            other => self.apply(engine, other, None),
         }
+    }
+}
+
+impl PageEndpoint {
+    /// Apply every command queued so far, on this thread.
+    ///
+    /// `live` is the runtime the live loop already uses. A navigation builds
+    /// its own runtime, as the view did before this protocol.
+    pub fn drain(&mut self, live: Option<&tokio::runtime::Runtime>) {
+        self.side.drain(&mut self.engine, live);
+    }
+
+    /// Load `url` as [`PageCmd::Navigate`] does, as a future the window
+    /// thread polls a slice at a time (#743). It holds the endpoint until
+    /// the load ends or yields after `DOMContentLoaded`.
+    pub async fn navigate(&mut self, url: Url, nav_id: u64) {
+        self.side.navigate(&mut self.engine, url, nav_id).await;
+    }
+
+    /// Cancels this view's navigations without the endpoint (M3b).
+    pub fn nav_canceller(&self) -> Option<crate::NavCanceller> {
+        self.side.nav_canceller(&self.engine)
+    }
+
+    /// Whether a yielded load is parked on the view; see
+    /// [`Engine::load_tail_open`].
+    pub fn load_tail_open(&self) -> bool {
+        self.side.load_tail_open(&self.engine)
+    }
+
+    pub(crate) fn set_settle_keys(&mut self, settle: bool) {
+        self.side.set_settle_keys(settle);
+    }
+
+    pub(crate) fn set_wake_window(&mut self, wake: bool) {
+        self.side.set_wake_window(wake);
+    }
+
+    pub(crate) fn set_command_wake(&mut self, wake: Arc<tokio::sync::Notify>) {
+        self.side.set_command_wake(wake);
+    }
+
+    /// What devtools has cost this page so far.
+    pub fn devtools_counters(&self) -> Arc<DevtoolsCounters> {
+        self.side.devtools_counters()
+    }
+
+    /// The page's Inspector, for reads the page need not answer
+    /// (`devtools_service`).
+    pub fn inspector(&self) -> Option<Arc<crate::inspector::Inspector>> {
+        self.side.inspector(&self.engine)
+    }
+
+    /// The content thread's loop. One current-thread runtime, already
+    /// entered by the caller: timers and fetches progress on every idle wait.
+    pub(crate) async fn run(mut self) {
+        self.side.run(&mut self.engine).await;
+    }
+}
+
+/// What a load's safe point may apply (LAT15): input and what reads or
+/// redraws the page. Not what starts or ends a document (a navigation, a
+/// reload, an HTML load, Stop, Close), a live turn (timers must not run
+/// inside a load), or the test hooks.
+fn runs_mid_load(cmd: &PageCmd) -> bool {
+    match cmd {
+        PageCmd::Input(_)
+        | PageCmd::Resize { .. }
+        | PageCmd::Eval { .. }
+        | PageCmd::DevtoolsEval { .. }
+        | PageCmd::SetVisible { .. }
+        | PageCmd::Render { .. }
+        | PageCmd::NoteInput { .. }
+        | PageCmd::GrabKeyboard
+        | PageCmd::Relayout
+        | PageCmd::Devtools { .. } => true,
+        PageCmd::Navigate { .. }
+        | PageCmd::LoadHtml { .. }
+        | PageCmd::Stop { .. }
+        | PageCmd::Reload { .. }
+        | PageCmd::Close
+        | PageCmd::PumpLive { .. }
+        | PageCmd::SetAppOwned { .. }
+        | PageCmd::SetHostReentry { .. }
+        | PageCmd::InstallReentryProbe { .. } => false,
+        #[cfg(test)]
+        PageCmd::Block(_) | PageCmd::PanicHoldingInspector => false,
     }
 }
 
