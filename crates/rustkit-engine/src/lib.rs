@@ -405,6 +405,8 @@ use nav_cancel::{load_phase, LoadInProgress, NavWatch};
 #[cfg(all(test, feature = "headless"))]
 mod load_cancel_tests;
 #[cfg(all(test, feature = "headless"))]
+mod load_turns_tests;
+#[cfg(all(test, feature = "headless"))]
 mod error_page_script_tests;
 #[cfg(all(test, feature = "headless"))]
 mod resource_url_log_tests;
@@ -1602,6 +1604,59 @@ const MAX_LIVE_TIMER_CALLBACKS: u32 = 1_000;
 /// still due for the next turn. Callbacks that finish inside the budget
 /// still run in the one turn, which is what a pump of a few timers observes.
 const LIVE_FRAME_MS: u64 = 16;
+
+/// What a load lends the engine to at its safe points (LAT15): the content
+/// thread's endpoint, which applies the window's commands that may run
+/// there. See [`Engine::safe_point`].
+pub(crate) type ServeFn<'s> = dyn FnMut(&mut Engine) -> Served + 's;
+
+/// What one safe point's serve did.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Served {
+    /// At least one command was applied.
+    pub ran: bool,
+    /// A command applied asked to leave the page: a followed link, a
+    /// submit, a script navigation. The window loads that page next.
+    pub leave: bool,
+}
+
+thread_local! {
+    /// Set while a load has lent the engine out at a safe point.
+    static SERVING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A document whose load ended early (Stop, a cancel after the commit)
+/// reads `complete`, as Chrome's does after a stop, rather than the
+/// `loading` it has read since the commit. No `readystatechange` fires: no
+/// page code runs for a stopped load. Not for a runtime that panicked
+/// (nothing more runs on it; its `readyState` stays as it was).
+fn settle_ready_state(bindings: Option<&DomBindings>) {
+    let Some(bindings) = bindings else { return };
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bindings.evaluate("if (document.readyState !== 'complete') { document.readyState = 'complete'; }")
+    }));
+}
+
+/// Whether this thread is inside a load's safe point.
+fn serving() -> bool {
+    SERVING.with(|s| s.get())
+}
+
+/// Marks this thread as inside a safe point until dropped.
+struct ServingScope;
+
+impl ServingScope {
+    fn enter() -> Self {
+        SERVING.with(|s| s.set(true));
+        ServingScope
+    }
+}
+
+impl Drop for ServingScope {
+    fn drop(&mut self) {
+        SERVING.with(|s| s.set(false));
+    }
+}
 
 /// Longest one turn of the live loop spends on the script requests that are
 /// out (XHR, fetch). The loop is the UI thread: a request is started on the
@@ -5616,6 +5671,7 @@ impl Engine {
     }
 
     pub async fn pump_live(&mut self, id: EngineViewId, elapsed_ms: u64) -> LivePump {
+        debug_assert!(!serving(), "a live turn ran at a load's safe point");
         let _hold = wgate::hold("live_turn");
         let mut out = LivePump::default();
         // The window's size as of this turn, laid out once, before the
@@ -7300,6 +7356,7 @@ impl Engine {
         policy: Option<Arc<FetchPolicy>>,
         watch: Option<&NavWatch>,
         yield_inserted: bool,
+        serve: Option<&mut ServeFn<'_>>,
     ) {
         // The page's scripts run on the view's bindings and log, taken out of
         // the view for the run so that the engine can lay the page out again
@@ -7321,16 +7378,21 @@ impl Engine {
         // callback and microtask drain arms the watchdog on its own; the
         // fetches between them do not.
         let _js = install_script_js(budget, self.config.interrupt_scripts_at_budget);
+        // Out of the view, except while a safe point lends the engine out
+        // between two scripts (LAT15): then the view holds them again, so
+        // the window's input reaches the page's listeners.
+        let mut slot = Some(bindings);
         self.run_page_scripts_with(
             id,
             fetched,
             &prefetch,
             budget,
             policy,
-            &bindings,
+            &mut slot,
             &mut log,
             watch,
             yield_inserted,
+            serve,
         )
         .await;
         let parked = script_net::take_parked_deliveries();
@@ -7343,7 +7405,9 @@ impl Engine {
         if let Some(view) = self.views.get_mut(&id) {
             log.append(&mut view.script_log);
             view.script_log = log;
-            view.bindings = Some(bindings);
+            if let Some(bindings) = slot {
+                view.bindings = Some(bindings);
+            }
         }
     }
 
@@ -7354,11 +7418,13 @@ impl Engine {
         prefetch: &module_prefetch::ModulePrefetch,
         _budget: std::time::Duration,
         policy: Option<Arc<FetchPolicy>>,
-        bindings: &DomBindings,
+        slot: &mut Option<DomBindings>,
         log: &mut Vec<ScriptRecord>,
         watch: Option<&NavWatch>,
         yield_inserted: bool,
+        mut serve: Option<&mut ServeFn<'_>>,
     ) {
+        let Some(bindings) = slot.as_ref() else { return };
         let horizon_ms = self.config.timer_horizon_ms;
         let post_load_live = self.config.post_load_requests_live;
         let loop_limit = self.config.script_loop_iteration_limit;
@@ -7403,7 +7469,7 @@ impl Engine {
         // it and run nothing more on this page.
         let poisoned = Cell::new(false);
         // `f` is given the source's label.
-        let run = |source: String, bytes: usize, f: &dyn Fn(&str) -> Result<(), String>| {
+        let run = |bindings: &DomBindings, source: String, bytes: usize, f: &dyn Fn(&str) -> Result<(), String>| {
             // Lifecycle steps (`DOMContentLoaded`, `load`, timers) still run
             // after the budget is spent. Only a script not yet started is
             // skipped; that check is at the script loop. With interruption
@@ -7491,10 +7557,34 @@ impl Engine {
         while let Some((index, (label, _, source, node_id, is_module, facts))) = jobs.next() {
             // Between scripts, on the same cadence as a live turn: the load
             // stays pending and the poll loop publishes the frame.
+            //
+            // Safe point (c) (LAT15): the bindings go back to the view for
+            // it, so a click reaches the listeners the scripts so far added.
             if frame_at.elapsed() >= std::time::Duration::from_millis(LIVE_FRAME_MS) {
-                tokio::task::yield_now().await;
+                match (serve.is_some(), watch) {
+                    (true, Some(watch)) => {
+                        if let Some(view) = self.views.get_mut(&id) {
+                            view.bindings = slot.take();
+                        }
+                        self.safe_point(id, watch, &mut serve).await;
+                        // What the served commands logged (a listener that
+                        // threw, one the budget stopped) follows the
+                        // scripts already run, in time order.
+                        if let Some(view) = self.views.get_mut(&id) {
+                            log.append(&mut view.script_log);
+                        }
+                        *slot = self.views.get_mut(&id).and_then(|view| view.bindings.take());
+                    }
+                    _ => tokio::task::yield_now().await,
+                }
                 frame_at = std::time::Instant::now();
             }
+            let Some(bindings) = slot.as_ref() else {
+                debug!(source = %label, "The page's bindings went away at a safe point: the rest of its scripts do not run");
+                facts.cancelled(&inspector, &label);
+                cancel_rest(&mut jobs);
+                return;
+            };
             // Between two scripts: a cancelled load runs none of the rest.
             #[cfg(test)]
             load_phase(&format!("script:{index}"));
@@ -7721,7 +7811,7 @@ impl Engine {
                 Some(name)
             };
             let began = std::time::Instant::now();
-            let record = run(label, text.len(), &|label| {
+            let record = run(bindings, label, text.len(), &|label| {
                 let name = external.as_deref().unwrap_or(label);
                 // `document.currentScript` is this element while it runs.
                 let _ = bindings.set_current_script(Some(node_id));
@@ -7740,6 +7830,7 @@ impl Engine {
         if poisoned.get() || nav_cancel::cancelled(watch) {
             return;
         }
+        let Some(bindings) = slot.as_ref() else { return };
 
         info!(
             elapsed_ms = scripts_started.elapsed().as_millis() as u64,
@@ -7870,7 +7961,7 @@ impl Engine {
             load_phase(source);
             inspector.lifecycle(if index == 0 { "DOMContentLoaded" } else { "load" });
             let step_started = std::time::Instant::now();
-            let record = run(source.to_string(), 0, &|_| step());
+            let record = run(bindings, source.to_string(), 0, &|_| step());
             info!(
                 %source,
                 elapsed_ms = step_started.elapsed().as_millis() as u64,
@@ -8107,10 +8198,48 @@ impl Engine {
         }
     }
 
+    /// A load's safe point (LAT15): lend the engine to `serve`, then yield
+    /// so the load's poll loop publishes what that changed.
+    ///
+    /// The load reaches one after its first layout, once a frame while its
+    /// images arrive, and between page scripts. No script of the load is
+    /// running and the view holds its document, bindings and layout, so the
+    /// window's input, resizes, evals and devtools reads run as they would
+    /// on a live turn, each as its own W-gate entry. A cancelled load serves
+    /// nothing. A command that asked to leave the page cancels this load:
+    /// the window loads the page asked for, and this one fires no `load`.
+    ///
+    /// The style memo spans two of the load's builds on the promise that
+    /// no script runs between them; anything served breaks that promise,
+    /// so the memo is put aside while serving and dropped if anything ran.
+    async fn safe_point(&mut self, id: EngineViewId, watch: &NavWatch, serve: &mut Option<&mut ServeFn<'_>>) {
+        let Some(serve) = serve.as_deref_mut() else {
+            return;
+        };
+        if self.nav_superseded(id, watch.nav_id) {
+            return;
+        }
+        let served = {
+            let _hold = wgate::suspend_hold();
+            let mut memo = StyleMemoAside::take();
+            let _serving = ServingScope::enter();
+            let served = serve(self);
+            if served.ran {
+                memo.0 = None;
+            }
+            served
+        };
+        if served.leave {
+            debug!(?id, nav_id = watch.nav_id, "A command at a safe point left the page: the load ends");
+            watch.canceller.cancel_nav(watch.nav_id);
+        }
+        tokio::task::yield_now().await;
+    }
+
     pub async fn load_url(&mut self, id: EngineViewId, url: Url) -> Result<(), EngineError> {
         self.begin_view_visit(id, url.host_str());
         let _hold = wgate::hold("load");
-        self.load_url_with_disposition(id, url, false, false, None)
+        self.load_url_with_disposition(id, url, false, false, None, None)
             .await
             .map(|_| ())
     }
@@ -8135,7 +8264,7 @@ impl Engine {
     ) -> Result<LoadYield, EngineError> {
         self.begin_view_visit(id, url.host_str());
         let _hold = wgate::hold("load");
-        self.load_url_with_disposition(id, url, false, true, None)
+        self.load_url_with_disposition(id, url, false, true, None, None)
             .await
     }
 
@@ -8150,7 +8279,25 @@ impl Engine {
     ) -> Result<LoadYield, EngineError> {
         self.begin_view_visit(id, url.host_str());
         let _hold = wgate::hold("load");
-        self.load_url_with_disposition(id, url, false, true, Some(nav_id))
+        self.load_url_with_disposition(id, url, false, true, Some(nav_id), None)
+            .await
+    }
+
+    /// [`Engine::load_url_yielding`] (`nav_id` `None`) or
+    /// [`Engine::load_url_yielding_as`], lending the engine to `serve` at
+    /// the load's safe points (LAT15; see [`Engine::safe_point`]). The
+    /// content thread passes the half of its endpoint that applies the
+    /// window's commands.
+    pub(crate) async fn load_url_serving(
+        &mut self,
+        id: EngineViewId,
+        url: Url,
+        nav_id: Option<u64>,
+        serve: Option<&mut ServeFn<'_>>,
+    ) -> Result<LoadYield, EngineError> {
+        wgate::begin_visit(id.raw(), url.host_str());
+        let _hold = wgate::hold("load");
+        self.load_url_with_disposition(id, url, false, true, nav_id, serve)
             .await
     }
 
@@ -8171,9 +8318,10 @@ impl Engine {
         replace: bool,
         yield_inserted: bool,
         preset_nav: Option<u64>,
+        serve: Option<&mut ServeFn<'_>>,
     ) -> Result<LoadYield, EngineError> {
         let result = self
-            .load_url_with_disposition_inner(id, url, replace, yield_inserted, preset_nav)
+            .load_url_with_disposition_inner(id, url, replace, yield_inserted, preset_nav, serve)
             .await;
         // The load's own layouts had their images looked for by the load,
         // or were cancelled with it: not the live loop's to fetch. A yielded
@@ -8191,7 +8339,9 @@ impl Engine {
         replace: bool,
         yield_inserted: bool,
         preset_nav: Option<u64>,
+        serve: Option<&mut ServeFn<'_>>,
     ) -> Result<LoadYield, EngineError> {
+        debug_assert!(!serving(), "a load started at another load's safe point");
         let _turn = rustkit_js::DiagTurn::enter("load");
         if let Some(nav_id) = preset_nav {
             let newest = self.nav_seq.load(Ordering::Acquire);
@@ -8254,7 +8404,7 @@ impl Engine {
             LoadInProgress::begin(watch.canceller.control().clone(), watch.nav_id);
         // Boxed: the load's state is large, and the debug build's stack
         // is not.
-        let result = Box::pin(self.load_url_for_nav(id, url, &watch, yield_inserted)).await;
+        let result = Box::pin(self.load_url_for_nav(id, url, &watch, yield_inserted, serve)).await;
         if !self.nav_superseded(id, watch.nav_id)
             && self
                 .views
@@ -8287,6 +8437,7 @@ impl Engine {
         url: Url,
         watch: &NavWatch,
         yield_inserted: bool,
+        mut serve: Option<&mut ServeFn<'_>>,
     ) -> Result<(), EngineError> {
         let generation = watch.nav_id;
 
@@ -8561,6 +8712,10 @@ impl Engine {
             bindings
                 .set_location(&url)
                 .map_err(|e| EngineError::JsError(e.to_string()))?;
+            // The document is `loading` until its scripts have run and
+            // DOMContentLoaded fires. Script reads it before then only at a
+            // safe point (LAT15): a click's listener, the app's evals.
+            let _ = bindings.set_ready_state("loading");
             // `document.cookie` is the jar the document's own requests use.
             if let Some(jar) = self.loader.cookie_jar() {
                 let (read, read_url, write_url) = (jar.clone(), url.clone(), url.clone());
@@ -8655,6 +8810,9 @@ impl Engine {
             // a beacon the script sends. A fast answer must not be the
             // first thing the window can show.
             tokio::task::yield_now().await;
+            // Safe point (a): what the window sent meanwhile runs on the
+            // page now shown, before any of its scripts.
+            self.safe_point(id, watch, &mut serve).await;
         }
 
         // Load external resources (stylesheets, images, fonts), and fetch
@@ -8666,7 +8824,7 @@ impl Engine {
             None
         };
         let subresources = async {
-            let result = self.load_subresources_for(id, Some(watch)).await;
+            let result = self.load_subresources_serving(id, Some(watch), serve.as_deref_mut()).await;
             (result, std::time::Instant::now())
         };
         let scripts = async move {
@@ -8705,6 +8863,7 @@ impl Engine {
             }
             self.relayout_for(id, RelayoutCause::InitialLoad)?;
             tokio::task::yield_now().await;
+            self.safe_point(id, watch, &mut serve).await;
         }
 
         // Subresource loading awaited the network too: a stop during a
@@ -8732,6 +8891,7 @@ impl Engine {
                 script_policy,
                 Some(watch),
                 yield_inserted,
+                serve.as_deref_mut(),
             )
             .await;
             if self.nav_superseded(id, generation) {
@@ -16744,6 +16904,12 @@ impl Engine {
     /// This is deliberately NOT the `DownloadManager` cancel path in
     /// rustkit-net — that one cancels FILE DOWNLOADS and has nothing to do
     /// with page loads. Conflating them was the first wrong turn on this unit.
+    /// After a Stop (LAT15 R1): the document left on screen reads
+    /// `complete`, as Chrome's does, once its interrupt word is lowered.
+    pub(crate) fn settle_ready_state(&self, id: EngineViewId) {
+        settle_ready_state(self.views.get(&id).and_then(|view| view.bindings.as_ref()));
+    }
+
     pub fn stop(&mut self, id: EngineViewId) -> bool {
         match self.views.get_mut(&id) {
             Some(view) => {
@@ -16902,6 +17068,11 @@ impl Engine {
         if committed {
             view.control.stop_cancelled();
         }
+        // The document this load committed stays on screen. It read
+        // `loading` from the commit (LAT15); stopped, it reads `complete`.
+        if committed {
+            settle_ready_state(view.bindings.as_ref());
+        }
         // A cancel during a render-blocking sheet (or before the first
         // layout) leaves the committed document never laid out: lay it out
         // as it is, unstyled as Chrome shows a stopped one, so the frame and
@@ -16974,7 +17145,7 @@ impl Engine {
         };
         match target {
             Some(url) => {
-                self.load_url_with_disposition(id, url, true, false, None)
+                self.load_url_with_disposition(id, url, true, false, None, None)
                     .await?;
                 Ok(true)
             }
@@ -16990,7 +17161,7 @@ impl Engine {
         };
         match target {
             Some(url) => {
-                self.load_url_with_disposition(id, url, true, false, None)
+                self.load_url_with_disposition(id, url, true, false, None, None)
                     .await?;
                 Ok(true)
             }
@@ -17008,7 +17179,7 @@ impl Engine {
         };
         match target {
             Some(url) => {
-                self.load_url_with_disposition(id, url, true, false, None)
+                self.load_url_with_disposition(id, url, true, false, None, None)
                     .await?;
                 Ok(true)
             }
@@ -18227,6 +18398,34 @@ impl Engine {
         self.load_images_pass(id, true).await
     }
 
+    /// The load's image pass with safe point (b) (LAT15): while the images
+    /// arrive the engine is lent to `serve` once a frame. The fetch is one
+    /// future, pinned for the whole wait, raced with each frame's tick; a
+    /// tick never starts it again. `None`: the navigation was cancelled.
+    async fn load_images_serving(
+        &mut self,
+        id: EngineViewId,
+        watch: &NavWatch,
+        serve: &mut Option<&mut ServeFn<'_>>,
+    ) -> Option<Result<usize, EngineError>> {
+        let plan = match self.plan_image_loads(id, false) {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return Some(Ok(0)),
+            Err(e) => return Some(Err(e)),
+        };
+        let mut fetch = std::pin::pin!(Self::fetch_planned_images(plan));
+        loop {
+            let tick = std::pin::pin!(tokio::time::sleep(std::time::Duration::from_millis(LIVE_FRAME_MS)));
+            let raced = futures::future::select(fetch.as_mut(), tick);
+            match nav_cancel::unless_cancelled(Some(watch), raced).await? {
+                futures::future::Either::Left((fetched, _)) => {
+                    return Some(Ok(self.keep_fetched_images(fetched)));
+                }
+                futures::future::Either::Right(((), _)) => self.safe_point(id, watch, serve).await,
+            }
+        }
+    }
+
     async fn load_images_pass(&mut self, id: EngineViewId, only_new: bool) -> Result<usize, EngineError> {
         let Some(plan) = self.plan_image_loads(id, only_new)? else {
             return Ok(0);
@@ -18549,6 +18748,17 @@ impl Engine {
         id: EngineViewId,
         watch: Option<&NavWatch>,
     ) -> Result<(), EngineError> {
+        self.load_subresources_serving(id, watch, None).await
+    }
+
+    /// [`Engine::load_subresources_for`], lending the engine to `serve`
+    /// while the images arrive (LAT15 safe point (b)).
+    async fn load_subresources_serving(
+        &mut self,
+        id: EngineViewId,
+        watch: Option<&NavWatch>,
+        mut serve: Option<&mut ServeFn<'_>>,
+    ) -> Result<(), EngineError> {
         // Load external stylesheets.
         //
         // The assignment below is UNCONDITIONAL on purpose. It used to sit
@@ -18642,8 +18852,11 @@ impl Engine {
             return Ok(());
         }
         let images = wgate::bucket(wgate::HoldBucket::Images);
-        let Some(image_count) = nav_cancel::unless_cancelled(watch, self.load_images(id)).await
-        else {
+        let image_count = match (serve.is_some(), watch) {
+            (true, Some(watch)) => self.load_images_serving(id, watch, &mut serve).await,
+            _ => nav_cancel::unless_cancelled(watch, self.load_images(id)).await,
+        };
+        let Some(image_count) = image_count else {
             return Ok(());
         };
         drop(images);

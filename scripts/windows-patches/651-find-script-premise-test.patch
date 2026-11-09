@@ -1,0 +1,31 @@
+Windows: load_turns_tests::find_in_page_mid_load_then_a_hydrating_script (new in hiwave-macos
+4b49aaf2, LAT15) pins that the app's find script ERRORS in RustKit content, because macOS's
+find_in_page.js wraps matches with Range.surroundContents, which RustKit lacks. The Windows copy
+of find_in_page.js (e26544d, native find) wraps with createTextNode / insertBefore instead, so
+here the find works and answers String("1"). The Windows arm expects that answer; the rest of
+the test (answered at once, the page's own script and the load untouched) is unchanged.
+
+Remove if the two copies of find_in_page.js converge.
+
+diff --git a/crates/rustkit-engine/src/load_turns_tests.rs b/crates/rustkit-engine/src/load_turns_tests.rs
+index f83b3a0..270dfa5 100644
+--- a/crates/rustkit-engine/src/load_turns_tests.rs
++++ b/crates/rustkit-engine/src/load_turns_tests.rs
+@@ -789,8 +789,16 @@ document.getElementById('main').textContent = 'hydrated hello world';</script>"#
+     let answer = wait(&mut rx, Duration::from_secs(20));
+     let waited = sent.elapsed();
+     assert!(waited < SERVED, "find waited {waited:?}");
++    // macOS's find script wraps matches with Range.surroundContents, which RustKit lacks, so
++    // there the find errors. The Windows copy of find_in_page.js wraps with createTextNode and
++    // insertBefore (no surroundContents), so it answers with the count instead.
++    let expect_error = !cfg!(windows);
+     assert!(
+-        answer.as_ref().is_some_and(|r| r.as_ref().is_err_and(|e| e.contains("surroundContents") || e.contains("not a callable"))),
++        answer.as_ref().is_some_and(|r| if expect_error {
++            r.as_ref().is_err_and(|e| e.contains("surroundContents") || e.contains("not a callable"))
++        } else {
++            r.as_ref().is_ok_and(|v| v == "String(\"1\")")
++        }),
+         "find mid-load: {answer:?}"
+     );
+     load.wait_complete();
