@@ -1636,6 +1636,11 @@ impl Default for AppConfig {
 
 /// Get data directory, with fallback
 fn dirs_or_default() -> PathBuf {
+    // HIWAVE_DATA_DIR overrides it: a portable install, and tests that must not
+    // touch the real history, downloads and settings.
+    if let Some(dir) = std::env::var_os("HIWAVE_DATA_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir);
+    }
     // Try standard data directory
     if let Some(data_dir) = dirs::data_local_dir() {
         return data_dir.join("hiwave");

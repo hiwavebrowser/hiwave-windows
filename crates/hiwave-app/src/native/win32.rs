@@ -27,6 +27,7 @@
 
 use rustkit_core::input::{InputEvent, KeyCode, KeyEvent, KeyEventType, Modifiers, MouseButton, MouseEventType};
 use super::shortcuts::{self, Shortcut};
+use super::chrome_data;
 use super::content_page::{self, ContentPage};
 use super::layout::{self, Layout, LayoutInput};
 use super::tabs::{TabModel, TabSwitch};
@@ -115,7 +116,7 @@ pub struct NativeBrowser {
     tabs: Option<TabModel<EngineViewId>>,
     /// Application state
     #[allow(dead_code)]
-    app_state: Arc<AppState>,
+    app_state: Arc<Mutex<AppState>>,
     /// Current window dimensions
     window_width: u32,
     window_height: u32,
@@ -147,6 +148,8 @@ pub struct NativeBrowser {
     /// content thread is on.
     page_tabs: Option<TabModel<u64>>,
     next_page_id: u64,
+    /// Which snapshots of the active tab are a new visit for the history.
+    visits: chrome_data::VisitTracker,
     /// A find on the content thread whose answer has not come back yet, with the
     /// query the chrome sent (the answer is echoed with that, never the page's).
     pending_find: RefCell<Option<(tokio::sync::oneshot::Receiver<Result<String, String>>, String)>>,
@@ -170,10 +173,10 @@ impl NativeBrowser {
             .map_err(|e| format!("Failed to create engine: {}", e))?;
 
         // Initialize app state
-        let app_state = Arc::new(
+        let app_state = Arc::new(Mutex::new(
             AppState::with_defaults()
                 .map_err(|e| format!("Failed to initialize app state: {}", e))?,
-        );
+        ));
 
         Ok(Self {
             viewhost: ViewHost::new(),
@@ -205,6 +208,7 @@ impl NativeBrowser {
             page_tabs: None,
             next_page_id: 1,
             pending_find: RefCell::new(None),
+            visits: chrome_data::VisitTracker::default(),
             page_focused: std::cell::Cell::new(false),
         })
     }
@@ -966,6 +970,7 @@ impl NativeBrowser {
             Shortcut::FocusAddressBar => self.send_chrome_chord(0x4C, "l"),
             Shortcut::ToggleSidebar => self.send_chrome_chord(0x42, "b"),
             Shortcut::CommandPalette => self.send_chrome_chord(0x4B, "k"),
+            Shortcut::History => self.send_chrome_chord(0x48, "h"),
         }
     }
 
@@ -1057,6 +1062,46 @@ impl NativeBrowser {
         };
         if let Some((answer, query)) = outcome {
             self.show_find_result(answer.ok(), &query);
+        }
+    }
+
+    /// A command on the shared app state (history, downloads). These are the calls the
+    /// WebView2 shell's handlers make; its `ipc` module is not built here (it needs the
+    /// WebView platform layer), so the two that change state are made directly.
+    fn app_data_command(&self, cmd: &str) {
+        let Ok(mut state) = self.app_state.lock() else {
+            return;
+        };
+        let script = match cmd {
+            "clear_visit_history" => {
+                if let Err(e) = state.clear_visit_history() {
+                    warn!(error = %e, "Failed to clear the history");
+                }
+                chrome_data::history_script(&state)
+            }
+            "clear_downloads" => {
+                state.clear_download_history();
+                if let Err(e) = state.save_workspace_state() {
+                    warn!(error = %e, "Failed to persist the download history");
+                }
+                chrome_data::downloads_script(&state)
+            }
+            "get_visit_history" => chrome_data::history_script(&state),
+            _ => chrome_data::downloads_script(&state),
+        };
+        drop(state);
+        self.run_chrome_script(&script);
+    }
+
+    /// Write the active page to the history when `VisitTracker` says it is a new visit.
+    fn record_visit_if_new(&mut self, tab: Option<u64>, url: &str, title: &str, loading: bool) {
+        if !self.visits.should_record(tab, url, title, loading) {
+            return;
+        }
+        if let Ok(mut state) = self.app_state.lock() {
+            if let Err(e) = state.record_visit(url, Some(title.to_string()), None) {
+                warn!(error = %e, "Failed to write the history entry");
+            }
         }
     }
 
@@ -1224,6 +1269,8 @@ impl NativeBrowser {
 
     /// Tell the chrome what differs between `now` and what it was last told.
     fn push_snapshot(&mut self, now: ChromeSnapshot) {
+        let active_tab = now.tabs.iter().find(|r| r.active).map(|r| r.id);
+        self.record_visit_if_new(active_tab, &now.url, &now.title, now.loading);
         if self.chrome_synced.as_ref() == Some(&now) {
             return;
         }
@@ -1577,6 +1624,11 @@ impl NativeBrowser {
                 self.run_chrome_script(&script);
             }
             "save_sidebar_width" => {}
+            // The panels' data lives in the shared app state: run the shared handler,
+            // then send the panel its new data.
+            "get_visit_history" | "clear_visit_history" | "get_downloads" | "clear_downloads" => {
+                self.app_data_command(cmd);
+            }
             "find_in_page" => {
                 let query = json.get("query").and_then(|v| v.as_str()).unwrap_or("");
                 let case_sensitive = json.get("case_sensitive").and_then(|v| v.as_bool()).unwrap_or(false);

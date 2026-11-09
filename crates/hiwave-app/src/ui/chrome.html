@@ -2641,7 +2641,8 @@
 
         .downloads-panel {
             position: absolute;
-            top: calc(100% + 6px);
+            /* under the tab bar (44) + toolbar (48): the viewport is the expanded chrome, not the strip */
+            top: 98px;
             right: 18px;
             width: 320px;
             background: var(--bg-secondary);
@@ -2657,7 +2658,8 @@
 
         .history-panel {
             position: absolute;
-            top: calc(100% + 6px);
+            /* under the tab bar (44) + toolbar (48): the viewport is the expanded chrome, not the strip */
+            top: 98px;
             right: 18px;
             width: 360px;
             max-height: 360px;
