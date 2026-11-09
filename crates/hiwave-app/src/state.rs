@@ -560,6 +560,10 @@ pub struct AppState {
     /// own file so it never reads or rewrites the default build's session.
     pub workspace_state_file: String,
 
+    /// Set when the saved session could not be read and could not be moved aside: saving is
+    /// refused for the rest of the run, so the unreadable file is never overwritten.
+    workspace_state_save_blocked: bool,
+
     /// Shelved tabs by workspace name
     pub shelves: HashMap<String, Vec<ShelfItem>>,
 
@@ -649,6 +653,7 @@ impl AppState {
             focus_mode,
             focus_mode_config,
             workspace_state_file: "workspace_state.json".to_string(),
+            workspace_state_save_blocked: false,
             shelves: HashMap::new(),
             cellar: Vec::new(),
             downloads: Vec::new(),
@@ -1080,8 +1085,22 @@ impl AppState {
         if !path.exists() {
             return Ok(false);
         }
+        match self.read_workspace_state(&path) {
+            Ok(()) => {
+                self.ensure_download_dir();
+                Ok(true)
+            }
+            Err(err) => {
+                // A session file that cannot be read must not be overwritten by the empty
+                // state the first save would write: keep it under another name first.
+                self.set_workspace_state_aside(&path);
+                Err(err)
+            }
+        }
+    }
 
-        let contents = std::fs::read_to_string(&path)?;
+    fn read_workspace_state(&mut self, path: &std::path::Path) -> HiWaveResult<()> {
+        let contents = std::fs::read_to_string(path)?;
         if let Ok(snapshot) = serde_json::from_str::<WorkspaceStateSnapshot>(&contents) {
             self.shell.load_snapshot(snapshot.shell)?;
             self.shelves = snapshot.shelves;
@@ -1106,11 +1125,40 @@ impl AppState {
             self.next_download_id = 1;
             self.sync_shelf_keys();
         }
-        self.ensure_download_dir();
-        Ok(true)
+        Ok(())
+    }
+
+    /// Rename an unreadable session file to `<name>.corrupt`, `.corrupt-1`, ... (never over an
+    /// earlier one). If that fails too, block saving for this run so the file survives.
+    fn set_workspace_state_aside(&mut self, path: &std::path::Path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut target = path.with_file_name(format!("{name}.corrupt"));
+        let mut n = 1;
+        while target.exists() {
+            target = path.with_file_name(format!("{name}.corrupt-{n}"));
+            n += 1;
+        }
+        match std::fs::rename(path, &target) {
+            Ok(()) => tracing::warn!(
+                "The saved session could not be read; kept as {} and starting empty",
+                target.display()
+            ),
+            Err(err) => {
+                tracing::warn!(
+                    "The saved session could not be read and could not be moved aside ({}); not saving it this run",
+                    err
+                );
+                self.workspace_state_save_blocked = true;
+            }
+        }
     }
 
     pub fn save_workspace_state(&self) -> HiWaveResult<()> {
+        if self.workspace_state_save_blocked {
+            return Err(hiwave_core::HiWaveError::Config(
+                "Not saving: the saved session could not be read or moved aside".to_string(),
+            ));
+        }
         let path = self.workspace_state_path();
         let snapshot = WorkspaceStateSnapshot {
             shell: self.shell.snapshot(),
@@ -1121,7 +1169,20 @@ impl AppState {
         let data = serde_json::to_string_pretty(&snapshot).map_err(|err| {
             hiwave_core::HiWaveError::Config(format!("Failed to save workspace state: {}", err))
         })?;
-        std::fs::write(path, data)?;
+        // Write a temp file next to it and rename it over the real one: a crash or a full disk
+        // mid-write leaves the old file, not a truncated one.
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let tmp = path.with_file_name(format!("{name}.tmp"));
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(data.as_bytes())?;
+            file.sync_all()?;
+        }
+        if let Err(err) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err.into());
+        }
         Ok(())
     }
 
@@ -1823,6 +1884,97 @@ impl HiWaveExport {
             workspaces: Vec::new(),
             shelf: HashMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod workspace_state_file_tests {
+    use super::*;
+
+    fn fresh(name: &str) -> AppState {
+        let dir = std::env::temp_dir().join(format!("hiwave_wsfile_{}_{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = AppConfig::default();
+        config.data_dir = dir.clone();
+        config.download_dir = dir.join("downloads");
+        AppState::new(config).expect("state")
+    }
+
+    fn file(s: &AppState) -> PathBuf {
+        s.config.data_dir.join(&s.workspace_state_file)
+    }
+
+    #[test]
+    fn a_save_leaves_the_file_and_no_temp_file_and_loads_back() {
+        let mut s = fresh("roundtrip");
+        s.shell.create_workspace("Work".to_string());
+        s.save_workspace_state().unwrap();
+        assert!(file(&s).exists());
+        assert!(!s.config.data_dir.join("workspace_state.json.tmp").exists(), "the temp file is renamed away");
+        let mut again = AppState::new(s.config.clone()).unwrap();
+        assert!(again.load_workspace_state().unwrap());
+        assert_eq!(again.shell.list_workspaces().len(), 2);
+    }
+
+    #[test]
+    fn an_empty_session_file_is_kept_aside_not_overwritten() {
+        let mut s = fresh("empty");
+        std::fs::write(file(&s), "").unwrap();
+        assert!(s.load_workspace_state().is_err());
+        assert!(!file(&s).exists(), "moved out of the way");
+        assert!(s.config.data_dir.join("workspace_state.json.corrupt").exists());
+        // The first save writes a fresh file and leaves the kept one alone.
+        s.save_workspace_state().unwrap();
+        assert!(file(&s).exists());
+        assert_eq!(std::fs::read_to_string(s.config.data_dir.join("workspace_state.json.corrupt")).unwrap(), "");
+    }
+
+    #[test]
+    fn a_corrupt_session_file_keeps_its_bytes_and_each_one_gets_its_own_name() {
+        let mut s = fresh("corrupt");
+        std::fs::write(file(&s), "{ this is not json").unwrap();
+        assert!(s.load_workspace_state().is_err());
+        let first = s.config.data_dir.join("workspace_state.json.corrupt");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "{ this is not json");
+
+        // A second bad file does not replace the first.
+        std::fs::write(file(&s), "[1, 2").unwrap();
+        assert!(s.load_workspace_state().is_err());
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "{ this is not json");
+        assert_eq!(
+            std::fs::read_to_string(s.config.data_dir.join("workspace_state.json.corrupt-1")).unwrap(),
+            "[1, 2"
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_utf8_is_kept_aside_too() {
+        let mut s = fresh("binary");
+        std::fs::write(file(&s), [0xff, 0xfe, 0x00, 0x9f]).unwrap();
+        assert!(s.load_workspace_state().is_err());
+        assert_eq!(
+            std::fs::read(s.config.data_dir.join("workspace_state.json.corrupt")).unwrap(),
+            vec![0xff, 0xfe, 0x00, 0x9f]
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_not_an_error_and_a_good_one_is_not_moved() {
+        let mut s = fresh("missing");
+        assert!(!s.load_workspace_state().unwrap());
+        s.save_workspace_state().unwrap();
+        let before = std::fs::read(file(&s)).unwrap();
+        assert!(s.load_workspace_state().unwrap());
+        assert_eq!(std::fs::read(file(&s)).unwrap(), before, "a readable file is left as it was");
+        assert!(!s.config.data_dir.join("workspace_state.json.corrupt").exists());
+    }
+
+    #[test]
+    fn saving_is_refused_when_the_unreadable_file_could_not_be_moved_aside() {
+        let mut s = fresh("blocked");
+        s.workspace_state_save_blocked = true;
+        assert!(s.save_workspace_state().is_err());
+        assert!(!file(&s).exists(), "nothing was written");
     }
 }
 
