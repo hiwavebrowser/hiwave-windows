@@ -407,6 +407,8 @@ mod load_cancel_tests;
 #[cfg(all(test, feature = "headless"))]
 mod load_turns_tests;
 #[cfg(all(test, feature = "headless"))]
+mod script_stream_tests;
+#[cfg(all(test, feature = "headless"))]
 mod error_page_script_tests;
 #[cfg(all(test, feature = "headless"))]
 mod resource_url_log_tests;
@@ -1729,6 +1731,89 @@ pub const HTML_LOAD_RUNS_INLINE_CLASSIC_ONLY: &str = "an inline HTML load runs i
 /// Inspector facts)`. A module's label is the URL it was finally served
 /// from (`inline#n` for an inline one).
 type FetchedScript = (String, usize, Result<(ScriptTiming, String), ScriptOutcome>, bool, ScriptFetched);
+
+/// The page's `<script>`s as they arrive (LAT17). Each fetch fills its
+/// document-order slot when it lands, so the run can start a script as soon
+/// as it and the scripts before it are in, instead of after every fetch.
+///
+/// The driver owns the fetches. Whoever awaits on the load polls it: the
+/// subresource phase ([`ScriptFeed::alongside`]), and the script run while
+/// it waits for a slot or awaits anything else. Dropping the feed drops
+/// every fetch still out.
+struct ScriptFeed {
+    /// Per script, in document order: its label before any fetch, its
+    /// Inspector kind, and its pass (0 classic or not runnable, 1 `defer`
+    /// and module, 2 `async`).
+    entries: Vec<(String, &'static str, u8)>,
+    slots: Rc<std::cell::RefCell<Vec<Option<FetchedScript>>>>,
+    driver: Option<futures::future::LocalBoxFuture<'static, ()>>,
+    prefetch: module_prefetch::ModulePrefetch,
+}
+
+impl ScriptFeed {
+    /// Poll the fetches once. `true` once they are all in.
+    fn poll_driver(&mut self, cx: &mut std::task::Context<'_>) -> bool {
+        if let Some(driver) = self.driver.as_mut() {
+            if std::future::Future::poll(driver.as_mut(), cx).is_ready() {
+                self.driver = None;
+            }
+        }
+        self.driver.is_none()
+    }
+
+    /// Script `index`, if it has arrived. A script whose fetch was lost
+    /// (the driver ended without it) is reported as skipped.
+    fn take(&mut self, index: usize) -> Option<FetchedScript> {
+        // The borrow ends with this statement: none is held across a poll.
+        let arrived = self.slots.borrow_mut()[index].take();
+        if arrived.is_some() {
+            return arrived;
+        }
+        if self.driver.is_some() {
+            return None;
+        }
+        let (label, kind, _) = &self.entries[index];
+        Some((
+            label.clone(),
+            0,
+            Err(ScriptOutcome::Skipped("script fetch lost")),
+            false,
+            ScriptFetched { kind, fetch: None, arrived: None },
+        ))
+    }
+
+    fn arrived(&self, index: usize) -> bool {
+        self.slots.borrow()[index].is_some()
+    }
+
+    /// Wait until script `index` arrives (`true`) or `tick` ends (`false`),
+    /// driving every fetch meanwhile.
+    async fn wait_for(&mut self, index: usize, tick: impl std::future::Future<Output = ()>) -> bool {
+        let mut tick = std::pin::pin!(tick);
+        std::future::poll_fn(|cx| {
+            let done = self.poll_driver(cx);
+            if done || self.arrived(index) {
+                return std::task::Poll::Ready(true);
+            }
+            if std::future::Future::poll(tick.as_mut(), cx).is_ready() {
+                return std::task::Poll::Ready(false);
+            }
+            std::task::Poll::Pending
+        })
+        .await
+    }
+
+    /// Await `fut`, driving the fetches alongside it, so the network does
+    /// not stall while the load awaits something else.
+    async fn alongside<F: std::future::Future>(&mut self, fut: F) -> F::Output {
+        let mut fut = std::pin::pin!(fut);
+        std::future::poll_fn(|cx| {
+            self.poll_driver(cx);
+            std::future::Future::poll(fut.as_mut(), cx)
+        })
+        .await
+    }
+}
 
 /// What the Inspector's `script` record says about how a page script was
 /// loaded (`inspector::ScriptEnd`).
@@ -6928,6 +7013,12 @@ impl Engine {
         Ok(())
     }
 
+    /// Whether a page's script navigation is followed (and, on the content
+    /// thread, ends the load that asked for it; LAT17).
+    pub(crate) fn follows_script_navigation(&self) -> bool {
+        self.config.follows_script_navigation
+    }
+
     /// Load a URL in a view.
     /// What the current document's scripts did on load: one record per
     /// `<script>` in execution order, then any exception that escaped a
@@ -6957,17 +7048,19 @@ impl Engine {
     }
 
     /// Collect the document's `<script>`s in document order and start
-    /// fetching the external ones. The returned future borrows nothing from
-    /// the engine, so `load_url` polls it alongside `load_subresources`:
+    /// fetching the external ones. The returned feed borrows nothing from
+    /// the engine, so `load_url` drives it alongside `load_subresources`:
     /// script bytes arrive while stylesheets, images and fonts do, instead
-    /// of after them. A fetch that is still waiting when the network cap
-    /// runs out fails; that cap is not the script budget.
+    /// of after them. Each script lands in its own slot as it arrives, and
+    /// the run takes it from there (LAT17). A fetch that is still waiting
+    /// when the network cap runs out fails; that cap is not the script
+    /// budget.
     fn fetch_page_scripts(
         &self,
         id: EngineViewId,
         base: &Url,
         policy: Option<Arc<FetchPolicy>>,
-    ) -> Option<futures::future::LocalBoxFuture<'static, (Vec<FetchedScript>, module_prefetch::ModulePrefetch)>> {
+    ) -> Option<ScriptFeed> {
         let document = self.views.get(&id).and_then(|v| v.document.clone())?;
 
         // Collect in document order.
@@ -7062,7 +7155,27 @@ impl Engine {
             }
             _ => None,
         };
-        let scripts = futures::stream::iter(entries.into_iter().map(move |(label, node_id, entry, is_module, kind)| {
+        // What the run needs before anything arrives: the label (for a
+        // cancel record), the kind, and the pass the script runs in.
+        let meta: Vec<(String, &'static str, u8)> = entries
+            .iter()
+            .map(|(label, _, entry, is_module, kind)| {
+                let pass = match entry {
+                    Ok((ScriptTiming::Classic, _)) => 0,
+                    Ok((ScriptTiming::Defer, _)) => 1,
+                    Ok((ScriptTiming::Async, _)) => 2,
+                    // A module that cannot be fetched keeps its place so
+                    // its `error` fires in order; a classic one is logged
+                    // in its place.
+                    Err(_) if *is_module => 1,
+                    Err(_) => 0,
+                };
+                (label.clone(), *kind, pass)
+            })
+            .collect();
+        let slots: Rc<std::cell::RefCell<Vec<Option<FetchedScript>>>> =
+            Rc::new(std::cell::RefCell::new((0..meta.len()).map(|_| None).collect()));
+        let scripts = futures::stream::iter(entries.into_iter().enumerate().map(move |(position, (label, node_id, entry, is_module, kind))| {
                 let loader = loader.clone();
                 let referrer = referrer.clone();
                 let policy = policy.clone();
@@ -7199,25 +7312,32 @@ impl Engine {
                             });
                         }
                     }
-                    (label, node_id, result, is_module, fetched)
+                    (position, (label, node_id, result, is_module, fetched))
                 }
             }))
-            .buffered(MAX_CONCURRENT_SCRIPT_LOADS);
-        Some(
-            async move {
-                // The stream (and with it every sender) is gone once
-                // collected, which is what lets the walker finish.
-                let collect = async move { scripts.collect::<Vec<_>>().await };
-                let walk = async move {
-                    if let Some(walker) = walker {
-                        walker.await;
-                    }
-                };
-                let (scripts, ()) = futures::join!(collect, walk);
-                (scripts, prefetch)
-            }
-            .boxed_local(),
-        )
+            // Started in document order, at most this many at once. A
+            // fetch that lands frees its place at once: a slow early script
+            // does not hold back the later fetches.
+            .buffer_unordered(MAX_CONCURRENT_SCRIPT_LOADS);
+        let filled = slots.clone();
+        let driver = async move {
+            // The stream (and with it every sender) is gone once drained,
+            // which is what lets the walker finish.
+            let fill = async move {
+                let mut scripts = std::pin::pin!(scripts);
+                while let Some((position, fetched)) = scripts.next().await {
+                    filled.borrow_mut()[position] = Some(fetched);
+                }
+            };
+            let walk = async move {
+                if let Some(walker) = walker {
+                    walker.await;
+                }
+            };
+            futures::join!(fill, walk);
+        }
+        .boxed_local();
+        Some(ScriptFeed { entries: meta, slots, driver: Some(driver), prefetch })
     }
 
     /// Fetch and run external scripts the page inserted.
@@ -7348,12 +7468,13 @@ impl Engine {
     /// waits are not part of that budget.
     ///
     /// The document is fully parsed before any script runs, so a script
-    /// sees the whole tree rather than the part above it.
+    /// sees the whole tree rather than the part above it. A script does not
+    /// wait for the fetches of the scripts after it (LAT17): each runs once
+    /// it and every script before it in its pass are in.
     async fn run_page_scripts(
         &mut self,
         id: EngineViewId,
-        fetched: Vec<FetchedScript>,
-        prefetch: module_prefetch::ModulePrefetch,
+        mut feed: ScriptFeed,
         budget: std::time::Duration,
         policy: Option<Arc<FetchPolicy>>,
         watch: Option<&NavWatch>,
@@ -7386,8 +7507,7 @@ impl Engine {
         let mut slot = Some(bindings);
         self.run_page_scripts_with(
             id,
-            fetched,
-            &prefetch,
+            &mut feed,
             budget,
             policy,
             &mut slot,
@@ -7413,11 +7533,90 @@ impl Engine {
         }
     }
 
+    /// Safe point (c) and its kin while a script's fetch is awaited
+    /// (LAT15, LAT17): the bindings go back to the view so the window's
+    /// input reaches the listeners the scripts so far added, and come back
+    /// after. Without `serve` (or a watch) the load only yields.
+    async fn lend_at_safe_point(
+        &mut self,
+        id: EngineViewId,
+        watch: Option<&NavWatch>,
+        serve: &mut Option<&mut ServeFn<'_>>,
+        slot: &mut Option<DomBindings>,
+        log: &mut Vec<ScriptRecord>,
+    ) {
+        match (serve.is_some(), watch) {
+            (true, Some(watch)) => {
+                if let Some(view) = self.views.get_mut(&id) {
+                    view.bindings = slot.take();
+                }
+                self.safe_point(id, watch, serve).await;
+                // What the served commands logged (a listener that threw,
+                // one the budget stopped) follows the scripts already run,
+                // in time order.
+                if let Some(view) = self.views.get_mut(&id) {
+                    log.append(&mut view.script_log);
+                }
+                *slot = self.views.get_mut(&id).and_then(|view| view.bindings.take());
+            }
+            _ => tokio::task::yield_now().await,
+        }
+    }
+
+    /// The load ended because its page asked to navigate: the requests the
+    /// page made before that still go out, as in Chromium, with nobody to
+    /// answer (LAT17). Not when the load goes on (the window did not take
+    /// the navigation): the page then gets its answers as usual.
+    ///
+    /// `queued` was taken from the page before the safe point. If the load
+    /// goes on after all, they start as live requests and the page gets its
+    /// answers from the live loop, after the load.
+    fn send_leaving_requests(
+        &mut self,
+        id: EngineViewId,
+        queued: Vec<rustkit_bindings::NetRequest>,
+        policy: &Option<Arc<FetchPolicy>>,
+        loader: &Arc<ResourceLoader>,
+        inspector: &Arc<Inspector>,
+        watch: Option<&NavWatch>,
+    ) {
+        let Some(policy) = policy.as_ref() else {
+            return;
+        };
+        if queued.is_empty() {
+            return;
+        }
+        if nav_cancel::cancelled(watch) {
+            let deadline = tokio::time::Instant::now() + SCRIPT_NETWORK_CAP;
+            let sent = script_net::send_for_leaving_page(policy, loader, queued, deadline, inspector);
+            debug!(sent, "The page left with requests out: sent, unanswered");
+            return;
+        }
+        let Some(view) = self.views.get_mut(&id) else { return };
+        let deadline = tokio::time::Instant::now() + LIVE_REQUEST_TIMEOUT;
+        for request in queued {
+            let out = view.live_requests.len();
+            view.live_requests.push(script_net::start_live(
+                policy.clone(),
+                loader.clone(),
+                request,
+                deadline,
+                inspector.clone(),
+                out,
+            ));
+        }
+    }
+
+    /// What the page has queued for the network and not yet sent.
+    fn take_queued_requests(slot: &Option<DomBindings>) -> Vec<rustkit_bindings::NetRequest> {
+        let Some(bindings) = slot.as_ref() else { return Vec::new() };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bindings.take_net_requests())).unwrap_or_default()
+    }
+
     async fn run_page_scripts_with(
         &mut self,
         id: EngineViewId,
-        fetched: Vec<FetchedScript>,
-        prefetch: &module_prefetch::ModulePrefetch,
+        feed: &mut ScriptFeed,
         _budget: std::time::Duration,
         policy: Option<Arc<FetchPolicy>>,
         slot: &mut Option<DomBindings>,
@@ -7444,28 +7643,13 @@ impl Engine {
         // Execution order: classic, defer (module scripts run here, in
         // document order with them), async (stable within each). A module
         // whose fetch failed keeps its place so its `error` event fires in
-        // order; a classic script failure is only logged.
-        type Job = (String, u8, Result<String, ScriptOutcome>, usize, bool, ScriptFetched);
-        let mut runnable: Vec<Job> = Vec::new();
-        for (label, node_id, result, is_module, facts) in fetched {
-            match result {
-                Ok((timing, text)) => {
-                    let key = match timing {
-                        ScriptTiming::Classic => 0,
-                        ScriptTiming::Defer => 1,
-                        ScriptTiming::Async => 2,
-                    };
-                    runnable.push((label, key, Ok(text), node_id, is_module, facts));
-                }
-                Err(outcome) if is_module => runnable.push((label, 1, Err(outcome), node_id, true, facts)),
-                Err(outcome) => {
-                    let record = ScriptRecord { source: label, bytes: 0, elapsed_ms: 0, outcome };
-                    facts.ended(&inspector, &record, None, None);
-                    inspector_glue::log_script(log, &inspector, record);
-                }
-            }
-        }
-        runnable.sort_by_key(|(_, key, _, _, _, _)| *key);
+        // order; a classic script failure is only logged, in its place.
+        // Each is taken from the feed when its turn comes, waiting for its
+        // fetch only then (LAT17).
+        let prefetch = feed.prefetch.clone();
+        let prefetch = &prefetch;
+        let mut order: Vec<usize> = (0..feed.entries.len()).collect();
+        order.sort_by_key(|&position| feed.entries[position].2);
 
         // A panic inside the JS engine leaves its state unknowable: record
         // it and run nothing more on this page.
@@ -7548,54 +7732,106 @@ impl Engine {
         // What listeners reported while a script ran, for the script log at
         // the next lifecycle step.
         let mut carried: Vec<String> = Vec::new();
-        let mut jobs = runnable.into_iter().enumerate();
         // A cancelled load runs none of the rest; each still gets its one
-        // Inspector record.
-        let cancel_rest = |jobs: &mut dyn Iterator<Item = (usize, Job)>| {
-            for (_, (label, _, _, _, _, facts)) in jobs {
-                facts.cancelled(&inspector, &label);
+        // Inspector record, arrived or not.
+        let cancel_rest = |feed: &mut ScriptFeed, rest: &mut dyn Iterator<Item = usize>| {
+            for position in rest {
+                let taken = feed.slots.borrow_mut()[position].take();
+                match taken {
+                    Some((label, _, _, _, facts)) => facts.cancelled(&inspector, &label),
+                    None => {
+                        let (label, kind, _) = &feed.entries[position];
+                        ScriptFetched { kind, fetch: None, arrived: None }.cancelled(&inspector, label);
+                    }
+                }
             }
         };
-        while let Some((index, (label, _, source, node_id, is_module, facts))) = jobs.next() {
+        let follows = self.config.follows_script_navigation;
+        // The leave boundary is offered once per load: a navigation the
+        // window does not take (nothing reported it) does not turn every
+        // later boundary into a safe point, and the requests later scripts
+        // make stay with the load's own pump.
+        let mut offered = false;
+        let mut rest = order.into_iter();
+        // Counts the scripts that reach their run, as before LAT17.
+        let mut index = 0usize;
+        while let Some(position) = rest.next() {
             // Between scripts, on the same cadence as a live turn: the load
             // stays pending and the poll loop publishes the frame.
             //
             // Safe point (c) (LAT15): the bindings go back to the view for
             // it, so a click reaches the listeners the scripts so far added.
-            if frame_at.elapsed() >= std::time::Duration::from_millis(LIVE_FRAME_MS) {
-                match (serve.is_some(), watch) {
-                    (true, Some(watch)) => {
-                        if let Some(view) = self.views.get_mut(&id) {
-                            view.bindings = slot.take();
-                        }
-                        self.safe_point(id, watch, &mut serve).await;
-                        // What the served commands logged (a listener that
-                        // threw, one the budget stopped) follows the
-                        // scripts already run, in time order.
-                        if let Some(view) = self.views.get_mut(&id) {
-                            log.append(&mut view.script_log);
-                        }
-                        *slot = self.views.get_mut(&id).and_then(|view| view.bindings.take());
-                    }
-                    _ => tokio::task::yield_now().await,
-                }
+            // At once when the last script asked to leave the page: the
+            // safe point reports it, and the window's navigation ends this
+            // load (LAT17).
+            let leaving = follows
+                && !offered
+                && serve.is_some()
+                && slot.as_ref().is_some_and(|bindings| bindings.navigation_requested());
+            offered |= leaving;
+            if leaving || frame_at.elapsed() >= std::time::Duration::from_millis(LIVE_FRAME_MS) {
+                // Taken before the safe point: once the window takes the
+                // navigation it raises the interrupt word, and the old
+                // page's queue can no longer be read.
+                let queued = if leaving { Self::take_queued_requests(slot) } else { Vec::new() };
+                feed.alongside(self.lend_at_safe_point(id, watch, &mut serve, slot, log)).await;
                 frame_at = std::time::Instant::now();
+                self.send_leaving_requests(id, queued, &policy, &loader, &inspector, watch);
             }
+            // Its fetch, if it is still out. The others keep arriving
+            // meanwhile, and the window is served every frame (LAT17).
+            let fetched = loop {
+                if nav_cancel::cancelled(watch) {
+                    debug!("Navigation cancelled: the rest of its scripts do not run");
+                    cancel_rest(feed, &mut std::iter::once(position).chain(&mut rest));
+                    return;
+                }
+                if let Some(fetched) = feed.take(position) {
+                    break fetched;
+                }
+                let waiting = wgate::bucket(wgate::HoldBucket::ScriptFetch);
+                // Served every frame while it waits; with nothing to serve
+                // (the same-thread load) it waits for the slot alone.
+                let serving = serve.is_some() && watch.is_some();
+                let tick = async move {
+                    match serving {
+                        true => tokio::time::sleep(std::time::Duration::from_millis(LIVE_FRAME_MS)).await,
+                        false => std::future::pending::<()>().await,
+                    }
+                };
+                let arrived = nav_cancel::unless_cancelled(watch, feed.wait_for(position, tick)).await;
+                drop(waiting);
+                if arrived == Some(false) {
+                    feed.alongside(self.lend_at_safe_point(id, watch, &mut serve, slot, log)).await;
+                    frame_at = std::time::Instant::now();
+                }
+            };
+            let (label, node_id, result, is_module, facts) = fetched;
+            let source = match result {
+                Ok((_, text)) => Ok(text),
+                Err(outcome) if is_module => Err(outcome),
+                Err(outcome) => {
+                    // A classic script that will not run: logged in its place.
+                    let record = ScriptRecord { source: label, bytes: 0, elapsed_ms: 0, outcome };
+                    facts.ended(&inspector, &record, None, None);
+                    inspector_glue::log_script(log, &inspector, record);
+                    continue;
+                }
+            };
             let Some(bindings) = slot.as_ref() else {
                 debug!(source = %label, "The page's bindings went away at a safe point: the rest of its scripts do not run");
                 facts.cancelled(&inspector, &label);
-                cancel_rest(&mut jobs);
+                cancel_rest(feed, &mut rest);
                 return;
             };
             // Between two scripts: a cancelled load runs none of the rest.
             #[cfg(test)]
             load_phase(&format!("script:{index}"));
-            #[cfg(not(test))]
-            let _ = index;
+            index += 1;
             if nav_cancel::cancelled(watch) {
                 debug!(source = %label, "Navigation cancelled: the rest of its scripts do not run");
                 facts.cancelled(&inspector, &label);
-                cancel_rest(&mut jobs);
+                cancel_rest(feed, &mut rest);
                 return;
             }
             let text = match source {
@@ -7683,7 +7919,7 @@ impl Engine {
                             if let (Some(policy), Some(document)) = (&policy, &document_url) {
                                 let mut count = modules_fetched.get();
                                 let importing = wgate::bucket(wgate::HoldBucket::ScriptNet);
-                                let found = nav_cancel::unless_cancelled(
+                                let found = feed.alongside(nav_cancel::unless_cancelled(
                                     watch,
                                     script_net::pump_modules(
                                         bindings,
@@ -7695,14 +7931,14 @@ impl Engine {
                                         &inspector,
                                         Some(prefetch),
                                     ),
-                                )
+                                ))
                                 .await;
                                 drop(importing);
                                 let Some(found) = found else {
                                     // Cancelled while its imports were fetched:
                                     // the graph never runs.
                                     facts.cancelled(&inspector, &label);
-                                    cancel_rest(&mut jobs);
+                                    cancel_rest(feed, &mut rest);
                                     return;
                                 };
                                 modules_fetched.set(count);
@@ -7828,6 +8064,18 @@ impl Engine {
             // attribute) is this script's in the Inspector; the script log
             // keeps it for the next lifecycle step (`carried`).
             inspector_glue::drain_script_reports(bindings, &inspector, &mut carried, &source);
+        }
+        // The last script (or a promise reaction it queued, drained with
+        // it) asked to leave: the same boundary as between two scripts, so
+        // the page fires no DOMContentLoaded or `load` (LAT17).
+        if follows
+            && !offered
+            && serve.is_some()
+            && slot.as_ref().is_some_and(|bindings| bindings.navigation_requested())
+        {
+            let queued = Self::take_queued_requests(slot);
+            feed.alongside(self.lend_at_safe_point(id, watch, &mut serve, slot, log)).await;
+            self.send_leaving_requests(id, queued, &policy, &loader, &inspector, watch);
         }
         if poisoned.get() || nav_cancel::cancelled(watch) {
             return;
@@ -8819,34 +9067,29 @@ impl Engine {
 
         // Load external resources (stylesheets, images, fonts), and fetch
         // the page's scripts at the same time. Scripts still run after the
-        // subresources; only their network time overlaps.
-        let script_fetch = if self.config.javascript_enabled {
+        // subresources. They do not wait for each other's fetches: each runs
+        // once it and the scripts before it are in (LAT17), so the feed is
+        // driven here and handed over part-filled.
+        let mut scripts = if self.config.javascript_enabled {
             self.fetch_page_scripts(id, &url, script_policy.clone())
         } else {
             None
         };
-        let subresources = async {
-            let result = self.load_subresources_serving(id, Some(watch), serve.as_deref_mut()).await;
-            (result, std::time::Instant::now())
-        };
-        let scripts = async move {
-            match script_fetch {
-                Some(fetch) => Some((fetch.await, std::time::Instant::now())),
-                None => None,
-            }
-        };
+        let subresources = self.load_subresources_serving(id, Some(watch), serve.as_deref_mut());
         // A cancel drops every fetch still out, the page's scripts too.
-        // The subresources' buckets take the time while they run; what is
-        // left is the page's scripts still arriving after them.
-        let script_fetching = wgate::bucket(wgate::HoldBucket::ScriptFetch);
-        let Some(((subresources, _subresources_done), scripts)) = watch
-            .unless_cancelled(Box::pin(async { futures::join!(subresources, scripts) }))
+        let feed = &mut scripts;
+        let Some(subresources) = watch
+            .unless_cancelled(Box::pin(async move {
+                match feed.as_mut() {
+                    Some(feed) => feed.alongside(subresources).await,
+                    None => subresources.await,
+                }
+            }))
             .await
         else {
             debug!(?id, %url, "Navigation cancelled during its subresources");
             return Ok(());
         };
-        drop(script_fetching);
         drop(style_memo);
         // This will trigger additional relayouts as resources arrive
         if let Err(e) = subresources {
@@ -8883,12 +9126,11 @@ impl Engine {
         // The script budget is JavaScript time only. How long the fetches
         // took, including a fetch that outlasted the subresources, does
         // not spend it.
-        if let Some(((fetched, prefetch), _fetch_done)) = scripts {
+        if let Some(feed) = scripts {
             let budget = std::time::Duration::from_millis(self.config.script_budget_ms);
             self.run_page_scripts(
                 id,
-                fetched,
-                prefetch,
+                feed,
                 budget,
                 script_policy,
                 Some(watch),

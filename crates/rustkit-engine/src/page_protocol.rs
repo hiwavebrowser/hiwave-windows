@@ -948,7 +948,8 @@ impl EndpointSide {
     /// (a navigation, Stop, Close, a reload, a live turn) and everything
     /// after it stay queued for after the load, in order; while one heads
     /// the queue, nothing is applied here. Reports whether anything ran, and
-    /// whether a command that ran asked to leave the page.
+    /// whether a command that ran, or a page script before this safe point,
+    /// asked to leave the page.
     fn serve_mid_load(&mut self, engine: &mut Engine) -> crate::Served {
         let mut served = crate::Served::default();
         for _ in 0..64 {
@@ -957,7 +958,11 @@ impl EndpointSide {
                 Err(_) => break,
             }
         }
-        if !self.deferred.front().is_some_and(runs_mid_load) {
+        // A command that may not run here heads the queue (the window's own
+        // navigation, Stop, Close...): nothing runs and nothing is reported
+        // until the load returns. A script navigation reported now would
+        // overtake it.
+        if self.deferred.front().is_some_and(|cmd| !runs_mid_load(cmd)) {
             return served;
         }
         // `deferred` holds only what the window has sent: commands move
@@ -981,6 +986,13 @@ impl EndpointSide {
             self.report_focus(engine);
             self.report_script_navigation(engine);
             self.report_ipc(engine);
+        } else if engine.follows_script_navigation() {
+            // The load's own script asked to leave (`location.href = ...`)
+            // and nothing else ran: report it now, not when the load ends,
+            // so the window's navigation starts at once and ends this load
+            // (LAT17). A page thread that does not follow script
+            // navigation mid-load hears of it after the load, as before.
+            self.report_script_navigation(engine);
         }
         served.leave = self.asked_to_leave.replace(false);
         served

@@ -29,28 +29,28 @@ const JPEG: &[u8] =
     include_bytes!("../../../websuite/js-ladder/01-mdn/32-image-gallery/images/pic4.jpg");
 
 /// The main text's box colour: the first frame that has it shows the text.
-const MAIN: (u8, u8, u8) = (0, 160, 0);
+pub(crate) const MAIN: (u8, u8, u8) = (0, 160, 0);
 
 /// How soon a command sent while the load waits is answered.
-const SERVED: Duration = Duration::from_millis(500);
+pub(crate) const SERVED: Duration = Duration::from_millis(500);
 
 /// One route: content type, body, how long the server waits before
 /// answering.
-type Route = (&'static str, Vec<u8>, u64);
+pub(crate) type Route = (&'static str, Vec<u8>, u64);
 
-struct Fixture {
+pub(crate) struct Fixture {
     port: u16,
-    start: Instant,
+    pub(crate) start: Instant,
     /// (path, ms since `start`) for every request.
     seen: Arc<Mutex<Vec<(String, u128)>>>,
 }
 
 impl Fixture {
-    fn url(&self, path: &str) -> Url {
+    pub(crate) fn url(&self, path: &str) -> Url {
         Url::parse(&format!("http://127.0.0.1:{}{path}", self.port)).unwrap()
     }
 
-    fn requests(&self, path: &str) -> Vec<u128> {
+    pub(crate) fn requests(&self, path: &str) -> Vec<u128> {
         self.seen
             .lock()
             .unwrap()
@@ -61,7 +61,7 @@ impl Fixture {
     }
 }
 
-fn serve(routes: Vec<(&'static str, Route)>) -> Fixture {
+pub(crate) fn serve(routes: Vec<(&'static str, Route)>) -> Fixture {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let start = Instant::now();
@@ -105,11 +105,11 @@ fn serve(routes: Vec<(&'static str, Route)>) -> Fixture {
     Fixture { port, start, seen }
 }
 
-fn html(body: &str) -> Route {
+pub(crate) fn html(body: &str) -> Route {
     ("text/html", body.as_bytes().to_vec(), 0)
 }
 
-fn js(body: &str) -> Route {
+pub(crate) fn js(body: &str) -> Route {
     ("text/javascript", body.as_bytes().to_vec(), 0)
 }
 
@@ -121,7 +121,7 @@ fn slow_image(ms: u64) -> Route {
 /// some real work: an empty loop reaches the loop limit
 /// (`script_loop_iteration_limit`, 10 M iterations) in about a second and
 /// is stopped there.
-fn spin(ms: u64) -> String {
+pub(crate) fn spin(ms: u64) -> String {
     format!("(function () {{ var t = Date.now(); while (Date.now() - t < {ms}) {{ JSON.stringify({{ a: [1, 2, 3], b: 'x' }}); }} }})();")
 }
 
@@ -160,19 +160,23 @@ fn wait<T>(rx: &mut oneshot::Receiver<T>, budget: Duration) -> Option<T> {
 }
 
 /// A page thread on one navigation, with the events it has published.
-struct Load {
-    page: ContentThread,
-    nav: u64,
+pub(crate) struct Load {
+    pub(crate) page: ContentThread,
+    pub(crate) nav: u64,
     started: Instant,
-    events: Vec<(Instant, PageEvent)>,
+    pub(crate) events: Vec<(Instant, PageEvent)>,
     /// Play the window: load what the page asks to navigate to.
-    follow: bool,
-    followed: Vec<String>,
+    pub(crate) follow: bool,
+    pub(crate) followed: Vec<String>,
 }
 
 impl Load {
-    fn start(fixture: &Fixture, path: &str) -> Self {
-        let page = app_page();
+    pub(crate) fn start(fixture: &Fixture, path: &str) -> Self {
+        Self::start_on(app_page(), fixture, path)
+    }
+
+    /// [`Load::start`] on a page thread built some other way.
+    pub(crate) fn start_on(page: ContentThread, fixture: &Fixture, path: &str) -> Self {
         let mut boot = page.eval("0");
         assert!(wait(&mut boot, Duration::from_secs(30)).is_some(), "the page thread boots");
         let _ = page.poll();
@@ -181,7 +185,7 @@ impl Load {
         Load { page, nav, started, events: Vec::new(), follow: false, followed: Vec::new() }
     }
 
-    fn pump(&mut self) {
+    pub(crate) fn pump(&mut self) {
         for event in self.page.poll() {
             if let (true, PageEvent::NavigateRequested { url, .. }) = (self.follow, &event) {
                 self.followed.push(url.clone());
@@ -193,7 +197,7 @@ impl Load {
         }
     }
 
-    fn until(&mut self, budget: Duration, mut done: impl FnMut(&Self) -> bool) -> bool {
+    pub(crate) fn until(&mut self, budget: Duration, mut done: impl FnMut(&Self) -> bool) -> bool {
         let deadline = Instant::now() + budget;
         loop {
             self.pump();
@@ -221,26 +225,31 @@ impl Load {
         })
     }
 
-    fn completed(&self, nav: u64) -> Option<Instant> {
+    pub(crate) fn completed(&self, nav: u64) -> Option<Instant> {
         self.events.iter().find_map(|(at, event)| match event {
             PageEvent::LoadState { state: LoadState::Complete, nav_id } if *nav_id == nav => Some(*at),
             _ => None,
         })
     }
 
-    fn wait_main(&mut self) -> Instant {
+    pub(crate) fn wait_main_color(&mut self, rgb: (u8, u8, u8)) -> Instant {
+        assert!(self.until(Duration::from_secs(20), |l| l.first_frame_with(rgb).is_some()), "the colour is shown");
+        self.first_frame_with(rgb).unwrap()
+    }
+
+    pub(crate) fn wait_main(&mut self) -> Instant {
         assert!(self.until(Duration::from_secs(20), |l| l.first_frame_with(MAIN).is_some()), "the main text is shown");
         self.first_frame_with(MAIN).unwrap()
     }
 
-    fn wait_complete(&mut self) -> Instant {
+    pub(crate) fn wait_complete(&mut self) -> Instant {
         let nav = self.nav;
         assert!(self.until(Duration::from_secs(30), |l| l.completed(nav).is_some()), "the load completes");
         self.completed(nav).unwrap()
     }
 
     /// Evaluate `script`; its answer and how long it took.
-    fn eval(&mut self, script: &str, budget: Duration) -> (Option<String>, Duration) {
+    pub(crate) fn eval(&mut self, script: &str, budget: Duration) -> (Option<String>, Duration) {
         let sent = Instant::now();
         let mut rx = self.page.eval(script);
         let deadline = sent + budget;
@@ -255,7 +264,7 @@ impl Load {
         }
     }
 
-    fn click(&mut self, x: f32, y: f32, budget: Duration) -> Option<Duration> {
+    pub(crate) fn click(&mut self, x: f32, y: f32, budget: Duration) -> Option<Duration> {
         let sent = Instant::now();
         let (reply, mut rx) = oneshot::channel();
         self.page.input(PageInput::Click { x, y, reply });
@@ -278,7 +287,7 @@ impl Drop for Load {
     }
 }
 
-const MAIN_DIV: &str = r#"<div id="main" style="width:400px;height:200px;background:rgb(0,160,0)">Main text</div>"#;
+pub(crate) const MAIN_DIV: &str = r#"<div id="main" style="width:400px;height:200px;background:rgb(0,160,0)">Main text</div>"#;
 
 // ---------------------------------------------------------------------
 // Path 6 / safe point (b): the image wait.
