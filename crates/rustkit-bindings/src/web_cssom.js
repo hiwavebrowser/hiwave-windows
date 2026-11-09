@@ -262,23 +262,57 @@
         return s;
     }
     function isStyle(o) { return o && o._owner && o._owner.localName === 'style'; }
+    // A <style>'s wrapper the element no longer owns (its children changed,
+    // or it or an ancestor was inserted or removed since: a new generation).
+    // Chromium makes a new CSSStyleSheet then; the old object keeps its
+    // rules, owns no node, and its disabled flag and rule edits reach
+    // nothing. Marked the first time anyone asks, so a wrapper held across
+    // the change is inert even before `.sheet` is read again.
+    function stale(sheet) {
+        if (!isStyle(sheet)) return false;
+        if (!sheet._detached && sheet._gen !== sheetGeneration(sheet._owner)) sheet._detached = true;
+        return !!sheet._detached;
+    }
     // A <style>'s rules follow its text: reparse when script changed it.
+    // A stale wrapper keeps the rules it had.
     function sync(sheet) {
-        if (isStyle(sheet)) {
+        if (isStyle(sheet) && !sheet._detached) {
             var text = sheet._owner.textContent || '';
             if (text !== sheet._text) { sheet._text = text; sheet._rules = parseSheet(text, sheet, false); }
         }
         fill(sheet._list, sheet._rules);
         return sheet;
     }
-    // After a rule edit: write the rules back into the <style>'s text.
+    // After a rule edit: write the rules back into the <style>'s text. A
+    // stale wrapper's edit stays in the wrapper.
     function changed(sheet) {
         if (!sheet) return;
-        if (isStyle(sheet)) write(sheet, sheet._rules.map(sourceOf).join('\n'));
+        if (isStyle(sheet) && !stale(sheet)) write(sheet, sheet._rules.map(sourceOf).join('\n'));
         fill(sheet._list, sheet._rules);
         refreshAdopted(sheet);
     }
-    function write(sheet, text) { sheet._text = text; sheet._owner.textContent = text; }
+    function write(sheet, text) {
+        sheet._text = text;
+        sheet._owner.textContent = text;
+        // A CSSOM edit keeps the sheet (and its disabled flag) although the
+        // engine sees new text: rebind the sheet to the element's new
+        // generation and tell the engine the flag is for it.
+        sheet._gen = sheetGeneration(sheet._owner);
+        if (sheet._disabled) publishDisabled(sheet);
+    }
+    // Which sheet a <style> owns now: the engine's number changes whenever
+    // the element's children change or it is inserted or removed (CSSOM
+    // "update a style block" makes a new, enabled sheet each time).
+    function sheetGeneration(el) {
+        return typeof g.__rkSheetGeneration === 'function' ? g.__rkSheetGeneration(el) : 0;
+    }
+    // A <style>'s sheet.disabled goes to the engine, which leaves that sheet
+    // out of the cascade for as long as it is the one the element owns.
+    function publishDisabled(sheet) {
+        if (isStyle(sheet) && typeof g.__rkSetSheetDisabled === 'function') {
+            g.__rkSetSheetDisabled(sheet._owner, !!sheet._disabled);
+        }
+    }
     function checkIndex(sheet, index, max) {
         if (index > max) throw domError("Failed to execute on 'CSSStyleSheet': The index provided (" + index +
             ') is larger than the maximum index (' + max + ').', 'IndexSizeError');
@@ -293,7 +327,7 @@
             if (r._type === 3 && this._constructed) throw domError("Can't insert @import rules into a constructed stylesheet.", 'SyntaxError');
             var atEnd = index === this._rules.length;
             this._rules.splice(index, 0, r);
-            if (isStyle(this) && atEnd) {
+            if (isStyle(this) && atEnd && !stale(this)) {
                 // The CSS-in-JS path: append the rule to the element's text.
                 write(this, this._text + (this._text ? '\n' : '') + r._src);
                 fill(this._list, this._rules);
@@ -325,7 +359,7 @@
     getter(CSSStyleSheet.prototype, 'rules', function () { return sync(this)._list; });
     getter(CSSStyleSheet.prototype, 'ownerRule', function () { return null; });
     getter(StyleSheet.prototype, 'type', function () { return 'text/css'; });
-    getter(StyleSheet.prototype, 'ownerNode', function () { return this._owner || null; });
+    getter(StyleSheet.prototype, 'ownerNode', function () { return this._detached ? null : (this._owner || null); });
     getter(StyleSheet.prototype, 'parentStyleSheet', function () { return null; });
     getter(StyleSheet.prototype, 'href', function () {
         var o = this._owner;
@@ -355,13 +389,22 @@
         sheet._mediaList = list;
         return list;
     }
-    // `disabled` republishes a constructed sheet's adopters.
+    // `disabled` republishes a constructed sheet's adopters, and a <style>'s
+    // flag goes to the engine (for the text the sheet has now).
     Object.defineProperty(StyleSheet.prototype, 'disabled', {
         get: function () { return !!this._disabled; },
         set: function (v) {
             var was = !!this._disabled;
             this._disabled = !!v;
-            if (was !== this._disabled) refreshAdopted(this);
+            if (was === this._disabled) return;
+            if (isStyle(this)) {
+                // A wrapper the element no longer owns keeps its own flag;
+                // the element's current sheet is untouched (Chromium).
+                if (stale(this)) return;
+                sync(this);
+                publishDisabled(this);
+            }
+            refreshAdopted(this);
         },
         configurable: true
     });
@@ -375,7 +418,16 @@
     function ownSheet(el) {
         if (!el.isConnected || (el.localName === 'link' && !isSheetLink(el))) return null;
         var s = sheets.get(el);
-        if (!s) { s = sheetFor(el); sheets.set(el, s); }
+        // New children in a <style>, or a move of it or an ancestor, make a
+        // new sheet (CSSOM "update a style block"), enabled, a new object;
+        // the old wrapper is detached with the rules it had (Chromium; the
+        // identity pin in web_cssom_tests follows this).
+        if (s && el.localName === 'style' && stale(s)) s = null;
+        if (!s) {
+            s = sheetFor(el);
+            if (el.localName === 'style') { s._gen = sheetGeneration(el); sync(s); }
+            sheets.set(el, s);
+        }
         return s;
     }
     getter(g.HTMLStyleElement.prototype, 'sheet', function () { return ownSheet(this); });

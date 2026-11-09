@@ -68,6 +68,55 @@ fn an_inline_bad_url_is_dropped_and_the_next_declaration_applies() {
     }
 }
 
+/// CH2.E14b / #956: a `var()` with neither a value nor a fallback is
+/// invalid at computed-value time → `unset`. An earlier declaration does
+/// not survive. Portable beside the macos+headless `var_unset` family and
+/// the headless-gated pseudo suite.
+#[test]
+fn a_missing_var_without_fallback_unsets_the_declaration() {
+    let engine = Engine::new(EngineConfig::default()).expect("engine");
+    let parent = ComputedStyle {
+        color: rustkit_css::Color::new(1, 2, 3, 1.0),
+        ..ComputedStyle::default()
+    };
+    let mut style = ComputedStyle::default();
+    let vars: HashMap<String, String> = HashMap::new();
+    engine.lctx.apply_inline_style(
+        &mut style,
+        Some(&parent),
+        "width:50px;width:var(--missing);\
+         background-color:red;background-color:var(--missing);\
+         color:red;color:var(--missing)",
+        &vars,
+        &mut ChPending::default(),
+        false,
+    );
+    assert!(
+        matches!(style.width, rustkit_css::Length::Auto),
+        "width: var(--missing) must unset the earlier 50px, got {:?}",
+        style.width
+    );
+    assert_eq!(style.background_color, rustkit_css::Color::TRANSPARENT);
+    assert_eq!(
+        style.color,
+        rustkit_css::Color::new(1, 2, 3, 1.0),
+        "inherited color falls back to the parent, not the earlier red"
+    );
+
+    // A fallback still resolves; the earlier declaration is replaced.
+    let mut style = ComputedStyle::default();
+    engine.lctx.apply_inline_style(
+        &mut style,
+        None,
+        "width:10px;width:var(--missing, 40px);background-color:var(--missing, rgb(0, 0, 255))",
+        &vars,
+        &mut ChPending::default(),
+        false,
+    );
+    assert_eq!(style.width, rustkit_css::Length::Px(40.0));
+    assert_eq!(style.background_color, rustkit_css::Color::new(0, 0, 255, 1.0));
+}
+
 /// CH2.E29: a rejected `background-image` leaves the image the cascade
 /// already had (a stylesheet's, or an earlier declaration's), as Chromium
 /// keeps it. It used to clear the layers: a bad inline url wiped the sheet's

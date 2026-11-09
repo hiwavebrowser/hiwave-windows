@@ -29,6 +29,8 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 struct Gpu {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
+    /// A CPU rasteriser (WARP on a hosted Windows runner), not a GPU: GPU timings do not apply.
+    software: bool,
 }
 
 fn gpu() -> Option<Gpu> {
@@ -41,6 +43,7 @@ fn gpu() -> Option<Gpu> {
         compatible_surface: None,
         force_fallback_adapter: false,
     }))?;
+    let software = adapter.get_info().device_type == wgpu::DeviceType::Cpu;
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: Some("layer cost test device"),
@@ -54,6 +57,7 @@ fn gpu() -> Option<Gpu> {
     Some(Gpu {
         device: Arc::new(device),
         queue: Arc::new(queue),
+        software,
     })
 }
 
@@ -146,6 +150,10 @@ fn fifty_opacity_layers_fit_a_frame_budget() {
         eprintln!("SKIP fifty_opacity_layers_fit_a_frame_budget: no GPU adapter");
         return;
     };
+    if gpu.software {
+        eprintln!("SKIP fifty_opacity_layers_fit_a_frame_budget: software adapter (a GPU timing)");
+        return;
+    }
     let (ms, _) = frame_ms(&gpu, &opacity_page(50), 21);
     let (base, _) = frame_ms(&gpu, &opacity_page(0), 21);
     println!("50 layers {ms:.3} ms/frame, none {base:.3} ms/frame");

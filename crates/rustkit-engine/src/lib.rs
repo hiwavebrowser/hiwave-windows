@@ -447,6 +447,8 @@ mod late_sheet_slot_tests;
 #[cfg(all(test, feature = "headless"))]
 mod adopted_sheets_tests;
 #[cfg(all(test, feature = "headless"))]
+mod style_media_disabled_tests;
+#[cfg(all(test, feature = "headless"))]
 mod sheet_reuse_tests;
 #[cfg(all(test, feature = "headless"))]
 mod script_fresh_layout_tests;
@@ -473,6 +475,8 @@ mod computed_read;
 mod computed_read_tests;
 #[cfg(test)]
 mod style_attr_declaration_tests;
+#[cfg(test)]
+mod style_string_brace_tests;
 #[cfg(test)]
 mod canvas_context_tests;
 #[cfg(test)]
@@ -16914,8 +16918,9 @@ impl Engine {
 
 impl layout_ctx::LayoutCtx {
     /// The parsed sheet of each `<style>` element the document has, in
-    /// tree order. Parsing is a function of the text alone (no base URL,
-    /// no `media` attribute, nothing from the element), so a sheet whose
+    /// tree order, less those script disabled. Parsing is a function of the
+    /// text alone (no base URL; a `media` attribute is folded into the text
+    /// by `style_sheet_text`), so a sheet whose
     /// text `view`'s cache has seen is taken from it instead of parsed
     /// again (`RUSTKIT_SHEET_CACHE`). A cached sheet is shared with the
     /// cache: callers that change it take a copy (`Rc::unwrap_or_clone`).
@@ -16930,14 +16935,13 @@ impl layout_ctx::LayoutCtx {
             if !sheet_element_counts(javascript_enabled, &style_el) {
                 continue;
             }
-            let mut css_text = String::new();
-            for child in style_el.children() {
-                if let NodeType::Text(text) = &child.node_type {
-                    css_text.push_str(text);
-                }
+            // `sheet.disabled = true` from script (CH2.E17).
+            if document.style_sheet_disabled(&style_el) {
+                continue;
             }
+            let css_text = rustkit_dom::style_element_text(&style_el);
             if !css_text.is_empty() {
-                texts.push(css_text);
+                texts.push(style_sheet_text(&style_el, css_text));
             }
         }
 
@@ -16961,6 +16965,117 @@ impl layout_ctx::LayoutCtx {
         self.with_building_lay(|lay| lay.sheet_cache.borrow_mut().take_parsed())
             .unwrap_or_else(|| ADHOC_SHEET_CACHE.with(|cache| cache.borrow_mut().take_parsed()))
     }
+}
+
+/// The CSS text a `<style>` element contributes: `css_text`, inside
+/// `@media <list> { ... }` when the element has a `media` attribute
+/// (HTML 4.2.6: the sheet applies only where the list matches). The list is
+/// serialized first, so a query Chrome rejects (`foo bar`) becomes
+/// `not all` and matches nothing; an empty list applies everywhere. The
+/// engine has no `@import`, so wrapping the text changes nothing else, and
+/// the wrapped rules carry the list as their outermost `@media` condition,
+/// which the cascade re-evaluates on every resize.
+pub(crate) fn style_sheet_text(element: &Node, css_text: String) -> String {
+    let media = match &element.node_type {
+        NodeType::Element { attributes, .. } => attributes.get("media"),
+        _ => None,
+    };
+    let list = media.map(|m| rustkit_css::media_query_list_serialize(m)).unwrap_or_default();
+    if list.is_empty() {
+        css_text
+    } else {
+        let css_text = drop_brace_broken_statements(&css_text);
+        format!("@media {list} {{\n{css_text}\n}}")
+    }
+}
+
+/// `css_text` less each top-level statement whose prelude holds a stray
+/// `}`. At the top level of a sheet that `}` is part of the statement's
+/// prelude, which then fails, so dropping the statement changes nothing
+/// there (CSS Syntax 3 "consume a qualified rule" / "consume an at-rule";
+/// Chromium drops it). Inside `@media <list> { ... }` the same `}` would
+/// close the wrapper and every rule after it would apply wherever the list
+/// does not match, so [`style_sheet_text`] drops the statement before
+/// wrapping. A qualified rule runs to the end of its `{}` block, an at-rule
+/// to its `;` or block; comments, strings, escapes and `()`/`[]` blocks are
+/// skipped, as the tokenizer does. Only ASCII bytes are compared, so every
+/// cut is on a char boundary.
+fn drop_brace_broken_statements(css_text: &str) -> std::borrow::Cow<'_, str> {
+    let b = css_text.as_bytes();
+    let mut cuts: Vec<(usize, usize)> = Vec::new();
+    let mut closers: Vec<u8> = Vec::new();
+    // The current top-level statement: where it starts, whether it is an
+    // at-rule, and whether its prelude met a stray `}`.
+    let mut start: Option<usize> = None;
+    let mut at_rule = false;
+    let mut broken = false;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            i = css_text[i + 2..].find("*/").map_or(b.len(), |n| i + 2 + n + 2);
+            continue;
+        }
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if closers.is_empty() && start.is_none() {
+            start = Some(i);
+            at_rule = c == b'@';
+            broken = false;
+        }
+        let mut end = None;
+        match c {
+            b'\\' => {
+                i += 2;
+                continue;
+            }
+            b'"' | b'\'' => {
+                i += 1;
+                while i < b.len() && b[i] != c && b[i] != b'\n' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+                continue;
+            }
+            b'{' => closers.push(b'}'),
+            b'(' => closers.push(b')'),
+            b'[' => closers.push(b']'),
+            _ if closers.last() == Some(&c) => {
+                closers.pop();
+                if c == b'}' && closers.is_empty() {
+                    end = Some(i + 1);
+                }
+            }
+            b'}' if closers.is_empty() => broken = true,
+            b';' if closers.is_empty() && at_rule => end = Some(i + 1),
+            _ => {}
+        }
+        if let Some(end) = end {
+            if broken {
+                cuts.push((start.unwrap_or(end), end));
+            }
+            start = None;
+        }
+        i += 1;
+    }
+    if broken {
+        if let Some(start) = start {
+            cuts.push((start, b.len()));
+        }
+    }
+    if cuts.is_empty() {
+        return std::borrow::Cow::Borrowed(css_text);
+    }
+    let mut out = String::with_capacity(css_text.len());
+    let mut at = 0;
+    for (from, to) in cuts {
+        out.push_str(&css_text[at..from]);
+        at = to;
+    }
+    out.push_str(&css_text[at..]);
+    std::borrow::Cow::Owned(out)
 }
 
 /// [`Engine::sheet_element_counts`] for a given scripting setting.
@@ -38795,7 +38910,9 @@ document.currentScript.remove();
         };
         let (engine, view, took) = load_timed(config, port);
         assert!(
-            took < std::time::Duration::from_millis(2_500),
+            // 3.5 s, not 2.5 s: a hosted CPU-adapter runner under load took 2.83 s. The
+            // point is that the network client's 30 s timeout is not waited out.
+            took < std::time::Duration::from_millis(3_500),
             "waited for the stalled subresources: {took:?}"
         );
         // The sheet that did arrive still applies — and it must be the fast

@@ -463,3 +463,55 @@ fn a_meta_refresh_after_load_asks_to_replace_the_history_entry() {
         [("https://site.test/again".into(), true)]
     );
 }
+
+/// HTML §7.2.4 hash setter (#850 / e00f0988): when the new fragment equals
+/// the current one (none reads as empty), return — no hashchange, no history
+/// entry, URL unchanged. Portable beside the headless scroll_into_view pins.
+#[test]
+fn the_hash_setter_does_nothing_for_the_fragment_already_there() {
+    let b = bound();
+    // DOC ends in `#top`.
+    assert_eq!(
+        ev(
+            &b,
+            "window.hc = 0; addEventListener('hashchange', function () { hc++; }); \
+             var len = history.length; location.hash = 'top'; location.hash = '#top'; \
+             [hc, history.length - len, location.hash, location.href].join()"
+        ),
+        "0,0,#top,https://site.test/dir/index.html?a=1#top"
+    );
+    // A different fragment still navigates inside the document.
+    assert_eq!(
+        ev(
+            &b,
+            "var len = history.length; location.hash = 'other'; \
+             [hc, history.length - len, location.hash].join()"
+        ),
+        "1,1,#other"
+    );
+
+    // No fragment: clearing stays put (Chromium keeps `/`, not `/#`).
+    b.set_location(&Url::parse("https://site.test/dir/index.html?a=1").unwrap())
+        .unwrap();
+    assert_eq!(
+        ev(
+            &b,
+            "window.hc = 0; var len = history.length; \
+             location.hash = ''; location.hash = '#'; \
+             [hc, history.length - len, location.hash, location.href].join()"
+        ),
+        "0,0,,https://site.test/dir/index.html?a=1"
+    );
+    // A bare `#` already there is the empty fragment; clearing is still a no-op.
+    b.set_location(&Url::parse("https://site.test/dir/index.html?a=1#").unwrap())
+        .unwrap();
+    assert_eq!(
+        ev(
+            &b,
+            "window.hc = 0; var len = history.length; \
+             location.hash = ''; location.hash = '#'; \
+             [hc, history.length - len, location.href.endsWith('#')].join()"
+        ),
+        "0,0,true"
+    );
+}

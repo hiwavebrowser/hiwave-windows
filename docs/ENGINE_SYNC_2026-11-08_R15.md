@@ -53,3 +53,42 @@ Gates for the final tree:
 
 Not run: the renderer's `layer_cost_table` timing (it is a GPU measurement on a Mac and is
 not a Windows claim), parity swarm, live-site board, launch smoke.
+
+## Update 2: CI failure explained (patch 649), and develop `f712df45` (batches 42-43)
+
+**The CI failure.** `collect-metrics` on the previous head (`c3e2b58`) failed after 2 h 03 m: one
+`rustkit-engine` test failed and cargo stopped, so the renderer and later crates never ran. The
+collector swallows cargo's output, so a probe branch (`athena/probe-r15-ci`, workflow only, run
+42527292839) re-ran `cargo test --workspace -- --test-threads=1 --no-fail-fast` on the hosted
+runner: **4612 passed / 2 failed / 54 ignored**, exactly:
+
+1. `rustkit-engine` `page_script_tests::a_stalled_subresource_is_dropped_at_the_subresource_budget`
+   waited 2.83 s against its 2.5 s bound.
+2. `rustkit-renderer` `layer_cost_tests::fifty_opacity_layers_fit_a_frame_budget`, the 4 ms GPU
+   frame-budget pin.
+
+Both pass on a machine with a real GPU. The hosted runner's only adapter is a CPU rasteriser under
+load; I did not reproduce either failure on a software adapter locally, so that is the reading of the
+evidence, not a measurement. The CI re-run of this PR is the proof.
+
+**Patch 649** (`scripts/windows-patches/649-hosted-runner-timing-tests.patch`): widens the first
+bound to 3.5 s (the point of the test, not waiting out the network client's 30 s timeout, still
+holds; the same value hiwave-macos row CH2.E30 uses) and skips the second on a software adapter
+(`Gpu.software`, from `device_type == Cpu`, as T30 did for the scroll-cost test). Upstream row for
+the second: hiwave-macos #999. Remove each hunk when upstream lands its row. Round-trips through
+`apply_windows_patches.py` and is detected as applied by `--check`.
+
+**Refresh to `f712df45`.** Atlas's newer target: batch 42 (#996, one behaviour-preserving
+extraction in `rustkit-bindings` plus pins) and batch 43 (#994 braces inside CSS strings and CRLF
+folding in `rustkit-cssparser`; #964 `<style media>`, `.sheet.disabled`, sheet generation in
+`rustkit-dom` / `rustkit-engine` / `rustkit-bindings`). 21 upstream commits past `022aa2fa`, 13
+files; every Windows patch re-applied, none dropped.
+
+Gates for this tree (this machine): `cargo test --workspace -- --test-threads=1` exit 0,
+**4635 passed / 0 failed / 54 ignored**; WebView2 `hiwave-app`, native-win32 and release
+`parity-capture` build. (A first local run died with a link error and a corrupt test executable
+left by an interrupted earlier run, not by this tree; I removed the six damaged executables and
+re-ran the whole workspace.)
+
+Receipt: the residual against `f712df45` is the patch files 641-649 plus the script's inline edits
+to `rustkit-layout` `text.rs` / `lib.rs`, as before.
