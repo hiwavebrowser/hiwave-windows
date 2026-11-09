@@ -391,6 +391,33 @@ mod tests {
     }
 
     #[test]
+    fn a_shelf_restore_lands_at_the_end_of_the_strip() {
+        let mut s = state("shelf_end");
+        let mut mirrored = HashSet::new();
+        let (a, b, c) = (alloc_tab_id(), alloc_tab_id(), alloc_tab_id());
+        reconcile(
+            &mut s,
+            &mut mirrored,
+            &[tab(a, "https://a.test/", "A", false), tab(b, "https://b.test/", "B", false), tab(c, "https://c.test/", "C", true)],
+        );
+        // Shelve the middle tab, then reopen it the way the native shell does: take it off the
+        // shelf and let reconcile add the tab the shell opens.
+        let item = s.add_to_shelf(TabId(b)).unwrap().expect("shelved");
+        mirrored.remove(&b);
+        let (url, _) = take_from_shelf(&mut s, &item.id, None).expect("on the shelf");
+        let reopened = alloc_tab_id();
+        reconcile(
+            &mut s,
+            &mut mirrored,
+            &[tab(a, "https://a.test/", "A", false), tab(c, "https://c.test/", "C", false), tab(reopened, &url, "B", true)],
+        );
+        let ws = s.shell.get_active_workspace().unwrap();
+        assert_eq!(ws.tabs, vec![TabId(a), TabId(c), TabId(reopened)], "at the end, not back in its old place");
+        let in_strip: Vec<u64> = active_workspace_view(&s, &mirrored).visible;
+        assert_eq!(in_strip, vec![a, c, reopened], "the strip shows the same order");
+    }
+
+    #[test]
     fn a_tab_restored_from_disk_is_not_in_the_view() {
         let mut s = state("restored");
         let ws = s.shell.get_active_workspace().map(|w| w.id).unwrap();
