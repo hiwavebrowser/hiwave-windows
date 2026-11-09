@@ -4151,9 +4151,7 @@
         // Update workspace count display
         function updateWorkspaceCount() {
             const countEl = document.getElementById('workspaceCount');
-            if (countEl) {
-                countEl.textContent = currentWorkspaces.length;
-            }
+            setText(countEl, currentWorkspaces.length);
         }
 
         // Initialize collapsible section event listeners
@@ -4869,6 +4867,7 @@
 
             // Handle empty workspaces state
             if (!currentWorkspaces || currentWorkspaces.length === 0) {
+                list.__hiwaveHtml = null;
                 list.innerHTML = `
                     <div class="workspace-empty">
                         <div class="workspace-empty-icon">💼</div>
@@ -4946,7 +4945,15 @@
                 </div>
             `;
 
-            list.innerHTML = workspaceEntries + shelvedItem;
+            // CH3.A10: the same sidebar as last time keeps its nodes (and
+            // the listeners below, already on them).
+            const html = workspaceEntries + shelvedItem;
+            if (list.__hiwaveHtml === html && list.firstElementChild) {
+                updateWorkspaceCount();
+                return;
+            }
+            list.__hiwaveHtml = html;
+            list.innerHTML = html;
 
             list.querySelectorAll('.workspace-entry').forEach(wrapper => {
                 const workspaceItem = wrapper.querySelector('.workspace-item');
@@ -5136,17 +5143,18 @@
             const activeWs = currentWorkspaces.find(ws => ws.is_active);
             if (activeWs) {
                 const firstLetter = (activeWs.name || 'W').trim().charAt(0).toUpperCase() || 'W';
-                workspaceBadge.textContent = firstLetter;
-                workspaceBadge.title = activeWs.name;
+                setText(workspaceBadge, firstLetter);
+                setTitleAttr(workspaceBadge, activeWs.name);
             }
             // Show badge only if there are multiple workspaces
-            workspaceBadge.style.display = currentWorkspaces.length > 1 ? 'flex' : 'none';
+            const badgeDisplay = currentWorkspaces.length > 1 ? 'flex' : 'none';
+            if (workspaceBadge.style.display !== badgeDisplay) workspaceBadge.style.display = badgeDisplay;
         }
 
         // Update workspace tab count when tabs change
         function updateWorkspaceTabCount() {
             const activeWs = currentWorkspaces.find(ws => ws.id === activeWorkspaceId);
-            if (activeWs) {
+            if (activeWs && activeWs.tab_count !== currentTabs.length) {
                 activeWs.tab_count = currentTabs.length;
                 renderSidebarWorkspaces();
             }
@@ -5158,12 +5166,12 @@
             if (!title) return;
 
             if (shelfScope === 'all') {
-                title.textContent = 'The Shelf - Shelved';
+                setText(title, 'The Shelf - Shelved');
                 return;
             }
 
             const activeWs = currentWorkspaces.find(ws => ws.id === activeWorkspaceId);
-            title.textContent = activeWs ? `The Shelf - ${activeWs.name}` : 'The Shelf';
+            setText(title, activeWs ? `The Shelf - ${activeWs.name}` : 'The Shelf');
         }
 
         function getDomain(url) {
@@ -5235,7 +5243,7 @@
                 ? Number(globalShelfCount || items.length)
                 : items.length;
 
-            countEl.textContent = displayCount;
+            setText(countEl, displayCount);
 
             if (items.length === 0) {
                 const emptyTitle = shelfScope === 'all'
@@ -5244,7 +5252,7 @@
                 const emptyDesc = shelfScope === 'all'
                     ? 'Shelved tabs appear here. They auto-expire after 7 days unless pinned.'
                     : 'Park tabs here to revisit later. They\'ll fade over time.';
-                list.innerHTML = `
+                const emptyHtml = `
                     <div class="shelf-empty">
                         <div class="shelf-empty-icon">📚</div>
                         <div class="shelf-empty-title">${emptyTitle}</div>
@@ -5252,10 +5260,14 @@
                         <div class="shelf-empty-hint">Drag tabs here or use <kbd>⌘K</kbd></div>
                     </div>
                 `;
+                if (list.__hiwaveHtml !== emptyHtml) {
+                    list.__hiwaveHtml = emptyHtml;
+                    list.innerHTML = emptyHtml;
+                }
                 return;
             }
 
-            list.innerHTML = items.map(item => {
+            const html = items.map(item => {
                 const decayClass = item.decayLevel >= 4
                     ? 'expiring'
                     : item.decayLevel >= 2
@@ -5289,6 +5301,11 @@
                     </div>
                 `;
             }).join('');
+            // CH3.A10: the same items as last time keep their nodes and
+            // the listeners below.
+            if (list.__hiwaveHtml === html && list.firstElementChild) return;
+            list.__hiwaveHtml = html;
+            list.innerHTML = html;
 
             list.querySelectorAll('.shelf-item').forEach(el => {
                 const item = shelfItems.find(i => i.id === el.dataset.id);
@@ -5383,30 +5400,17 @@
             const sidebarStatus = document.getElementById('sidebarShieldStatus');
 
             const count = (shieldStats.requests_blocked || 0) + (shieldStats.trackers_blocked || 0);
-            if (shieldCount) {
-                shieldCount.textContent = count;
-            }
-            if (sidebarBadge) {
-                sidebarBadge.textContent = count;
-            }
+            setText(shieldCount, count);
+            setText(sidebarBadge, count);
 
             if (shieldBtn) {
-                if (shieldEnabled) {
-                    shieldBtn.classList.remove('disabled');
-                    shieldBtn.title = `Shield Active\n${shieldStats.requests_blocked} requests blocked\n${shieldStats.trackers_blocked} trackers blocked`;
-                } else {
-                    shieldBtn.classList.add('disabled');
-                    shieldBtn.title = 'Shield Disabled - Click to enable';
-                }
+                setClass(shieldBtn, 'disabled', !shieldEnabled);
+                setTitleAttr(shieldBtn, shieldEnabled
+                    ? `Shield Active\n${shieldStats.requests_blocked} requests blocked\n${shieldStats.trackers_blocked} trackers blocked`
+                    : 'Shield Disabled - Click to enable');
             }
 
-            if (sidebarStatus) {
-                if (shieldEnabled) {
-                    sidebarStatus.classList.add('shield-status');
-                } else {
-                    sidebarStatus.classList.remove('shield-status');
-                }
-            }
+            setClass(sidebarStatus, 'shield-status', shieldEnabled);
         }
 
         function toggleShield() {
@@ -5879,6 +5883,41 @@
             renderTabs: function(tabs) {
                 currentTabs = tabs;
                 const container = document.getElementById('tabs');
+                const previousActive = activeTabId;
+
+                // CH3.A10: the same tabs in the same order (a title, the
+                // active tab or a decay level changed, or nothing did) are
+                // updated in place: no rebuild of the strip, and only what
+                // differs is written.
+                const tabAudio = tab => {
+                    const isPlayingAudio = tab.is_playing_audio || false;
+                    const isMuted = tab.is_muted || false;
+                    return isMuted ? 'muted' : (isPlayingAudio ? 'playing' : '');
+                };
+                const existing = Array.from(container.children);
+                const sameTabs = existing.length === tabs.length && existing.every((el, i) =>
+                    el.dataset.id === String(tabs[i].id) && (el.__hiwaveAudio || '') === tabAudio(tabs[i]));
+                if (sameTabs) {
+                    tabs.forEach((tab, i) => {
+                        const tabEl = existing[i];
+                        setClass(tabEl, 'active', tab.is_active);
+                        setClass(tabEl, 'locked', tab.locked);
+                        const decay = String(tab.decay_level || 0);
+                        if (tabEl.dataset.decay !== decay) tabEl.dataset.decay = decay;
+                        setText(tabEl.querySelector('.tab-title'), getDisplayName(tab));
+                        if (tab.is_active) activeTabId = String(tab.id);
+                    });
+                    const activeTab = tabs.find(t => t.is_active);
+                    if (activeTab) {
+                        const displayName = getDisplayName(activeTab);
+                        setDocumentTitle(displayName !== 'New Tab' ? `${displayName} - HiWave` : 'HiWave');
+                    }
+                    updateWorkspaceTabCount();
+                    // Scrolling reads the strip's geometry: only when the
+                    // active tab moved.
+                    if (activeTabId !== previousActive) this.scrollToActiveTab();
+                    return;
+                }
                 container.innerHTML = '';
 
                 tabs.forEach(tab => {
@@ -5910,6 +5949,7 @@
                         audioIcon = `<span class="${iconClass}" title="${title}">${icon}</span>`;
                     }
 
+                    tabEl.__hiwaveAudio = tabAudio(tab);
                     tabEl.innerHTML = `
                         <span class="tab-decay-indicator"></span>
                         ${audioIcon}
@@ -5985,11 +6025,7 @@
                     const workspaceLabel = workspaces.length > 1
                         ? `${activeWs.name} (${workspaces.length})`
                         : activeWs.name;
-                    // The toggle button this names is not in this chrome (upstream's setText
-                    // skips a missing element too): without the guard renderWorkspaces threw here
-                    // and the sidebar never drew past the first workspace.
-                    const workspaceNameEl = document.getElementById('workspaceName');
-                    if (workspaceNameEl) workspaceNameEl.textContent = workspaceLabel;
+                    setText(document.getElementById('workspaceName'), workspaceLabel);
                 }
 
                 // Auto-expand active workspace only on first render, or if expanded workspace was deleted
@@ -6023,29 +6059,34 @@
 
             // Update URL in address bar
             updateUrl: function(url) {
-                document.getElementById('urlInput').value = url;
+                const input = document.getElementById('urlInput');
+                // CH3.A10 (#955 R1): the app's URL can now land up to a
+                // frame-and-200-ms later; it does not overwrite what the
+                // person is typing in the bar (edited since it was focused
+                // or since Enter). After Enter the committed URL shows, as
+                // before (a redirect's final URL).
+                if (document.activeElement === input && urlInputEdited) return;
+                if (input.value !== url) input.value = url;
             },
 
             // Update active tab title
             updateTitle: function(title) {
                 const activeTab = document.querySelector('.tab.active .tab-title');
-                if (activeTab) {
-                    activeTab.textContent = title || 'New Tab';
-                }
-                document.title = title ? `${title} - HiWave` : 'HiWave';
+                setText(activeTab, title || 'New Tab');
+                setDocumentTitle(title ? `${title} - HiWave` : 'HiWave');
             },
 
             // Update navigation button states
             updateNavState: function(canGoBack, canGoForward) {
-                document.getElementById('backBtn').classList.toggle('disabled', !canGoBack);
-                document.getElementById('forwardBtn').classList.toggle('disabled', !canGoForward);
+                setClass(document.getElementById('backBtn'), 'disabled', !canGoBack);
+                setClass(document.getElementById('forwardBtn'), 'disabled', !canGoForward);
                 navState.canGoBack = canGoBack;
                 navState.canGoForward = canGoForward;
             },
 
             // Set loading state
             setLoading: function(loading) {
-                document.getElementById('loadingIndicator').classList.toggle('active', loading);
+                setClass(document.getElementById('loadingIndicator'), 'active', loading);
             },
 
             updateFindState: function(state) {
@@ -6350,17 +6391,140 @@
             }
         };
 
-        // Helper to escape HTML
+        // Helper to escape HTML for text and for double- or single-quoted
+        // attribute values (&, <, >, quotes, no-break space), as a string.
+        // Until CH3.A10 it wrote the text into a scratch <div>, a DOM write
+        // for every tab title on every render, and left quotes as they were
+        // (#955 R1: a workspace name with `"` broke out of `data-name`).
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            return String(text == null ? '' : text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/\u00a0/g, '&nbsp;');
         }
+
+        // CH3.A10: write only what differs from the document. Each write
+        // the chrome makes is a relayout of it; the app re-sends its whole
+        // state while a page loads.
+        function setText(el, text) {
+            if (el && el.textContent !== String(text)) el.textContent = text;
+        }
+        function setClass(el, name, on) {
+            if (el && el.classList.contains(name) !== !!on) el.classList.toggle(name, !!on);
+        }
+        function setTitleAttr(el, title) {
+            if (el && el.title !== title) el.title = title;
+        }
+        function setDocumentTitle(title) {
+            if (document.title !== title) document.title = title;
+        }
+
+        // The app's state for the chrome (CH3.A10): one script per event-loop
+        // turn, `__hiwaveApplyState({tabs, workspaces, url, title, ...})`.
+        // The latest value of each key waits for the next animation frame and
+        // is applied then, in the order the keys last arrived. After an
+        // apply, the next waits until STATE_MIN_INTERVAL_MS have passed: a
+        // change after a quiet spell shows on the next frame, and a page
+        // load's stream of changes is at most five relayouts of the chrome a
+        // second. A script the app runs on the chrome otherwise (a shortcut)
+        // applies what is waiting first (`__hiwaveFlushState`).
+        (function () {
+            const appliers = {
+                tabs: v => hiwaveChrome.renderTabs(v),
+                workspaces: v => hiwaveChrome.renderWorkspaces(v),
+                shelf: v => hiwaveChrome.renderShelf(v),
+                url: v => hiwaveChrome.updateUrl(v),
+                title: v => hiwaveChrome.updateTitle(v),
+                nav: v => hiwaveChrome.updateNavState(!!(v && v[0]), !!(v && v[1])),
+                loading: v => hiwaveChrome.setLoading(!!v),
+                shield: v => hiwaveChrome.updateShieldStats(v),
+                history: v => hiwaveChrome.updateHistory(v),
+                downloads: v => hiwaveChrome.updateDownloads(v),
+                blocklist: v => hiwaveChrome.updateBlocklist(v),
+            };
+            const STATE_MIN_INTERVAL_MS = 200;
+            // The clock the spacing is measured on: the wall clock, or a
+            // test's (`__hiwaveStateClock`, the engine's headless tests).
+            const now = () => (typeof window.__hiwaveStateClock === 'function' ? window.__hiwaveStateClock() : Date.now());
+            let pending = null;
+            let scheduled = false;
+            let lastApplied = -Infinity;
+            // A frame that comes too soon (a timer that ran early against
+            // the wall clock) waits again; `__hiwaveFlushState` applies at
+            // once (`force`).
+            function flush(force) {
+                scheduled = false;
+                if (force !== true && pending && now() - lastApplied < STATE_MIN_INTERVAL_MS) {
+                    schedule();
+                    return;
+                }
+                const batch = pending;
+                pending = null;
+                if (!batch) return;
+                lastApplied = now();
+                batch.keys.forEach(key => {
+                    try {
+                        appliers[key](batch.values[key]);
+                    } catch (e) {
+                        console.log('[State] ' + key + ' not applied:', e);
+                    }
+                });
+            }
+            function apply(state) {
+                if (!state || typeof state !== 'object') return;
+                if (!pending) pending = { keys: [], values: {} };
+                Object.keys(state).forEach(key => {
+                    if (!appliers[key]) return;
+                    const at = pending.keys.indexOf(key);
+                    if (at >= 0) pending.keys.splice(at, 1);
+                    pending.keys.push(key);
+                    pending.values[key] = state[key];
+                });
+                if (pending.keys.length) schedule();
+            }
+            function schedule() {
+                if (!scheduled) {
+                    scheduled = true;
+                    const onFrame = () => {
+                        if (typeof requestAnimationFrame === 'function') {
+                            requestAnimationFrame(flush);
+                        } else {
+                            flush();
+                        }
+                    };
+                    const wait = lastApplied + STATE_MIN_INTERVAL_MS - now();
+                    if (wait > 0) {
+                        setTimeout(onFrame, wait);
+                    } else {
+                        onFrame();
+                    }
+                }
+            }
+            window.__hiwaveApplyState = apply;
+            window.__hiwaveFlushState = () => flush(true);
+            hiwaveChrome.applyState = apply;
+            // State the app sent before this script ran.
+            window.__hiwaveDrainEarlyState = function () {
+                const early = window.__hiwaveEarlyState || [];
+                window.__hiwaveEarlyState = [];
+                early.forEach(apply);
+            };
+            window.__hiwaveDrainEarlyState();
+        })();
 
         // Address bar navigation
         const urlInput = document.getElementById('urlInput');
+        // Whether the person has typed in the bar since it was focused or
+        // since Enter: the app's URL waits until then (`updateUrl`).
+        var urlInputEdited = false;
+        urlInput.addEventListener('input', () => { urlInputEdited = true; });
+        urlInput.addEventListener('blur', () => { urlInputEdited = false; });
         urlInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
+                urlInputEdited = false;
                 const url = urlInput.value.trim();
                 if (url) {
                     sendIpc('navigate', { url });

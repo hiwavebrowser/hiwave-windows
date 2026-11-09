@@ -1479,8 +1479,7 @@
    {
     "prop": "border-style",
     "value": "solid dashed",
-    "chrome": "solid dashed",
-    "gap": "a solid side with no width set lays out 0px wide, so its style reads none"
+    "chrome": "solid dashed"
    },
    {
     "prop": "border-style",
@@ -2155,6 +2154,121 @@
     "prop": "mask",
     "value": "",
     "chrome": "none"
+   }
+  ],
+  "var_unset": [
+   {
+    "prop": "width",
+    "base": "width:50px",
+    "value": "var(--missing)",
+    "chrome": "400px"
+   },
+   {
+    "prop": "width",
+    "value": "var(--missing, 40px)",
+    "chrome": "40px"
+   },
+   {
+    "prop": "background-color",
+    "base": "background-color:red",
+    "value": "var(--missing)",
+    "chrome": "rgba(0, 0, 0, 0)"
+   },
+   {
+    "prop": "color",
+    "base": "color:red",
+    "value": "var(--missing)",
+    "chrome": "rgb(0, 0, 0)"
+   },
+   {
+    "prop": "margin-left",
+    "base": "margin-left:10px",
+    "value": "var(--missing)",
+    "chrome": "0px"
+   },
+   {
+    "prop": "font-size",
+    "base": "font-size:30px",
+    "value": "var(--missing)",
+    "chrome": "16px"
+   },
+   {
+    "prop": "opacity",
+    "base": "opacity:0.5",
+    "value": "var(--missing)",
+    "chrome": "1"
+   },
+   {
+    "prop": "display",
+    "base": "display:flex",
+    "value": "var(--missing)",
+    "chrome": "inline"
+   },
+   {
+    "prop": "padding-top",
+    "base": "padding:5px",
+    "value": "var(--missing)",
+    "chrome": "0px"
+   },
+   {
+    "prop": "width",
+    "base": "--a:var(--b);--b:var(--a);width:50px",
+    "value": "var(--a)",
+    "chrome": "400px"
+   },
+   {
+    "prop": "width",
+    "base": "--w:30px",
+    "value": "calc(var(--w) + var(--missing))",
+    "chrome": "400px"
+   },
+   {
+    "prop": "width",
+    "value": "var(--missing)",
+    "inline": true,
+    "chrome": "400px"
+   },
+   {
+    "prop": "color",
+    "base": "color:red",
+    "value": "var(--missing)",
+    "inline": true,
+    "chrome": "rgb(0, 0, 0)"
+   },
+   {
+    "prop": "margin-left",
+    "base": "margin-left:10px",
+    "value": "var(--missing)",
+    "inline": true,
+    "chrome": "0px"
+   },
+   {
+    "prop": "padding-left",
+    "base": "padding:5px",
+    "value": "var(--missing)",
+    "chrome": "0px"
+   },
+   {
+    "prop": "margin-right",
+    "base": "margin:10px",
+    "value": "var(--missing)",
+    "chrome": "0px"
+   },
+   {
+    "prop": "border-left-width",
+    "base": "border:3px solid;border-width:var(--missing)",
+    "value": "",
+    "chrome": "3px"
+   },
+   {
+    "prop": "display",
+    "value": "unset",
+    "chrome": "inline"
+   },
+   {
+    "prop": "display",
+    "value": "initial",
+    "chrome": "inline"
    }
   ]
  }

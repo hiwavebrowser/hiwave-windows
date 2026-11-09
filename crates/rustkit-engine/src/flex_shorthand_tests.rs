@@ -95,6 +95,7 @@ fn an_invalid_value_leaves_the_earlier_declaration() {
 /// What it does to a row: `flex: auto` takes the free space, `flex: none`
 /// refuses to shrink, a lone length is a basis that still grows. The expected
 /// string is Chromium 143 on this page (`flex_row_probe.mjs`).
+#[cfg(feature = "headless")]
 #[test]
 fn the_keywords_change_the_row() {
     let mut engine = Engine::new(EngineConfig::default()).expect("engine");

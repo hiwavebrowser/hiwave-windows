@@ -180,6 +180,18 @@ pub struct Node {
     /// and are not applied. The cascade reads this; it is not a `<style>`
     /// element, so it does not change the child count.
     adopted_styles: RefCell<Vec<String>>,
+    /// How many times this node's child list changed: one of the events
+    /// that end the sheet a `<style>` element owns (CSSOM "update a style
+    /// block": Chromium makes a new, enabled `CSSStyleSheet` each time).
+    /// Kept on every node, since a child list does not know its parent is
+    /// a `<style>`. See [`Node::sheet_generation`].
+    sheet_generation: Cell<u64>,
+    /// How many times this node was inserted or removed. A connection
+    /// change anywhere above a `<style>` ends its sheet too (a container
+    /// detached and reinserted, or moved), so [`Node::sheet_generation`]
+    /// sums this count over the element and every ancestor instead of
+    /// walking the subtree at every mutation.
+    connection_generation: Cell<u64>,
 }
 
 impl Node {
@@ -195,7 +207,35 @@ impl Node {
             event_target: EventTarget::new(),
             shadow: RefCell::new(None),
             adopted_styles: RefCell::new(Vec::new()),
+            sheet_generation: Cell::new(0),
+            connection_generation: Cell::new(0),
         })
+    }
+
+    /// The current lifetime of this element's sheet: changes whenever the
+    /// element's children change or it, or any ancestor, is inserted or
+    /// removed. Two reads of one element are the same sheet iff they are
+    /// equal: every event adds one to a count on the chain, so the sum
+    /// only grows (a `wrapping_add` that never wraps in practice; script
+    /// reads it as a JS number, exact below 2^53, which no page reaches).
+    /// A `<style>`'s `sheet.disabled` is recorded against this number
+    /// ([`Document::set_style_sheet_disabled`]) and dies with the sheet.
+    pub fn sheet_generation(&self) -> u64 {
+        let mut generation = self.sheet_generation.get().wrapping_add(self.connection_generation.get());
+        let mut node = self.parent();
+        while let Some(ancestor) = node {
+            generation = generation.wrapping_add(ancestor.connection_generation.get());
+            node = ancestor.parent();
+        }
+        generation
+    }
+
+    fn end_sheet(&self) {
+        self.sheet_generation.set(self.sheet_generation.get().wrapping_add(1));
+    }
+
+    fn moved(&self) {
+        self.connection_generation.set(self.connection_generation.get().wrapping_add(1));
     }
 
     /// Replace the CSS text adopted by this document or shadow root.
@@ -302,6 +342,8 @@ impl Node {
     /// Append a child node.
     pub fn append_child(self: &Rc<Self>, child: Rc<Node>) {
         note_mutation();
+        self.end_sheet();
+        child.moved();
         // Update child's parent
         *child.parent.borrow_mut() = Some(Rc::downgrade(self));
 
@@ -339,6 +381,8 @@ impl Node {
         }
         if let Some(parent) = self.parent() {
             note_mutation();
+            parent.end_sheet();
+            self.moved();
             // Update sibling links
             if let Some(prev) = self.previous_sibling() {
                 *prev.next_sibling.borrow_mut() = self.next_sibling.borrow().clone();
@@ -365,6 +409,8 @@ impl Node {
         let ref_idx = children.iter().position(|c| Rc::ptr_eq(c, &reference));
 
         if let Some(idx) = ref_idx {
+            self.end_sheet();
+            new_child.moved();
             // Update new_child's parent
             *new_child.parent.borrow_mut() = Some(Rc::downgrade(self));
 
@@ -411,6 +457,24 @@ pub struct Document {
     /// The names that settle found present and undefined, minus any
     /// defined since: `:defined` for the cascade only.
     settled_custom_elements: RefCell<std::collections::HashSet<String>>,
+    /// `<style>` elements whose sheet script disabled
+    /// (`sheet.disabled = true`), each with the [`Node::sheet_generation`]
+    /// of the sheet that was. New children or a move make a new, enabled
+    /// sheet (CSSOM: "update a style block"), so the flag holds only while
+    /// the generation is the same. Keyed by the text instead, a sheet came
+    /// back disabled when its text did (A -> B -> A; #964 R1 HOLD).
+    disabled_style_sheets: RefCell<HashMap<NodeId, u64>>,
+}
+
+/// The CSS text of a `<style>` element: its Text children, in order.
+pub fn style_element_text(element: &Node) -> String {
+    let mut text = String::new();
+    for child in element.children() {
+        if let NodeType::Text(s) = &child.node_type {
+            text.push_str(s);
+        }
+    }
+    text
 }
 
 /// Sink for building a Document from HTML parsing.
@@ -683,7 +747,33 @@ impl Document {
             defined_custom_elements: RefCell::new(std::collections::HashSet::new()),
             custom_element_definitions_settled: Cell::new(false),
             settled_custom_elements: RefCell::new(std::collections::HashSet::new()),
+            disabled_style_sheets: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Set the `disabled` flag of `<style>` element `element`'s sheet: the
+    /// one the element owns now ([`Node::sheet_generation`]). A CSSOM edit
+    /// rewrites the text, which ends that sheet, so web_cssom.js calls
+    /// again after one.
+    pub fn set_style_sheet_disabled(&self, element: &Node, disabled: bool) {
+        note_mutation();
+        let mut map = self.disabled_style_sheets.borrow_mut();
+        if disabled {
+            map.insert(element.id, element.sheet_generation());
+        } else {
+            map.remove(&element.id);
+        }
+    }
+
+    /// Whether `<style>` element `element`'s sheet is disabled: script set
+    /// the flag on this very sheet (its children and place in the tree are
+    /// unchanged since).
+    pub fn style_sheet_disabled(&self, element: &Node) -> bool {
+        let map = self.disabled_style_sheets.borrow();
+        if map.is_empty() {
+            return false;
+        }
+        map.get(&element.id) == Some(&element.sheet_generation())
     }
 
     /// Parse HTML and create a document (new rustkit-html parser).
@@ -819,6 +909,13 @@ impl Document {
         let new = Node::new(id, node_type);
         new.event_target.adopt_listeners(&old.event_target);
         *new.adopted_styles.borrow_mut() = old.adopted_styles.borrow().clone();
+        // An attribute change keeps a <style>'s sheet; new data in a Text
+        // child ends its parent's.
+        new.sheet_generation.set(old.sheet_generation.get());
+        new.connection_generation.set(old.connection_generation.get());
+        if let Some(p) = old.parent() {
+            p.end_sheet();
+        }
 
         let children = std::mem::take(&mut *old.children.borrow_mut());
         for child in &children {

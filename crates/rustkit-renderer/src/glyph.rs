@@ -336,6 +336,21 @@ impl GlyphCache {
         self.resets
     }
 
+    /// Empty both atlases as a reset does, without counting as one: nothing
+    /// handed out before is kept. For a frame drawn again from a known
+    /// state (see `Renderer::execute`).
+    pub fn start_over(&mut self, queue: &wgpu::Queue) {
+        Self::zero_texture(queue, &self.atlas, self.atlas_size, 1);
+        Self::zero_texture(queue, &self.color_atlas, self.atlas_size, 4);
+        self.clear();
+    }
+
+    /// How much of the grayscale atlas is handed out: the rows used so far
+    /// as a fraction of its height (tests size their frames against it).
+    pub fn atlas_fill(&self) -> f32 {
+        (self.next_y + self.row_height) as f32 / self.atlas_size as f32
+    }
+
     /// Get the bind group for the atlas texture.
     pub fn bind_group(&self) -> &wgpu::BindGroup {
         &self.bind_group

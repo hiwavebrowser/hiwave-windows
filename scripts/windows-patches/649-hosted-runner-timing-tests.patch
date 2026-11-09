@@ -1,0 +1,68 @@
+Windows CI: two timing/budget tests fail on the hosted windows-latest runner, whose only
+adapter is a CPU rasteriser under load (found by a probe run of the refresh #15 tree, which
+named them; the real job's collector swallows cargo's output):
+
+  rustkit-engine  page_script_tests::a_stalled_subresource_is_dropped_at_the_subresource_budget
+      waited 2.83 s against a 2.5 s bound. The test is about NOT waiting the network client's
+      30 s timeout for a stalled subresource; 3.5 s still catches that. This is the same bound
+      hiwave-macos row CH2.E30 widens (branch atlas/z-ch2-e30-budget-bound).
+  rustkit-renderer  layer_cost_tests::fifty_opacity_layers_fit_a_frame_budget
+      asserts 50 opacity layers add less than 4 ms a frame over none. That is a GPU timing; a CPU
+      rasteriser cannot meet it. The test's own gpu() helper skips only when there is NO adapter.
+      Skip it on a software adapter too (the second upstream row records device_type in gpu()).
+
+Remove each hunk when upstream lands its row.
+
+
+--- a/crates/rustkit-engine/src/lib.rs
++++ b/crates/rustkit-engine/src/lib.rs
+@@ -38910,7 +38910,9 @@
+         };
+         let (engine, view, took) = load_timed(config, port);
+         assert!(
+-            took < std::time::Duration::from_millis(2_500),
++            // 3.5 s, not 2.5 s: a hosted CPU-adapter runner under load took 2.83 s. The
++            // point is that the network client's 30 s timeout is not waited out.
++            took < std::time::Duration::from_millis(3_500),
+             "waited for the stalled subresources: {took:?}"
+         );
+         // The sheet that did arrive still applies — and it must be the fast
+
+--- a/crates/rustkit-renderer/src/layer_cost_tests.rs
++++ b/crates/rustkit-renderer/src/layer_cost_tests.rs
+@@ -29,6 +29,8 @@
+ struct Gpu {
+     device: Arc<wgpu::Device>,
+     queue: Arc<wgpu::Queue>,
++    /// A CPU rasteriser (WARP on a hosted Windows runner), not a GPU: GPU timings do not apply.
++    software: bool,
+ }
+ 
+ fn gpu() -> Option<Gpu> {
+@@ -41,6 +43,7 @@
+         compatible_surface: None,
+         force_fallback_adapter: false,
+     }))?;
++    let software = adapter.get_info().device_type == wgpu::DeviceType::Cpu;
+     let (device, queue) = pollster::block_on(adapter.request_device(
+         &wgpu::DeviceDescriptor {
+             label: Some("layer cost test device"),
+@@ -54,6 +57,7 @@
+     Some(Gpu {
+         device: Arc::new(device),
+         queue: Arc::new(queue),
++        software,
+     })
+ }
+ 
+@@ -146,6 +150,10 @@
+         eprintln!("SKIP fifty_opacity_layers_fit_a_frame_budget: no GPU adapter");
+         return;
+     };
++    if gpu.software {
++        eprintln!("SKIP fifty_opacity_layers_fit_a_frame_budget: software adapter (a GPU timing)");
++        return;
++    }
+     let (ms, _) = frame_ms(&gpu, &opacity_page(50), 21);
+     let (base, _) = frame_ms(&gpu, &opacity_page(0), 21);
+     println!("50 layers {ms:.3} ms/frame, none {base:.3} ms/frame");

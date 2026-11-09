@@ -88,6 +88,8 @@ mod geometry_tests;
 #[cfg(test)]
 mod forced_layout_budget_tests;
 #[cfg(test)]
+mod dirty_mark_animation_tests;
+#[cfg(test)]
 mod range_tests;
 #[cfg(test)]
 mod selection_tests;
@@ -135,7 +137,7 @@ mod web_url;
 
 pub use dom::{
     AnimatedStyles, BoxGeometry, ControlWrites, CssAnimationControl, CssAnimationInfo, ElementScrolls,
-    ForcedGeometry, ForcedLayout, GeometrySource, HitTester, SelectorMatchFn, SharedAnimatedStyles,
+    ComputedLines, ForcedGeometry, ForcedLayout, GeometrySource, HitTester, SelectorMatchFn, SharedAnimatedStyles,
     SharedElementScrolls,
 };
 pub mod events;
@@ -758,6 +760,11 @@ pub enum DomDirty {
 pub(crate) struct DirtyMark {
     bucket: Cell<DomDirty>,
     since_layout: Cell<bool>,
+    /// The kind of the write that first dirtied the published layout
+    /// (`attribute`, `class`, `style`, `text`, `html`, `insert`, `remove`,
+    /// `animation`, `form`, `sheet`, `shadow`): the forced-layout log's
+    /// cause. `None` while the layout is current.
+    cause: Cell<Option<&'static str>>,
     /// The pending bucket holds a mark other than Web Animations' write of
     /// the animated-style layer (`mark_animation_layer`). Every other mark
     /// sets it, recorded in the `MutationLog` or not (`adoptedStyleSheets`,
@@ -765,24 +772,89 @@ pub(crate) struct DirtyMark {
     /// the embedder's `mark_dirty`), so the engine's paint-only animation
     /// frame is taken only when the layer write is all that changed.
     beyond_animation_layer: Cell<bool>,
+    /// LAT7c: Web Animations wrote paint properties of the animated-style
+    /// layer since the last published layout ([`LAYER_PAINT`],
+    /// [`LAYER_TRANSFORM`]). The boxes did not move, so only the reads that
+    /// see those values lay out first (`needs_layout_for`).
+    layer_since_layout: Cell<u8>,
 }
 
+/// A layer write of paint properties (`opacity`, `color`,
+/// `background-color`, the border colours): the computed style sees it.
+pub(crate) const LAYER_PAINT: u8 = 1;
+/// A layer write of `transform` (and `translate`/`rotate`/`scale`): the
+/// computed style, the transformed rects, hit testing and the scroll
+/// extents see it; offset and client boxes do not.
+pub(crate) const LAYER_TRANSFORM: u8 = 2;
+
 impl DirtyMark {
-    /// A script write that invalidated `bucket`.
-    pub(crate) fn mark(&self, bucket: DomDirty) {
+    /// A script write of kind `kind` that invalidated `bucket`.
+    pub(crate) fn mark(&self, bucket: DomDirty, kind: &'static str) {
         if bucket != DomDirty::Clean {
             self.beyond_animation_layer.set(true);
-            self.mark_animation_layer(bucket);
+            self.mark_animation_layer(bucket, kind);
         }
     }
 
     /// Web Animations wrote an element's animated-style layer, and nothing
-    /// else: the one mark that leaves `beyond_animation_layer` alone.
-    pub(crate) fn mark_animation_layer(&self, bucket: DomDirty) {
+    /// else: the one mark that leaves `beyond_animation_layer` alone. It is
+    /// a script write all the same, and names its cause (`animation`) for
+    /// the forced-layout log like every other mark.
+    pub(crate) fn mark_animation_layer(&self, bucket: DomDirty, kind: &'static str) {
         if bucket != DomDirty::Clean {
             self.bucket.set(self.bucket.get().max(bucket));
-            self.since_layout.set(true);
+            if !self.since_layout.replace(true) {
+                self.cause.set(Some(kind));
+            }
         }
+    }
+
+    /// LAT7c: Web Animations wrote only paint properties of an element's
+    /// animated-style layer (`reads`: [`LAYER_PAINT`] and/or
+    /// [`LAYER_TRANSFORM`]). The engine paints it when script settles (the
+    /// bucket, and the paint-only frame: `beyond_animation_layer` is left
+    /// alone), but no box moved: an offset or client read stays clean, and
+    /// only the reads that see the values lay out (`needs_layout_for`).
+    pub(crate) fn mark_animation_paint(&self, bucket: DomDirty, reads: u8) {
+        if bucket != DomDirty::Clean {
+            self.bucket.set(self.bucket.get().max(bucket));
+            self.layer_since_layout.set(self.layer_since_layout.get() | reads);
+        }
+    }
+
+    /// Whether the read `read` (the forced-layout log's read kinds) must
+    /// lay the page out first: after any write a layout can see, or after a
+    /// paint-layer write whose values it reads.
+    pub(crate) fn needs_layout_for(&self, read: &str) -> bool {
+        if self.since_layout.get() {
+            return true;
+        }
+        let layer = self.layer_since_layout.get();
+        match read {
+            "computed_style" => layer != 0,
+            "rect" | "hit_test" | "scroll_size" | "element_scroll" | "scroll_chain" | "window_scroll"
+            | "scroll_to" => layer & LAYER_TRANSFORM != 0,
+            _ => false,
+        }
+    }
+
+    /// A script write the engine must lay out when script settles, but that
+    /// no box of the published layout can see (it is inside a `display:
+    /// none` subtree): a geometry read before then needs no forced layout.
+    ///
+    /// It is still a write the engine has to lay out, so it is beyond the
+    /// animated-style layer: the paint-only animation frame must not skip
+    /// it. A no-op write (`Clean`) is not a write and marks nothing.
+    pub(crate) fn mark_unseen(&self, bucket: DomDirty) {
+        if bucket != DomDirty::Clean {
+            self.beyond_animation_layer.set(true);
+            self.bucket.set(self.bucket.get().max(bucket));
+        }
+    }
+
+    /// What first dirtied the published layout (see `cause`).
+    pub(crate) fn cause(&self) -> Option<&'static str> {
+        self.cause.get()
     }
 
     /// Whether the pending bucket holds a mark other than the animated-style
@@ -808,6 +880,50 @@ impl DirtyMark {
     /// A layout of the DOM as it is now was published.
     pub(crate) fn laid_out(&self) {
         self.since_layout.set(false);
+        self.layer_since_layout.set(0);
+        self.cause.set(None);
+    }
+}
+
+/// A script task's forced layouts (`DomBindings::take_forced_report`): how
+/// many, their time, and per cause how many, as `(write, read, count)` in
+/// the order first seen. The write is the one that first dirtied the
+/// layout the read found stale (`attribute`, `class`, `style`, `text`,
+/// `html`, `insert`, `remove`, `animation`, `form`, `sheet`, `shadow`);
+/// the read is what asked (`offset`, `rect`, `client`, `scroll_size`,
+/// `computed_style`, `element_scroll`, `scroll_chain`, `inner_text`,
+/// `laid_out`, `hit_test`, `window_scroll`, `scroll_to`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ForcedLayoutReport {
+    pub count: u64,
+    pub ms: f64,
+    pub causes: Vec<(&'static str, &'static str, u64)>,
+}
+
+impl ForcedLayoutReport {
+    pub(crate) fn note(&mut self, write: &'static str, read: &'static str, ms: f64) {
+        self.ms += ms;
+        match self.causes.iter_mut().find(|(w, r, _)| *w == write && *r == read) {
+            Some(entry) => entry.2 += 1,
+            None => self.causes.push((write, read, 1)),
+        }
+    }
+
+    /// The most frequent cause as `write:read` (the first seen on a tie).
+    pub fn top_cause(&self) -> Option<String> {
+        let mut top: Option<&(&str, &str, u64)> = None;
+        for entry in &self.causes {
+            if top.is_none_or(|t| entry.2 > t.2) {
+                top = Some(entry);
+            }
+        }
+        top.map(|(w, r, _)| format!("{w}:{r}"))
+    }
+
+    /// Every cause, as `{write:read:n,...}`.
+    pub fn causes_field(&self) -> String {
+        let parts: Vec<String> = self.causes.iter().map(|(w, r, n)| format!("{w}:{r}:{n}")).collect();
+        format!("{{{}}}", parts.join(","))
     }
 }
 
@@ -1866,7 +1982,8 @@ impl DomBindings {
         self.dirty.laid_out();
         let mut host = self.dom_host.borrow_mut();
         host.geometry.clear();
-        host.computed.clear();
+        host.computed.borrow_mut().clear();
+        host.computed_lines = None;
         host.geometry_source = Some(source);
         host.renew_forced_budget();
     }
@@ -1895,6 +2012,20 @@ impl DomBindings {
     /// per-task budget (the engine calls this when a script task settles).
     pub fn take_forced_layouts(&self) -> u64 {
         self.dom_host.borrow_mut().take_forced_layouts()
+    }
+
+    /// `take_forced_layouts`, with each forced layout's cause and the time
+    /// they took (the engine's per-task log line).
+    pub fn take_forced_report(&self) -> ForcedLayoutReport {
+        self.dom_host.borrow_mut().take_forced_report()
+    }
+
+    /// Whether the page's sheets have a `:has()` rule, asked when a write
+    /// lands inside a `display: none` subtree: with one, the write may show
+    /// it, and a geometry read after it lays the page out. Without a probe
+    /// the answer is yes.
+    pub fn set_has_rules_probe(&self, probe: Option<std::rc::Rc<dyn Fn() -> bool>>) {
+        self.dom_host.borrow_mut().has_rules = probe;
     }
 
     /// How many times a source from `set_geometry_source` was built.
@@ -1948,7 +2079,16 @@ impl DomBindings {
     pub fn set_computed_styles(&self, styles: std::collections::HashMap<usize, String>) {
         let mut host = self.dom_host.borrow_mut();
         host.geometry_source = None;
-        host.computed = styles;
+        host.computed_lines = None;
+        *host.computed.borrow_mut() = styles;
+    }
+
+    /// Format each element's computed style of the layout just published
+    /// (`set_geometry_source`) on its first read, instead of all of them
+    /// with the geometry (LAT8). Call after `set_geometry_source`, which
+    /// drops the previous layout's.
+    pub fn set_computed_lines(&self, lines: Option<ComputedLines>) {
+        self.dom_host.borrow_mut().computed_lines = lines;
     }
 
     /// Set the document.
@@ -2597,13 +2737,15 @@ impl DomBindings {
     pub fn fire_transition_event(
         &self,
         node: usize,
+        pseudo: Option<&str>,
         event_type: &str,
         property: &str,
         elapsed_s: f32,
     ) -> Result<(), BindingError> {
         self.runtime.borrow_mut().evaluate_script(&format!(
             "document.__rkFireTransition({node}, {event_type:?}, {{ propertyName: {property:?}, \
-             elapsedTime: {elapsed_s}, pseudoElement: '' }});"
+             elapsedTime: {elapsed_s}, pseudoElement: {pseudo:?} }});",
+            pseudo = pseudo.unwrap_or("")
         ))?;
         Ok(())
     }
@@ -2616,13 +2758,15 @@ impl DomBindings {
     pub fn fire_animation_event(
         &self,
         node: usize,
+        pseudo: Option<&str>,
         event_type: &str,
         name: &str,
         elapsed_s: f32,
     ) -> Result<(), BindingError> {
         self.runtime.borrow_mut().evaluate_script(&format!(
             "document.__rkFireAnimation({node}, {event_type:?}, {{ animationName: {name:?}, \
-             elapsedTime: {elapsed_s}, pseudoElement: '' }});"
+             elapsedTime: {elapsed_s}, pseudoElement: {pseudo:?} }});",
+            pseudo = pseudo.unwrap_or("")
         ))?;
         Ok(())
     }
@@ -3657,6 +3801,73 @@ mod tests {
         assert_eq!(bindings.take_dirty(), DomDirty::Clean);
     }
 
+    // LAT7c: a Web Animations write of paint properties only marks the
+    // layer for the reads that see it, not the published layout.
+    #[test]
+    fn lat7c_a_paint_layer_write_leaves_offset_reads_clean() {
+        let d = DirtyMark::default();
+        d.mark_animation_paint(DomDirty::Layout, LAYER_PAINT);
+        assert!(!d.written_since_layout(), "the boxes did not move");
+        assert!(!d.needs_layout_for("offset"));
+        assert!(!d.needs_layout_for("client"));
+        assert!(!d.needs_layout_for("rect"), "opacity moves no rect");
+        assert!(d.needs_layout_for("computed_style"), "the computed value is the animated one");
+        assert_eq!(d.get(), DomDirty::Layout, "the engine still paints the frame");
+        assert!(!d.beyond_animation_layer());
+        d.mark_animation_paint(DomDirty::Layout, LAYER_TRANSFORM);
+        assert!(d.needs_layout_for("rect") && d.needs_layout_for("hit_test") && d.needs_layout_for("scroll_size"));
+        assert!(!d.needs_layout_for("offset"), "a transform moves no offset box");
+        d.laid_out();
+        assert!(!d.needs_layout_for("computed_style"), "a layout publishes the layer");
+        // A seen write afterwards forces every read again.
+        d.mark(DomDirty::Layout, "text");
+        assert!(d.needs_layout_for("offset"));
+        assert_eq!(d.cause(), Some("text"));
+    }
+
+    // #947 x #941: the LAT7 marks (write cause, unseen writes, no-op writes)
+    // against LAT2's paint-only marker (`beyond_animation_layer`).
+    #[test]
+    fn lat7_marks_and_the_animation_layer_marker() {
+        // The WAAPI layer write is a script write: it names its cause.
+        let d = DirtyMark::default();
+        d.mark_animation_layer(DomDirty::Layout, "animation");
+        assert!(d.written_since_layout());
+        assert_eq!(d.cause(), Some("animation"), "the layer write logs cause=animation");
+        assert!(!d.beyond_animation_layer(), "the layer write alone is paint-only");
+
+        // A write the published layout cannot see (display:none subtree)
+        // still changes the DOM the engine lays out next: it is beyond the
+        // layer, so the paint-only frame is not taken.
+        d.mark_unseen(DomDirty::Style);
+        assert!(d.beyond_animation_layer(), "an unseen write is beyond the layer");
+        assert_eq!(d.cause(), Some("animation"), "it does not rename the first cause");
+        assert_eq!(d.take(), DomDirty::Style);
+        assert!(!d.beyond_animation_layer(), "take resets it");
+
+        // Unseen first, on a current layout: no forced layout, but beyond.
+        let d = DirtyMark::default();
+        d.mark_unseen(DomDirty::Layout);
+        assert!(!d.written_since_layout(), "a read needs no forced layout");
+        assert_eq!(d.cause(), None);
+        assert!(d.beyond_animation_layer());
+
+        // A no-op write (the same value again: `write` answers `Clean`) is
+        // not a write, seen or unseen.
+        let d = DirtyMark::default();
+        d.mark_animation_layer(DomDirty::Layout, "animation");
+        d.mark(DomDirty::Clean, "style");
+        d.mark_unseen(DomDirty::Clean);
+        assert!(!d.beyond_animation_layer(), "a no-op write leaves the paint-only frame alone");
+        assert_eq!(d.cause(), Some("animation"));
+        assert_eq!(d.get(), DomDirty::Layout);
+
+        // A real seen write after the layer: beyond, cause kept as first.
+        d.mark(DomDirty::Layout, "text");
+        assert!(d.beyond_animation_layer());
+        assert_eq!(d.cause(), Some("animation"));
+    }
+
     fn bound(html: &str) -> DomBindings {
         let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
         bindings
@@ -4443,6 +4654,73 @@ mod tests {
         assert_eq!(b.take_dirty(), DomDirty::Style);
         let doc = b.window.borrow().document.clone().unwrap();
         assert_eq!(doc.get_element_by_id("d").unwrap().get_attribute("style"), Some(""));
+    }
+
+    /// CH2.E27: the attribute is a declaration list, so the `;` in a data
+    /// URL's `;base64,` does not end the declaration, and a write elsewhere
+    /// keeps the URL whole. Chromium 148.0.7778.216 on the same page:
+    /// `2|background-image|red|url("data:image/svg+xml;base64,AA==")|3|
+    /// background-image: url("data:image/svg+xml;base64,AA=="); color: red; width: 1px;`
+    /// -- the same declarations; it re-serializes the URL quoted, this
+    /// keeps the author's text.
+    #[test]
+    fn style_keeps_a_semicolon_inside_a_data_url() {
+        let b = bound(
+            "<html><body><div id='d' style='background-image:url(data:image/svg+xml;base64,AA==);color:red'>x</div></body></html>",
+        );
+        assert_eq!(
+            eval_string(
+                &b,
+                "var d = document.getElementById('d'), s = d.style, r = [s.length, s[0], s.color, s.backgroundImage]; \
+                 s.width = '1px'; r.push(s.length, d.getAttribute('style')); r.join('|')"
+            ),
+            "2|background-image|red|url(data:image/svg+xml;base64,AA==)|3|\
+             background-image: url(data:image/svg+xml;base64,AA==); color: red; width: 1px;"
+        );
+    }
+
+    /// The JS copy of the declaration-list rule (`splitDecls`) on the case
+    /// list `rustkit_cssparser`'s own copy runs, read back through
+    /// `CSSStyleDeclaration` (#972 R1 nit 3: the two copies must not drift).
+    /// A declaration whose value is a bad url is split the same way but is
+    /// not in the block (CH2.E29: Chromium's `el.style` leaves it out), so
+    /// the read-back leaves those out of the split.
+    #[test]
+    fn style_splits_the_shared_declaration_list_cases() {
+        let doc: serde_json::Value = serde_json::from_str(include_str!(
+            "../../rustkit-cssparser/src/declaration_list_cases.json"
+        ))
+        .expect("cases");
+        let b = bound("<html><body><div id='d'>x</div></body></html>");
+        let mut wrong = Vec::new();
+        for case in doc["cases"].as_array().expect("cases") {
+            let input = case["input"].as_str().unwrap();
+            let want: Vec<String> = case["decls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| {
+                    let v = d[1].as_str().unwrap();
+                    let is_url = v.get(..4).is_some_and(|h| h.eq_ignore_ascii_case("url("));
+                    // A url left open at the end of the text is still a url
+                    // token (CSS Syntax 3 §4.3.6, EOF): close it to ask.
+                    let closed = if v.ends_with(')') { v.to_string() } else { format!("{v})") };
+                    !is_url || rustkit_css::mask::parse_css_url(&closed).is_some()
+                })
+                .map(|d| format!("{}={}", d[0].as_str().unwrap(), d[1].as_str().unwrap()))
+                .collect();
+            let script = format!(
+                "var d = document.getElementById('d'); d.setAttribute('style', {}); \
+                 var s = d.style, r = []; for (var i = 0; i < s.length; i++) r.push(s[i] + '=' + s.getPropertyValue(s[i])); \
+                 JSON.stringify(r)",
+                serde_json::to_string(input).unwrap()
+            );
+            let got: Vec<String> = serde_json::from_str(&eval_string(&b, &script)).expect("json");
+            if got != want {
+                wrong.push(format!("{input:?}: got {got:?}, want {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{} wrong\n{}", wrong.len(), wrong.join("\n"));
     }
 
     const TREE: &str = "<html><body><div id='o'><p id='i'>x</p></div></body></html>";

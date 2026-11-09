@@ -812,6 +812,8 @@
             w._css = info; w._listeners = {}; w.id = ''; w.onfinish = null; w.oncancel = null; w.onremove = null;
             w.replaceState = 'active'; w.timeline = timeline; w._idle = false; w._pending = null; w._rate = 1;
             w._effect = new KeyframeEffect(target, null, cssTiming(info));
+            // A `::before`/`::after`'s: the element is the target (CH2.E16).
+            w._effect.pseudoElement = info.pseudo || null;
             w._effect._animation = w;
             if (info.kind === 'transition') w.transitionProperty = info.name; else w.animationName = info.name;
             w._newReady(true); w._newFinished();
@@ -901,7 +903,10 @@
         });
         out.sort(function (x, y) {
             var kx = x._css.kind === 'transition' ? 0 : 1, ky = y._css.kind === 'transition' ? 0 : 1;
-            return kx - ky || x._css.node - y._css.node || x._css.index - y._css.index;
+            // An element's own, then its ::before's, then its ::after's.
+            var px = x._css.pseudo === '::after' ? 2 : x._css.pseudo ? 1 : 0;
+            var py = y._css.pseudo === '::after' ? 2 : y._css.pseudo ? 1 : 0;
+            return kx - ky || x._css.node - y._css.node || px - py || x._css.index - y._css.index;
         });
         if (out.length) queueFrame();
         return out;
@@ -924,6 +929,9 @@
         var sub = opts && opts.subtree;
         return animationsOf(function (a) {
             var t = a._effect && a._effect.target;
+            // A pseudo-element's animations are in the subtree, not the
+            // element's own list (Chromium 143).
+            if (t === el && a._effect.pseudoElement) return !!sub;
             return !!t && (t === el || (sub && el.contains && el.contains(t)));
         });
     };

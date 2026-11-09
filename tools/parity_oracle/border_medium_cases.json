@@ -1,0 +1,260 @@
+{
+ "viewport": [
+  400,
+  300
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "style-only",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:solid\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:16:16 b:0:16:10:10"
+  },
+  {
+   "name": "side-style-dashed",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-top-style:dashed\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:13 b:0:13:10:10"
+  },
+  {
+   "name": "style-two-values",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:solid none\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:16 b:0:16:10:10"
+  },
+  {
+   "name": "width-then-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:1px;border-style:solid\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:12:12 b:0:12:10:10"
+  },
+  {
+   "name": "style-then-width",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:solid;border-width:2px\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:14:14 b:0:14:10:10"
+  },
+  {
+   "name": "style-then-zero",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:solid;border-width:0\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "style-then-thin",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:solid;border-width:thin\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:12:12 b:0:12:10:10"
+  },
+  {
+   "name": "style-then-thick",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:solid;border-width:thick\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:20:20 b:0:20:10:10"
+  },
+  {
+   "name": "side-width-medium",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:solid;border-left-width:medium;border-right-width:1px\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:14:16 b:0:16:10:10"
+  },
+  {
+   "name": "style-none",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:none\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "style-then-none",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:solid;border-style:none\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "none-then-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-style:none;border-style:dotted\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:16:16 b:0:16:10:10"
+  },
+  {
+   "name": "rule-style-only",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}.s{border-style:solid}</style></head><body><div id=a class=s></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:16:16 b:0:16:10:10"
+  },
+  {
+   "name": "shorthand-style-only",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border:solid\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:16:16 b:0:16:10:10"
+  },
+  {
+   "name": "input-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><input id=a style=\"border-style:solid;padding:0;width:20px;height:10px\"><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:3:24:14 b:0:18:10:10"
+  },
+  {
+   "name": "input-style-dashed",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><input id=a style=\"border-style:dashed;padding:0;width:20px;height:10px\"><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:3:24:14 b:0:18:10:10"
+  },
+  {
+   "name": "input-side-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><input id=a style=\"border-top-style:solid;padding:0;width:20px;height:10px\"><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:3:24:14 b:0:18:10:10"
+  },
+  {
+   "name": "input-style-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><input id=a style=\"display:block;border-style:solid;padding:0;width:20px;height:10px\"><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:0:24:14 b:0:14:10:10"
+  },
+  {
+   "name": "input-style-none",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><input id=a style=\"display:block;border-style:none;padding:0;width:20px;height:10px\"><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:0:20:10 b:0:10:10:10"
+  },
+  {
+   "name": "input-style-medium",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><input id=a style=\"display:block;border-style:solid;border-width:medium;padding:0;width:20px;height:10px\"><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:0:26:16 b:0:16:10:10"
+  },
+  {
+   "name": "textarea-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><textarea id=a style=\"border-style:solid;padding:0;width:20px;height:10px\"></textarea><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:2:22:12 b:0:18:10:10"
+  },
+  {
+   "name": "textarea-style-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><textarea id=a style=\"display:block;border-style:solid;padding:0;width:20px;height:10px\"></textarea><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:0:22:12 b:0:12:10:10"
+  },
+  {
+   "name": "button-style-border-box",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><button id=a style=\"display:block;border-style:solid;padding:0;width:20px;height:10px\"></button><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:0:20:10 b:0:10:10:10"
+  },
+  {
+   "name": "hr",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><hr id=a><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:8:400:2 b:0:18:10:10"
+  },
+  {
+   "name": "hr-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}hr{border-style:solid}</style></head><body><hr id=a><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:8:400:2 b:0:18:10:10"
+  },
+  {
+   "name": "hr-side-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}hr{border-bottom-style:solid;margin:0}</style></head><body><hr id=a><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:0:400:2 b:0:2:10:10"
+  },
+  {
+   "name": "input-shorthand-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><input id=a style=\"display:block;border:solid;padding:0;width:20px;height:10px\"><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:0:26:16 b:0:16:10:10"
+  },
+  {
+   "name": "textarea-shorthand-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><textarea id=a style=\"display:block;border:solid;padding:0;width:20px;height:10px\"></textarea><div id=b style=\"width:10px;height:10px\"></div></body></html>",
+   "chrome_boxes": "a:0:0:26:16 b:0:16:10:10"
+  },
+  {
+   "name": "width-thin-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:thin\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "width-medium-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:medium\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "width-thick-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:thick\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "width-four-keywords-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:thin medium thick\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "top-width-thick-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-top-width:thick\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "left-width-thick-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-left-width:thick\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "color-and-width-thick-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-color:red;border-width:thick\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "width-length-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:5px\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "top-width-length-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-top-width:5px\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "width-then-side-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:thick;border-top-style:solid\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:15 b:0:15:10:10"
+  },
+  {
+   "name": "pseudo-width-thick-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px}#a::after{content:\"\";display:block;width:4px;height:4px;border-width:thick}#c::after{content:\"\";display:block;width:4px;height:4px;border-width:thick;border-style:solid}</style></head><body><div id=a></div><div id=c></div></body></html>",
+   "chrome_boxes": "a:0:0:10:4 c:0:4:10:14"
+  },
+  {
+   "name": "input-width-length-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><input id=a style=\"border-width:5px;padding:0;width:20px;height:10px\"></body></html>",
+   "chrome_boxes": "a:0:0:30:20"
+  },
+  {
+   "name": "input-width-thick-no-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><input id=a style=\"border-width:thick;padding:0;width:20px;height:10px\"></body></html>",
+   "chrome_boxes": "a:0:0:30:20"
+  },
+  {
+   "name": "width-thick-style-hidden",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:thick;border-style:hidden\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "width-length-style-hidden",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:5px;border-style:hidden\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "top-width-length-top-style-hidden",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-top-width:5px;border-top-style:hidden\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "script-adds-style-to-thick",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-width:thick\"></div><script>document.getElementById(\"a\").offsetWidth;document.getElementById(\"a\").style.borderStyle=\"solid\"</script><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:20:20 b:0:20:10:10"
+  },
+  {
+   "name": "script-adds-top-style-to-length",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border-top-width:5px\"></div><script>document.getElementById(\"a\").offsetWidth;document.getElementById(\"a\").style.borderTopStyle=\"dashed\"</script><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:15 b:0:15:10:10"
+  },
+  {
+   "name": "script-adds-class-with-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><style>.on{border-style:solid}</style><div id=a style=\"border-color:red;border-width:thin medium\"></div><script>document.getElementById(\"a\").offsetWidth;document.getElementById(\"a\").className=\"on\"</script><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:16:12 b:0:12:10:10"
+  },
+  {
+   "name": "border-style-initial",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border:5px solid;border-style:initial\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:10:10 b:0:10:10:10"
+  },
+  {
+   "name": "border-width-initial-after-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border:5px solid;border-width:initial\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:16:16 b:0:16:10:10"
+  },
+  {
+   "name": "border-left-width-initial-after-style",
+   "html": "<!doctype html><html><head><style>body{margin:0}div{width:10px;height:10px}</style></head><body><div id=a style=\"border:5px solid;border-left-width:initial\"></div><div id=b></div></body></html>",
+   "chrome_boxes": "a:0:0:18:20 b:0:20:10:10"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}
