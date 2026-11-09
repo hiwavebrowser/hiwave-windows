@@ -55,6 +55,18 @@ impl NavHistory {
         self.entries.get(self.index)
     }
 
+    /// Where in the trail we are, to put back after a step that was refused.
+    pub fn position(&self) -> usize {
+        self.index
+    }
+
+    /// Return to a `position` taken earlier (ignored when the trail has shrunk past it).
+    pub fn restore(&mut self, position: usize) {
+        if position < self.entries.len() {
+            self.index = position;
+        }
+    }
+
     pub fn can_go_back(&self) -> bool {
         self.index > 0
     }
@@ -278,30 +290,46 @@ impl ContentPage {
         self.load(url);
     }
 
-    fn load(&self, url: Url) {
-        // Every navigation ends here (redirects, back, forward, reload, a page's own
-        // navigation), so this is the one place that covers all of them.
+    /// Start loading `url`. False when the blocklist refused it (nothing changed).
+    fn load(&self, url: Url) -> bool {
+        // Every navigation STARTS here (typed, back, forward, reload, a page's own navigation),
+        // so this is the one place that covers them. A redirect that lands on a blocked
+        // domain is not a navigation start and is not covered.
         if (self.guard)(url.as_str()) {
             warn!(%url, "Navigation refused: the domain is on the user's blocklist");
-            return;
+            return false;
         }
         self.from_string.set(false);
         *self.url.borrow_mut() = shown_in_address_bar(&url).then(|| url.to_string());
+        // The previous page's title and load state must not outlive the navigation: the
+        // chrome (and the saved workspace) would pair the new address with the old title
+        // until the new document's title arrives.
+        *self.title.borrow_mut() = None;
+        self.loading.set(true);
         let nav_id = self.thread.navigate(url);
         self.accepted_nav.set(nav_id);
+        true
     }
 
     pub fn go_back(&self) {
+        let position = self.history.borrow().position();
         let target = self.history.borrow_mut().back();
         if let Some(url) = target {
-            self.load(url);
+            // A refused step leaves the trail where it was, or it would point at a page
+            // that was never shown.
+            if !self.load(url) {
+                self.history.borrow_mut().restore(position);
+            }
         }
     }
 
     pub fn go_forward(&self) {
+        let position = self.history.borrow().position();
         let target = self.history.borrow_mut().forward();
         if let Some(url) = target {
-            self.load(url);
+            if !self.load(url) {
+                self.history.borrow_mut().restore(position);
+            }
         }
     }
 
@@ -361,8 +389,15 @@ impl ContentPage {
                     // The page navigated itself (script, a form). Follow it.
                     if let Ok(parsed) = Url::parse(&url) {
                         if replace {
+                            // Replace the entry only if the load is allowed: a refused
+                            // navigation must not rewrite the trail to the blocked address.
+                            let before = self.history.borrow().current().cloned();
                             self.history.borrow_mut().replace_current(parsed.clone());
-                            self.load(parsed);
+                            if !self.load(parsed) {
+                                if let Some(before) = before {
+                                    self.history.borrow_mut().replace_current(before);
+                                }
+                            }
                         } else {
                             self.navigate(parsed);
                         }
@@ -406,6 +441,21 @@ mod tests {
 
     fn u(s: &str) -> Url {
         Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn a_refused_step_is_put_back_where_it_was() {
+        let mut h = NavHistory::default();
+        h.push(u("https://a.test/"));
+        h.push(u("https://blocked.test/"));
+        h.push(u("https://c.test/"));
+        let at = h.position();
+        assert_eq!(h.back(), Some(u("https://blocked.test/")));
+        h.restore(at); // the load was refused
+        assert_eq!(h.current(), Some(&u("https://c.test/")), "still on the page that is shown");
+        assert!(h.can_go_back() && !h.can_go_forward());
+        h.restore(99); // past the trail: ignored
+        assert_eq!(h.current(), Some(&u("https://c.test/")));
     }
 
     #[test]
