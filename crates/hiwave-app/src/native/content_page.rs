@@ -179,17 +179,16 @@ impl ContentPage {
         }
     }
 
-    /// Close the page: stop its thread and destroy its window. `WindowSurface` has
-    /// no `Drop` that does the second, so without this a closed tab's window would
-    /// stay on screen.
+    /// Close the page: stop its thread and destroy its window.
+    ///
+    /// Dropping the page drops its `WindowSurface`, whose `Drop` (CH2.E35) releases the
+    /// GPU surface first and then destroys the host view: `Presenter::destroy_view` ->
+    /// `ViewHost::destroy_view`, which on Windows unregisters the view and calls
+    /// `DestroyWindow`. This used to be done here by hand, because `WindowSurface` had no
+    /// such `Drop` and a closed tab's window would otherwise stay on screen; doing it
+    /// again now would destroy the same window twice.
     pub fn close(self) {
-        use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
-        let hwnd = self.hwnd();
         drop(self);
-        // SAFETY: `hwnd` was created on this (the window) thread and is destroyed once.
-        unsafe {
-            let _ = DestroyWindow(hwnd);
-        }
     }
 
     // ---- input ------------------------------------------------------------------
