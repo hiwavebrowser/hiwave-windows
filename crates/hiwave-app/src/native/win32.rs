@@ -135,6 +135,9 @@ pub struct NativeBrowser {
     focus_bar: Option<u32>,
     /// Tab ids this shell has put into the shared `BrowserShell` (see `shell_tabs`).
     mirrored_tabs: std::collections::HashSet<u64>,
+    /// The active tab is not one the active workspace shows: settle on the next tick,
+    /// once the model has caught up with a closed tab.
+    needs_settle: bool,
     /// The workspaces script the chrome was last sent, so it is sent again only when it changes.
     last_workspaces: String,
     /// The view that last had the keyboard focus. Win32 can leave focus on the
@@ -182,10 +185,18 @@ impl NativeBrowser {
             .map_err(|e| format!("Failed to create engine: {}", e))?;
 
         // Initialize app state
-        let app_state = Arc::new(Mutex::new(
-            AppState::with_defaults()
-                .map_err(|e| format!("Failed to initialize app state: {}", e))?,
-        ));
+        let mut state = AppState::with_defaults()
+            .map_err(|e| format!("Failed to initialize app state: {}", e))?;
+        // Tabs saved by an earlier session cannot be reopened here, so they are dropped
+        // instead of piling up in workspace_state.json every run.
+        let dropped = shell_tabs::drop_unreopenable_tabs(&mut state);
+        if dropped > 0 {
+            info!(dropped, "Dropped tabs saved by an earlier session");
+            if let Err(e) = state.save_workspace_state() {
+                warn!(error = %e, "Failed to persist workspace state");
+            }
+        }
+        let app_state = Arc::new(Mutex::new(state));
 
         Ok(Self {
             viewhost: ViewHost::new(),
@@ -208,6 +219,7 @@ impl NativeBrowser {
             right_panel_open: false,
             focus_bar: None,
             mirrored_tabs: std::collections::HashSet::new(),
+            needs_settle: false,
             last_workspaces: String::new(),
             last_focus: std::cell::Cell::new(None),
             chrome_ready: false,
@@ -808,6 +820,23 @@ impl NativeBrowser {
         info!(?closed, count, "Tab closed");
     }
 
+    /// Ctrl+1..9 / Ctrl+9: the nth tab of the strip, which shows the active workspace's tabs
+    /// only (`None` = the last one). Counting every tab would pick one from another
+    /// workspace. The strip is what the chrome was last told.
+    fn activate_visible_tab(&mut self, nth: Option<usize>) {
+        let ids: Vec<u64> = match self.chrome_synced.as_ref() {
+            Some(s) => s.tabs.iter().map(|t| t.id).collect(),
+            None => return,
+        };
+        let id = match nth {
+            Some(n) => ids.get(n).copied(),
+            None => ids.last().copied(),
+        };
+        if let Some(index) = id.and_then(|id| self.tab_index_for_id(id)) {
+            self.activate_tab_by_index(index);
+        }
+    }
+
     /// Select a tab by index (Ctrl+1..9).
     fn activate_tab_by_index(&mut self, index: usize) {
         if let Some(tabs) = self.page_tabs.as_mut() {
@@ -1169,13 +1198,8 @@ impl NativeBrowser {
         match shortcut {
             Shortcut::NewTab => self.new_tab(),
             Shortcut::CloseTab => self.close_active_tab(),
-            Shortcut::ActivateTab(i) => self.activate_tab_by_index(i),
-            Shortcut::ActivateLastTab => {
-                let count = self.page_tabs.as_ref().map(|t| t.count()).or_else(|| self.tabs.as_ref().map(|t| t.count()));
-                if let Some(last) = count.map(|c| c - 1) {
-                    self.activate_tab_by_index(last);
-                }
-            }
+            Shortcut::ActivateTab(i) => self.activate_visible_tab(Some(i)),
+            Shortcut::ActivateLastTab => self.activate_visible_tab(None),
             Shortcut::Back => self.traverse("back"),
             Shortcut::Forward => self.traverse("forward"),
             Shortcut::Reload => self.traverse("reload"),
@@ -1393,6 +1417,22 @@ impl NativeBrowser {
         self.close_active_tab();
     }
 
+    /// Close the tabs the page calls `ids`. The strip never empties, so when they are all
+    /// the tabs there are, a new one opens first.
+    fn close_tabs_by_id(&mut self, ids: &[u64]) {
+        if ids.is_empty() {
+            return;
+        }
+        let open = self.page_tabs.as_ref().map(|t| t.count()).or_else(|| self.tabs.as_ref().map(|t| t.count())).unwrap_or(0);
+        let closing = ids.iter().filter(|id| self.tab_index_for_id(**id).is_some()).count();
+        if open <= closing {
+            self.new_tab();
+        }
+        for id in ids {
+            self.close_tab_by_id(*id);
+        }
+    }
+
     /// Minimise, maximise/restore or close the main window.
     fn window_command(&self, cmd: &str) {
         use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -1543,6 +1583,13 @@ impl NativeBrowser {
         // The strip shows the active workspace's tabs only.
         let view = shell_tabs::active_workspace_view(&state, &self.mirrored_tabs);
         drop(state);
+        // Whatever closed or switched a tab (Ctrl+W, block-and-close, a workspace delete),
+        // the visible page must belong to the workspace the strip shows.
+        if let Some(active) = rows.iter().find(|r| r.active) {
+            if !view.visible.contains(&active.id) {
+                self.needs_settle = true;
+            }
+        }
         rows.retain(|r| view.visible.contains(&r.id));
         // Tabs came, went or changed: the sidebar lists them under their workspaces.
         if done.changed {
@@ -1555,6 +1602,9 @@ impl NativeBrowser {
         // The tab that is active, before the strip is filtered to the active workspace.
         let active_tab = now.tabs.iter().find(|r| r.active).map(|r| r.id);
         self.mirror_tabs(&mut now.tabs);
+        if std::mem::take(&mut self.needs_settle) {
+            self.settle_workspace();
+        }
         self.record_visit_if_new(active_tab, &now.url, &now.title, now.loading);
         if self.chrome_synced.as_ref() == Some(&now) {
             return;
@@ -1979,11 +2029,20 @@ impl NativeBrowser {
             }
             "delete_workspace" => {
                 if let Some(id) = json.get("id").and_then(id_value) {
+                    // The tabs open in the workspace go with it: the model drops them, so a
+                    // view left open would be adopted into another workspace next tick.
+                    let mut doomed: Vec<u64> = Vec::new();
                     if let Ok(mut state) = self.app_state.lock() {
                         let id = hiwave_core::types::WorkspaceId(id);
                         let name = state.shell.get_workspace(id).map(|w| w.name.clone());
+                        let owned: Vec<u64> = state
+                            .shell
+                            .get_workspace(id)
+                            .map(|w| w.tabs.iter().map(|t| t.0).filter(|t| self.mirrored_tabs.contains(t)).collect())
+                            .unwrap_or_default();
                         match state.shell.delete_workspace(id) {
                             Ok(()) => {
+                                doomed = owned;
                                 if let Some(name) = name {
                                     state.remove_workspace_shelf(&name);
                                 }
@@ -1991,6 +2050,7 @@ impl NativeBrowser {
                             Err(e) => warn!(error = %e, "Could not delete the workspace"),
                         }
                     }
+                    self.close_tabs_by_id(&doomed);
                     self.settle_workspace();
                     self.save_and_sync_workspaces();
                 }

@@ -112,6 +112,17 @@ pub fn reconcile(state: &mut AppState, mirrored: &mut HashSet<u64>, tabs: &[Nati
     out
 }
 
+/// Forget every tab the shared model has. The native shell starts with one fresh tab and
+/// cannot reopen tabs saved by an earlier session; left in the model they were saved and
+/// reloaded forever, listed in the sidebar with no page behind them. Returns how many.
+pub fn drop_unreopenable_tabs(state: &mut AppState) -> usize {
+    let ids: Vec<TabId> = state.shell.list_tabs(None).iter().map(|t| t.id).collect();
+    for id in &ids {
+        let _ = state.shell.close_tab(*id);
+    }
+    ids.len()
+}
+
 /// The native tabs that belong to the active workspace, and which of them it last had
 /// active. The tab strip shows only these.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -191,6 +202,31 @@ mod tests {
         s.shell.set_active_workspace(work).unwrap();
         let view = active_workspace_view(&s, &mirrored);
         assert_eq!(view.visible, vec![a]);
+    }
+
+    #[test]
+    fn restored_tabs_are_dropped_and_leave_no_workspace_entry() {
+        let mut s = state("drop_restored");
+        let ws = s.shell.get_active_workspace().map(|w| w.id).unwrap();
+        for n in 0..3 {
+            s.shell
+                .create_tab(TabInfo {
+                    id: TabId::new(),
+                    url: url::Url::parse(&format!("https://old{n}.test/")).unwrap(),
+                    title: None,
+                    favicon: None,
+                    workspace_id: ws,
+                    suspended: true,
+                    loading: false,
+                    locked: n == 0,
+                    last_visited: None,
+                })
+                .unwrap();
+        }
+        assert_eq!(drop_unreopenable_tabs(&mut s), 3);
+        assert!(s.shell.list_tabs(None).is_empty());
+        assert!(s.shell.get_active_workspace().unwrap().tabs.is_empty());
+        assert_eq!(drop_unreopenable_tabs(&mut s), 0);
     }
 
     #[test]
