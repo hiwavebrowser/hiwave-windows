@@ -27,11 +27,10 @@ pub fn workspaces_json(state: &AppState) -> serde_json::Value {
     let active_ws = state.shell.get_active_workspace().map(|w| w.id);
     let active_tab = state.shell.get_active_tab().map(|t| t.id);
     let decay_days = state.user_settings.tab_decay_days;
-    // `list_workspaces` walks a HashMap, so its order changes from run to run; the sidebar
-    // lists workspaces in the order they were made.
-    let mut ordered = state.shell.list_workspaces();
-    ordered.sort_by_key(|ws| ws.id.0);
-    let workspaces: Vec<serde_json::Value> = ordered
+    // `list_workspaces` is in creation order (sorted by id).
+    let workspaces: Vec<serde_json::Value> = state
+        .shell
+        .list_workspaces()
         .iter()
         .map(|ws| {
             let tabs: Vec<serde_json::Value> = ws

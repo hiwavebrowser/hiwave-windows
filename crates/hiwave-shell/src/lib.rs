@@ -726,6 +726,37 @@ mod tab_order_tests {
     }
 
     #[test]
+    fn deleting_a_workspace_activates_the_lowest_id_and_clears_its_tabs_from_the_order() {
+        let mut shell = BrowserShell::new();
+        let first = shell.get_active_workspace().unwrap().id;
+        let second = shell.create_workspace("Second".to_string());
+        let third = shell.create_workspace("Third".to_string());
+        let fourth = shell.create_workspace("Fourth".to_string());
+        let keep_a = shell.create_tab(tab(first, 0)).unwrap();
+        let gone_a = shell.create_tab(tab(third, 1)).unwrap();
+        let keep_b = shell.create_tab(tab(second, 2)).unwrap();
+        let gone_b = shell.create_tab(tab(third, 3)).unwrap();
+        let keep_c = shell.create_tab(tab(fourth, 4)).unwrap();
+
+        shell.set_active_workspace(third).unwrap();
+        shell.delete_workspace(third).unwrap();
+
+        // Not an arbitrary survivor: the lowest id, every time.
+        assert_eq!(shell.get_active_workspace().unwrap().id, first);
+        // Its tabs are gone from the map and from the order, and the rest keep their places.
+        assert!(shell.get_tab(gone_a).is_none() && shell.get_tab(gone_b).is_none());
+        assert_eq!(ids(shell.list_tabs(None)), vec![keep_a, keep_b, keep_c]);
+        assert_eq!(shell.tab_order, vec![keep_a, keep_b, keep_c], "no stale entry for a deleted tab");
+        // And again with the lowest workspace gone: the next lowest is chosen.
+        shell.set_active_workspace(fourth).unwrap();
+        shell.delete_workspace(first).unwrap();
+        shell.set_active_workspace(fourth).unwrap();
+        shell.delete_workspace(fourth).unwrap();
+        assert_eq!(shell.get_active_workspace().unwrap().id, second);
+        assert_eq!(shell.tab_order, vec![keep_b]);
+    }
+
+    #[test]
     fn closing_a_tab_keeps_the_others_in_order() {
         let mut shell = BrowserShell::new();
         let ws = shell.get_active_workspace().unwrap().id;
