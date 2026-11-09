@@ -35,7 +35,10 @@ env:
 jobs:
   collect-metrics:
     runs-on: windows-latest
-    timeout-minutes: 150
+    # 210, not 150: refresh #15's green run took 2 h 23 m (143 of 150 minutes), and a run that
+    # times out reads as red and blocks the stack for nothing. The suite grew (4635 tests, the
+    # renderer now runs in full on the CPU adapter) and the hosted runner is slow under load.
+    timeout-minutes: 210
     permissions:
       contents: write
 
