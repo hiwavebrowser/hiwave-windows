@@ -656,6 +656,7 @@ fn draw_text(
         // the renderer the baseline directly).
         ascent: Some(0.0),
         run: None,
+        faces: None,
     });
 }
 

@@ -177,6 +177,7 @@ fn text(s: &str, x: f32, y: f32, color: Color) -> DisplayCommand {
         advances: Some(vec![7.0; s.chars().count()]),
         ascent: Some(13.0),
         run: None,
+        faces: None,
     }
 }
 
@@ -444,6 +445,7 @@ fn text_sized(s: &str, x: f32, y: f32, size: f32, color: Color) -> DisplayComman
         advances: Some(vec![size; s.chars().count()]),
         ascent: Some((size * 0.88).round()),
         run: None,
+        faces: None,
     }
 }
 

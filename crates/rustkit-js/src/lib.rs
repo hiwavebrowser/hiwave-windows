@@ -497,6 +497,21 @@ pub struct JsRuntime {
     sources: source_context::ScriptSources,
 }
 
+/// M2: dropping a runtime lets its realm go. The realm's natives (console,
+/// the host object) hold the runtime's `Diagnostics` in an `Rc`, and that
+/// holds the realm's `Error.prototype.stack` getter: a GC handle owned from
+/// Rust, so a root. Left alone, the getter keeps the realm, the realm keeps
+/// the natives and the natives keep the getter, and every document's realm
+/// (its compiled bindings, its DOM wrappers and through them the
+/// `Document`) outlived it: ~10 MB a navigation in the app. Taking the
+/// getter breaks the cycle; the next collection frees the realm.
+#[cfg(feature = "boa")]
+impl Drop for JsRuntime {
+    fn drop(&mut self) {
+        self.diag.stack_getter.borrow_mut().take();
+    }
+}
+
 impl JsRuntime {
     /// Create a new JavaScript runtime.
     pub fn new() -> Result<Self, JsError> {

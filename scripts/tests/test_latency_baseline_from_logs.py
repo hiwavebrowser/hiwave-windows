@@ -10,7 +10,10 @@ A synthetic log (no real site, no real URL path) checks that:
 5. (LAT1) the per-visit `Content thread holds n=...` summary lines, merged with the logged
    holds of 50 ms or more, give the exact hold p95 over all entries when it is 50 ms or more
    and "under 50" when it is not; the relayout line's `extract_ms`, the forced-layout `ms`
-   and the `Input to present` windows feed the exit metric.
+   and the `Input to present` windows feed the exit metric;
+6. (LAT1c) the tagged `Input to present view=N host=H ...` lines group by their own host (the
+   chrome's under `(chrome)`), give the exact input-to-present p95 per host over every input when
+   it is 100 ms or more and "under 100" when it is not, and replace the untagged windows.
 """
 
 import importlib.util
@@ -253,6 +256,80 @@ class BaselineFromLogs(unittest.TestCase):
         text = out.getvalue()
         for leak in ("secret", "token", "sig=", "?q=", "/next", "https://"):
             self.assertNotIn(leak, text)
+
+
+# LAT1c: input-to-present lines as the presenter writes them. a.example: a full window of 100
+# headline inputs and a 40-input visit-end line, listing 8 inputs of 100 ms or more (8 = 140 - 133
+# + 1, rank 133 of 140): the p95 is the smallest of them, 105. The every-100 line lands after the
+# window has logged the next load, so the tag names the site. b.example: 20 inputs, none listed:
+# under 100. The chrome's line (role=chrome, host -) is its own row. An old untagged window in the
+# same log is not what the metric reads once tagged lines exist.
+LAT1C_LOG = f"""{E}2026-11-09T10:00:00.000000Z  INFO rustkit_engine: Loading URL id=EngineViewId(4) url=https://a.example/ipath?i=1 replace=false
+2026-11-09T10:00:00.100000Z  INFO rustkit_engine: Running page script source=inline#1 bytes=10
+2026-11-09T10:00:02.000000Z  INFO rustkit_engine::presenter: Input to present p50_ms=10 p95_ms=900 max_ms=900 n=100
+2026-11-09T10:00:05.000000Z  INFO rustkit_engine::presenter: Input to present view=4 host=a.example n=100 p50_ms=20.0 p95_ms=150.0 max_ms=900.0 by_kind=key:60:40.0,wheel:30:150.0,move:25:30.0,down:5:900.0,up:5:300.0 over_100=6 over_100_ms=900.0,300.0,250.0,200.0,150.0,120.0 no_frame=4 role=page at=every_100
+2026-11-09T10:01:00.000000Z  INFO rustkit_engine: Loading URL id=EngineViewId(4) url=https://b.example/other?j=2 replace=false
+2026-11-09T10:01:00.000100Z  INFO rustkit_engine::presenter: Input to present view=4 host=a.example n=40 p50_ms=15.0 p95_ms=105.0 max_ms=110.0 by_kind=key:40:105.0 over_100=2 over_100_ms=110.0,105.0 no_frame=1 role=page at=navigation
+2026-11-09T10:01:00.100000Z  INFO rustkit_engine: Running page script source=inline#1 bytes=10
+2026-11-09T10:01:20.000000Z  INFO rustkit_engine::presenter: Input to present view=4 host=b.example n=20 p50_ms=8.0 p95_ms=60.0 max_ms=90.0 by_kind=wheel:20:60.0,move:3:12.0 over_100=0 over_100_ms=- no_frame=0 role=page at=drop
+2026-11-09T10:01:21.000000Z  INFO rustkit_engine::presenter: Input to present view=3 host=- n=12 p50_ms=30.0 p95_ms=140.0 max_ms=140.0 by_kind=down:6:140.0,up:6:40.0 over_100=1 over_100_ms=140.0 no_frame=2 role=chrome at=drop
+"""
+
+
+class Lat1cInputToPresent(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.s = _summary(LAT1C_LOG)
+
+    def test_lines_group_by_their_own_host_and_count_every_input(self):
+        a = self.s["a.example"]["input_to_present_lat1c"]
+        self.assertEqual(a["lines"], 2)
+        self.assertEqual(a["n"], 140)
+        self.assertEqual(a["by_kind"], {"key": 100, "wheel": 30, "move": 25, "down": 5, "up": 5})
+        self.assertEqual(a["no_frame"], 5)
+        self.assertEqual(a["over_100_ms"], [900.0, 300.0, 250.0, 200.0, 150.0, 120.0, 110.0, 105.0])
+        self.assertEqual(self.s["b.example"]["input_to_present_lat1c"]["n"], 20)
+
+    def test_p95_per_host_is_exact_at_or_over_100_and_under_it_otherwise(self):
+        a = self.s["a.example"]["exit_metric"]
+        self.assertEqual(a["input_to_present_n"], 140)
+        self.assertEqual(a["input_to_present_p95_ms"], 105.0)
+        self.assertFalse(a["input_to_present_p95_under_threshold"])
+        # The tagged lines, not the old untagged 900 ms window, decide it.
+        self.assertEqual(a["input_to_present_p95_worst_ms"], 105.0)
+        b = self.s["b.example"]["exit_metric"]
+        self.assertIsNone(b["input_to_present_p95_ms"])
+        self.assertTrue(b["input_to_present_p95_under_threshold"])
+
+    def test_the_chrome_is_its_own_row(self):
+        c = self.s[tool.CHROME]
+        self.assertEqual(c["input_to_present_lat1c"]["n"], 12)
+        m = c["exit_metric"]
+        # 12 inputs, one listed: rank 12 of 12 is the 140.
+        self.assertEqual(m["input_to_present_p95_ms"], 140.0)
+        self.assertFalse(m["pass"], "the chrome fails on input alone")
+        by_view = _summary(LAT1C_LOG, by_view=True)
+        self.assertIn("(chrome)#v3", by_view)
+        self.assertIn("a.example#v4", by_view)
+
+    def test_printed_report_has_the_p95_per_host_and_no_paths(self):
+        out = io.StringIO()
+        tool.print_table(self.s, out)
+        text = out.getvalue()
+        rows = {l.split(" | ")[0]: l for l in text.splitlines() if " | " in l}
+        self.assertIn("105 (140)", rows["a.example"])
+        self.assertIn("< 100 (20)", rows["b.example"])
+        self.assertIn("140 (12)", rows["(chrome)"])
+        self.assertIn("input to present (LAT1c): n=140 p95 105 ms", text)
+        for leak in ("ipath", "?i=", "?j=", "https://"):
+            self.assertNotIn(leak, text)
+
+    def test_an_untagged_log_still_reads_the_worst_window(self):
+        s = _summary(LAT1_LOG)
+        self.assertIsNone(s["a.example"]["exit_metric"]["input_to_present_n"])
+        out = io.StringIO()
+        tool.print_exit_metric(s, out)
+        self.assertIn("120 (worst window)", out.getvalue())
 
 
 if __name__ == "__main__":

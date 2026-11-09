@@ -104,6 +104,26 @@ struct Args {
     #[arg(long)]
     live_ms: Option<u64>,
 
+    /// Run the page's CSS animations and transitions as the app does (the
+    /// parity config holds them still so a frame is reproducible). For
+    /// `--live-ms` measurements of animation frames; a frame taken with it
+    /// is not comparable with the board.
+    #[arg(long)]
+    animations: bool,
+
+    /// Before the `--url` load, load this URL in the same view and turn the
+    /// live loop for `--prelude-live-ms`, as a page visited earlier in a
+    /// browsing session would have been; then navigate to `--url`. For
+    /// measuring what one document leaves to the next (LAT14: a Web
+    /// Animation of the previous page). A frame taken with it is not
+    /// comparable with the board.
+    #[arg(long)]
+    prelude_url: Option<String>,
+
+    /// How long the prelude page's live loop turns, in milliseconds [default: 500]
+    #[arg(long)]
+    prelude_live_ms: Option<u64>,
+
     /// Enable verbose output
     #[arg(long, short)]
     verbose: bool,
@@ -439,6 +459,16 @@ fn run_capture(args: &Args) -> CaptureResult {
             Ok(rt) => rt,
             Err(e) => return result.failed("error", format!("Failed to create runtime: {}", e)),
         };
+        if let Some(prelude) = &args.prelude_url {
+            let prelude = match Url::parse(prelude) {
+                Ok(u) => u,
+                Err(e) => return result.failed("error", format!("Invalid prelude URL: {}", e)),
+            };
+            if let Err(e) = rt.block_on(engine.load_url(view_id, prelude)) {
+                return result.failed("error", format!("Failed to load prelude URL: {:?}", e));
+            }
+            run_live(&rt, &mut engine, view_id, args.prelude_live_ms.unwrap_or(500));
+        }
         if let Err(e) = rt.block_on(engine.load_url(view_id, url)) {
             return result.failed("error", format!("Failed to load URL: {:?}", e));
         }
@@ -1256,6 +1286,9 @@ fn capture_config(args: &Args, replay_proxy: Option<Url>) -> EngineConfig {
         config.script_budget_ms = budget;
     }
     config.interrupt_scripts_at_budget = args.interrupt_scripts;
+    if args.animations {
+        config.disable_animations = false;
+    }
     config.replay_proxy = replay_proxy;
     config
 }
@@ -1294,6 +1327,24 @@ mod tests {
             config.timer_horizon_ms,
             EngineConfig::for_parity_testing().timer_horizon_ms
         );
+    }
+
+    /// LAT14: animations run in a capture only with `--animations`; the
+    /// board's frames stay still.
+    #[test]
+    fn animations_run_only_with_the_flag() {
+        assert!(capture_config(&parsed(&[]), None).disable_animations);
+        assert!(capture_config(&parsed(&["--live-ms", "1000"]), None).disable_animations);
+        assert!(!capture_config(&parsed(&["--animations"]), None).disable_animations);
+    }
+
+    /// LAT14: the prelude page and how long it runs live before the
+    /// `--url` load (the fixture path has no live loop and ignores it).
+    #[test]
+    fn a_prelude_is_parsed_with_its_live_time() {
+        assert_eq!(parsed(&["--prelude-url", "http://p/"]).prelude_url.as_deref(), Some("http://p/"));
+        assert_eq!(parsed(&[]).prelude_live_ms, None);
+        assert_eq!(parsed(&["--prelude-live-ms", "250"]).prelude_live_ms, Some(250));
     }
 
     #[test]

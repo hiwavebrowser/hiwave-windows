@@ -109,6 +109,39 @@ fn normal_line_height_unites_the_used_faces_like_chrome() {
         26.0
     );
 
+    // Chrome for Testing 148 (the chrome sidebar's action icons, flex items
+    // at 14px system-ui): an emoji WITHOUT Emoji_Presentation takes the
+    // system's cascade face. `🛡` is `.AppleColorEmojiUI` (the system font's
+    // extents: 17, not 23) and `⚙` is Menlo (17, 8.44px wide). `🚫` has
+    // Emoji_Presentation (Apple Color Emoji: 23), and so does `🛡` with
+    // U+FE0F after it.
+    let s14 = style(14.0, LineHeight::Normal);
+    let line14 = |t: &str| run_line_height(&s14, 14.0, &measure(t, 14.0));
+    assert_eq!(line14("plain"), 17.0);
+    assert_eq!(line14("\u{1F6E1}"), 17.0, "shield");
+    assert_eq!(line14("\u{2699}"), 17.0, "gear");
+    assert_eq!(line14("\u{1F6AB}"), 23.0, "no-entry");
+    assert_eq!(line14("\u{1F6E1}\u{FE0F}"), 23.0, "shield + VS16");
+    let gear = measure("\u{2699}", 14.0).width;
+    assert!((gear - 8.4375).abs() < 0.05, "gear is Menlo's advance (Chrome 8.4375), got {gear}");
+
+    // A variation selector decides for the primary face too (Chrome for
+    // Testing 148, presentation-matrix probe 2026-11-08): `©` + U+FE0F is
+    // the emoji face though the system font has `©` (its advance, a 23px
+    // line), while `▾` U+25BE + U+FE0F stays the primary (no Emoji
+    // property: 17, `▾`'s own advance). `⚙` + U+FE0E keeps Menlo.
+    let emoji_advance = measure("\u{1F6AB}", 14.0).width;
+    assert_eq!(line14("\u{A9}\u{FE0F}"), 23.0, "copyright + VS16");
+    assert_eq!(measure("\u{A9}\u{FE0F}", 14.0).width, emoji_advance, "copyright + VS16 advance");
+    assert_eq!(line14("\u{25BE}\u{FE0F}"), 17.0, "small down triangle + VS16");
+    assert_eq!(
+        measure("\u{25BE}\u{FE0F}", 14.0).width,
+        measure("\u{25BE}", 14.0).width,
+        "small down triangle + VS16 advance"
+    );
+    assert_eq!(line14("\u{2699}\u{FE0E}"), 17.0, "gear + VS15");
+    assert_eq!(measure("\u{2699}\u{FE0E}", 14.0).width, gear, "gear + VS15 advance");
+
     // An explicit line-height ignores the used faces (Chrome: 24 stays 24).
     let fixed = style(16.0, LineHeight::Px(24.0));
     assert_eq!(
@@ -124,6 +157,65 @@ fn normal_line_height_unites_the_used_faces_like_chrome() {
         |t: &str| measure_text_advanced(t, "Arial", 16.0, FontWeight::NORMAL, FontStyle::Normal);
     assert_eq!(run_line_height(&arial, 16.0, &m("plain arial")), 18.0);
     assert_eq!(run_line_height(&arial, 16.0, &m("☕ arial coffee")), 26.0);
+}
+
+/// The face is ONE decision shared by layout and paint: for every symbol ×
+/// {plain, U+FE0E, U+FE0F} under a primary that has or lacks its glyph, the
+/// advance the shaper measured is the advance the rasterizer's glyph carries
+/// (Chrome for Testing 148 presentation-matrix probe, 2026-11-08; the face
+/// names are pinned in rustkit-text).
+#[test]
+fn layout_advance_is_the_painted_advance_for_every_presentation() {
+    use rustkit_css::FontStretch;
+    use rustkit_layout::{FontFamilyChain, TextShaper};
+    use rustkit_text::macos::GlyphRasterizer;
+
+    let shaper = TextShaper::new();
+    let mut wrong = Vec::new();
+    for family in ["-apple-system, BlinkMacSystemFont, sans-serif", "Helvetica", "Menlo"] {
+        let paint = GlyphRasterizer::with_style(family, 14.0, 400, false);
+        for ch in ['\u{A9}', '\u{2699}', '\u{1F6E1}', '\u{25BE}', '\u{2328}', '\u{263A}', '\u{2764}'] {
+            for (next, variant) in [(None, "plain"), (Some('\u{FE0E}'), "VS15"), (Some('\u{FE0F}'), "VS16")] {
+                let mut text = ch.to_string();
+                if let Some(vs) = next {
+                    text.push(vs);
+                }
+                let run = shaper
+                    .shape(
+                        &text,
+                        &FontFamilyChain::from_css_value(family),
+                        FontWeight::NORMAL,
+                        FontStyle::Normal,
+                        FontStretch::Normal,
+                        14.0,
+                    )
+                    .expect("shapes");
+                let layout_advance = run.glyphs[0].advance;
+                // Paint's side: the face the shaper recorded on the glyph
+                // (the display list carries it), nothing re-decided.
+                let face = run.glyphs[0].face;
+                let paint_advance = paint.rasterize_with_face(ch, face).expect("paints").advance();
+                if (layout_advance - paint_advance).abs() > 0.01 {
+                    wrong.push(format!(
+                        "{family} {ch:?} {variant}: {face:?} layout {layout_advance} vs paint {paint_advance}"
+                    ));
+                }
+                // A rasterizer without the record decides the same face
+                // from the same font.
+                let auto = paint.select_face(ch, rustkit_text::Variation::after(next));
+                if auto != face {
+                    wrong.push(format!("{family} {ch:?} {variant}: layout {face:?} vs paint's own {auto:?}"));
+                }
+                // The selector itself is zero-width wherever it lands.
+                if let Some(vs) = run.glyphs.get(1) {
+                    if vs.advance != 0.0 {
+                        wrong.push(format!("{family} {ch:?} {variant}: the selector advances {}", vs.advance));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[test]

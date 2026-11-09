@@ -12,6 +12,8 @@ use core_text::font::{self, CTFont};
 use foreign_types_shared::ForeignType;
 use thiserror::Error;
 
+use crate::{GlyphFace, Variation};
+
 /// Errors that can occur in text shaping
 #[derive(Error, Debug)]
 pub enum TextError {
@@ -542,10 +544,121 @@ const EMOJI_FAMILY: &str = "Apple Color Emoji";
 /// (`GlyphRasterizer::resolve_color_font`).
 const COLOR_GLYPH_FAMILIES: &[&str] = &[EMOJI_FAMILY, "Apple Symbols"];
 
+/// THE face decision, made once per character where the text is shaped and
+/// carried to paint as a [`GlyphFace`] (rustkit-layout records it on the
+/// display list; the renderer reads it and never decides again). `primary`
+/// is the run's face, `variation` the selector after `ch`, and
+/// `primary_has_glyph` whether `primary` has a glyph for `ch`.
+///
+/// Chrome for Testing 148 (CSS.getPlatformFontsForNode, the
+/// presentation-matrix probe of 2026-11-08), which this follows:
+///
+/// * U+FE0F after a character with the Unicode Emoji property goes to the
+///   colour faces whether or not the primary has the glyph: `©️` in
+///   Helvetica, Menlo or the system font is Apple Color Emoji (18px wide,
+///   a 23px line at 14px). After a character without the property (`▾`
+///   U+25BE) the selector changes nothing.
+/// * U+FE0E asks for a text face: the primary when it has the glyph and is
+///   not a colour face, else the cascade's (`☕︎` under Helvetica is Apple
+///   Symbols; under the system font `.AppleColorEmojiUI`, the UI emoji
+///   face with the system font's extents).
+/// * Otherwise the primary when it has the glyph (Apple Symbols keeps its
+///   own `☕`); else the colour faces for an Emoji_Presentation character
+///   and the cascade face for any other, text-default emoji included (`🛡`
+///   under the system font is `.AppleColorEmojiUI`, `⚙` Menlo, `❤` Zapf
+///   Dingbats).
+///
+/// A variation selector or joiner is [`GlyphFace::Ignorable`]: zero
+/// advance, nothing drawn, no face of its own (Chrome draws it as a
+/// zero-width glyph of the base character's face).
+pub fn select_face(
+    primary: &CTFont,
+    ch: char,
+    variation: Variation,
+    primary_has_glyph: bool,
+) -> GlyphFace {
+    if crate::is_default_ignorable(ch) {
+        return GlyphFace::Ignorable;
+    }
+    match variation {
+        Variation::Emoji if has_emoji_property(ch) => GlyphFace::Fallback { emoji: true },
+        Variation::Text => {
+            if primary_has_glyph && !is_color_face(primary) {
+                GlyphFace::Primary
+            } else {
+                GlyphFace::Fallback { emoji: false }
+            }
+        }
+        _ if primary_has_glyph => GlyphFace::Primary,
+        _ => GlyphFace::Fallback { emoji: has_emoji_presentation(ch) },
+    }
+}
+
+/// ICU's Emoji_Presentation property (`UCHAR_EMOJI_PRESENTATION`, 58), from
+/// the system's libicucore: the same table Chrome's `SymbolsIterator` reads.
+/// A character with it is emoji unless U+FE0E follows.
+pub fn has_emoji_presentation(ch: char) -> bool {
+    const UCHAR_EMOJI_PRESENTATION: i32 = 58;
+    (ch as u32) >= 0x80 && icu_binary_property(ch, UCHAR_EMOJI_PRESENTATION)
+}
+
+/// ICU's Emoji property (`UCHAR_EMOJI`, 57): a character U+FE0F can turn
+/// into an emoji. The digits, `#`, `*`, `©` and `®` have it.
+pub fn has_emoji_property(ch: char) -> bool {
+    const UCHAR_EMOJI: i32 = 57;
+    icu_binary_property(ch, UCHAR_EMOJI)
+}
+
+fn icu_binary_property(ch: char, which: i32) -> bool {
+    #[link(name = "icucore")]
+    extern "C" {
+        fn u_hasBinaryProperty(c: i32, which: i32) -> i8;
+    }
+    // SAFETY: a pure lookup on a code point; ICU accepts any i32.
+    unsafe { u_hasBinaryProperty(ch as i32, which) != 0 }
+}
+
+/// Whether `font` draws colour glyphs (Apple Color Emoji and its
+/// `.AppleColorEmojiUI` variant): such a face is painted on the colour-glyph
+/// path, any other on the coverage-mask path.
+pub fn is_color_face(font: &CTFont) -> bool {
+    const K_CT_FONT_COLOR_GLYPHS_TRAIT: u32 = 1 << 13;
+    font.symbolic_traits() & K_CT_FONT_COLOR_GLYPHS_TRAIT != 0
+}
+
+/// The horizontal advance of `glyph` in `font`, in CSS px at the font's
+/// size: what layout measures a character at and what paint owes for it.
+pub fn glyph_advance(font: &CTFont, glyph: u16) -> f32 {
+    extern "C" {
+        fn CTFontGetAdvancesForGlyphs(
+            font: core_text::font::CTFontRef,
+            orientation: u32,
+            glyphs: *const u16,
+            advances: *mut CGSize,
+            count: isize,
+        ) -> f64;
+    }
+    let mut advance = CGSize::new(0.0, 0.0);
+    // SAFETY: `font` is a live CTFont; one glyph id is read and one
+    // advance written.
+    unsafe {
+        CTFontGetAdvancesForGlyphs(font.as_concrete_TypeRef(), 0, &glyph, &mut advance, 1);
+    }
+    advance.width as f32
+}
+
 /// The face a character is drawn from when `primary` has no glyph for it,
 /// and its glyph id there. ONE function for layout (which takes the advance
 /// and the face's extents) and paint (which draws the glyph), so both use
-/// the same face.
+/// the same face. The presentation is the character's own
+/// (`has_emoji_presentation`); a caller that knows the face decision
+/// (`select_face`) uses `fallback_face_for_presentation`.
+pub fn fallback_face_for(primary: &CTFont, ch: char) -> Option<(CTFont, u16)> {
+    fallback_face_for_presentation(primary, ch, has_emoji_presentation(ch))
+}
+
+/// `fallback_face_for` with the presentation decided by the caller (the
+/// `emoji` of a [`GlyphFace::Fallback`]).
 ///
 /// Chrome asks the system for the fallback of the font in use, and so does
 /// this: `CTFontCreateForString` walks Core Text's cascade list for
@@ -553,33 +666,38 @@ const COLOR_GLYPH_FAMILIES: &[&str] = &[EMOJI_FAMILY, "Apple Symbols"];
 /// Apple Symbols' advance (22.3 to 22.6px in a 16px `<kbd>`), where the
 /// cascade, and Chrome, give Menlo's (21.23px).
 ///
-/// Two things come before the cascade. A character above Latin-1 that
-/// Apple Color Emoji has is taken from it, as it was when that face led the
-/// fixed list: `⏰` and `⌨` alone get a text face from the cascade, and
-/// Chrome's line for them is the emoji face's height (an `about` heading is
-/// 29px, and was 24 with the cascade first). ASCII and Latin-1 are left
-/// out because that face also has the digits, `#`, `*`, `©` and `®`, which
-/// are text unless a variation selector or keycap follows: a web font
-/// without digits drew x.com's year as wide emoji-face digits. And a
-/// character on the colour-glyph path (`is_emoji`) keeps that path's own
-/// faces, because that is where paint draws it from. The fixed list is the
-/// last resort. `None` means no face has the character (Core Text answers
-/// with its LastResort face, which is not a glyph anyone meant).
-pub fn fallback_face_for(primary: &CTFont, ch: char) -> Option<(CTFont, u16)> {
+/// An emoji-presented character (Emoji_Presentation, or U+FE0F after it)
+/// takes Apple Color Emoji first, as Blink's emoji fallback priority does:
+/// `⏰` and `⌨️` lines are the emoji face's height (an `about` heading is
+/// 29px). Every other character takes the cascade first, text-default emoji
+/// included, which is what Chrome for Testing 148 does: under the system
+/// font `🛡` is `.AppleColorEmojiUI` (the system font's extents, so a 17px
+/// line at 14px, not 23) and `⚙` and `⌨` are Menlo; under Helvetica `❤` is
+/// Zapf Dingbats. Taking Apple Color Emoji for every character above
+/// Latin-1 it has made the chrome sidebar's shield and settings rows 6px
+/// taller than Chrome's. ASCII and Latin-1 never go to the emoji face
+/// unasked (it has the digits, `#`, `*`, `©` and `®`). The fixed list is
+/// the last resort. `None` means no face has the character (Core Text
+/// answers with its LastResort face, which is not a glyph anyone meant).
+pub fn fallback_face_for_presentation(
+    primary: &CTFont,
+    ch: char,
+    emoji: bool,
+) -> Option<(CTFont, u16)> {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    type Key = (String, u32, char);
+    type Key = (String, u32, char, bool);
     thread_local! {
         static FOUND: RefCell<HashMap<Key, Option<(CTFont, u16)>>> = RefCell::new(HashMap::new());
     }
     const MAX_ENTRIES: usize = 4096;
 
-    let key = (postscript_name_or_empty(primary), (primary.pt_size() as f32).to_bits(), ch);
+    let key = (postscript_name_or_empty(primary), (primary.pt_size() as f32).to_bits(), ch, emoji);
     if let Some(hit) = FOUND.with(|m| m.borrow().get(&key).cloned()) {
         return hit;
     }
-    let found = fallback_face_uncached(primary, ch);
+    let found = fallback_face_uncached(primary, ch, emoji);
     FOUND.with(|m| {
         let mut m = m.borrow_mut();
         if m.len() >= MAX_ENTRIES {
@@ -590,7 +708,7 @@ pub fn fallback_face_for(primary: &CTFont, ch: char) -> Option<(CTFont, u16)> {
     found
 }
 
-fn fallback_face_uncached(primary: &CTFont, ch: char) -> Option<(CTFont, u16)> {
+fn fallback_face_uncached(primary: &CTFont, ch: char, emoji: bool) -> Option<(CTFont, u16)> {
     let size = primary.pt_size();
     let named = |families: &[&str]| -> Option<(CTFont, u16)> {
         families.iter().find_map(|name| {
@@ -600,17 +718,17 @@ fn fallback_face_uncached(primary: &CTFont, ch: char) -> Option<(CTFont, u16)> {
         })
     };
 
-    if ch as u32 > 0xFF {
-        if let Some(hit) = named(&[EMOJI_FAMILY]) {
-            return Some(hit);
-        }
-    }
-    if is_emoji(ch) {
+    if emoji {
         if let Some(hit) = named(COLOR_GLYPH_FAMILIES) {
             return Some(hit);
         }
     }
-    if let Some(font) = cascade_font(primary, ch) {
+    // A text face asked for an Emoji_Presentation character (U+FE0E after
+    // it): the cascade is asked with the selector, as Chrome asks it, so
+    // Core Text answers a text face where one has the character (`☕︎`
+    // under Helvetica is Apple Symbols, not Apple Color Emoji).
+    let text_request = !emoji && has_emoji_presentation(ch);
+    if let Some(font) = cascade_font(primary, ch, text_request) {
         if let Some(glyph) = color_glyph_id(&font, ch) {
             return Some((font, glyph));
         }
@@ -618,9 +736,10 @@ fn fallback_face_uncached(primary: &CTFont, ch: char) -> Option<(CTFont, u16)> {
     named(GLYPH_FALLBACK_FAMILIES)
 }
 
-/// Core Text's cascade face for `ch` under `primary`, at `primary`'s size.
-/// `None` when the answer is the LastResort face.
-fn cascade_font(primary: &CTFont, ch: char) -> Option<CTFont> {
+/// Core Text's cascade face for `ch` under `primary`, at `primary`'s size;
+/// with `text_request`, for `ch` followed by U+FE0E. `None` when the answer
+/// is the LastResort face.
+fn cascade_font(primary: &CTFont, ch: char, text_request: bool) -> Option<CTFont> {
     use core_foundation::base::CFRange;
     use core_foundation::string::{CFString, CFStringRef};
     use core_text::font::CTFontRef;
@@ -633,9 +752,12 @@ fn cascade_font(primary: &CTFont, ch: char) -> Option<CTFont> {
         ) -> CTFontRef;
     }
 
-    let mut utf8 = [0u8; 4];
-    let string = CFString::new(ch.encode_utf8(&mut utf8));
-    let range = CFRange::init(0, ch.len_utf16() as isize);
+    let mut text = ch.to_string();
+    if text_request {
+        text.push('\u{FE0E}');
+    }
+    let string = CFString::new(&text);
+    let range = CFRange::init(0, text.encode_utf16().count() as isize);
     // SAFETY: `primary` and `string` are live, and the range is the whole
     // string in UTF-16 units. The result follows the create rule.
     let font = unsafe {
@@ -882,6 +1004,30 @@ pub struct GlyphRasterizer {
     font_size: f32,
     font_weight: u16,
     font_italic: bool,
+}
+
+/// A rasterized glyph: `(bitmap, width, height, advance, bearing_x,
+/// bearing_y)` (BITMAP-EDGE and INTEGER-BASELINE contracts, see
+/// `GlyphRasterizer::rasterize_char`). The bitmap is a coverage mask
+/// (`width * height` bytes) or premultiplied RGBA (`* 4`), as the
+/// [`GlyphRaster`] it comes in says.
+pub type Raster = (Vec<u8>, u32, u32, f32, f32, f32);
+
+/// A glyph on the path its face takes: a coverage mask the renderer tints,
+/// or a colour face's own artwork.
+pub enum GlyphRaster {
+    Mask(Raster),
+    Color(Raster),
+}
+
+impl GlyphRaster {
+    /// The advance the glyph carries: layout's advance for the character
+    /// (`select_face` decided one face for both).
+    pub fn advance(&self) -> f32 {
+        match self {
+            GlyphRaster::Mask(r) | GlyphRaster::Color(r) => r.3,
+        }
+    }
 }
 
 impl GlyphRasterizer {
@@ -1328,11 +1474,48 @@ impl GlyphRasterizer {
     /// Returns `(rgba, width, height, advance, bearing_x, bearing_y)` where
     /// `rgba` is `width*height*4` premultiplied bytes, or `None` if the char
     /// has no glyph in any color-capable fallback font.
-    pub fn rasterize_char_color(&self, ch: char) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
-        // Resolve a font that actually has a glyph for `ch`. Prefer the
-        // instance font, then the color-emoji fallback chain.
+    pub fn rasterize_char_color(&self, ch: char) -> Option<Raster> {
         let font = self.resolve_color_font(ch)?;
         self.rasterize_char_color_with_font(&font, ch)
+    }
+
+    /// THE face decision (`select_face`) for `ch` in this rasterizer's own
+    /// font, for a caller that has no record from layout (the legacy text
+    /// commands without advances). `variation` is the selector after `ch`.
+    pub fn select_face(&self, ch: char, variation: Variation) -> GlyphFace {
+        select_face(&self.font, ch, variation, color_glyph_id(&self.font, ch).is_some())
+    }
+
+    /// The glyph for `ch` from the face `face` names (layout's recorded
+    /// decision, or `select_face`'s for a legacy caller), on the path that
+    /// face takes: a colour face's artwork (`GlyphRaster::Color`) or a
+    /// coverage mask (`GlyphRaster::Mask`). Nothing here decides a face: a
+    /// `Fallback` resolves through `fallback_face_for_presentation`, the
+    /// same lookup layout measured with, so the advance in the result is
+    /// layout's advance. `None` for an `Ignorable` (nothing is drawn) and
+    /// for a character no face has.
+    pub fn rasterize_with_face(&self, ch: char, face: GlyphFace) -> Option<GlyphRaster> {
+        match face {
+            GlyphFace::Ignorable => None,
+            GlyphFace::Primary => {
+                if is_color_face(&self.font) {
+                    self.rasterize_char_color_with_font(&self.font, ch).map(GlyphRaster::Color)
+                } else {
+                    // The common path, as it always was (rasterize_char
+                    // falls back by itself should this font lack the
+                    // glyph: a face the record was not made for).
+                    self.rasterize_char(ch, 0.0).map(GlyphRaster::Mask)
+                }
+            }
+            GlyphFace::Fallback { emoji } => {
+                let (font, glyph) = fallback_face_for_presentation(&self.font, ch, emoji)?;
+                if is_color_face(&font) {
+                    self.rasterize_char_color_with_font(&font, ch).map(GlyphRaster::Color)
+                } else {
+                    self.rasterize_glyph_with_font(&font, glyph).map(GlyphRaster::Mask)
+                }
+            }
+        }
     }
 
     /// Find a font containing a glyph for `ch`, preferring color-emoji fonts.
@@ -2014,9 +2197,10 @@ mod tests {
     #[test]
     fn fallback_keeps_emoji_faces_and_refuses_the_last_resort_face() {
         let helvetica = named_font("Helvetica", 16.0).expect("Helvetica is installed");
-        // U+23F0 and U+2328 are outside `is_emoji`'s ranges; Apple Color
-        // Emoji has them, and Chrome's line for them is that face's height.
-        for ch in ['\u{2615}', '\u{1F3AF}', '\u{23F0}', '\u{2328}'] {
+        // Emoji_Presentation characters (U+23F0 is outside `is_emoji`'s
+        // ranges) take Apple Color Emoji, and Chrome's line for them is that
+        // face's height.
+        for ch in ['\u{2615}', '\u{1F3AF}', '\u{23F0}'] {
             let (face, glyph) = fallback_face_for(&helvetica, ch).expect("an emoji face");
             assert_eq!(family_name_or_empty(&face), "Apple Color Emoji", "{ch:?}");
             assert_ne!(glyph, 0);
@@ -2034,6 +2218,145 @@ mod tests {
         let again = fallback_face_for(&helvetica, '\u{6F22}').map(|(f, g)| (f.postscript_name(), g));
         assert!(first.is_some(), "a CJK face");
         assert_eq!(first, again);
+    }
+
+    /// Chrome for Testing 148 (CSS.getPlatformFontsForNode, impl-board3
+    /// probe 2026-11-08): a character WITHOUT Emoji_Presentation (an emoji
+    /// that is text by default) takes the system's cascade face for the
+    /// primary face, like any other missing glyph. Only Emoji_Presentation
+    /// characters (or a following U+FE0F) take Apple Color Emoji first. The
+    /// chrome sidebar's `🛡` (U+1F6E1) under the system font is
+    /// `.AppleColorEmojiUI`, whose extents are the system font's (its line is
+    /// 17px at 14px, not the emoji face's 23), and `⚙` (U+2699) is Menlo
+    /// (8.44px wide, not 18).
+    #[test]
+    fn a_text_default_emoji_takes_the_cascade_face_like_chrome() {
+        let system = create_font("-apple-system", 14.0).expect("system font");
+        let helvetica = named_font("Helvetica", 14.0).expect("Helvetica is installed");
+        let ps = |primary: &CTFont, ch: char| {
+            fallback_face_for(primary, ch).map(|(f, _)| f.postscript_name()).unwrap_or_default()
+        };
+        assert_eq!(ps(&system, '\u{1F6E1}'), ".AppleColorEmojiUI", "shield under system-ui");
+        assert_eq!(ps(&system, '\u{2699}'), "Menlo-Regular", "gear under system-ui");
+        assert_eq!(ps(&system, '\u{2328}'), "Menlo-Regular", "keyboard under system-ui");
+        assert_eq!(ps(&system, '\u{1F6AB}'), "AppleColorEmoji", "no-entry is Emoji_Presentation");
+        assert_eq!(ps(&system, '\u{1F4C8}'), "AppleColorEmoji", "chart is Emoji_Presentation");
+        assert_eq!(ps(&helvetica, '\u{1F6E1}'), "AppleColorEmoji", "shield under Helvetica");
+        assert_eq!(ps(&helvetica, '\u{2764}'), "ZapfDingbatsITC", "heart under Helvetica");
+        assert_eq!(ps(&helvetica, '\u{2328}'), "Menlo-Regular", "keyboard under Helvetica");
+    }
+
+    /// Chrome for Testing 148 (CSS.getPlatformFontsForNode, 14px, the
+    /// presentation-matrix probe of 2026-11-08) for a symbol × {plain, U+FE0E,
+    /// U+FE0F} under a primary that has or lacks its glyph. The face is ONE
+    /// decision for layout and paint, and these are its outcomes:
+    ///
+    /// * U+FE0F after a character with the Emoji property goes to Apple Color
+    ///   Emoji whether or not the primary has the glyph (`©️` in Helvetica,
+    ///   Menlo or the system font is the emoji face, 18px wide, a 23px line);
+    ///   after a character without it (`▾` U+25BE) it changes nothing.
+    /// * U+FE0E asks for a text face: the primary when it has the glyph,
+    ///   else the cascade's.
+    /// * Plain: the primary when it has the glyph; else Apple Color Emoji
+    ///   for an Emoji_Presentation character and the cascade face for any
+    ///   other (`🛡` under the system font is `.AppleColorEmojiUI`, `⚙` and
+    ///   `⌨` Menlo, `☺` Helvetica, `❤` Zapf Dingbats, `▾` under Helvetica
+    ///   Lucida Grande).
+    ///
+    /// For every cell the advance layout measures and the advance paint's
+    /// glyph carries are the same number: a line never wraps on one face
+    /// and paints with another.
+    #[test]
+    fn layout_and_paint_take_one_face_per_presentation_like_chrome() {
+        const ACE: &str = "AppleColorEmoji";
+        // "" is the primary's own PostScript name.
+        const P: &str = "";
+        let system = create_font("-apple-system", 14.0).expect("system font");
+        let helvetica = named_font("Helvetica", 14.0).expect("Helvetica is installed");
+        let menlo = named_font("Menlo", 14.0).expect("Menlo is installed");
+        type Row = (char, [&'static str; 3]);
+        let matrix: [(&CTFont, &str, [Row; 7]); 3] = [
+            (
+                &system,
+                "system",
+                [
+                    ('\u{A9}', [P, P, ACE]),
+                    ('\u{2699}', ["Menlo-Regular", "Menlo-Regular", ACE]),
+                    ('\u{1F6E1}', [".AppleColorEmojiUI", ".AppleColorEmojiUI", ACE]),
+                    ('\u{25BE}', [P, P, P]),
+                    ('\u{2328}', ["Menlo-Regular", "Menlo-Regular", ACE]),
+                    ('\u{263A}', ["Helvetica", "Helvetica", ACE]),
+                    ('\u{2764}', ["ZapfDingbatsITC", "ZapfDingbatsITC", ACE]),
+                ],
+            ),
+            (
+                &helvetica,
+                "Helvetica",
+                [
+                    ('\u{A9}', [P, P, ACE]),
+                    ('\u{2699}', ["Menlo-Regular", "Menlo-Regular", ACE]),
+                    ('\u{1F6E1}', [ACE, ACE, ACE]),
+                    ('\u{25BE}', ["LucidaGrande", "LucidaGrande", "LucidaGrande"]),
+                    ('\u{2328}', ["Menlo-Regular", "Menlo-Regular", ACE]),
+                    ('\u{263A}', [P, P, ACE]),
+                    ('\u{2764}', ["ZapfDingbatsITC", "ZapfDingbatsITC", ACE]),
+                ],
+            ),
+            (
+                &menlo,
+                "Menlo",
+                [
+                    ('\u{A9}', [P, P, ACE]),
+                    ('\u{2699}', [P, P, ACE]),
+                    ('\u{1F6E1}', [ACE, ACE, ACE]),
+                    ('\u{25BE}', [P, P, P]),
+                    ('\u{2328}', [P, P, ACE]),
+                    ('\u{263A}', [P, P, ACE]),
+                    ('\u{2764}', [P, P, ACE]),
+                ],
+            ),
+        ];
+        let variants: [(Option<char>, &str); 3] =
+            [(None, "plain"), (Some('\u{FE0E}'), "VS15"), (Some('\u{FE0F}'), "VS16")];
+        let mut wrong = Vec::new();
+        for (primary, primary_name, rows) in &matrix {
+            let primary_ps = primary.postscript_name();
+            let paint = GlyphRasterizer::for_face((*primary).clone(), 14.0);
+            for (ch, want_faces) in rows {
+                for ((next, variant), want) in variants.iter().zip(want_faces) {
+                    let want = if want.is_empty() { primary_ps.as_str() } else { want };
+                    // ONE decision, as layout makes it; paint's own view
+                    // of the same font agrees with it.
+                    let variation = Variation::after(*next);
+                    let has = color_glyph_id(primary, *ch).is_some();
+                    let decided = select_face(primary, *ch, variation, has);
+                    assert_eq!(paint.select_face(*ch, variation), decided, "{primary_name} {ch:?} {variant}");
+                    // Layout's side: the decided face's advance.
+                    let (face, glyph) = match decided {
+                        GlyphFace::Primary => ((*primary).clone(), color_glyph_id(primary, *ch).expect("has")),
+                        GlyphFace::Fallback { emoji } => {
+                            fallback_face_for_presentation(primary, *ch, emoji).expect("a face")
+                        }
+                        GlyphFace::Ignorable => unreachable!("{ch:?} is not a selector"),
+                    };
+                    let layout_advance = glyph_advance(&face, glyph);
+                    // Paint's side: the recorded decision, nothing re-decided.
+                    let raster = paint.rasterize_with_face(*ch, decided).expect("paints");
+                    let paint_advance = raster.advance();
+                    let colour = matches!(raster, GlyphRaster::Color(_));
+                    let got = face.postscript_name();
+                    if got != want
+                        || (layout_advance - paint_advance).abs() > 0.01
+                        || colour != is_color_face(&face)
+                    {
+                        wrong.push(format!(
+                            "{primary_name} {ch:?} {variant}: {decided:?} face {got} (Chrome {want}), layout {layout_advance} vs paint {paint_advance}, colour path {colour}"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 
     #[test]

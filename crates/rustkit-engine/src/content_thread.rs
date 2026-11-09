@@ -1581,7 +1581,7 @@ mod tests {
     #[test]
     fn coalesce_keeps_only_the_latest_of_adjacent_moves() {
         let mv = |x: f32| PageCmd::Input(PageInput::MouseMove { x, y: 0.0 });
-        let note = |seq| PageCmd::NoteInput { at: Instant::now(), seq };
+        let note = |seq| PageCmd::NoteInput { at: Instant::now(), seq, kind: crate::InputClass::Move };
         let batch = vec![
             note(1),
             mv(1.0),
@@ -1629,7 +1629,7 @@ mod tests {
     #[test]
     fn coalesce_drops_pointer_input_queued_ahead_of_a_navigation() {
         let mv = |x: f32| PageCmd::Input(PageInput::MouseMove { x, y: 0.0 });
-        let note = |seq| PageCmd::NoteInput { at: Instant::now(), seq };
+        let note = |seq| PageCmd::NoteInput { at: Instant::now(), seq, kind: crate::InputClass::Move };
         let (click_reply, mut clicked) = oneshot::channel();
         let (html_reply, _) = oneshot::channel();
         let batch = vec![

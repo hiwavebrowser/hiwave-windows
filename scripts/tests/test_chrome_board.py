@@ -272,6 +272,29 @@ class GateTests(unittest.TestCase):
 
 
 class RealSiteGateTests(unittest.TestCase):
+    def test_compare_geometry_joins_across_class_whitespace(self):
+        """The board's geometry column goes through the same join: a two-space
+        class attribute (chrome.html's locked workspace tab) is one compared box,
+        not a missing_box + phantom_box pair that blocks the geometry rule."""
+        from scripts import chrome_board
+
+        chrome = {"elements": [{"selector": "body > div.workspace-tab  locked", "tag": "div",
+                                "rect": {"x": 0, "y": 0, "width": 10, "height": 10}}]}
+        box = {"x": 0, "y": 0, "width": 10, "height": 10}
+        rustkit = {"root": {"type": "block", "border_box": {"x": 0, "y": 0, "width": 800, "height": 600},
+                            "children": [{"type": "block", "selector": "body > div.workspace-tab locked",
+                                          "tag": "div", "element_id": 1, "border_box": box,
+                                          "content_rect": box, "children": []}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            rects = Path(tmp) / "layout-rects.json"
+            layout = Path(tmp) / "rustkit-layout.json"
+            rects.write_text(json.dumps(chrome), encoding="utf-8")
+            layout.write_text(json.dumps(rustkit), encoding="utf-8")
+            geometry = chrome_board.compare_geometry("t", rects, layout)
+        self.assertEqual(geometry["join_failures"], 0)
+        self.assertEqual(geometry["compared"], 1)
+        self.assertEqual(geometry["geometry_failures"], 0)
+
     def test_looks_right_is_20_pct_for_now(self):
         from scripts import realsite_board
 

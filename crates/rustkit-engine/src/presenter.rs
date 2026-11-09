@@ -44,7 +44,7 @@ use url::Url;
 #[cfg(windows)]
 use windows::Win32::Foundation::HWND;
 
-use super::wgate::{self, HoldStage, InputLatency, InputMark};
+use super::wgate::{self, HoldStage, InputLatency, InputMark, VisitTag};
 use super::{EngineError, EngineViewId, PresentedFrame};
 
 /// One frame, as the page side hands it over: everything the presenter
@@ -73,9 +73,15 @@ pub struct FrameCommit {
     /// The viewport the list was laid out for, in CSS pixels (0 x 0 before
     /// the first layout).
     pub laid_out_for: (u32, u32),
-    /// The earliest input the page took since its last commit, for the
-    /// input-to-present log.
-    pub input: Option<InputMark>,
+    /// Every input the page took since its last commit (moves sampled:
+    /// the earliest one), for the input-to-present log (LAT1c). The
+    /// presenter measures each once, when it presents this frame.
+    pub inputs: Vec<InputMark>,
+    /// Inputs since the last commit whose turn changed no frame, or that
+    /// a navigation overtook (`no_frame` on the input-to-present line).
+    pub inputs_unpresented: u32,
+    /// The view and host this frame belongs to (LAT1c).
+    pub visit: VisitTag,
     /// The page's canvas colour (CSS 2.1 §14.2), as the window should
     /// clear a surface that is larger than `laid_out_for`. Opaque; a
     /// transparent canvas is white.
@@ -85,6 +91,38 @@ pub struct FrameCommit {
     /// press outside it closes it and goes nowhere else, so a view with a
     /// region (the RustKit chrome over the page) is hit everywhere.
     pub modal_popup: bool,
+}
+
+impl FrameCommit {
+    /// Take the inputs this commit carries (LAT1c), leaving none: the
+    /// window calls it once the commit has been handed to its presenter,
+    /// so a redraw of the same commit (a resize) does not measure them
+    /// again.
+    pub fn take_inputs(&mut self) -> (Vec<InputMark>, u32) {
+        (std::mem::take(&mut self.inputs), std::mem::take(&mut self.inputs_unpresented))
+    }
+
+    /// `older` is being replaced by this commit before the window drew it
+    /// (LAT1c): its inputs ride this one, ahead of this one's own, so an
+    /// input made while the window was slow is measured by the frame that
+    /// finally shows it rather than lost with the frame it skipped. Inputs
+    /// of another visit are counted `no_frame` instead.
+    pub fn absorb_undrawn(&mut self, older: &mut FrameCommit) {
+        let (mut inputs, unpresented) = older.take_inputs();
+        if inputs.is_empty() && unpresented == 0 {
+            return;
+        }
+        if older.visit != self.visit {
+            self.inputs_unpresented = self
+                .inputs_unpresented
+                .saturating_add(unpresented)
+                .saturating_add(inputs.len() as u32);
+            return;
+        }
+        self.inputs_unpresented = self.inputs_unpresented.saturating_add(unpresented);
+        inputs.append(&mut self.inputs);
+        self.inputs = inputs;
+    }
 }
 
 /// The window thread's half of the engine: every NSView/HWND, every GPU
@@ -190,6 +228,49 @@ impl Presenter {
     #[cfg(test)]
     pub(crate) fn latency_samples(&self) -> u64 {
         self.latency.samples
+    }
+
+    /// The input-to-present samples and lines so far (tests).
+    #[cfg(test)]
+    pub(crate) fn latency(&mut self) -> &mut InputLatency {
+        &mut self.latency
+    }
+
+    /// `commit` was just presented for view `id`: one sample per input it
+    /// carries, and its `no_frame` count, under its visit. Once: a commit
+    /// drawn again (a new surface size, the one-second refresh) is not
+    /// those inputs' frame a second time.
+    fn measure_inputs(&mut self, id: EngineViewId, commit: &FrameCommit) {
+        if commit.inputs.is_empty() && commit.inputs_unpresented == 0 {
+            return;
+        }
+        let now = std::time::Instant::now();
+        // The `no_frame` count first: a navigation's first commit carries
+        // the inputs the document being left took and never drew, which
+        // are the line of the visit before.
+        self.latency.unpresented(u64::from(commit.inputs_unpresented));
+        self.latency.begin(&commit.visit);
+        for input in &commit.inputs {
+            let ms = now.saturating_duration_since(input.at).as_secs_f64() * 1000.0;
+            debug!(ms, seq = input.seq, kind = input.kind.name(), "Input to present");
+            self.latency.record(input.kind, ms);
+        }
+        if let Some(stored) = self.commits.get_mut(&id) {
+            stored.inputs.clear();
+            stored.inputs_unpresented = 0;
+        }
+    }
+
+    /// `commit`'s inputs were not presented by this presenter (its frame
+    /// was already on screen, not laid out, or failed to draw): they are
+    /// `no_frame` for its visit.
+    pub(crate) fn note_unpresented(&mut self, commit: &FrameCommit) {
+        let n = commit.inputs.len() as u64 + u64::from(commit.inputs_unpresented);
+        if n == 0 {
+            return;
+        }
+        self.latency.begin(&commit.visit);
+        self.latency.unpresented(n);
     }
 
     // ----- views and surfaces -------------------------------------------
@@ -438,7 +519,9 @@ impl Presenter {
             scroll_offset: (0.0, 0.0),
             max_scroll_offset: (0.0, 0.0),
             laid_out_for: (0, 0),
-            input: None,
+            inputs: Vec::new(),
+            inputs_unpresented: 0,
+            visit: VisitTag::none(),
             canvas: self.background_color,
             modal_popup: false,
         });
@@ -551,21 +634,10 @@ impl Presenter {
             self.compositor.present(output);
         }
 
-        // The W-gate's second figure: from the input's arrival at the
-        // app's queue to this present. A headless view presents nothing,
+        // The W-gate's second figure (LAT1c): from each input's native
+        // event time to this present. A headless view presents nothing,
         // but its draw is the same work, so it is measured the same way.
-        if let Some(input) = commit.input {
-            let ms = input.at.elapsed().as_millis().min(u32::MAX as u128) as u32;
-            debug!(ms, seq = input.seq, "Input to present");
-            if let Some(summary) = self.latency.record(ms) {
-                info!("{summary}");
-            }
-            // Once: a commit drawn again (a new surface size, the one-second
-            // refresh) is not that input's frame a second time.
-            if let Some(stored) = self.commits.get_mut(&id) {
-                stored.input = None;
-            }
-        }
+        self.measure_inputs(id, &commit);
 
         Ok(Some(presented))
     }
@@ -944,8 +1016,13 @@ impl WindowSurface {
     /// Draw `commit` when its navigation, generation or scroll offset
     /// differs from the frame on screen. A commit that has not been laid
     /// out is not drawn and does not become the frame on screen.
+    ///
+    /// The commit's inputs (LAT1c) are measured by this present, or
+    /// counted as `no_frame` when it draws nothing; either way the caller
+    /// should not hand the same inputs in again (`FrameCommit::take_inputs`).
     pub fn present_commit(&mut self, commit: &FrameCommit, images: &ImageManager) -> Result<(), EngineError> {
         if present_choice(self.shown, commit) != PresentChoice::Draw {
+            self.presenter.note_unpresented(commit);
             return Ok(());
         }
         let key = ShownFrame {
@@ -962,8 +1039,25 @@ impl WindowSurface {
         self.presenter.note_render_result(self.id, &noted);
         if drawn.is_ok() {
             self.shown = Some(key);
+        } else {
+            self.presenter.note_unpresented(commit);
         }
         drawn.map(|_| ())
+    }
+}
+
+/// CH2.E35: a surface owns its host view. Dropping it (a closed tab, a
+/// closed panel) releases the GPU surface first, then removes and releases
+/// the host view and its view-host registration
+/// ([`Presenter::destroy_view`]), so no shell has to tear the window or
+/// view down itself. Without this the presenter's fields dropped in
+/// declaration order: the view host (and the view under the swapchain)
+/// before the compositor's surface.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl Drop for WindowSurface {
+    fn drop(&mut self) {
+        self.shown = None;
+        self.presenter.destroy_view(self.id, self.viewhost_id);
     }
 }
 
@@ -979,7 +1073,9 @@ mod present_choice_tests {
             scroll_offset: (0.0, 0.0),
             max_scroll_offset: (0.0, 0.0),
             laid_out_for: if laid_out { (800, 600) } else { (0, 0) },
-            input: None,
+            inputs: Vec::new(),
+            inputs_unpresented: 0,
+            visit: VisitTag::none(),
             canvas: [1.0, 1.0, 1.0, 1.0],
             modal_popup: false,
         }

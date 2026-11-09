@@ -22,6 +22,7 @@ fn text(text: &str, x: f32, y: f32, font_size: f32) -> DisplayCommand {
         advances: None,
         ascent: None,
         run: None,
+        faces: None,
     }
 }
 

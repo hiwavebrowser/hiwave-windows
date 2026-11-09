@@ -252,6 +252,7 @@ pub fn render_broken_image(
                 advances: None,
                 ascent: None,
                 run: None,
+                faces: None,
             });
         }
     }

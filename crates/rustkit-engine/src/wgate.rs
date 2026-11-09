@@ -40,19 +40,41 @@
 //!    stages and the buckets. A nested entry (a relayout inside a click)
 //!    is counted by the outer one and reports nothing itself.
 //!
-//! 2. **Input to present.** The app notes each input event's arrival
-//!    time as it drains its queue ([`InputMark`]); the first unpresented
-//!    one rides the next [`super::presenter::FrameCommit`] and the
-//!    presenter logs the time from arrival to the surface present:
+//! 2. **Input to present (LAT1c).** Every input the user makes on a
+//!    RustKit view (page, chrome or panel) is stamped with the native
+//!    event's own time (`NSEvent.timestamp`, so time spent waiting in the
+//!    window server's queue while the window thread was busy counts) and
+//!    its kind ([`InputMark`], [`InputClass`]). The app notes it to the
+//!    view's engine before it dispatches it. Every mark noted since the
+//!    view's last commit rides the next [`super::presenter::FrameCommit`],
+//!    and the presenter takes one sample per mark when it presents that
+//!    frame: the time from the native event to the return of the
+//!    surface's present.
+//!
+//!    **What "reflects" means here.** The frame measured is the first
+//!    frame presented after the input's turn completed whose content
+//!    changed (a new display list, a new scroll offset or a new
+//!    navigation). An input whose turn changed no frame (a key into
+//!    nothing, a press on blank space) is not charged to a later,
+//!    unrelated frame: it is counted as `no_frame`. So is one whose
+//!    document a navigation replaced before it was drawn. The present
+//!    is the swap chain's present call; the time the compositor then
+//!    takes to put it on the glass (up to a refresh interval) is not
+//!    seen. Moves are sampled: at most one per frame (the earliest since
+//!    the last commit), reported only in `by_kind`, never in the headline
+//!    figures, which cover keys, presses, releases, wheels and edits.
+//!
+//!    One line per visit (a frame of a different view or host ends it,
+//!    `at=navigation`), one per [`LATENCY_SUMMARY_EVERY`] inputs
+//!    (`at=every_100`), and one when the presenter goes (`at=drop`):
 //!
 //!    ```text
-//!    Input to present ms=41 seq=1207
-//!    Input to present p50_ms=12 p95_ms=38 max_ms=612 n=100   (every 100 inputs)
+//!    Input to present view=4 host=en.wikipedia.org n=100 p50_ms=12.0 p95_ms=38.0 max_ms=612.0 by_kind=key:60:20.0,wheel:30:38.0,down:5:90.0,up:5:612.0,move:41:30.0 over_100=1 over_100_ms=612.0 no_frame=7 role=page at=every_100
 //!    ```
 //!
-//!    An input that changed no frame (a move over nothing) is dropped at
-//!    the next `render_changed_views`, not charged to the next frame.
-//!
+//!    `role=chrome` is the RustKit chrome or a panel (the app's own
+//!    views); `role=page` is a page. The line carries no page content.
+
 //! 3. **Hold summary (LAT1, per visit since LAT1b).** Every outermost
 //!    entry on the content thread, whatever its length, is one sample of
 //!    the current visit's summary; one line covers at most
@@ -83,6 +105,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// The shortest hold that is reported, in milliseconds (the W-gate's
@@ -92,8 +115,13 @@ pub const HOLD_THRESHOLD_MS: f64 = 50.0;
 /// How many entries make one hold summary line at most (LAT1).
 pub const HOLD_SUMMARY_EVERY: usize = 100;
 
-/// How many input-to-present samples make one summary line.
+/// How many input-to-present samples of one kind (headline inputs, or
+/// sampled moves) make one summary line at most.
 pub const LATENCY_SUMMARY_EVERY: usize = 100;
+
+/// The input-to-present line lists the headline inputs that took this
+/// long or longer (the exit metric's p95 bound, `trench/latency`).
+pub const INPUT_THRESHOLD_MS: f64 = 100.0;
 
 /// What the window thread was doing, for the breakdown of a hold. The
 /// first five are the relayout stages (`relayout_cause::Stage`); the
@@ -590,55 +618,240 @@ pub(crate) fn hold_line(thread: &str, entry: &str, total_ms: f64, stages: &HoldM
     ))
 }
 
-/// When an input event arrived at the app's queue, and its sequence
-/// number there (`rustkit_viewhost::InputEvent`).
+/// What kind of input a mark stands for (LAT1c): the summary line's
+/// `by_kind`. A click is a `down` and an `up`, each measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InputClass {
+    /// A key press or release, a Cmd chord the page heard first, or what
+    /// the input method committed or composed.
+    Key,
+    /// A primary or secondary button press.
+    Down,
+    /// A primary or secondary button release.
+    Up,
+    /// A wheel turn or trackpad swipe (a burst queued in one turn is one
+    /// input, measured from its first event).
+    Wheel,
+    /// An Edit menu action (copy, paste, undo, ...).
+    Edit,
+    /// The pointer moving over the view or leaving it. Sampled, not
+    /// counted: at most one per frame (the earliest since the last
+    /// commit), and outside the headline `n`/`p50`/`p95`, which are the
+    /// discrete inputs the user waits on.
+    Move,
+}
+
+impl InputClass {
+    /// The class of a recorded input.
+    pub fn of(kind: &rustkit_viewhost::InputKind) -> Self {
+        use rustkit_viewhost::{InputKind, PointerInput};
+        match kind {
+            InputKind::Pointer(click) => match click.input {
+                PointerInput::Button | PointerInput::Secondary if click.down => InputClass::Down,
+                PointerInput::Button | PointerInput::Secondary => InputClass::Up,
+                PointerInput::Move | PointerInput::Leave => InputClass::Move,
+            },
+            InputKind::Key(_) | InputKind::KeyEquivalent { .. } | InputKind::Ime(_) => InputClass::Key,
+            InputKind::Wheel(_) => InputClass::Wheel,
+            InputKind::Edit(_) => InputClass::Edit,
+        }
+    }
+
+    /// Its name in `by_kind`.
+    pub fn name(self) -> &'static str {
+        match self {
+            InputClass::Key => "key",
+            InputClass::Down => "down",
+            InputClass::Up => "up",
+            InputClass::Wheel => "wheel",
+            InputClass::Edit => "edit",
+            InputClass::Move => "move",
+        }
+    }
+
+    /// Sampled (moves) rather than counted in the headline.
+    pub fn sampled(self) -> bool {
+        self == InputClass::Move
+    }
+}
+
+/// When the user made an input, its sequence number in the app's queue
+/// (`rustkit_viewhost::InputEvent`), and what kind it was. `at` is the
+/// native event's own time (`NSEvent.timestamp` on macOS, converted to an
+/// `Instant`), so the time the event waited in the window server's queue
+/// while the window thread was busy is counted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputMark {
     pub at: Instant,
     pub seq: u64,
+    pub kind: InputClass,
 }
 
-/// Input-to-present samples, summarised every [`LATENCY_SUMMARY_EVERY`].
-#[derive(Debug, Default)]
-pub(crate) struct InputLatency {
-    window: Vec<u32>,
-    /// Samples taken since the presenter was built (tests read it).
-    pub(crate) samples: u64,
+/// The visit a frame belongs to (LAT1c): the page's view id and hostname,
+/// as the `Content thread holds` line names them (`-` for an HTML load),
+/// whether the view is the app's own (the RustKit chrome or a panel:
+/// `role=chrome`) or a page (`role=page`), and the navigation (`nav_id`),
+/// so a second visit to the same host is a visit of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisitTag {
+    pub view: u64,
+    pub host: Arc<str>,
+    pub chrome: bool,
+    pub nav: u64,
 }
 
-impl InputLatency {
-    /// Records one sample; returns the summary line when the window is
-    /// full.
-    pub(crate) fn record(&mut self, ms: u32) -> Option<String> {
-        self.samples += 1;
-        self.window.push(ms);
-        if self.window.len() < LATENCY_SUMMARY_EVERY {
-            return None;
+impl VisitTag {
+    /// No visit yet: view 0, host `-`.
+    pub fn none() -> Self {
+        thread_local! {
+            static DASH: Arc<str> = Arc::from("-");
         }
-        let line = summary_line(&self.window);
-        self.window.clear();
-        Some(line)
+        VisitTag { view: 0, host: DASH.with(Arc::clone), chrome: false, nav: 0 }
     }
 }
 
-/// `p50_ms p95_ms max_ms n` of `samples` (nearest-rank percentiles).
-pub(crate) fn summary_line(samples: &[u32]) -> String {
-    let mut sorted = samples.to_vec();
-    sorted.sort_unstable();
-    let rank = |p: f64| -> u32 {
-        if sorted.is_empty() {
-            return 0;
+/// The presenter's input-to-present samples for the visit on screen
+/// (LAT1c): one line per visit, and one per [`LATENCY_SUMMARY_EVERY`]
+/// samples of either the headline inputs or the sampled moves, and one
+/// when the presenter goes (`at=drop`).
+#[derive(Debug, Default)]
+pub(crate) struct InputLatency {
+    visit: Option<VisitTag>,
+    window: Vec<(InputClass, f64)>,
+    headline: usize,
+    moves: usize,
+    /// Inputs whose turn presented nothing (the frame did not change, or
+    /// a navigation replaced the document first), since the last line.
+    no_frame: u64,
+    /// Samples taken since the presenter was built (tests read it).
+    pub(crate) samples: u64,
+    /// Every sample taken, in ms (tests).
+    #[cfg(test)]
+    pub(crate) taken: Vec<(InputClass, f64)>,
+    /// Every line logged (tests).
+    #[cfg(test)]
+    pub(crate) lines: Vec<String>,
+}
+
+impl InputLatency {
+    /// The frame about to be presented belongs to `visit`: a different
+    /// visit ends the line of the one before (`at=navigation`).
+    pub(crate) fn begin(&mut self, visit: &VisitTag) {
+        if self.visit.as_ref() == Some(visit) {
+            return;
         }
-        let k = ((p * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
-        sorted[k - 1]
+        if self.visit.is_some() {
+            self.flush("navigation");
+        }
+        self.visit = Some(visit.clone());
+    }
+
+    /// One input presented `ms` after it was made.
+    pub(crate) fn record(&mut self, kind: InputClass, ms: f64) {
+        self.samples += 1;
+        #[cfg(test)]
+        self.taken.push((kind, ms));
+        if self.window.capacity() == 0 {
+            self.window.reserve_exact(2 * LATENCY_SUMMARY_EVERY);
+        }
+        self.window.push((kind, ms));
+        if kind.sampled() {
+            self.moves += 1;
+        } else {
+            self.headline += 1;
+        }
+        if self.headline >= LATENCY_SUMMARY_EVERY || self.moves >= LATENCY_SUMMARY_EVERY {
+            self.flush("every_100");
+        }
+    }
+
+    /// `n` inputs of the visit on screen presented no frame of their own.
+    pub(crate) fn unpresented(&mut self, n: u64) {
+        self.no_frame += n;
+    }
+
+    /// Logs the line for the samples since the last one, if any.
+    pub(crate) fn flush(&mut self, at: &str) {
+        let line = input_summary_line(self.visit.as_ref(), &self.window, self.no_frame, at);
+        self.window.clear();
+        self.headline = 0;
+        self.moves = 0;
+        self.no_frame = 0;
+        if let Some(line) = line {
+            #[cfg(test)]
+            self.lines.push(line.clone());
+            tracing::info!("{line}");
+        }
+    }
+}
+
+impl Drop for InputLatency {
+    fn drop(&mut self) {
+        self.flush("drop");
+    }
+}
+
+/// The input-to-present line of `samples` (class, ms) for `visit`, or
+/// `None` when there is nothing to say. Pure, so its shape is testable
+/// without a clock. `n`, `p50_ms`, `p95_ms`, `max_ms` and `over_100_ms` are
+/// over the headline inputs (every class but `move`); `by_kind` is
+/// `kind:n:p95_ms` for every class, most samples first, `move` included;
+/// `over_100_ms` lists the headline samples of 100 ms or more, longest
+/// first, so the exact p95 over many lines can be had whenever it is
+/// 100 ms or more (`tools/latency/baseline_from_logs.py`).
+pub(crate) fn input_summary_line(
+    visit: Option<&VisitTag>,
+    samples: &[(InputClass, f64)],
+    no_frame: u64,
+    at: &str,
+) -> Option<String> {
+    if samples.is_empty() && no_frame == 0 {
+        return None;
+    }
+    let mut all: Vec<f64> = samples.iter().filter(|(k, _)| !k.sampled()).map(|&(_, ms)| ms).collect();
+    all.sort_unstable_by(f64::total_cmp);
+    let mut by_kind: Vec<(InputClass, Vec<f64>)> = Vec::new();
+    for &(kind, ms) in samples {
+        match by_kind.iter_mut().find(|(k, _)| *k == kind) {
+            Some((_, values)) => values.push(ms),
+            None => by_kind.push((kind, vec![ms])),
+        }
+    }
+    for (_, values) in &mut by_kind {
+        values.sort_unstable_by(f64::total_cmp);
+    }
+    by_kind.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.name().cmp(b.0.name())));
+    let by_kind = if by_kind.is_empty() {
+        "-".to_string()
+    } else {
+        by_kind
+            .iter()
+            .map(|(kind, values)| format!("{}:{}:{:.1}", kind.name(), values.len(), nearest_rank(values, 0.95)))
+            .collect::<Vec<_>>()
+            .join(",")
     };
-    format!(
-        "Input to present p50_ms={} p95_ms={} max_ms={} n={}",
-        rank(0.5),
-        rank(0.95),
-        sorted.last().copied().unwrap_or(0),
-        sorted.len()
-    )
+    let over: Vec<String> = all
+        .iter()
+        .rev()
+        .take_while(|&&ms| ms >= INPUT_THRESHOLD_MS)
+        .map(|ms| format!("{ms:.1}"))
+        .collect();
+    let over_ms = if over.is_empty() { "-".to_string() } else { over.join(",") };
+    let none = VisitTag::none();
+    let visit = visit.unwrap_or(&none);
+    let view = if visit.view == 0 { "-".to_string() } else { visit.view.to_string() };
+    Some(format!(
+        "Input to present view={view} host={} n={} p50_ms={:.1} p95_ms={:.1} max_ms={:.1} by_kind={by_kind} over_{}={} over_{}_ms={over_ms} no_frame={no_frame} role={} at={at}",
+        visit.host,
+        all.len(),
+        nearest_rank(&all, 0.5),
+        nearest_rank(&all, 0.95),
+        all.last().copied().unwrap_or(0.0),
+        INPUT_THRESHOLD_MS as u32,
+        over.len(),
+        INPUT_THRESHOLD_MS as u32,
+        if visit.chrome { "chrome" } else { "page" },
+    ))
 }
 
 #[cfg(test)]
@@ -957,17 +1170,114 @@ mod tests {
         assert_eq!(take_last_summary(), None);
     }
 
+    fn tag(view: u64, host: &str, chrome: bool) -> VisitTag {
+        VisitTag { view, host: Arc::from(host), chrome, nav: 1 }
+    }
+
+    /// LAT1c: the line names the visit and the role, gives the headline
+    /// figures over the discrete inputs only, and `by_kind` for every
+    /// class, moves included.
     #[test]
-    fn latency_summarises_every_hundred_samples_with_nearest_rank_percentiles() {
+    fn the_input_line_names_its_visit_and_keeps_moves_out_of_the_headline() {
+        let samples = [
+            (InputClass::Key, 20.0),
+            (InputClass::Move, 900.0),
+            (InputClass::Key, 40.0),
+            (InputClass::Wheel, 120.0),
+            (InputClass::Down, 10.0),
+            (InputClass::Move, 30.0),
+        ];
+        let line = input_summary_line(Some(&tag(4, "a.example", false)), &samples, 2, "navigation").expect("line");
+        assert_eq!(
+            line,
+            "Input to present view=4 host=a.example n=4 p50_ms=20.0 p95_ms=120.0 max_ms=120.0 \
+             by_kind=key:2:40.0,move:2:900.0,down:1:10.0,wheel:1:120.0 over_100=1 over_100_ms=120.0 \
+             no_frame=2 role=page at=navigation"
+        );
+        let chrome = input_summary_line(Some(&tag(3, "-", true)), &[(InputClass::Up, 5.0)], 0, "drop").expect("line");
+        assert_eq!(
+            chrome,
+            "Input to present view=3 host=- n=1 p50_ms=5.0 p95_ms=5.0 max_ms=5.0 by_kind=up:1:5.0 \
+             over_100=0 over_100_ms=- no_frame=0 role=chrome at=drop"
+        );
+        assert_eq!(input_summary_line(None, &[], 0, "drop"), None, "nothing to say");
+        let only_misses = input_summary_line(None, &[], 3, "drop").expect("no_frame alone is said");
+        assert!(only_misses.starts_with("Input to present view=- host=- n=0 p50_ms=0.0 "), "{only_misses}");
+    }
+
+    /// LAT1c: a line per hundred headline inputs (moves do not push the
+    /// headline over), a line when the visit changes, a line at the drop.
+    #[test]
+    fn the_input_summary_flushes_every_hundred_at_a_new_visit_and_at_the_drop() {
+        let a = tag(5, "a.example", false);
+        let b = tag(5, "b.example", false);
         let mut latency = InputLatency::default();
-        for i in 1..LATENCY_SUMMARY_EVERY as u32 {
-            assert_eq!(latency.record(i), None, "sample {i}");
+        latency.begin(&a);
+        for i in 0..LATENCY_SUMMARY_EVERY {
+            latency.record(InputClass::Move, 1.0);
+            if i + 1 < LATENCY_SUMMARY_EVERY {
+                latency.record(InputClass::Key, (i + 1) as f64);
+            }
         }
-        let line = latency.record(612).expect("the hundredth sample summarises");
-        assert_eq!(line, "Input to present p50_ms=50 p95_ms=95 max_ms=612 n=100");
-        assert_eq!(latency.samples, 100);
-        assert_eq!(latency.record(3), None, "a new window");
-        assert_eq!(summary_line(&[]), "Input to present p50_ms=0 p95_ms=0 max_ms=0 n=0");
-        assert_eq!(summary_line(&[7]), "Input to present p50_ms=7 p95_ms=7 max_ms=7 n=1");
+        // 100 moves flushed the line with 99 keys in it.
+        assert_eq!(latency.lines.len(), 1);
+        assert!(latency.lines[0].contains(" n=99 "), "{}", latency.lines[0]);
+        assert!(latency.lines[0].contains("move:100:1.0"), "{}", latency.lines[0]);
+        assert!(latency.lines[0].ends_with(" at=every_100"), "{}", latency.lines[0]);
+        for _ in 0..LATENCY_SUMMARY_EVERY {
+            latency.record(InputClass::Wheel, 7.0);
+        }
+        assert_eq!(latency.lines.len(), 2, "a hundred wheels");
+        latency.record(InputClass::Key, 3.0);
+        latency.unpresented(2);
+        latency.begin(&a);
+        assert_eq!(latency.lines.len(), 2, "the same visit");
+        latency.begin(&b);
+        assert_eq!(latency.lines.len(), 3, "a new visit ends the line");
+        assert!(latency.lines[2].starts_with("Input to present view=5 host=a.example n=1 "), "{}", latency.lines[2]);
+        assert!(latency.lines[2].ends_with(" no_frame=2 role=page at=navigation"), "{}", latency.lines[2]);
+        latency.record(InputClass::Down, 9.0);
+        latency.flush("drop");
+        assert!(latency.lines[3].starts_with("Input to present view=5 host=b.example n=1 "), "{}", latency.lines[3]);
+        assert_eq!(latency.samples, 2 * LATENCY_SUMMARY_EVERY as u64 + 99 + 1 + 1);
+    }
+
+    /// LAT1c: the class of each recorded input.
+    #[test]
+    fn every_recorded_input_has_a_class() {
+        use rustkit_viewhost::{InputKind, PendingClick, PendingScroll, PointerInput};
+        let click = |down, input| {
+            InputKind::Pointer(PendingClick { x: 0.0, y: 0.0, down, input, clicks: 1, shift: false })
+        };
+        assert_eq!(InputClass::of(&click(true, PointerInput::Button)), InputClass::Down);
+        assert_eq!(InputClass::of(&click(false, PointerInput::Button)), InputClass::Up);
+        assert_eq!(InputClass::of(&click(true, PointerInput::Secondary)), InputClass::Down);
+        assert_eq!(InputClass::of(&click(false, PointerInput::Move)), InputClass::Move);
+        assert_eq!(InputClass::of(&click(false, PointerInput::Leave)), InputClass::Move);
+        assert_eq!(
+            InputClass::of(&InputKind::Wheel(PendingScroll { x: 0.0, y: 0.0, dx: 0.0, dy: 1.0 })),
+            InputClass::Wheel
+        );
+        assert_eq!(InputClass::of(&InputKind::Edit(rustkit_viewhost::EditAction::Copy)), InputClass::Edit);
+    }
+
+    /// LAT1c overhead: recording a sample is a push and, every hundred,
+    /// a sort of a hundred values and one line. Measured here so the PR
+    /// can state it; the bound is loose (a debug build on a loaded Mac).
+    #[test]
+    fn recording_an_input_sample_is_cheap() {
+        let a = tag(1, "a.example", false);
+        let mut latency = InputLatency::default();
+        latency.begin(&a);
+        let n = 200_000u32;
+        let started = Instant::now();
+        for i in 0..n {
+            latency.record(if i % 3 == 0 { InputClass::Move } else { InputClass::Key }, f64::from(i % 97));
+        }
+        let per = started.elapsed().as_nanos() as f64 / f64::from(n);
+        latency.taken.clear();
+        latency.lines.clear();
+        eprintln!("LAT1c overhead: {per:.0} ns per recorded input (incl. a line every 100)");
+        assert!(per < 20_000.0, "{per} ns per input");
     }
 }
