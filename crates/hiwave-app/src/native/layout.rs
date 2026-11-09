@@ -51,7 +51,17 @@ pub struct LayoutInput {
     /// Width of the left sidebar; 0 when closed.
     pub sidebar_width: u32,
     pub right_panel_open: bool,
+    /// Focus mode: `Some(bar)` hides the sidebar, right panel and shelf and leaves only
+    /// a strip of `bar` pixels of chrome at the top (a thin reveal zone, or a taller
+    /// one while the peek is showing). `None` is the normal layout.
+    pub focus_bar: Option<u32>,
 }
+
+/// Height of the chrome strip left in focus mode, so the mouse can reach the top
+/// edge to peek. The WebView2 shell uses the same figures.
+pub const FOCUS_REVEAL_HEIGHT: u32 = 10;
+/// Height of the chrome while the focus-mode peek is showing.
+pub const FOCUS_PEEK_HEIGHT: u32 = 60;
 
 /// The three view rectangles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +81,14 @@ pub fn compute(input: LayoutInput) -> Layout {
         shelf_height,
         sidebar_width,
         right_panel_open,
+        focus_bar,
     } = input;
+
+    // Focus mode drops everything but the strip along the top.
+    let (chrome_height, shelf_height, sidebar_width, right_panel_open) = match focus_bar {
+        Some(bar) => (bar, 0, 0, false),
+        None => (chrome_height, shelf_height, sidebar_width, right_panel_open),
+    };
 
     let sidebar = sidebar_width.min(width);
     let right = if right_panel_open {
@@ -103,11 +120,32 @@ mod tests {
             shelf_height: 0,
             sidebar_width: 0,
             right_panel_open: false,
+            focus_bar: None,
         }
     }
 
     /// The bug this module exists for: the chrome view must span the window,
     /// not a 220px column, or the tab strip is cut off.
+    #[test]
+    fn focus_mode_leaves_only_the_reveal_strip() {
+        let busy = LayoutInput {
+            sidebar_width: 220,
+            right_panel_open: true,
+            shelf_height: 280,
+            chrome_height: 460,
+            focus_bar: Some(FOCUS_REVEAL_HEIGHT),
+            ..input()
+        };
+        let l = compute(busy);
+        assert_eq!(l.content, Rect::new(0, 10, 1280, 790));
+        assert_eq!(l.shelf.height, 0);
+        // The peek makes the strip taller, still without a sidebar.
+        let peek = compute(LayoutInput { focus_bar: Some(FOCUS_PEEK_HEIGHT), ..busy });
+        assert_eq!(peek.content, Rect::new(0, 60, 1280, 740));
+        // And the chrome still spans the window.
+        assert_eq!(l.chrome, Rect::new(0, 0, 1280, 800));
+    }
+
     #[test]
     fn the_chrome_view_spans_the_whole_window() {
         let l = compute(input());

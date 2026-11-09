@@ -126,6 +126,8 @@ pub struct NativeBrowser {
     /// Width of the left sidebar; 0 while it is closed (chrome.html starts closed).
     sidebar_width: u32,
     right_panel_open: bool,
+    /// Focus mode's chrome strip (see `LayoutInput::focus_bar`); None when not in focus mode.
+    focus_bar: Option<u32>,
     /// The view that last had the keyboard focus. Win32 can leave focus on the
     /// bare main window (activation, a click on the frame); the main window
     /// ignores keys, so the shell hands focus back to this view.
@@ -197,6 +199,7 @@ impl NativeBrowser {
             shelf_height: SHELF_HEIGHT_DEFAULT,
             sidebar_width: 0,
             right_panel_open: false,
+            focus_bar: None,
             last_focus: std::cell::Cell::new(None),
             chrome_ready: false,
             next_tab_id: 1,
@@ -404,6 +407,7 @@ impl NativeBrowser {
             shelf_height: self.shelf_height,
             sidebar_width: self.sidebar_width,
             right_panel_open: self.right_panel_open,
+            focus_bar: self.focus_bar,
         })
     }
 
@@ -475,6 +479,54 @@ impl NativeBrowser {
         if !self.views.is_empty() {
             self.update_layout();
         }
+    }
+
+    /// Enter or leave focus mode (the state lives in the shared app state, the layout
+    /// here), then tell the chrome so it hides or shows its own bars.
+    fn set_focus_mode(&mut self, active: Option<bool>) {
+        let (now, config) = {
+            let Ok(mut state) = self.app_state.lock() else {
+                return;
+            };
+            match active {
+                Some(true) => state.focus_mode.enter(),
+                Some(false) => state.focus_mode.exit(),
+                None => state.focus_mode.toggle(),
+            }
+            let c = &state.focus_mode_config;
+            (
+                state.focus_mode.active,
+                serde_json::json!({
+                    "show_progress_bar": c.show_progress_bar,
+                    "hide_cursor": c.hide_cursor,
+                    "cursor_hide_delay_secs": c.cursor_hide_delay_secs,
+                }),
+            )
+        };
+        self.focus_bar = now.then_some(layout::FOCUS_REVEAL_HEIGHT);
+        self.update_layout();
+        let script = if now {
+            format!("if(window.hiwaveChrome) {{ hiwaveChrome.setFocusMode(true, {config}); }}")
+        } else {
+            "if(window.hiwaveChrome) { hiwaveChrome.setFocusMode(false); }".to_string()
+        };
+        self.run_chrome_script(&script);
+    }
+
+    /// The peek: a taller chrome strip while the mouse is at the top in focus mode.
+    fn set_focus_peek(&mut self, show: bool) {
+        if self.focus_bar.is_none() {
+            return;
+        }
+        if let Ok(mut state) = self.app_state.lock() {
+            if show {
+                state.focus_mode.show_peek();
+            } else {
+                state.focus_mode.hide_peek();
+            }
+        }
+        self.focus_bar = Some(if show { layout::FOCUS_PEEK_HEIGHT } else { layout::FOCUS_REVEAL_HEIGHT });
+        self.update_layout();
     }
 
     /// Expand the Chrome UI (for overlays).
@@ -967,6 +1019,11 @@ impl NativeBrowser {
     }
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
+        // Focus mode hides the chrome: a chord that types into it must leave focus mode
+        // first, or the keystrokes would go into UI that is not on screen.
+        if self.focus_bar.is_some() && shortcuts::needs_chrome_visible(shortcut) {
+            self.set_focus_mode(Some(false));
+        }
         match shortcut {
             Shortcut::NewTab => self.new_tab(),
             Shortcut::CloseTab => self.close_active_tab(),
@@ -980,12 +1037,20 @@ impl NativeBrowser {
             Shortcut::Back => self.traverse("back"),
             Shortcut::Forward => self.traverse("forward"),
             Shortcut::Reload => self.traverse("reload"),
-            Shortcut::Stop => self.stop_loading(),
+            Shortcut::Stop => {
+                let loading = self.chrome_synced.as_ref().is_some_and(|s| s.loading);
+                if shortcuts::escape_leaves_focus_mode(self.focus_bar.is_some(), loading) {
+                    self.set_focus_mode(Some(false));
+                } else {
+                    self.stop_loading();
+                }
+            }
             Shortcut::Find => self.send_chrome_chord(0x46, "f"),
             Shortcut::FocusAddressBar => self.send_chrome_chord(0x4C, "l"),
             Shortcut::ToggleSidebar => self.send_chrome_chord(0x42, "b"),
             Shortcut::CommandPalette => self.send_chrome_chord(0x4B, "k"),
             Shortcut::History => self.send_chrome_chord(0x48, "h"),
+            Shortcut::FocusMode => self.set_focus_mode(None),
         }
     }
 
@@ -1639,6 +1704,23 @@ impl NativeBrowser {
                 self.run_chrome_script(&script);
             }
             "save_sidebar_width" => {}
+            "enter_focus_mode" => self.set_focus_mode(Some(true)),
+            "exit_focus_mode" => self.set_focus_mode(Some(false)),
+            "toggle_focus_mode" => self.set_focus_mode(None),
+            "show_focus_peek" => self.set_focus_peek(true),
+            "hide_focus_peek" => self.set_focus_peek(false),
+            "get_focus_mode_status" => {
+                let status = self.app_state.lock().ok().map(|s| {
+                    serde_json::json!({
+                        "active": s.focus_mode.active,
+                        "peek_visible": s.focus_mode.peek_visible,
+                        "scroll_progress": s.focus_mode.scroll_progress,
+                    })
+                });
+                if let Some(status) = status {
+                    self.run_chrome_script(&chrome_data::chrome_call("updateFocusModeStatus", &status));
+                }
+            }
             // The panels' data lives in the shared app state: run the shared handler,
             // then send the panel its new data.
             "get_visit_history" | "clear_visit_history" | "get_downloads" | "clear_downloads" => {

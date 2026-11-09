@@ -35,6 +35,25 @@ pub enum Shortcut {
     CommandPalette,
     /// Open the history panel.
     History,
+    /// Toggle focus mode (Ctrl+Shift+F, F11).
+    FocusMode,
+}
+
+/// Whether a shortcut types into the chrome page (the find bar, the address bar, the
+/// sidebar, the history panel). Focus mode hides all of that (its own CSS hides the find
+/// overlay and the toolbar), so these chords would send keystrokes into UI nobody can see
+/// (Pollux's R1 note on #128): they leave focus mode first.
+pub fn needs_chrome_visible(shortcut: Shortcut) -> bool {
+    matches!(
+        shortcut,
+        Shortcut::Find | Shortcut::CommandPalette | Shortcut::FocusAddressBar | Shortcut::History | Shortcut::ToggleSidebar
+    )
+}
+
+/// Escape in focus mode leaves it, unless a page is loading (then it stops the load, as it
+/// does everywhere else).
+pub fn escape_leaves_focus_mode(in_focus_mode: bool, loading: bool) -> bool {
+    in_focus_mode && !loading
 }
 
 /// Resolve a key press to a shell action.
@@ -55,7 +74,8 @@ pub fn resolve(key: KeyCode, mods: Modifiers) -> Option<Shortcut> {
         // the unshifted meaning — Ctrl+Shift+T must never silently open a
         // plain new tab.
         if mods.shift {
-            return None;
+            // The one Ctrl+Shift chord the shell owns: focus mode.
+            return (key == KeyCode::KeyF && !mods.alt).then_some(Shortcut::FocusMode);
         }
         return match key {
             KeyCode::KeyT => Some(Shortcut::NewTab),
@@ -91,6 +111,7 @@ pub fn resolve(key: KeyCode, mods: Modifiers) -> Option<Shortcut> {
         return match key {
             KeyCode::F5 => Some(Shortcut::Reload),
             KeyCode::Escape => Some(Shortcut::Stop),
+            KeyCode::F11 => Some(Shortcut::FocusMode),
             _ => None,
         };
     }
@@ -145,9 +166,27 @@ mod tests {
     }
 
     #[test]
-    fn the_chrome_chords_need_ctrl_alone() {
+    fn chords_that_type_into_the_chrome_need_it_visible() {
+        for s in [Shortcut::Find, Shortcut::CommandPalette, Shortcut::FocusAddressBar, Shortcut::History, Shortcut::ToggleSidebar] {
+            assert!(needs_chrome_visible(s), "{s:?}");
+        }
+        for s in [Shortcut::Reload, Shortcut::NewTab, Shortcut::CloseTab, Shortcut::Stop, Shortcut::FocusMode] {
+            assert!(!needs_chrome_visible(s), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn escape_leaves_focus_mode_unless_a_page_is_loading() {
+        assert!(escape_leaves_focus_mode(true, false));
+        assert!(!escape_leaves_focus_mode(true, true), "Escape stops the load first");
+        assert!(!escape_leaves_focus_mode(false, false), "outside focus mode it is just Stop");
+    }
+
+    #[test]
+    fn ctrl_shift_f_and_f11_are_focus_mode_a_bare_f_is_typing() {
         let ctrl_shift = Modifiers { ctrl: true, shift: true, ..Default::default() };
-        assert_eq!(resolve(KeyCode::KeyF, ctrl_shift), None, "Ctrl+Shift+F is focus mode, a different chord");
+        assert_eq!(resolve(KeyCode::KeyF, ctrl_shift), Some(Shortcut::FocusMode));
+        assert_eq!(resolve(KeyCode::F11, none()), Some(Shortcut::FocusMode));
         assert_eq!(resolve(KeyCode::KeyF, none()), None, "a bare F is typing");
     }
 
