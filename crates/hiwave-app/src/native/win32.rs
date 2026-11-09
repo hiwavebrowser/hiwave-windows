@@ -193,7 +193,18 @@ impl NativeBrowser {
         let mut state = AppState::with_workspace_state_file(shell_tabs::NATIVE_STATE_FILE)
             .map_err(|e| format!("Failed to initialize app state: {}", e))?;
         // Tabs an earlier native session saved are reopened by `restore_session` once the
-        // views exist (their pages load when first shown).
+        // views exist (their pages load when first shown). The content-thread path (an
+        // opt-in experiment) restores nothing but still saves its tabs, so it drops them
+        // instead, or every such session would add its tabs to the file for ever.
+        if content_page::enabled() {
+            let dropped = shell_tabs::drop_unreopenable_tabs(&mut state);
+            if dropped > 0 {
+                info!(dropped, "Dropped tabs saved by an earlier native session (content-thread path)");
+                if let Err(e) = state.save_workspace_state() {
+                    warn!(error = %e, "Failed to persist workspace state");
+                }
+            }
+        }
         let app_state = Arc::new(Mutex::new(state));
 
         Ok(Self {
@@ -1397,18 +1408,22 @@ impl NativeBrowser {
         active.or_else(|| saved.first().map(|t| t.id))
     }
 
-    /// Load a restored tab's page into the content view that is showing. The app's own
-    /// start page (`hiwave://about`) is the About document, not a navigation (`navigate`
-    /// would treat the text as a search); other internal addresses stay blank.
-    fn load_restored(&self, url: &str) {
-        if url == "hiwave://about" {
-            if let Some(&content_id) = self.views.get(&ViewType::Content) {
+    /// Load a restored tab's page into the content view that is showing. The saved address
+    /// is parsed (`shell_tabs::restore_action`), never run through the typed-address
+    /// resolver; the app's own start page is the About document.
+    fn load_restored(&self, saved: &str) {
+        let Some(&content_id) = self.views.get(&ViewType::Content) else {
+            return;
+        };
+        match shell_tabs::restore_action(saved) {
+            shell_tabs::Restore::About => {
                 if let Err(e) = self.engine.borrow_mut().load_html(content_id, ABOUT_HTML) {
                     warn!(error = %e, "Failed to load the About page into a restored tab");
                 }
             }
-        } else if super::address::resolve(url).is_some() {
-            self.navigate(url);
+            // `navigate_view` still checks the blocklist.
+            shell_tabs::Restore::Page(url) => self.navigate_view(content_id, &url),
+            shell_tabs::Restore::Nothing => {}
         }
     }
 
@@ -1457,6 +1472,16 @@ impl NativeBrowser {
     /// After the active workspace changed, or a tab left it: make the active tab one the
     /// workspace shows (its own active tab, else its first), or open a new tab in it.
     fn settle_workspace(&mut self) {
+        // Tabs this workspace kept from an earlier session get their views first, so every way
+        // of switching to it (the sidebar, deleting the active workspace, a click on another
+        // workspace's tab) reopens them, not only the activate_workspace command.
+        let active_ws = self.app_state.lock().ok().and_then(|s| s.shell.get_active_workspace().map(|w| w.id));
+        if let Some(own) = active_ws.and_then(|ws| self.adopt_workspace_tabs(ws)) {
+            if let Some(index) = self.tab_index_for_id(own) {
+                self.activate_tab_by_index(index);
+            }
+            self.load_pending_for_active();
+        }
         let view = match self.app_state.lock() {
             Ok(state) => shell_tabs::active_workspace_view(&state, &self.mirrored_tabs),
             Err(_) => return,
@@ -1488,6 +1513,9 @@ impl NativeBrowser {
         let Some(index) = self.tab_index_for_id(id) else {
             return;
         };
+        // A restored tab that was never shown is closed unloaded: activating it below must not
+        // load its page first (a blocking load on the UI thread, just to close it).
+        self.pending_load.remove(&id);
         let active = self.tabs.as_ref().map(|t| t.active_index());
         if active != Some(index) {
             // Closing is defined on the active tab: make it the active one first.
@@ -2085,12 +2113,6 @@ impl NativeBrowser {
                             warn!(error = %e, "Could not activate the workspace");
                         }
                     }
-                    // Tabs it kept from an earlier session get their views now.
-                    let own = self.adopt_workspace_tabs(hiwave_core::types::WorkspaceId(id));
-                    if let Some(index) = own.and_then(|tab| self.tab_index_for_id(tab)) {
-                        self.activate_tab_by_index(index);
-                    }
-                    self.load_pending_for_active();
                     self.settle_workspace();
                     self.save_and_sync_workspaces();
                 }

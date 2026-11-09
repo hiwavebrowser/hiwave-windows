@@ -117,6 +117,41 @@ pub fn reconcile(state: &mut AppState, mirrored: &mut HashSet<u64>, tabs: &[Nati
 /// restore nor has any business deleting.
 pub const NATIVE_STATE_FILE: &str = "workspace_state.native.json";
 
+/// Forget every tab the model has. The content-thread path (HIWAVE_CONTENT_THREAD=1) cannot
+/// reopen saved tabs but still saves its own, so without this each such session would add its
+/// tabs to the native file for ever. Returns how many were dropped.
+pub fn drop_unreopenable_tabs(state: &mut AppState) -> usize {
+    let ids: Vec<TabId> = state.shell.list_tabs(None).iter().map(|t| t.id).collect();
+    for id in &ids {
+        let _ = state.shell.close_tab(*id);
+    }
+    ids.len()
+}
+
+/// What to do with a saved tab's address when its tab is first shown.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Restore {
+    /// The app's own start page: load the About document.
+    About,
+    /// A page to load, exactly as saved.
+    Page(String),
+    /// Nothing to load (a blank tab, or an address that is not a page).
+    Nothing,
+}
+
+/// A saved address is a `Url` the shell wrote itself, not typed text: it is parsed, never run
+/// through the address bar's resolver (which would turn a `file:` URL into `https://file:///`
+/// or a search). Only http, https and file pages are loaded.
+pub fn restore_action(saved: &str) -> Restore {
+    if saved == "hiwave://about" {
+        return Restore::About;
+    }
+    match url::Url::parse(saved) {
+        Ok(u) if matches!(u.scheme(), "http" | "https" | "file") => Restore::Page(u.to_string()),
+        _ => Restore::Nothing,
+    }
+}
+
 /// A tab in the shared model that this shell has no view for yet (restored from a
 /// previous session).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +279,30 @@ mod tests {
             })
             .unwrap();
         id
+    }
+
+    #[test]
+    fn the_content_thread_path_drops_the_tabs_it_cannot_reopen() {
+        let mut s = state("drop_ct");
+        for n in 0..3 {
+            saved_tab(&mut s, &format!("https://old{n}.test/"));
+        }
+        assert_eq!(drop_unreopenable_tabs(&mut s), 3);
+        assert!(s.shell.list_tabs(None).is_empty());
+        assert!(s.shell.get_active_workspace().unwrap().tabs.is_empty());
+        assert_eq!(drop_unreopenable_tabs(&mut s), 0);
+    }
+
+    #[test]
+    fn a_saved_address_is_parsed_not_typed() {
+        assert_eq!(restore_action("hiwave://about"), Restore::About);
+        assert_eq!(restore_action("https://a.test/x?y=1"), Restore::Page("https://a.test/x?y=1".into()));
+        assert_eq!(restore_action("http://localhost:8765/a.html"), Restore::Page("http://localhost:8765/a.html".into()));
+        // The typed-address resolver would turn this into https://file:///... or a search.
+        assert_eq!(restore_action("file:///C:/docs/a.html"), Restore::Page("file:///C:/docs/a.html".into()));
+        for nothing in ["about:blank", "data:text/html,hi", "javascript:alert(1)", "hiwave://settings", "not a url", ""] {
+            assert_eq!(restore_action(nothing), Restore::Nothing, "{nothing:?}");
+        }
     }
 
     #[test]
