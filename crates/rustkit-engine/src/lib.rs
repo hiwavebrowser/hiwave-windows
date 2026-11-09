@@ -477,6 +477,8 @@ mod html_element_ancestor_tests;
 #[cfg(test)]
 mod is_complex_argument_tests;
 #[cfg(test)]
+mod ancestor_attribute_query_tests;
+#[cfg(test)]
 mod match_media_tests;
 #[cfg(test)]
 mod computed_content_tests;
@@ -19786,20 +19788,29 @@ impl SelectorMatcher {
             out
         };
 
-        // ancestors[0] is the parent, as in the cascade.
+        // ancestors[0] is the parent, as in the cascade. Each carries its
+        // attributes, as the cascade's do (`ancestor_entry_attributes`): an
+        // ancestor without them leaves a compound's `[...]`, `:not()` and
+        // `:is()` parts permissive, and `#tabs .tab[data-id="1"] .title`
+        // matched every tab's title (CH2.E50). Only a compound with `[` or
+        // `:` reads them; a selector without either does not pay the copy.
+        let carry = selector.contains(['[', ':']);
         let mut ancestors = Vec::new();
         let mut current = node.parent();
         while let Some(n) = current {
             let NodeType::Element { tag_name, attributes, .. } = &n.node_type else {
                 break;
             };
-            // The root element's attributes, as in the cascade.
+            // The root element's attributes are always carried, as in the
+            // cascade (`html[dir=rtl] .x`).
             let root = n.parent().is_none_or(|p| !matches!(p.node_type, NodeType::Element { .. }));
             ancestors.push(Rc::new((
                 tag_name.to_lowercase(),
                 marked_classes(n.id.raw(), attributes),
                 attributes.get("id").cloned(),
-                root.then(|| Rc::new(attributes.clone())),
+                (carry || root).then(|| {
+                    Rc::new(live(n.id.raw(), attributes).unwrap_or_else(|| attributes.clone()))
+                }),
             )));
             current = n.parent();
         }
