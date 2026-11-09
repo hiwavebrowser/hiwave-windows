@@ -295,14 +295,9 @@ fn style_texts(root: &Rc<Node>, javascript_enabled: bool) -> Vec<String> {
                 if noscript && javascript_enabled {
                     continue;
                 }
-                let mut text = String::new();
-                for t in child.children() {
-                    if let NodeType::Text(s) = &t.node_type {
-                        text.push_str(s);
-                    }
-                }
+                let text = rustkit_dom::style_element_text(&child);
                 if !text.is_empty() {
-                    out.push(text);
+                    out.push(crate::style_sheet_text(&child, text));
                 }
                 continue;
             }

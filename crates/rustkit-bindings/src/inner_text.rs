@@ -539,6 +539,102 @@ mod tests {
         );
     }
 
+    /// CH2.E13b / #951: published `white-space` and table display drive the
+    /// walk (UA tag defaults alone miss author CSS). Portable beside the
+    /// macos+headless `inner_text_style_tests` oracle.
+    #[test]
+    fn inner_text_honours_published_white_space_and_table_display() {
+        use super::{inner_text, Computed};
+        use rustkit_dom::Node;
+        use std::collections::HashMap;
+
+        assert_eq!(
+            Computed::from_lines("display\tblock\nwhite-space\tpre-wrap")
+                .and_then(|c| c.white_space),
+            Some("pre-wrap".into())
+        );
+
+        // `white-space: pre` on the parent keeps spaces and line feeds.
+        let document = Document::parse_html("<div id=t>  a  b\n c </div>").unwrap();
+        let t = document.get_element_by_id("t").unwrap();
+        let style = |n: &Node| -> Option<Computed> {
+            if n.id == t.id {
+                Some(Computed {
+                    display: "block".into(),
+                    visible: true,
+                    white_space: Some("pre".into()),
+                })
+            } else {
+                None
+            }
+        };
+        assert_eq!(inner_text(&t, &style), "  a  b\n c ");
+
+        // `pre-line` collapses spaces/tabs but keeps line feeds.
+        let style = |n: &Node| -> Option<Computed> {
+            if n.id == t.id {
+                Some(Computed {
+                    display: "block".into(),
+                    visible: true,
+                    white_space: Some("pre-line".into()),
+                })
+            } else {
+                None
+            }
+        };
+        assert_eq!(inner_text(&t, &style), "a b\nc");
+
+        // Author `display: table-cell` / `table-row` on non-td/tr still tabs
+        // and breaks; a `<td>` forced to `display: block` does not.
+        let document = Document::parse_html(
+            "<div id=t><span id=a>x</span><span id=b>y</span></div>\
+             <table id=u><tr id=r><td id=c>p</td><td id=d>q</td></tr></table>",
+        )
+        .unwrap();
+        let ids: HashMap<&str, usize> = ["t", "a", "b", "u", "r", "c", "d"]
+            .into_iter()
+            .map(|id| (id, document.get_element_by_id(id).unwrap().id.raw()))
+            .collect();
+        let style = |n: &Node| -> Option<Computed> {
+            let id = n.id.raw();
+            let (display, white_space) = if id == ids["t"] {
+                ("block", None)
+            } else if id == ids["a"] || id == ids["b"] {
+                ("table-cell", None)
+            } else if id == ids["u"] {
+                ("table", None)
+            } else if id == ids["r"] {
+                ("table-row", None)
+            } else if id == ids["c"] || id == ids["d"] {
+                ("block", None)
+            } else {
+                return None;
+            };
+            Some(Computed {
+                display: display.into(),
+                visible: true,
+                white_space: white_space.map(str::to_string),
+            })
+        };
+        let t = document.get_element_by_id("t").unwrap();
+        assert_eq!(inner_text(&t, &style), "x\ty");
+        let u = document.get_element_by_id("u").unwrap();
+        assert_eq!(inner_text(&u, &style), "p\nq");
+
+        // Through DomBindings: `white-space:normal` on a `<pre>` collapses.
+        let doc = Rc::new(Document::parse_html("<pre id=t>  a  b</pre>").unwrap());
+        let t_id = doc.get_element_by_id("t").unwrap().id.raw();
+        let b = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        b.set_document(doc).unwrap();
+        let mut styles = HashMap::new();
+        styles.insert(t_id, "display\tblock\nvisibility\tvisible\nwhite-space\tnormal".into());
+        b.set_computed_styles(styles);
+        assert_eq!(
+            eval_string(&b, "document.getElementById('t').innerText"),
+            "a b"
+        );
+    }
+
     #[test]
     fn inner_text_lays_out_table_cells_and_rows() {
         assert_eq!(

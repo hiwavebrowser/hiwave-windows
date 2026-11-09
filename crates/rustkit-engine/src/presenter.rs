@@ -634,6 +634,12 @@ impl Presenter {
         }
     }
 
+    /// Wait until the GPU has run everything submitted (frame-time tests).
+    #[cfg(test)]
+    pub(crate) fn wait_for_gpu(&self) {
+        self.compositor.device().poll(wgpu::Maintain::Wait);
+    }
+
     /// The renderer, for tests that read its caches.
     #[cfg(test)]
     pub(crate) fn renderer_mut(&mut self) -> Option<&mut Renderer> {

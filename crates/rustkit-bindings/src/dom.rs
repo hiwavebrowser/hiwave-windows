@@ -73,6 +73,29 @@ pub struct BoxGeometry {
     pub held: bool,
 }
 
+/// Element ids on a box's `scroller` chain that actually scroll (#850 /
+/// ec0b831d). Transformed boxes ride the same chain so rects follow paint,
+/// but `scrollChain` / `setOwn` must skip them.
+pub(crate) fn scrolling_chain_ids(
+    geometry: &HashMap<usize, BoxGeometry>,
+    start: Option<usize>,
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut at = start;
+    while let Some(id) = at {
+        match geometry.get(&id) {
+            Some(g) => {
+                if g.scrolls {
+                    out.push(id);
+                }
+                at = g.scroller;
+            }
+            None => break,
+        }
+    }
+    out
+}
+
 /// What moves a box from where layout put it (`DomHost::moved_by`).
 #[derive(Clone, Copy, Default)]
 struct MovedBy {
@@ -1702,6 +1725,9 @@ fn node_info(node: &Rc<Node>, field: &str, templates: &HashMap<usize, Rc<Node>>)
             }
         },
         "parent" => node_id(node.parent()),
+        // web_cssom.js: the lifetime of a <style>'s sheet (new children or
+        // a move make a new one); a sheet's `disabled` belongs to one.
+        "sheetGen" => JsValue::Number(node.sheet_generation() as f64),
         "first" => node_id(node.first_child()),
         "last" => node_id(node.last_child()),
         "next" => node_id(node.next_sibling()),
@@ -2003,15 +2029,8 @@ pub(crate) fn install(
                             up = n.parent();
                         }
                         let mut chain = String::from(if fixed { "f" } else { "w" });
-                        let mut at = g.scroller;
-                        while let Some(scroller) = at {
-                            let above = host.geometry.get(&scroller);
-                            // A sticky or transformed box on the chain moves
-                            // the box, but cannot be scrolled.
-                            if above.is_some_and(|g| g.scrolls) {
-                                chain.push_str(&format!(" {scroller}"));
-                            }
-                            at = above.and_then(|g| g.scroller);
+                        for scroller in scrolling_chain_ids(&host.geometry, g.scroller) {
+                            chain.push_str(&format!(" {scroller}"));
                         }
                         JsValue::String(chain)
                     }
@@ -2421,6 +2440,29 @@ pub(crate) fn install(
         }),
     )?;
 
+    // `set_sheet_disabled(gen, id, on)`: `<style>.sheet.disabled`. The
+    // engine leaves the element's sheet out of the cascade while its text
+    // is the text it had now (web_cssom.js calls again after a CSSOM edit).
+    let h = host.clone();
+    let d = dirty.clone();
+    runtime.register_host_function(
+        "__rustkit_dom_set_sheet_disabled",
+        3,
+        Box::new(move |args| {
+            let host = h.borrow();
+            let Some(node) = host.node(args) else {
+                return JsValue::Null;
+            };
+            let Some(document) = args.first().and_then(|g| host.document_for(g)) else {
+                return JsValue::Null;
+            };
+            let on = matches!(args.get(2), Some(JsValue::Boolean(true)));
+            document.set_style_sheet_disabled(&node, on);
+            d.mark(DomDirty::Style, "sheet");
+            JsValue::Null
+        }),
+    )?;
+
     // Its listener and handler errors go to the host natives (`__rk`).
     runtime.evaluate_with_host(WRAPPERS_JS)?;
     shadow::install(runtime, host, dirty)?;
@@ -2443,12 +2485,13 @@ const WRAPPERS_JS: &str = r#"
         checked: __rustkit_dom_checked, submit: __rustkit_dom_submit,
         navigate: __rustkit_dom_navigate, insertedScript: __rustkit_dom_inserted_script,
         hit: __rustkit_dom_hit, setAdopted: __rustkit_dom_set_adopted,
+        setSheetDisabled: __rustkit_dom_set_sheet_disabled,
         scrollElement: __rustkit_dom_scroll_element,
         animate: __rustkit_dom_animate, cssAnimations: __rustkit_dom_css_animations,
         cssControl: __rustkit_dom_css_control, animated: __rustkit_dom_animated
     };
     ['root', 'by_id', 'collect', 'info', 'attr', 'mutate', 'write', 'matches', 'value', 'resolve', 'checked', 'submit', 'navigate',
-        'inserted_script', 'hit', 'set_adopted', 'scroll_element', 'animate', 'css_animations', 'css_control', 'animated'].forEach(function (n) {
+        'inserted_script', 'hit', 'set_adopted', 'set_sheet_disabled', 'scroll_element', 'animate', 'css_animations', 'css_control', 'animated'].forEach(function (n) {
         delete g['__rustkit_dom_' + n];
     });
 
@@ -5528,6 +5571,20 @@ const WRAPPERS_JS: &str = r#"
         var s = node != null ? node[SLOT] : undefined;
         if (!s || s.gen !== gen) return;
         N.setAdopted(s.gen, s.id, String(json));
+    };
+    // web_cssom.js: a <style>'s sheet.disabled, for the sheet it owns now.
+    g.__rkSetSheetDisabled = function (node, on) {
+        var s = node != null ? node[SLOT] : undefined;
+        if (!s || s.gen !== gen) return;
+        N.setSheetDisabled(s.gen, s.id, !!on);
+    };
+    // web_cssom.js: which sheet a <style> owns now (a number that changes
+    // when its children change or it moves); -1 for a node of another
+    // document.
+    g.__rkSheetGeneration = function (node) {
+        var s = node != null ? node[SLOT] : undefined;
+        if (!s || s.gen !== gen) return -1;
+        return N.info(s.gen, s.id, 'sheetGen');
     };
 
     // For dom/editing.js, which deletes it.
