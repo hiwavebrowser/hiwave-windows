@@ -579,7 +579,14 @@ impl NativeBrowser {
         if !shelved {
             return;
         }
-        if self.native_tab_count() <= 1 {
+        // The strip shows the active workspace's tabs: if this is the only one, open another
+        // first (counting every workspace's tabs would show a neighbour's page for a tick).
+        let in_workspace = self
+            .app_state
+            .lock()
+            .map(|state| shell_tabs::active_workspace_view(&state, &self.mirrored_tabs).visible.len())
+            .unwrap_or_else(|_| self.native_tab_count());
+        if in_workspace <= 1 {
             self.new_tab();
         }
         self.close_tab_by_id(id);
@@ -589,8 +596,31 @@ impl NativeBrowser {
 
     /// Reopen a shelved page in a new tab of its workspace (or the one it was dropped on).
     fn restore_shelf_item(&mut self, item: &str, workspace: Option<u64>) {
+        let target = workspace.map(hiwave_core::types::WorkspaceId);
+        // Decide first: an item that cannot open stays on the shelf.
+        let plan = match self.app_state.lock() {
+            Ok(state) => shell_tabs::peek_shelf_item(&state, item, target).map(|(url, _)| {
+                let kind = shell_tabs::restore_kind(&state, &url);
+                (url, kind)
+            }),
+            Err(_) => None,
+        };
+        let Some((url, kind)) = plan else {
+            return;
+        };
+        match kind {
+            shell_tabs::RestoreKind::Blocked => {
+                warn!(url, "Shelf restore refused: the domain is on the user's blocklist; the item stays on the shelf");
+                return;
+            }
+            shell_tabs::RestoreKind::Unopenable => {
+                warn!(url, "Shelf restore refused: the shell cannot open this address; the item stays on the shelf");
+                return;
+            }
+            shell_tabs::RestoreKind::Page | shell_tabs::RestoreKind::StartPage => {}
+        }
         let taken = match self.app_state.lock() {
-            Ok(mut state) => shell_tabs::take_from_shelf(&mut state, item, workspace.map(hiwave_core::types::WorkspaceId)),
+            Ok(mut state) => shell_tabs::take_from_shelf(&mut state, item, target),
             Err(_) => None,
         };
         let Some((url, _)) = taken else {
@@ -598,7 +628,9 @@ impl NativeBrowser {
         };
         // The workspace is active now; the new tab lands in it on the next turn.
         self.new_tab();
-        self.navigate(&url);
+        if kind == shell_tabs::RestoreKind::Page {
+            self.navigate(&url);
+        }
         self.save_and_sync_workspaces();
     }
 
