@@ -20,6 +20,54 @@ pub fn history_script(state: &AppState) -> String {
     chrome_call("updateHistory", &history)
 }
 
+/// The sidebar's workspaces: each with its tabs (ids as strings, the shape the chrome's
+/// `renderWorkspaces` reads), the active one, and how many tabs are locked. The same
+/// shape the WebView2 shell builds in `main.rs`.
+pub fn workspaces_json(state: &AppState) -> serde_json::Value {
+    let active_ws = state.shell.get_active_workspace().map(|w| w.id);
+    let active_tab = state.shell.get_active_tab().map(|t| t.id);
+    let decay_days = state.user_settings.tab_decay_days;
+    // `list_workspaces` walks a HashMap, so its order changes from run to run; the sidebar
+    // lists workspaces in the order they were made.
+    let mut ordered = state.shell.list_workspaces();
+    ordered.sort_by_key(|ws| ws.id.0);
+    let workspaces: Vec<serde_json::Value> = ordered
+        .iter()
+        .map(|ws| {
+            let tabs: Vec<serde_json::Value> = ws
+                .tabs
+                .iter()
+                .filter_map(|id| state.shell.get_tab(*id))
+                .map(|tab| {
+                    serde_json::json!({
+                        "id": tab.id.0.to_string(),
+                        "title": tab.title.clone().unwrap_or_else(|| "New Tab".to_string()),
+                        "url": tab.url.to_string(),
+                        "is_active": active_tab == Some(tab.id),
+                        "locked": tab.locked,
+                        "decay_level": hiwave_shell::BrowserShell::calculate_decay_level(tab.last_visited, decay_days),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "id": ws.id.0.to_string(),
+                "name": ws.name,
+                "tab_count": ws.tabs.len(),
+                "tabs": tabs,
+                "is_active": Some(ws.id) == active_ws,
+                "is_suspended": ws.suspended,
+                "locked_count": state.workspace_locked_count(ws.id),
+            })
+        })
+        .collect();
+    serde_json::Value::Array(workspaces)
+}
+
+/// The script that hands the sidebar its workspaces.
+pub fn workspaces_script(state: &AppState) -> String {
+    chrome_call("renderWorkspaces", &workspaces_json(state))
+}
+
 /// Whether the user's blocklist covers `url`'s domain (a subdomain of a blocked domain
 /// counts). One predicate for every way a page can be reached: the address bar, a link
 /// click, a form, a script, and the content-thread page.
@@ -115,6 +163,79 @@ mod tests {
         let close = call.rfind("); }").unwrap();
         let back: serde_json::Value = serde_json::from_str(&call[open..close]).expect("one JSON value");
         assert_eq!(back[0]["title"], json!(title));
+    }
+
+    fn temp_state(name: &str) -> AppState {
+        let dir = std::env::temp_dir().join(format!("hiwave_chrome_data_{}_{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = crate::state::AppConfig::default();
+        config.data_dir = dir.clone();
+        config.download_dir = dir.join("downloads");
+        AppState::new(config).expect("state")
+    }
+
+    #[test]
+    fn workspaces_are_listed_in_the_order_they_were_made() {
+        let mut s = temp_state("ws_order");
+        for name in ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"] {
+            s.shell.create_workspace(name.to_string());
+        }
+        let json = workspaces_json(&s);
+        let names: Vec<&str> = json.as_array().unwrap().iter().map(|w| w["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Default", "Alpha", "Beta", "Gamma", "Delta", "Epsilon"]);
+    }
+
+    #[test]
+    fn the_workspace_list_has_the_shape_the_chrome_reads() {
+        let mut s = temp_state("ws");
+        let work = s.shell.create_workspace("Work".to_string());
+        let default = s.shell.get_active_workspace().map(|w| w.id).unwrap();
+        let tab = hiwave_core::types::TabInfo {
+            id: hiwave_core::types::TabId::new(),
+            url: url::Url::parse("https://a.test/").unwrap(),
+            title: Some("A \"quoted\" title".to_string()),
+            favicon: None,
+            workspace_id: default,
+            suspended: false,
+            loading: false,
+            locked: true,
+            last_visited: None,
+        };
+        let tab_id = tab.id;
+        s.shell.create_tab(tab).unwrap();
+        s.shell.set_active_tab(tab_id).unwrap();
+
+        let json = workspaces_json(&s);
+        let list = json.as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        let first = &list[0];
+        assert_eq!(first["is_active"], true);
+        assert_eq!(first["tab_count"], 1);
+        assert_eq!(first["locked_count"], 1);
+        assert_eq!(first["tabs"][0]["id"], tab_id.0.to_string());
+        assert_eq!(first["tabs"][0]["title"], "A \"quoted\" title");
+        assert_eq!(first["tabs"][0]["is_active"], true);
+        let second = list.iter().find(|w| w["id"] == work.0.to_string()).unwrap();
+        assert_eq!(second["name"], "Work");
+        assert_eq!(second["is_active"], false);
+        assert!(workspaces_script(&s).starts_with("if(window.hiwaveChrome) { hiwaveChrome.renderWorkspaces(["));
+    }
+
+    #[test]
+    fn a_tab_the_native_shell_just_opened_is_not_shown_as_expired() {
+        let mut s = temp_state("decay");
+        let mut mirrored = std::collections::HashSet::new();
+        let id = super::super::shell_tabs::alloc_tab_id();
+        let tabs = [super::super::shell_tabs::NativeTab {
+            id,
+            url: "https://a.test/".into(),
+            title: "A".into(),
+            active: true,
+        }];
+        super::super::shell_tabs::reconcile(&mut s, &mut mirrored, &tabs);
+        let json = workspaces_json(&s);
+        let level = json[0]["tabs"][0]["decay_level"].as_u64().unwrap();
+        assert!(level < 5, "a fresh tab has decay level {level}, which the sidebar draws struck through");
     }
 
     #[test]
