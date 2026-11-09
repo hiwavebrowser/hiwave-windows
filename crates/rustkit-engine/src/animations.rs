@@ -641,6 +641,14 @@ impl Animations {
         self.seen.retain(|_, s| *s == serial);
     }
 
+    /// Whether a build of this document has handed `node` to `on_style`:
+    /// it has a computed style and may have a box. A node no build visited
+    /// (detached, or under a `display: none` ancestor) paints nothing, so
+    /// an animation on it changes nothing a frame has to place (LAT14).
+    pub(crate) fn visited(&self, node: usize) -> bool {
+        self.seen.contains_key(&node)
+    }
+
     /// Whether `node` has a transition or a CSS animation record.
     pub(crate) fn has_records(&self, node: usize) -> bool {
         self.transitions.iter().any(|t| t.node == node) || self.css.iter().any(|a| a.node == node)
@@ -755,6 +763,10 @@ impl Animations {
         self.transitions_update(node, style);
         self.animations_update(node, style, resolve);
         self.transitions_overlay(node, style);
+        // CH2.B18b: an animated or transitioning width on a `none` side
+        // (no style, or `none`/`hidden`) is still a 0 used width (Chromium
+        // 143: `@keyframes { border-width: 5px }` on an unstyled div is 0).
+        crate::zero_width_of_borderless_sides(style);
     }
 
     /// Start the transitions this element's changed values call for.

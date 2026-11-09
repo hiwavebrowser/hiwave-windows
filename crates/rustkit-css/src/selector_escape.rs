@@ -117,6 +117,74 @@ pub fn css_ident(name: &str) -> Cow<'_, str> {
     )
 }
 
+/// The text a CSS string token's contents stand for (CSS Syntax §4.3.5 and
+/// §4.3.7): `raw` is what lies between the quotes of an attribute
+/// selector's value. A hex escape is its code point (0, a surrogate or past
+/// U+10FFFF is U+FFFD) and eats one whitespace after it; an escaped newline
+/// is nothing (a line continuation); a backslash at the end is nothing; any
+/// other escaped character is itself. An unquoted value (an ident) uses the
+/// same escapes.
+pub fn css_string_value(raw: &str) -> Cow<'_, str> {
+    if !raw.contains('\\') {
+        return Cow::Borrowed(raw);
+    }
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            None => {}
+            Some('\n' | '\x0c') => {
+                chars.next();
+            }
+            Some('\r') => {
+                chars.next();
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            Some(h) if h.is_ascii_hexdigit() => {
+                let mut value = 0u32;
+                let mut digits = 0;
+                while digits < 6 {
+                    match chars.peek().and_then(|d| d.to_digit(16)) {
+                        Some(d) => {
+                            value = value * 16 + d;
+                            chars.next();
+                            digits += 1;
+                        }
+                        None => break,
+                    }
+                }
+                match chars.peek() {
+                    Some(' ' | '\t' | '\n' | '\x0c') => {
+                        chars.next();
+                    }
+                    Some('\r') => {
+                        chars.next();
+                        if chars.peek() == Some(&'\n') {
+                            chars.next();
+                        }
+                    }
+                    _ => {}
+                }
+                out.push(match char::from_u32(value) {
+                    Some(ch) if value != 0 => ch,
+                    _ => '\u{FFFD}',
+                });
+            }
+            Some(n) => {
+                chars.next();
+                out.push(n);
+            }
+        }
+    }
+    Cow::Owned(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +209,19 @@ mod tests {
         assert_eq!(round_trip(".\\31 0"), ".10");
         assert_eq!(round_trip(".a\\3A b"), ".a:b");
         assert_eq!(round_trip(".\\0 x"), ".\u{FFFD}x");
+    }
+
+    #[test]
+    fn a_string_value_resolves_its_escapes() {
+        assert!(matches!(css_string_value("0.1.1"), Cow::Borrowed(_)));
+        assert_eq!(css_string_value("\\30 \\.1\\.1"), "0.1.1");
+        assert_eq!(css_string_value("a\\\"b"), "a\"b");
+        assert_eq!(css_string_value("\\61 \\62"), "ab");
+        assert_eq!(css_string_value("a\\20 b"), "a b");
+        assert_eq!(css_string_value("a\\\nb"), "ab");
+        assert_eq!(css_string_value("\\e9"), "\u{e9}");
+        assert_eq!(css_string_value("\\0"), "\u{FFFD}");
+        assert_eq!(css_string_value("x\\"), "x");
     }
 
     #[test]

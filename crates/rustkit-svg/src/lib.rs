@@ -2372,6 +2372,7 @@ impl SvgText {
                 // baseline directly instead of a run-top.
                 ascent: Some(0.0),
                 run: None,
+                faces: None,
             });
         }
     }

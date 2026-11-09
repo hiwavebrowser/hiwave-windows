@@ -39,7 +39,7 @@ pub struct MacOSViewHost {
 /// rest queued, for the viewhost's own event tests; the app does not use
 /// them, since draining kind by kind is what lost the arrival order (#575).
 #[cfg(target_os = "macos")]
-use crate::input_queue::{drain_input_kind, push_input, retire_view_input, InputKind};
+use crate::input_queue::{drain_input_kind, instant_of_native_event, push_input, push_input_at, retire_view_input, InputKind};
 #[cfg(target_os = "macos")]
 use crate::input_queue::{PendingClick, PendingKey, PendingScroll, PointerInput};
 #[cfg(target_os = "macos")]
@@ -257,6 +257,37 @@ pub fn finish_key_equivalent(token: u64, claimed: bool) {
 /// the same tool arrived (Z lane I0, hand-test item H6). The wheel is
 /// consumed here, not passed to super, so the window loop cannot scroll the
 /// page a second time if the chain ever carries it again.
+/// When the user made `event` (LAT1c): its `timestamp` (seconds on the
+/// uptime clock) against `NSProcessInfo.systemUptime` now, as an
+/// `Instant`. Two message sends.
+#[cfg(target_os = "macos")]
+unsafe fn native_event_instant(event: id) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    if event == nil {
+        return now;
+    }
+    let event_s: f64 = msg_send![event, timestamp];
+    match system_uptime() {
+        Some(now_s) => instant_of_native_event(event_s, now_s, now),
+        None => now,
+    }
+}
+
+/// `NSProcessInfo.processInfo.systemUptime`: the clock `NSEvent.timestamp`
+/// is on.
+#[cfg(target_os = "macos")]
+pub(crate) fn system_uptime() -> Option<f64> {
+    let info_class = objc::runtime::Class::get("NSProcessInfo")?;
+    unsafe {
+        let info: id = msg_send![info_class, processInfo];
+        if info == nil {
+            return None;
+        }
+        let now_s: f64 = msg_send![info, systemUptime];
+        Some(now_s)
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub fn rustkit_content_view_class() -> &'static objc::runtime::Class {
     use objc::declare::ClassDecl;
@@ -300,7 +331,7 @@ pub fn rustkit_content_view_class() -> &'static objc::runtime::Class {
                 // A move right after a move replaces it in the queue: the
                 // page needs where the pointer is, not every point it
                 // crossed since the last turn of the loop.
-                push_input(view_id_of(this), InputKind::Pointer(click));
+                push_input_at(view_id_of(this), InputKind::Pointer(click), native_event_instant(event));
             }
         }
         extern "C" fn mouse_down(this: &Object, _sel: Sel, event: id) {
@@ -407,7 +438,7 @@ pub fn rustkit_content_view_class() -> &'static objc::runtime::Class {
                 // queue: a trackpad flick is ~50 events a second and the
                 // page needs where it ends up, not every step. A click in
                 // between keeps its place after the steps before it.
-                push_input(view_id_of(this), InputKind::Wheel(scroll));
+                push_input_at(view_id_of(this), InputKind::Wheel(scroll), native_event_instant(event));
             }
         }
         extern "C" fn accepts_first_responder(_this: &Object, _sel: Sel) -> bool {
@@ -438,7 +469,7 @@ pub fn rustkit_content_view_class() -> &'static objc::runtime::Class {
         }
         extern "C" fn record_key(this: &Object, event: id, up: bool, text: Option<String>) {
             unsafe {
-                push_input(view_id_of(this), InputKind::Key(pending_key(event, up, text)));
+                push_input_at(view_id_of(this), InputKind::Key(pending_key(event, up, text)), native_event_instant(event));
             }
         }
         extern "C" fn key_down(this: &Object, _sel: Sel, event: id) {
@@ -682,7 +713,7 @@ pub fn rustkit_content_view_class() -> &'static objc::runtime::Class {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push((token, event as usize));
-                push_input(view_id_of(this), InputKind::KeyEquivalent { key, token });
+                push_input_at(view_id_of(this), InputKind::KeyEquivalent { key, token }, native_event_instant(event));
                 true
             }
         }

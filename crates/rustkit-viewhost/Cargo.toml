@@ -79,3 +79,7 @@ harness = false
 [[test]]
 name = "macos_transparent_region"
 harness = false
+
+[[test]]
+name = "macos_destroy_view"
+harness = false

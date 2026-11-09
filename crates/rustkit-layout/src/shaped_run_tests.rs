@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::text::{PositionedGlyph, TextDirection};
+use rustkit_text::GlyphFace;
 
 fn style_in(family: &str, size: f32, weight: u16) -> ComputedStyle {
     let mut style = ComputedStyle::new();
@@ -209,6 +210,7 @@ fn glyphs_of_one_cluster_share_a_range_and_ranges_count_utf16_units() {
         advance,
         character,
         cluster,
+        face: GlyphFace::Primary,
     };
     let shaped = ShapedRun {
         text: "e\u{301}\u{1D4B3}b".to_string(),

@@ -3761,7 +3761,7 @@ pub mod content;
 pub mod scrollbar;
 pub use scrollbar::{parse_scrollbar_color, parse_scrollbar_width, ScrollbarPart, WebkitScrollbar};
 pub mod selector_escape;
-pub use selector_escape::{css_ident, encode_selector_escapes};
+pub use selector_escape::{css_ident, css_string_value, encode_selector_escapes};
 
 /// Parse a color value.
 pub fn parse_color(value: &str) -> Option<Color> {

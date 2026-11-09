@@ -111,11 +111,30 @@ fn console_record(
 /// which the engine marks where it raises them, are recorded from here,
 /// with a fixed message. What page script threw is never one of them,
 /// whatever its text.
+///
+/// A script the loop-iteration limit ended gets a log line of its own, as a
+/// budget stop does (`Script stopped at the script budget`): in the app a
+/// bare `while (true) {}` reaches the limit long before the budget, and
+/// until H19 nothing in the log said why it ended.
 pub(crate) fn log_script(log: &mut Vec<ScriptRecord>, inspector: &Inspector, record: ScriptRecord) {
-    if let ScriptOutcome::EngineFailed(failure) = &record.outcome {
-        engine_error(inspector, failure, &record.source);
+    match &record.outcome {
+        ScriptOutcome::EngineFailed(failure) => engine_error(inspector, failure, &record.source),
+        ScriptOutcome::Threw(message) if is_loop_limit(message) => {
+            tracing::warn!(
+                source = %record.source,
+                elapsed_ms = record.elapsed_ms,
+                "Script stopped at the loop-iteration limit"
+            );
+        }
+        _ => {}
     }
     log.push(record);
+}
+
+/// The error Boa raises at the loop-iteration limit, as the script log
+/// holds it.
+fn is_loop_limit(message: &str) -> bool {
+    message.contains("RuntimeLimitError: reached the maximum number of iteration loops")
 }
 
 /// The engine's own `failure` as a `script_error` with a fixed message.

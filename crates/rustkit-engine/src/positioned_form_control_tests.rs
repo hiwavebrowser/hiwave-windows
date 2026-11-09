@@ -25,11 +25,9 @@ const BOXES: &str = "Array.prototype.map.call(document.querySelectorAll('[id]'),
 /// Shapes that do not match Chrome yet, each with its reason. A shape listed
 /// here that starts to match fails the test, so the list cannot go stale.
 ///
-/// `an-absolute-checkbox`: the UA sheet has no margin for checkbox and radio
-/// (Chrome: `margin: 3px 3px 3px 4px`), so the box is 4,3 short of Chrome's
-/// with or without positioning. The same page with `margin: 0`
-/// (`an-absolute-checkbox-with-no-margin`) matches.
-const GAPS: &[&str] = &["an-absolute-checkbox"];
+/// (`an-absolute-checkbox` left the list when the UA sheet gave checkboxes
+/// Chrome's `margin: 3px 3px 3px 4px`.)
+const GAPS: &[&str] = &[];
 
 #[test]
 #[cfg(all(target_os = "macos", feature = "headless"))]

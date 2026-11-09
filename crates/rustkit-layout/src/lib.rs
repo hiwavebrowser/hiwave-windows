@@ -383,18 +383,24 @@ pub(crate) fn form_control_intrinsic_size(
             // (DIG-2): the css-selectors buttons (padding 8px 16px) build
             // (fs+1)+16 = 31 in Chrome; the blob said 33. Width also
             // composes when the author sets horizontal padding.
-            let label_width = measure_text_advanced(
+            let label_metrics = measure_text_advanced(
                 label,
                 &style.font_family,
                 font_size,
                 style.font_weight,
                 style.font_style,
-            )
-            .width;
-            (
-                button_border_box_width(style, font_size, label_width),
-                single_line_box(19.0 * ua_scale),
-            )
+            );
+            // The label's line is `normal` united with every fallback face
+            // its text used (an emoji lifts Arial 14px from 16 to 23 in
+            // Chrome 148: report's "📱 Share to Social" is 39 tall where
+            // "Export as JSON" is 32). ASCII never reaches a fallback face.
+            let height = if author_pb_v > 0.0 && !label.is_ascii() && label_metrics.ascent > 0.0 {
+                normal_line_height(style, font_size).max(used_font_line_height(&label_metrics))
+                    + author_pb_v
+            } else {
+                single_line_box(19.0 * ua_scale)
+            };
+            (button_border_box_width(style, font_size, label_metrics.width), height)
         }
         FormControlType::Checkbox { .. } | FormControlType::Radio { .. } => {
             // Fixed size for checkboxes and radios
@@ -403,9 +409,9 @@ pub(crate) fn form_control_intrinsic_size(
         FormControlType::Select { size, options, .. } => {
             // Chrome sizes a select to its WIDEST option (n53
             // form-controls: listbox 39 = "Item 4" 37 + 2px border;
-            // dropdown 137 = "A longer option text" + 24px of border and
-            // arrow well, 60 = "Select" + 24). The old 10em blob built
-            // 133 for both.
+            // dropdown 137 = ceil("A longer option text") + 20px arrow well
+            // + 2px border, 60 = ceil("Select") + 22). The old 10em blob
+            // built 133 for both.
             let widest = options
                 .iter()
                 .map(|o| {
@@ -426,8 +432,31 @@ pub(crate) fn form_control_intrinsic_size(
                     list_box_row_height(font_size) * *size as f32 + 2.0 * ua_scale,
                 )
             } else {
-                // Dropdown: widest option plus the arrow well.
-                (widest + 24.0 * ua_scale, single_line_box(19.0 * ua_scale))
+                // Dropdown (menulist), measured in Chrome for Testing 148:
+                // ceil(widest option) + a 20px arrow well (font-size does not
+                // move it: 66 at 13.6px, 87 at 20px with no padding/border) +
+                // the horizontal padding and border — the UA 1px border each
+                // side when the style carries none. settings' #theme
+                // ("System", padding .5rem .75rem, 1px border, 13.6px) is 92
+                // wide; widest + 24 built 69.8. (An `appearance: none` select
+                // has no arrow well in Chrome; RustKit does not carry
+                // `appearance`, and the old +24 assumed the well too.)
+                let px = |l: &Length| match l {
+                    Length::Percent(_) | Length::Auto => 0.0,
+                    other => other.to_px(font_size, 16.0, 0.0),
+                };
+                let pb_h = px(&style.padding_left)
+                    + px(&style.padding_right)
+                    + px(&style.border_left_width)
+                    + px(&style.border_right_width);
+                let pb_h = if pb_h > 0.0 { pb_h } else { 2.0 };
+                // Height stays the text line + padding/border: Chrome's
+                // menulist adds 2px inside (#theme 35, not 33), but an
+                // `appearance: none` select does not (chrome's
+                // #modeSelector is 31), and RustKit does not carry
+                // `appearance` yet — taking the +2 moved chrome's whole
+                // sidebar 2px down on 12 board rows.
+                (widest.ceil() + 20.0 + pb_h, single_line_box(19.0 * ua_scale))
             }
         }
     }
@@ -3961,8 +3990,21 @@ impl LayoutBox {
         } else {
             (font_size * 0.8, font_size * 0.2)
         };
+        // Blink's FontMetrics are whole pixels (SimpleFontData rounds ascent
+        // and descent) and the leading above the text is floored
+        // (FontHeight::AddLeading) — the same seat `text_line_box_extents`
+        // sizes the line from and `blink_baseline_offset` paints on. The
+        // rect is round(a) + round(d) tall and starts that floored leading
+        // below the slot: report's 12px `.time-format` in a 32px/1 line is
+        // 15 tall at baseline - 12 in Chrome 148, not 14.13 at baseline -
+        // 11.6; a 16px `<a>` in a 24px line is 18 tall 3 below the top, not
+        // 18.84 at 2.58. SIGNED: a line-height smaller than the content
+        // area puts the rect above its slot (CSS2 §10.8.1), and the align
+        // pass reads the slot as rect - half-leading, so the shift must be
+        // applied for a negative value too or the line's baseline moves.
+        let (ascent, descent) = (ascent.round(), descent.round());
         let content = ascent + descent;
-        let half_leading = half_leading(line_height, ascent, descent);
+        let half_leading = half_leading(line_height, ascent, descent).floor();
         (content, half_leading)
     }
 
@@ -5961,7 +6003,9 @@ impl LayoutBox {
                 // report are different quantities.
                 if matches!(child.box_type, BoxType::Inline) {
                     let (_, half_leading) = child.inline_content_area();
-                    if half_leading > 0.0 {
+                    // Negative too: the rect sits above its slot when the
+                    // line-height is smaller than the content area.
+                    if half_leading != 0.0 {
                         child.shift_inline_content_area(half_leading);
                     }
                     line_height = line_height.max(child.get_line_height());
@@ -7016,7 +7060,9 @@ impl LayoutBox {
                 // report are different quantities.
                 if matches!(child.box_type, BoxType::Inline) {
                     let (_, half_leading) = child.inline_content_area();
-                    if half_leading > 0.0 {
+                    // Negative too: the rect sits above its slot when the
+                    // line-height is smaller than the content area.
+                    if half_leading != 0.0 {
                         child.shift_inline_content_area(half_leading);
                     }
                     line_height = line_height.max(child.get_line_height());
@@ -8690,6 +8736,14 @@ pub enum DisplayCommand {
         /// not name its face) and on the legacy callers; paint then walks
         /// `text` as before. A lane that edits the emitter keeps this field.
         run: Option<std::sync::Arc<GlyphRun>>,
+        /// FACE CONTRACT: the face each character was measured in
+        /// (`rustkit_text::macos::select_face`, ONE decision per character,
+        /// parallel to `advances`). Paint draws every character from the
+        /// recorded face, colour or mask, and never decides a face itself,
+        /// so the advance it owes and the glyph it draws are layout's. `None`
+        /// on the legacy callers (paint then decides with the same function
+        /// on its own font) and wherever `advances` is `None`.
+        faces: Option<Vec<rustkit_text::GlyphFace>>,
     },
     /// Draw text decoration line (underline, strikethrough, overline).
     TextDecoration {
@@ -8996,6 +9050,12 @@ pub enum DisplayCommand {
         /// advances and ascent; paint places, never re-measures.
         advances: Option<Vec<f32>>,
         ascent: Option<f32>,
+        /// FACE CONTRACT — same record as `Text::faces`: the face each
+        /// character was measured in, parallel to `advances`. Paint takes
+        /// that face's glyph as a coverage mask and tints it with the
+        /// gradient (a colour face's artwork by its alpha); it decides no
+        /// face itself. `None` wherever `advances` is `None`.
+        faces: Option<Vec<rustkit_text::GlyphFace>>,
     },
 
     // SVG-specific commands
@@ -12002,6 +12062,10 @@ impl DisplayList {
                 // text path.)
                 let shaped = shape_line(&text, style, font_size);
                 let mut advances = shaped.as_ref().and_then(char_advances_of);
+                // FACE CONTRACT: the face each character was measured in
+                // rides with its advance; paint draws from it (see
+                // `DisplayCommand::Text::faces`).
+                let faces = shaped.as_ref().and_then(char_faces_of);
                 // SHAPED-RUN CONTRACT (S0): the same shape call, frozen with
                 // the justification slack in it. `advances` above is its
                 // projection onto characters and stays for the old path.
@@ -12074,7 +12138,7 @@ impl DisplayList {
                 // edge and paint `…` in the run's own font. Without per-char
                 // advances there is nothing to cut against — the run paints
                 // as laid out and the clip alone applies.
-                let (text, advances, text_width, line_run) = match (self.ellipsis.as_mut(), &advances) {
+                let (text, advances, faces, text_width, line_run) = match (self.ellipsis.as_mut(), &advances) {
                     (Some(scope), Some(adv)) => {
                         let ellipsis_advance = shape_line_advances("\u{2026}", style, font_size)
                             .and_then(|a| a.first().copied())
@@ -12091,7 +12155,7 @@ impl DisplayList {
                                 .width
                             });
                         match scope.cut(&text, x, line_top, adv, ellipsis_advance) {
-                            TextOverflowCut::Keep => (text, advances, text_width, line_run),
+                            TextOverflowCut::Keep => (text, advances, faces, text_width, line_run),
                             TextOverflowCut::Hide => continue,
                             TextOverflowCut::Cut {
                                 text,
@@ -12102,16 +12166,30 @@ impl DisplayList {
                                 // the kept glyphs, then the ellipsis shaped
                                 // alone in the same face (as its advance was).
                                 let kept = advances.len().saturating_sub(1);
+                                let ellipsis = shape_line("\u{2026}", style, font_size);
+                                // The faces are cut the same way; the
+                                // ellipsis carries the face it was shaped in.
+                                let faces = faces.map(|f| {
+                                    let mut cut: Vec<_> = f.into_iter().take(kept).collect();
+                                    cut.push(
+                                        ellipsis
+                                            .as_ref()
+                                            .and_then(|e| e.glyphs.first().map(|g| g.face))
+                                            .unwrap_or(rustkit_text::GlyphFace::Primary),
+                                    );
+                                    cut
+                                });
                                 let line_run = line_run.and_then(|run| {
-                                    shape_line("\u{2026}", style, font_size)
-                                        .and_then(|tail| GlyphRun::freeze(&tail, 0.0))
+                                    ellipsis
+                                        .as_ref()
+                                        .and_then(|tail| GlyphRun::freeze(tail, 0.0))
                                         .and_then(|tail| run.cut_with_tail(kept, &tail))
                                 });
-                                (text, Some(advances), width, line_run)
+                                (text, Some(advances), faces, width, line_run)
                             }
                         }
                     }
-                    _ => (text, advances, text_width, line_run),
+                    _ => (text, advances, faces, text_width, line_run),
                 };
 
                 // Check if this is gradient text (background-clip: text with gradient and transparent fill)
@@ -12138,6 +12216,7 @@ impl DisplayList {
                             rect: Rect::new(x, y, text_width, line_height),
                             advances,
                             ascent: Some(seat_ascent),
+                            faces,
                         });
                         continue; // Skip regular text rendering for this line
                     }
@@ -12159,6 +12238,7 @@ impl DisplayList {
                     advances,
                     ascent: Some(seat_ascent),
                     run: line_run.map(std::sync::Arc::new),
+                    faces,
                 });
 
                 // Draw text decorations
@@ -12855,6 +12935,15 @@ fn char_advances_of(run: &ShapedRun) -> Option<Vec<f32>> {
     Some(run.glyphs.iter().map(|g| g.advance).collect())
 }
 
+/// Per-CHAR faces from the layout shaper (FACE CONTRACT), parallel to
+/// `char_advances_of` and `None` in the same cases.
+fn char_faces_of(run: &ShapedRun) -> Option<Vec<rustkit_text::GlyphFace>> {
+    if run.glyphs.len() != run.text.chars().count() {
+        return None;
+    }
+    Some(run.glyphs.iter().map(|g| g.face).collect())
+}
+
 /// Per-CHAR advances from the layout shaper, letter/word-spacing applied
 /// (ADVANCE CONTRACT, text-stack unification 2026-07-11). Returns None when
 /// shaping fails or when glyph count != char count (ligature clusters) — the
@@ -13129,6 +13218,92 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_a_styled_drop_down_composes_its_arrow_well_with_author_padding() {
+        // settings.html `select { padding: .5rem .75rem; border: 1px solid;
+        // font-size: .85rem }`: Chrome for Testing 148 builds #theme
+        // ("System") 92 x 35 — ceil(widest option) + a 20px arrow well +
+        // the author's horizontal padding and border, and an inner line of
+        // round(ascent) + round(descent) + 2 plus the vertical padding and
+        // border. RustKit built widest + 24 (69.8) and the text line (33).
+        // Bare at the UA font the same rule gives Chrome's 60 / 137 / 67.
+        let mut style = ComputedStyle::new();
+        style.font_size = Length::Px(13.6);
+        style.font_family = "Arial".to_string();
+        style.padding_top = Length::Px(8.0);
+        style.padding_bottom = Length::Px(8.0);
+        style.padding_left = Length::Px(12.0);
+        style.padding_right = Length::Px(12.0);
+        for side in [
+            &mut style.border_top_width,
+            &mut style.border_right_width,
+            &mut style.border_bottom_width,
+            &mut style.border_left_width,
+        ] {
+            *side = Length::Px(1.0);
+        }
+        let select = |options: &[&str]| FormControlType::Select {
+            options: options.iter().map(|o| o.to_string()).collect(),
+            selected_index: None,
+            size: 0,
+            selected: Vec::new(),
+        };
+        // Width only: the menulist's +2 inner height needs `appearance`
+        // (an `appearance: none` select has none), which RustKit does not
+        // carry, so the height stays the text line (33 here, Chrome 35).
+        assert_eq!(
+            form_control_intrinsic_size(&style, &select(&["Dark", "Light", "System"])).0,
+            92.0
+        );
+
+        let mut bare = ComputedStyle::new();
+        bare.font_size = Length::Px(40.0 / 3.0);
+        bare.font_family = "Arial".to_string();
+        for (options, want) in [
+            (&["Select"][..], 60.0),
+            (&["A longer option text"][..], 137.0),
+            (&["Dark", "Light", "System"][..], 67.0),
+        ] {
+            let (w, h) = form_control_intrinsic_size(&bare, &select(options));
+            assert_eq!((w, h), (want, 19.0), "{options:?}");
+        }
+    }
+
+    #[test]
+    fn test_an_emoji_label_lifts_a_styled_buttons_line() {
+        // report.html `.export-btn { padding: .5rem 1rem; font-size: .875rem }`:
+        // Chrome for Testing 148 builds "Export as JSON" 32 tall and
+        // "📱 Share to Social" 39 — Blink unites the emoji's fallback face into
+        // the label's `normal` line (Arial 14px 16 -> 23), as it does for any
+        // text line. RustKit composed every button from the primary face's
+        // line alone (32), and the flex row stretched none of them to 39.
+        let mut style = ComputedStyle::new();
+        style.font_size = Length::Px(14.0);
+        style.font_family = "Arial".to_string();
+        style.padding_top = Length::Px(8.0);
+        style.padding_bottom = Length::Px(8.0);
+        style.padding_left = Length::Px(16.0);
+        style.padding_right = Length::Px(16.0);
+        // The same guard as the n40 test below: a platform whose text measurement does not
+        // unite the emoji's fallback face into the line has nothing to lift (Windows).
+        let arial = measure_text_advanced("x", "Arial", 14.0, rustkit_css::FontWeight(400), rustkit_css::FontStyle::Normal);
+        let united = measure_text_advanced("\u{1F4F1} x", "Arial", 14.0, rustkit_css::FontWeight(400), rustkit_css::FontStyle::Normal);
+        if arial.ascent <= 0.0 || united.ascent <= arial.ascent + 1.0 {
+            eprintln!("SKIP: this platform does not unite fallback faces into a line");
+            return;
+        }
+        let plain = FormControlType::Button {
+            label: "Export as JSON".to_string(),
+            button_type: "button".to_string(),
+        };
+        let emoji = FormControlType::Button {
+            label: "\u{1F4F1} Share to Social".to_string(),
+            button_type: "button".to_string(),
+        };
+        assert_eq!(form_control_intrinsic_size(&style, &plain).1, 32.0);
+        assert_eq!(form_control_intrinsic_size(&style, &emoji).1, 39.0);
+    }
+
+    #[test]
     fn test_styled_button_composes_its_font_line_with_author_padding() {
         // flex-positioning `.btn { padding: 8px 16px; border: none; font-size:
         // 14px }`: Chrome builds label + 32 wide and 16 + 16 = 32 tall (the
@@ -13231,6 +13406,53 @@ mod tests {
         assert_eq!(line[0].dimensions.content.y, 100.0, "the strut-font text does not move");
         assert_eq!(line[1].children[0].dimensions.content.y, 100.0 + drop);
         assert_eq!(line[1].dimensions.content.y, 100.0 + half_leading + drop);
+    }
+
+    #[test]
+    #[cfg_attr(windows, ignore = "pins Chrome-on-macOS metrics of the macOS system font (a 15px content area at 12px); Arial gives 14")]
+    fn test_negative_half_leading_inline_keeps_the_line_baseline() {
+        // report.html `.stat-value { font-size: 2rem; line-height: 1 }` with
+        // a 12px `<span class=time-format>`: Chrome for Testing 148 (probe
+        // tf.html, line at 100) gives the span a 15px rect at 116, the
+        // baseline minus SimpleFontData's rounded ascent (11.6 -> 12), on
+        // the same baseline (128 = 100 + 28) as the 32px "0". The 12px line
+        // is 3px shorter than its content area, so the half-leading is
+        // negative (floor(-1.5) = -2) and the rect sits ABOVE its text slot
+        // (118 = 128 - 10). RustKit reported 14.13 at a fractional offset
+        // and, skipping the negative shift while the line read the slot as
+        // rect - half-leading, seated the whole line a pixel high (the six
+        // report rows' only in-viewport geometry diff).
+        let mut big = ComputedStyle::new();
+        big.font_size = Length::Px(32.0);
+        big.font_weight = rustkit_css::FontWeight::BOLD;
+        big.font_family = "-apple-system, BlinkMacSystemFont, sans-serif".to_string();
+        big.line_height = rustkit_css::LineHeight::Number(1.0);
+        let mut small = big.clone();
+        small.font_size = Length::Px(12.0);
+        small.font_weight = rustkit_css::FontWeight::NORMAL;
+
+        assert_eq!(LayoutBox::text_line_box_extents(&big).0, 28.0, "32px bold strut seat");
+        assert_eq!(LayoutBox::text_line_box_extents(&small).0, 10.0, "12px seat in a 12px line");
+
+        let mut text = LayoutBox::new(BoxType::Text("0".to_string()), big.clone());
+        text.dimensions.content.y = 100.0;
+        text.dimensions.content.height = 32.0;
+        let mut inner = LayoutBox::new(BoxType::Text("m".to_string()), small.clone());
+        inner.dimensions.content.y = 100.0;
+        inner.dimensions.content.height = 12.0;
+        let mut span = LayoutBox::new(BoxType::Inline, small.clone());
+        span.dimensions.content.y = 100.0;
+        span.children.push(inner);
+        let (content, half_leading) = span.inline_content_area();
+        assert_eq!((content, half_leading), (15.0, -2.0), "Chrome 148: 15 tall, floor(-1.5)");
+        span.shift_inline_content_area(half_leading);
+
+        let mut line = vec![text, span];
+        LayoutBox::apply_vertical_align(&mut line, &big);
+
+        assert_eq!(line[0].dimensions.content.y, 100.0, "the strut-font text stays");
+        assert_eq!(line[1].children[0].dimensions.content.y, 118.0, "span text slot: baseline 128 - 10");
+        assert_eq!(line[1].dimensions.content.y, 116.0, "span rect: baseline 128 - 12");
     }
 
     #[test]

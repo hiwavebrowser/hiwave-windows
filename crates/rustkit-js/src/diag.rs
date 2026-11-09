@@ -159,6 +159,11 @@ pub(crate) struct Diagnostics {
     known_paths: RefCell<HashSet<String>>,
     /// The realm's own `Error.prototype.stack` getter, taken before any page
     /// script ran.
+    ///
+    /// A GC handle held from Rust is a root, and the realm's console and
+    /// host natives hold this `Diagnostics` (an `Rc` the collector cannot
+    /// see into): getter -> realm -> natives -> getter is a cycle no
+    /// collection breaks. `JsRuntime`'s `Drop` takes it (M2).
     pub(crate) stack_getter: RefCell<Option<JsObject>>,
     /// Console calls are recorded (an embedder set a console handler).
     pub(crate) console_capturing: Cell<bool>,

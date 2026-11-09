@@ -95,6 +95,62 @@ pub use win::{face_by_id, intern_face, Font, FontCollection, FontFace, FontFamil
 pub mod emoji;
 pub use emoji::is_emoji;
 
+/// The face a character is drawn from: ONE decision, made where the text
+/// is shaped (`macos::select_face`), recorded per character on the
+/// display list (`DisplayCommand::Text::faces`) and read back by paint,
+/// which never decides again. Layout's advance and the painted glyph then
+/// come from the same face by construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GlyphFace {
+    /// The run's own face has the glyph and keeps it.
+    Primary,
+    /// A face the system gives for the primary: the colour faces first
+    /// when `emoji` (Emoji_Presentation, or U+FE0F after the character),
+    /// else the primary's cascade face.
+    Fallback { emoji: bool },
+    /// A default-ignorable (a variation selector, a joiner): zero advance,
+    /// nothing drawn.
+    Ignorable,
+}
+
+/// The variation selector after a character, which chooses its
+/// presentation (Unicode TR51 ED-9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Variation {
+    #[default]
+    None,
+    /// U+FE0E: text presentation.
+    Text,
+    /// U+FE0F: emoji presentation.
+    Emoji,
+}
+
+impl Variation {
+    /// The variation `next`, the character after the one in question, asks
+    /// for.
+    pub fn after(next: Option<char>) -> Self {
+        match next {
+            Some('\u{FE0E}') => Variation::Text,
+            Some('\u{FE0F}') => Variation::Emoji,
+            _ => Variation::None,
+        }
+    }
+}
+
+/// A character that modifies its neighbour and has no width of its own: a
+/// variation selector, a joiner, the word joiner and the BOM. Such a
+/// character is [`GlyphFace::Ignorable`]: zero advance, nothing drawn.
+pub fn is_default_ignorable(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200D}'
+            | '\u{2060}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{E0100}'..='\u{E01EF}'
+    )
+}
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 

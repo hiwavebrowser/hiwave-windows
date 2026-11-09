@@ -20,6 +20,7 @@ use rustkit_css::{
     WhiteSpace, WordBreak as CssWordBreak,
 };
 use rustkit_text::bidi::{BidiInfo, Direction as BidiDirection};
+use rustkit_text::GlyphFace;
 use rustkit_text::line_break::{LineBreaker, OverflowWrap, WordBreak as LineBreakWordBreak};
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -379,6 +380,12 @@ pub struct PositionedGlyph {
     pub character: char,
     /// Cluster index for multi-glyph characters.
     pub cluster: u32,
+    /// The face this glyph was measured in (`rustkit_text::macos::select_face`,
+    /// ONE decision for layout and paint): the run's own face, a fallback
+    /// face by presentation, or nothing for a selector. The display list
+    /// carries it to paint (`DisplayCommand::Text::faces`), which draws
+    /// from that face and never decides again.
+    pub face: GlyphFace,
 }
 
 /// A shaped text run.
@@ -545,11 +552,15 @@ impl GlyphRun {
         if run.direction != TextDirection::Ltr {
             return None;
         }
-        if run
-            .glyphs
-            .iter()
-            .any(|g| g.glyph_id == 0 || is_color_glyph_char(g.character))
-        {
+        // A glyph measured in a fallback face (`select_face`) is not this
+        // face's to draw: `©️` keeps the primary's glyph id but is the
+        // emoji face's, so its line stays on the per-character path, where
+        // paint reads the recorded face.
+        if run.glyphs.iter().any(|g| {
+            g.glyph_id == 0
+                || matches!(g.face, GlyphFace::Fallback { .. })
+                || is_color_glyph_char(g.character)
+        }) {
             return None;
         }
 
@@ -1326,6 +1337,7 @@ impl TextShaper {
                             advance,
                             character: c,
                             cluster: i as u32,
+                            face: GlyphFace::Primary,
                         });
 
                         x_offset += advance;
@@ -1416,6 +1428,7 @@ impl TextShaper {
                 advance,
                 character: c,
                 cluster: i as u32,
+                face: GlyphFace::Primary,
             });
 
             x_offset += advance;
@@ -1671,11 +1684,32 @@ impl TextShaper {
                 // 15.69px on SF at 16px — so the miss is the id, never a
                 // zero advance.
                 let notdef_advance = if advance == 0.0 { size * 0.5 } else { advance };
-                let final_advance = if glyph_ids[utf16_idx] == 0 {
-                    if c.is_whitespace() || c.is_control() {
-                        notdef_advance
-                    } else {
-                        match Self::fallback_glyph_advance(c, &ct_font) {
+                let primary_has_glyph = glyph_ids[utf16_idx] != 0;
+                let primary_advance = advance + kern.get(utf16_idx).copied().unwrap_or(0.0);
+                // THE face decision (rustkit_text::macos::select_face), made
+                // here and recorded on the glyph: paint reads it from the
+                // display list and never decides again. The next character
+                // takes part: U+FE0F asks for the emoji face even when this
+                // face has the glyph (`©️`), U+FE0E for a text face.
+                let next = text_chars.get(char_idx + 1).copied();
+                let face = if c.is_whitespace() || c.is_control() {
+                    GlyphFace::Primary
+                } else {
+                    rustkit_text::macos::select_face(
+                        &ct_font,
+                        c,
+                        rustkit_text::Variation::after(next),
+                        primary_has_glyph,
+                    )
+                };
+                let final_advance = match face {
+                    GlyphFace::Primary if primary_has_glyph => primary_advance,
+                    GlyphFace::Primary => notdef_advance,
+                    // Variation selectors / joiners are zero-width
+                    // wherever they land (they modify a neighbour).
+                    GlyphFace::Ignorable => 0.0,
+                    GlyphFace::Fallback { emoji } => {
+                        match Self::fallback_glyph_advance(c, emoji, &ct_font) {
                             Some((adv, asc, desc, lead)) => {
                                 used_fallback_extents = Some(match used_fallback_extents {
                                     Some((a, d, l)) => (a.max(asc), d.max(desc), l.max(lead)),
@@ -1683,14 +1717,9 @@ impl TextShaper {
                                 });
                                 adv
                             }
-                            // Variation selectors / joiners are zero-width
-                            // wherever they land (they modify a neighbour).
-                            None if is_default_ignorable(c) => 0.0,
                             None => notdef_advance, // tofu
                         }
                     }
-                } else {
-                    advance + kern.get(utf16_idx).copied().unwrap_or(0.0)
                 };
 
                 glyphs.push(PositionedGlyph {
@@ -1700,6 +1729,7 @@ impl TextShaper {
                     advance: final_advance,
                     character: c,
                     cluster: char_idx as u32,
+                    face,
                 });
 
                 x_offset += final_advance;
@@ -1844,39 +1874,20 @@ impl TextShaper {
         deltas
     }
 
-    /// Advance and face extents for a character `primary` lacks, from the
-    /// face rustkit-text's `fallback_face_for` gives: the one paint draws
-    /// the character from. Returns `(advance, ascent, descent, leading)`.
+    /// Advance and face extents for a character measured in a fallback face
+    /// (`GlyphFace::Fallback { emoji }`, from `select_face`), from the face
+    /// rustkit-text's `fallback_face_for_presentation` gives: the one paint
+    /// draws the character from, by the same record. Returns `(advance,
+    /// ascent, descent, leading)`.
     #[cfg(target_os = "macos")]
     fn fallback_glyph_advance(
         c: char,
+        emoji: bool,
         primary: &core_text::font::CTFont,
     ) -> Option<(f32, f32, f32, f32)> {
-        extern "C" {
-            fn CTFontGetAdvancesForGlyphs(
-                font: core_text::font::CTFontRef,
-                orientation: u32,
-                glyphs: *const u16,
-                advances: *mut CGSize,
-                count: isize,
-            ) -> f64;
-        }
-
-        let (font, glyph) = rustkit_text::macos::fallback_face_for(primary, c)?;
-        let mut advance = CGSize::new(0.0, 0.0);
-        // SAFETY: `font` is a live CTFont; one glyph id is read and one
-        // advance written.
-        unsafe {
-            CTFontGetAdvancesForGlyphs(
-                font.as_concrete_TypeRef(),
-                0, // kCTFontOrientationHorizontal
-                &glyph,
-                &mut advance,
-                1,
-            );
-        }
+        let (font, glyph) = rustkit_text::macos::fallback_face_for_presentation(primary, c, emoji)?;
         Some((
-            advance.width as f32,
+            rustkit_text::macos::glyph_advance(&font, glyph),
             rustkit_text::macos::blink_ascent(&font),
             font.descent() as f32,
             font.leading() as f32,
@@ -2062,6 +2073,7 @@ impl TextShaper {
                 advance,
                 character: c,
                 cluster: i as u32,
+                face: GlyphFace::Primary,
             });
 
             x_offset += advance;
@@ -2787,17 +2799,6 @@ fn is_collapsible_space(c: char) -> bool {
 /// Default-ignorable code points that modify a neighbouring character and
 /// take no space of their own when no face maps them: variation selectors
 /// (U+FE00–FE0F, U+E0100–E01EF), ZWSP/ZWNJ/ZWJ, word joiner, BOM.
-fn is_default_ignorable(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200B}'..='\u{200D}'
-            | '\u{2060}'
-            | '\u{FE00}'..='\u{FE0F}'
-            | '\u{FEFF}'
-            | '\u{E0100}'..='\u{E01EF}'
-    )
-}
-
 /// A wrapped line of text.
 #[derive(Debug, Clone)]
 pub struct WrappedLine {

@@ -308,10 +308,16 @@ impl LayoutCtx {
             for control in &controls {
                 anims.control(control);
             }
+            // A record's element was captured by the build that made the
+            // record. A script-layer entry's element is captured by the
+            // next build that visits it: one that no build has visited
+            // (detached, or under `display: none`) paints nothing, and
+            // the frame has nothing of it to place (LAT14: until
+            // 2026-11-08 such an entry laid out every frame of the page).
             if let Some(node) = anims
                 .record_nodes()
                 .into_iter()
-                .chain(script.keys().copied())
+                .chain(script.keys().copied().filter(|node| anims.visited(*node)))
                 .find(|node| !anims.captured.contains_key(node))
             {
                 return Err(format!("element {node} animates with no captured style"));

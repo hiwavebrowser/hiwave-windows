@@ -11,7 +11,7 @@
 
 use crate::ViewId;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// A content-view click, in VIEW-LOCAL TOP-LEFT coordinates: exactly the
 /// viewport space the engine's hit testing speaks, no chrome/sidebar math.
@@ -186,6 +186,14 @@ impl InputQueue {
     /// pointer leaving, a key, another view's event) keeps both sides apart,
     /// so a click after a burst stays after it.
     pub fn push(&mut self, view: ViewId, kind: InputKind) -> u64 {
+        self.push_at(view, kind, Instant::now())
+    }
+
+    /// [`InputQueue::push`] for an input the platform says the user made
+    /// at `made` (the native event's own time, LAT1c), not when its handler
+    /// ran: the time it waited in the window server's queue while the
+    /// window thread was busy belongs to its latency.
+    pub fn push_at(&mut self, view: ViewId, kind: InputKind, made: Instant) -> u64 {
         if let Some(at) = self.coalesces_into(view, &kind) {
             let queued = &mut self.events[at];
             match (&mut queued.kind, &kind) {
@@ -205,7 +213,7 @@ impl InputQueue {
         }
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.events.push(InputEvent { seq, at: Instant::now(), view, kind });
+        self.events.push(InputEvent { seq, at: made, view, kind });
         seq
     }
 
@@ -280,6 +288,25 @@ static INPUT: Mutex<InputQueue> = Mutex::new(InputQueue { events: Vec::new(), ne
 /// Record an input for `view` (called from the content view's handlers).
 pub fn push_input(view: ViewId, kind: InputKind) -> u64 {
     INPUT.lock().map(|mut q| q.push(view, kind)).unwrap_or(0)
+}
+
+/// [`push_input`] with the native event's own time (LAT1c).
+pub fn push_input_at(view: ViewId, kind: InputKind, made: Instant) -> u64 {
+    INPUT.lock().map(|mut q| q.push_at(view, kind, made)).unwrap_or(0)
+}
+
+/// The `Instant` of a native event stamped `event_s` seconds on the
+/// platform's uptime clock (`NSEvent.timestamp`), when that clock reads
+/// `now_s` at `now` (LAT1c). An event stamped in the future, more than a
+/// minute old, or not stamped at all is taken as made `now`: the stamp is
+/// a measurement aid and never moves an input earlier than is plausible.
+pub fn instant_of_native_event(event_s: f64, now_s: f64, now: Instant) -> Instant {
+    const OLDEST_S: f64 = 60.0;
+    let age = now_s - event_s;
+    if !(event_s > 0.0) || !age.is_finite() || !(age >= 0.0) || age > OLDEST_S {
+        return now;
+    }
+    now.checked_sub(Duration::from_secs_f64(age)).unwrap_or(now)
 }
 
 /// Everything recorded since the last drain, for the app's loop turn.
@@ -529,5 +556,45 @@ mod tests {
         assert!(second > first);
         retire_view_input(view);
         assert!(drain_input().iter().all(|e| e.view != view));
+    }
+
+    /// LAT1c: an input is stamped with the native event's time, and a
+    /// burst coalesced into it keeps the first event's.
+    #[test]
+    fn an_input_keeps_its_native_time_through_coalescing() {
+        let now = Instant::now();
+        let made = instant_of_native_event(100.000, 100.250, now);
+        assert_eq!(now.duration_since(made), Duration::from_millis(250));
+        assert_eq!(instant_of_native_event(100.5, 100.25, now), now, "from the future");
+        assert_eq!(instant_of_native_event(0.0, 100.25, now), now, "unstamped");
+        assert_eq!(instant_of_native_event(10.0, 100.25, now), now, "older than a minute");
+        assert_eq!(instant_of_native_event(f64::NAN, 100.25, now), now);
+
+        let mut q = InputQueue::default();
+        let view = ViewId::new();
+        let wheel = |dy| InputKind::Wheel(PendingScroll { x: 0.0, y: 0.0, dx: 0.0, dy });
+        let first = q.push_at(view, wheel(1.0), made);
+        let second = q.push_at(view, wheel(2.0), now);
+        assert_eq!(first, second, "coalesced");
+        let drained = q.drain();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].at, made, "the burst is timed from its first event");
+    }
+
+    /// LAT1c overhead: what reading the uptime clock costs per input (the
+    /// `NSEvent.timestamp` read is one more message send).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reading_the_native_clock_is_cheap() {
+        let n = 100_000u32;
+        let started = Instant::now();
+        let mut last = 0.0;
+        for _ in 0..n {
+            last = crate::macos::system_uptime().expect("uptime");
+        }
+        let per = started.elapsed().as_nanos() as f64 / f64::from(n);
+        eprintln!("LAT1c overhead: {per:.0} ns per uptime read");
+        assert!(last > 0.0);
+        assert!(per < 20_000.0, "{per} ns per read");
     }
 }
