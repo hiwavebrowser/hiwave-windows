@@ -12,6 +12,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct BrowserShell {
     tabs: HashMap<TabId, TabInfo>,
+    /// Every open tab, in tab-strip order (M1c): the order they were
+    /// opened, a new tab at the end, a tab moved to another workspace at
+    /// the end of it. Filtered to one workspace it equals that
+    /// workspace's `tabs`. Every reader of tab order reads this, never the
+    /// map's order.
+    tab_order: Vec<TabId>,
     workspaces: HashMap<WorkspaceId, WorkspaceInfo>,
     active_workspace: Option<WorkspaceId>,
     command_palette: CommandPalette,
@@ -23,6 +29,7 @@ impl BrowserShell {
 
         let mut shell = Self {
             tabs: HashMap::new(),
+            tab_order: Vec::new(),
             workspaces: HashMap::new(),
             active_workspace: None,
             command_palette: CommandPalette::new(),
@@ -33,6 +40,11 @@ impl BrowserShell {
         shell.set_active_workspace(default_ws).ok();
 
         shell
+    }
+
+    /// The open tabs in tab-strip order.
+    fn ordered_tabs(&self) -> impl Iterator<Item = &TabInfo> {
+        self.tab_order.iter().filter_map(|id| self.tabs.get(id))
     }
 
     fn current_timestamp_secs() -> u64 {
@@ -70,13 +82,14 @@ impl BrowserShell {
             log::info!("Deleted workspace {:?}: {}", id, workspace.name);
 
             // Close all tabs in this workspace
-            for tab_id in workspace.tabs {
-                self.tabs.remove(&tab_id);
+            for tab_id in &workspace.tabs {
+                self.tabs.remove(tab_id);
             }
+            self.tab_order.retain(|tab_id| !workspace.tabs.contains(tab_id));
 
             // Switch to another workspace if this was active
             if self.active_workspace == Some(id) {
-                if let Some(&new_active) = self.workspaces.keys().next() {
+                if let Some(new_active) = self.workspaces.keys().min_by_key(|ws| ws.0).copied() {
                     self.set_active_workspace(new_active)?;
                 }
             }
@@ -136,8 +149,11 @@ impl BrowserShell {
         self.workspaces.get(&id)
     }
 
+    /// Workspaces in creation order (ids are handed out in sequence).
     pub fn list_workspaces(&self) -> Vec<&WorkspaceInfo> {
-        self.workspaces.values().collect()
+        let mut workspaces: Vec<&WorkspaceInfo> = self.workspaces.values().collect();
+        workspaces.sort_by_key(|ws| ws.id.0);
+        workspaces
     }
 
     // Tab management
@@ -147,7 +163,16 @@ impl BrowserShell {
 
         log::info!("Creating tab {:?} in workspace {:?}", tab_id, workspace_id);
 
-        self.tabs.insert(tab_id, tab);
+        // A re-used id (no caller does this) replaces the old tab, which
+        // leaves both lists before the new one joins at the end.
+        if let Some(old) = self.tabs.insert(tab_id, tab) {
+            if let Some(workspace) = self.workspaces.get_mut(&old.workspace_id) {
+                workspace.tabs.retain(|&id| id != tab_id);
+            }
+            self.tab_order.retain(|&id| id != tab_id);
+        }
+        // A new tab goes at the end of the strip.
+        self.tab_order.push(tab_id);
 
         // Add to workspace
         if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
@@ -163,6 +188,7 @@ impl BrowserShell {
     pub fn close_tab(&mut self, tab_id: TabId) -> HiWaveResult<()> {
         if let Some(tab) = self.tabs.remove(&tab_id) {
             log::info!("Closing tab {:?}", tab_id);
+            self.tab_order.retain(|&id| id != tab_id);
 
             // Remove from workspace
             if let Some(workspace) = self.workspaces.get_mut(&tab.workspace_id) {
@@ -241,8 +267,7 @@ impl BrowserShell {
     pub fn stale_locks(&self, threshold_days: u64) -> Vec<TabInfo> {
         let cutoff_secs = threshold_days.saturating_mul(86400);
         let now = Self::current_timestamp_secs();
-        self.tabs
-            .values()
+        self.ordered_tabs()
             .filter(|tab| tab.locked)
             .filter(|tab| {
                 tab.last_visited
@@ -287,8 +312,7 @@ impl BrowserShell {
         workspace_id: Option<WorkspaceId>,
         decay_days: u32,
     ) -> Vec<(TabInfo, u8)> {
-        self.tabs
-            .values()
+        self.ordered_tabs()
             .filter(|tab| workspace_id.is_none() || tab.workspace_id == workspace_id.unwrap())
             .map(|tab| {
                 let decay_level = Self::calculate_decay_level(tab.last_visited, decay_days);
@@ -299,8 +323,7 @@ impl BrowserShell {
 
     /// Get tabs that have reached maximum decay (level 5) and are candidates for auto-shelving
     pub fn expired_tabs(&self, workspace_id: Option<WorkspaceId>, decay_days: u32) -> Vec<TabInfo> {
-        self.tabs
-            .values()
+        self.ordered_tabs()
             .filter(|tab| workspace_id.is_none() || tab.workspace_id == workspace_id.unwrap())
             .filter(|tab| !tab.locked) // Don't expire locked tabs
             .filter(|tab| Self::calculate_decay_level(tab.last_visited, decay_days) >= 5)
@@ -349,6 +372,9 @@ impl BrowserShell {
             workspace.tabs.push(tab_id);
             workspace.active_tab = Some(tab_id);
         }
+        // At the end of its new workspace, as in `workspace.tabs`.
+        self.tab_order.retain(|&id| id != tab_id);
+        self.tab_order.push(tab_id);
 
         Ok(())
     }
@@ -381,20 +407,15 @@ impl BrowserShell {
         }
     }
 
+    /// The open tabs (of one workspace, or all), in tab-strip order.
     pub fn list_tabs(&self, workspace_id: Option<WorkspaceId>) -> Vec<&TabInfo> {
-        if let Some(ws_id) = workspace_id {
-            self.tabs
-                .values()
-                .filter(|tab| tab.workspace_id == ws_id)
-                .collect()
-        } else {
-            self.tabs.values().collect()
-        }
+        self.ordered_tabs()
+            .filter(|tab| workspace_id.map_or(true, |ws_id| tab.workspace_id == ws_id))
+            .collect()
     }
 
     pub fn snapshot(&self) -> ShellSnapshot {
-        let mut workspaces: Vec<&WorkspaceInfo> = self.workspaces.values().collect();
-        workspaces.sort_by_key(|ws| ws.id.0);
+        let workspaces = self.list_workspaces();
 
         let active_workspace_index = self
             .active_workspace
@@ -435,6 +456,7 @@ impl BrowserShell {
 
     pub fn load_snapshot(&mut self, snapshot: ShellSnapshot) -> HiWaveResult<()> {
         self.tabs.clear();
+        self.tab_order.clear();
         self.workspaces.clear();
         self.active_workspace = None;
 
@@ -468,6 +490,7 @@ impl BrowserShell {
                     last_visited: tab_snapshot.last_visited,
                 };
                 self.tabs.insert(tab_id, tab_info);
+                self.tab_order.push(tab_id);
                 workspace.tabs.push(tab_id);
             }
 
@@ -653,5 +676,135 @@ mod tests {
 
         assert!(!results.is_empty());
         assert!(results.iter().any(|c| c.id == "new_tab"));
+    }
+}
+
+/// M1c: the shell keeps its tabs in one explicit order (the order they
+/// were opened; a new tab goes at the end, a moved tab goes at the end of
+/// its new workspace, a closed tab leaves the rest in place), and every
+/// reader of tab order reads it.
+#[cfg(test)]
+mod tab_order_tests {
+    use super::*;
+
+    fn tab(ws: WorkspaceId, n: usize) -> TabInfo {
+        TabInfo {
+            id: TabId::new(),
+            url: url::Url::parse(&format!("http://127.0.0.1/p{n}")).unwrap(),
+            title: Some(format!("p{n}")),
+            favicon: None,
+            workspace_id: ws,
+            suspended: false,
+            loading: false,
+            locked: false,
+            last_visited: None,
+        }
+    }
+
+    fn ids(tabs: Vec<&TabInfo>) -> Vec<TabId> {
+        tabs.iter().map(|t| t.id).collect()
+    }
+
+    /// Every reader of tab order agrees with `expected` for workspace `ws`,
+    /// and the workspace's own list does too.
+    fn assert_order(shell: &BrowserShell, ws: WorkspaceId, expected: &[TabId], at: &str) {
+        assert_eq!(ids(shell.list_tabs(Some(ws))), expected, "{at}: list_tabs(ws)");
+        assert_eq!(shell.get_workspace(ws).unwrap().tabs, expected, "{at}: workspace.tabs");
+        let decay: Vec<TabId> = shell.tabs_with_decay(Some(ws), 7).iter().map(|(t, _)| t.id).collect();
+        assert_eq!(decay, expected, "{at}: tabs_with_decay");
+        let expired: Vec<TabId> = shell.expired_tabs(Some(ws), 7).iter().map(|t| t.id).collect();
+        assert_eq!(expired, expected, "{at}: expired_tabs (no tab visited: all expired)");
+    }
+
+    #[test]
+    fn list_tabs_is_in_the_order_the_tabs_were_opened() {
+        let mut shell = BrowserShell::new();
+        let ws = shell.get_active_workspace().unwrap().id;
+        let opened: Vec<TabId> = (0..12).map(|n| shell.create_tab(tab(ws, n)).unwrap()).collect();
+        assert_order(&shell, ws, &opened, "12 opened");
+        assert_eq!(ids(shell.list_tabs(None)), opened, "list_tabs(None)");
+    }
+
+    #[test]
+    fn closing_a_tab_keeps_the_others_in_order() {
+        let mut shell = BrowserShell::new();
+        let ws = shell.get_active_workspace().unwrap().id;
+        let mut opened: Vec<TabId> = (0..6).map(|n| shell.create_tab(tab(ws, n)).unwrap()).collect();
+        shell.close_tab(opened[1]).unwrap();
+        opened.remove(1);
+        shell.close_tab(opened[3]).unwrap();
+        opened.remove(3);
+        assert_order(&shell, ws, &opened, "after closing the 2nd and 5th");
+    }
+
+    /// A tiny deterministic generator, so a failure replays.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self, below: usize) -> usize {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as usize) % below
+        }
+    }
+
+    #[test]
+    fn the_order_survives_a_hundred_random_opens_and_closes() {
+        let mut shell = BrowserShell::new();
+        let ws = shell.get_active_workspace().unwrap().id;
+        let mut rng = Lcg(0x5eed_1c);
+        let mut model: Vec<TabId> = Vec::new();
+        for step in 0..100 {
+            if model.is_empty() || rng.next(3) != 0 {
+                model.push(shell.create_tab(tab(ws, step)).unwrap());
+            } else {
+                let victim = model.remove(rng.next(model.len()));
+                shell.close_tab(victim).unwrap();
+            }
+            assert_order(&shell, ws, &model, &format!("step {step}"));
+        }
+        assert!(model.len() > 20, "the walk should leave many tabs open: {}", model.len());
+    }
+
+    #[test]
+    fn a_moved_tab_goes_to_the_end_of_its_new_workspace() {
+        let mut shell = BrowserShell::new();
+        let a = shell.get_active_workspace().unwrap().id;
+        let b = shell.create_workspace("B".to_string());
+        let in_a: Vec<TabId> = (0..4).map(|n| shell.create_tab(tab(a, n)).unwrap()).collect();
+        let in_b: Vec<TabId> = (0..3).map(|n| shell.create_tab(tab(b, n)).unwrap()).collect();
+        shell.move_tab_to_workspace(in_a[1], b).unwrap();
+        assert_order(&shell, a, &[in_a[0], in_a[2], in_a[3]], "source after move");
+        assert_order(&shell, b, &[in_b[0], in_b[1], in_b[2], in_a[1]], "target after move");
+    }
+
+    #[test]
+    fn a_snapshot_round_trip_keeps_the_order() {
+        let mut shell = BrowserShell::new();
+        let ws = shell.get_active_workspace().unwrap().id;
+        for n in 0..9 {
+            shell.create_tab(tab(ws, n)).unwrap();
+        }
+        let mut restored = BrowserShell::new();
+        restored.load_snapshot(shell.snapshot()).unwrap();
+        let ws = restored.get_active_workspace().unwrap().id;
+        let titles: Vec<String> = restored
+            .list_tabs(Some(ws))
+            .iter()
+            .map(|t| t.title.clone().unwrap())
+            .collect();
+        let expected: Vec<String> = (0..9).map(|n| format!("p{n}")).collect();
+        assert_eq!(titles, expected, "restored list_tabs order");
+        let restored_ids = restored.get_workspace(ws).unwrap().tabs.clone();
+        assert_order(&restored, ws, &restored_ids, "restored");
+    }
+
+    #[test]
+    fn list_workspaces_is_in_creation_order() {
+        let mut shell = BrowserShell::new();
+        let first = shell.get_active_workspace().unwrap().id;
+        let made: Vec<WorkspaceId> = (0..8).map(|n| shell.create_workspace(format!("w{n}"))).collect();
+        let listed: Vec<WorkspaceId> = shell.list_workspaces().iter().map(|w| w.id).collect();
+        let mut expected = vec![first];
+        expected.extend(made);
+        assert_eq!(listed, expected);
     }
 }
