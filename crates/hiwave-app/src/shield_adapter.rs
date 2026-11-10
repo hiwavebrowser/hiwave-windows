@@ -216,6 +216,19 @@ impl ShieldInterceptHandler {
 
 impl InterceptHandler for ShieldInterceptHandler {
     fn intercept(&self, request: &Request) -> InterceptAction {
+        self.intercept_with(request, shared_block)
+    }
+}
+
+impl ShieldInterceptHandler {
+    /// [`InterceptHandler::intercept`] with the filter-engine query passed in. Production asks the
+    /// shared worker ([`shared_block`]); a test passes `|_, _, _| None` to take the pending floor
+    /// deterministically, with no worker race.
+    fn intercept_with(
+        &self,
+        request: &Request,
+        engine: impl FnOnce(&Url, &Url, hiwave_shield::ResourceType) -> Option<bool>,
+    ) -> InterceptAction {
         trace!(url = %request.url, "Shield checking request");
 
         // Privacy pin 2026-09-29: interception happens BEFORE bytes; the
@@ -247,7 +260,7 @@ impl InterceptHandler for ShieldInterceptHandler {
         // disables third-party-only rules rather than inventing a party.
         let source = request.referrer.as_ref().unwrap_or(&request.url);
 
-        let blocked = match shared_block(&request.url, source, dest_to_shield(dest)) {
+        let blocked = match engine(&request.url, source, dest_to_shield(dest)) {
             Some(verdict) => verdict,
             None => {
                 // PENDING FLOOR (Prometheus R1 on this PR): while EasyList is
@@ -569,17 +582,49 @@ mod tests {
         // Deterministic regardless of EasyList readiness: the pending floor
         // uses BLOCKED_DOMAINS, and the compiled engine includes the same
         // hosts. Either path must Block before bytes.
+        // `ad.doubleclick.net`, not the bare host: the floor blocks every doubleclick.net host, but
+        // EasyList only names subdomains, so once the full lists load the bare `doubleclick.net/
+        // pagead.js` is allowed (measured; see the PR body). The old test used the bare host and
+        // passed only while the worker was still building.
+        //
+        // The pending-floor path, hermetically: the engine query answers None (still building),
+        // so the interim domain list decides. The shared worker is not asked, so this cannot race
+        // its readiness or depend on what the downloaded filter lists say.
         let handler = ShieldInterceptHandler::new();
-        let action = handler.intercept(&test_request_with(
-            "https://doubleclick.net/pagead.js",
-            RequestDestination::Script,
-            Some("https://news.example/"),
-        ));
+        let action = handler.intercept_with(
+            &test_request_with(
+                "https://ad.doubleclick.net/ads.js",
+                RequestDestination::Script,
+                Some("https://news.example/"),
+            ),
+            |_, _, _| None,
+        );
         assert!(matches!(action, InterceptAction::Block));
         assert_eq!(handler.blocked_count(), 1);
         let census = handler.census_snapshot();
         assert_eq!(census[2].0, 1, "script attempted");
         assert_eq!(census[2].1, 1, "script blocked");
+    }
+
+    #[test]
+    fn the_ready_engine_also_blocks_a_known_tracker_subresource() {
+        // The other half of the old test: once the shared worker's engine is READY its verdict
+        // replaces the floor, and it must block the same tracker. Waits (bounded) for readiness
+        // instead of racing it; a timeout or an Allow is a real failure with its own message.
+        let _ = shield_worker();
+        let url = Url::parse("https://ad.doubleclick.net/ads.js").unwrap();
+        let source = Url::parse("https://news.example/").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let verdict = loop {
+            if let Some(v) = shared_block(&url, &source, hiwave_shield::ResourceType::Script) {
+                break Some(v);
+            }
+            if std::time::Instant::now() > deadline {
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        };
+        assert_eq!(verdict, Some(true), "the ready filter engine must block ad.doubleclick.net/ads.js");
     }
 
     #[test]
