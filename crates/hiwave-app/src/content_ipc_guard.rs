@@ -42,6 +42,22 @@ pub(crate) fn analytics_allowed(message_nonce: Option<&str>) -> bool {
     nonce_matches(message_nonce, current.as_deref())
 }
 
+/// A URL as it may be logged: a `data:` URL (how the app loads its own pages, the report with its
+/// nonce included) is logged by size only, and anything else is cut to a sane length.
+pub(crate) fn url_for_log(url: &str) -> String {
+    if url.len() >= 5 && url[..5].eq_ignore_ascii_case("data:") {
+        return format!("data: URL ({} bytes)", url.len());
+    }
+    if url.len() > 200 {
+        let mut cut = 200;
+        while !url.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        return format!("{}... ({} bytes)", &url[..cut], url.len());
+    }
+    url.to_string()
+}
+
 /// The report HTML with this load's nonce embedded.
 pub(crate) fn with_nonce(html: &str, nonce: &str) -> String {
     html.replace(NONCE_PLACEHOLDER, nonce)
@@ -62,6 +78,22 @@ mod tests {
         assert!(!nonce_matches(Some("abc124"), Some("abc123")));
         assert!(!nonce_matches(Some("abc12"), Some("abc123")));
         assert!(!nonce_matches(Some(""), Some("")), "an empty nonce never matches");
+    }
+
+    #[test]
+    fn a_data_url_is_logged_by_size_and_a_long_one_is_cut() {
+        let report = format!("data:text/html;charset=utf-8,<script>const REPORT_NONCE = '{}'</script>", "ab12".repeat(8));
+        let logged = url_for_log(&report);
+        assert!(!logged.contains("ab12") && !logged.contains("REPORT_NONCE"), "no page content: {logged}");
+        assert!(logged.starts_with("data: URL ("));
+        assert_eq!(url_for_log("https://example.com/a"), "https://example.com/a");
+        let long = format!("https://example.com/{}", "x".repeat(500));
+        assert!(url_for_log(&long).len() < 260);
+    }
+
+    #[test]
+    fn the_content_navigation_log_does_not_print_the_whole_url() {
+        assert!(!MAIN.contains("\"Content navigating to: {}\", url)"), "a data: URL (the report page) must not be logged whole");
     }
 
     #[test]
