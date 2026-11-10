@@ -49,8 +49,25 @@ mod tests {
         config.data_dir = dir.clone();
         config.download_dir = dir.join("downloads");
         let state = Arc::new(Mutex::new(AppState::new(config).expect("state")));
+        // A fresh vault is locked, which made the OLD handler answer "Vault is locked" too: unlock it
+        // and save a login first, so only the stub keeps the password out of the answer.
+        {
+            let mut guard = state.lock().unwrap();
+            guard.vault.unlock("test-master-password").expect("unlock");
+            guard
+                .vault
+                .save_credential(&url::Url::parse("https://example.com/").unwrap(), "alice", "s3cret-password")
+                .expect("save a login");
+            assert!(guard.vault.is_unlocked());
+        }
         let response = handle_message(&state, IpcMessage::GetCredentialsForAutofill { domain: "example.com".to_string() });
         assert!(matches!(response, IpcResponse::Error { .. }), "the dispatcher must not answer with data: {response:?}");
+        assert!(!format!("{response:?}").contains("s3cret-password"), "no password in the answer");
+    }
+
+    #[test]
+    fn the_content_ipc_log_line_does_not_carry_the_message_body() {
+        assert!(!MAIN.contains("\"Content IPC: {}\", body"), "the content IPC body must not be logged");
     }
 
     #[test]

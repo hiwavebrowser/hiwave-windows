@@ -1495,7 +1495,11 @@ fn main() {
         })
         .with_ipc_handler(move |message| {
             let body = message.body();
-            info!("Content IPC: {}", body);
+            // The shape only: a content page's message is not logged (it may carry anything).
+            let cmd = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("cmd").and_then(|c| c.as_str()).map(str::to_string));
+            info!(cmd = cmd.as_deref().unwrap_or("?"), len = body.len(), "Content IPC");
             if let Ok(msg) = serde_json::from_str::<IpcMessage>(body) {
                 match &msg {
                     IpcMessage::GoBack => {
