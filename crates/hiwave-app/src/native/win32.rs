@@ -629,19 +629,24 @@ impl NativeBrowser {
             shell_tabs::RestoreKind::Page | shell_tabs::RestoreKind::StartPage => {}
         }
         let taken = match self.app_state.lock() {
-            Ok(mut state) => shell_tabs::take_from_shelf(&mut state, item, target),
+            Ok(mut state) => shell_tabs::take_from_shelf_undoable(&mut state, item, target),
             Err(_) => None,
         };
-        let Some((url, workspace)) = taken else {
+        let Some(taken) = taken else {
             return;
         };
+        let (url, workspace) = (taken.url.clone(), taken.workspace);
         // The workspace is active now. Tabs it kept from an earlier session get their views
         // first (they load when shown), so the restore never leaves one blank behind it.
         self.adopt_workspace_tabs(workspace);
-        // The new tab lands in it on the next turn. When no view was made, navigating would
-        // load the page over whichever tab is showing.
-        if self.open_tab().is_none() && self.page_tabs.is_none() {
-            warn!(url, "Shelf restore could not open a tab; the page was not opened");
+        // The new tab lands in it on the next turn. When no tab could be made, the item goes
+        // back on the shelf: navigating would load the page over whichever tab is showing.
+        if !self.open_tab_checked() {
+            warn!(url, "Shelf restore could not open a tab; the item stays on the shelf");
+            if let Ok(mut state) = self.app_state.lock() {
+                shell_tabs::put_back_on_shelf(&mut state, taken);
+            }
+            self.needs_settle = true;
         } else if kind == shell_tabs::RestoreKind::Page {
             self.navigate(&url);
         }
@@ -848,6 +853,16 @@ impl NativeBrowser {
     /// Open a new tab and select it.
     fn new_tab(&mut self) {
         self.open_tab();
+    }
+
+    /// Open a new tab and select it; whether a tab was made (either path). Callers that then
+    /// navigate must check this: a failed creation leaves the old tab active, and navigating
+    /// would load the page over it.
+    fn open_tab_checked(&mut self) -> bool {
+        let count = |s: &Self| s.page_tabs.as_ref().map(|t| t.count()).or_else(|| s.tabs.as_ref().map(|t| t.count()));
+        let before = count(self);
+        self.open_tab();
+        count(self) > before
     }
 
     /// Open a new tab and select it; the view it created. `None` when no view was made
@@ -1493,21 +1508,28 @@ impl NativeBrowser {
             Ok(state) => shell_tabs::unowned_tabs(&state, &self.mirrored_tabs, workspace),
             Err(_) => return None,
         };
-        for tab in &saved {
-            // No view made (a failed creation): this tab stays in the model, unowned, and is
-            // saved back untouched. Labelling the active view would hand it this saved id.
-            let Some(view) = self.open_tab() else {
-                warn!(id = tab.id, "Could not open a view for a saved tab; it stays saved");
-                break;
-            };
-            self.tab_ids.insert(view, tab.id);
-            self.mirrored_tabs.insert(tab.id);
-            self.pending_load.insert(tab.id, tab.url.clone());
+        let mut opened: Vec<(EngineViewId, u64, String)> = Vec::new();
+        let adopted = shell_tabs::adopt_each(
+            &saved,
+            || {
+                let view = self.open_tab();
+                if view.is_none() {
+                    warn!("Could not open a view for a saved tab; it and the rest stay saved");
+                }
+                view
+            },
+            |view, tab| opened.push((view, tab.id, tab.url.clone())),
+        );
+        for (view, id, url) in opened {
+            self.tab_ids.insert(view, id);
+            self.mirrored_tabs.insert(id);
+            self.pending_load.insert(id, url);
         }
-        if !saved.is_empty() {
-            info!(count = saved.len(), "Restored tabs opened");
+        if !adopted.is_empty() {
+            info!(opened = adopted.len(), saved = saved.len(), "Restored tabs opened");
         }
-        active.or_else(|| saved.first().map(|t| t.id))
+        // Only a tab that got a view can be the one to show.
+        active.filter(|id| adopted.contains(id)).or_else(|| adopted.first().copied())
     }
 
     /// Load a restored tab's page into the content view that is showing. The saved address
@@ -2161,11 +2183,15 @@ impl NativeBrowser {
             // sync sends them all.
             "get_tabs" => self.chrome_synced = None,
             "create_tab" => {
-                self.new_tab();
-                if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
-                    if !url.is_empty() {
-                        self.navigate(url);
+                // A failed creation leaves the old tab active: navigating would load over it.
+                if self.open_tab_checked() {
+                    if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                        if !url.is_empty() {
+                            self.navigate(url);
+                        }
                     }
+                } else {
+                    warn!("create_tab: no tab could be opened");
                 }
             }
             "close_tab" => match tab_id_of(&json) {
