@@ -56,6 +56,7 @@ const SIDEBAR_WIDTH: f64 = 220.0;
 
 // Core modules (needed by both modes)
 mod import;
+mod content_ipc_guard;
 mod state;
 
 // Native platform module (no wry/tao/WebView)
@@ -1627,7 +1628,15 @@ fn main() {
                     | IpcMessage::GetWorkspaceStats
                     | IpcMessage::ResetAnalyticsData
                     | IpcMessage::ExportAnalyticsData { .. } => {
-                        info!("Analytics command from content: {:?}", msg);
+                        // IPC hardening: answered for the app's own report page only.
+                        let active_url = content_state_ipc
+                            .lock()
+                            .ok()
+                            .and_then(|s| s.shell.get_active_tab().map(|t| t.url.to_string()));
+                        if !content_ipc_guard::analytics_allowed(active_url.as_deref()) {
+                            warn!("Dropped a content-page request");
+                            return;
+                        }
                         let response = ipc::commands::handle_message(&content_state_ipc, msg.clone());
                         let response_json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
                         let script = format!(
