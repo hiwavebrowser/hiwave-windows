@@ -175,13 +175,6 @@
         }
     };
 
-    // Listen for credential responses
-    window.addEventListener('message', function(event) {
-        if (event.data && event.data.type === 'hiwave_autofill_credentials') {
-            window.hiwaveAutofill.showCredentials(event.data.credentials);
-        }
-    });
-
     // Keyboard shortcut: Ctrl+Shift+L (or Cmd+Shift+L on Mac) triggers autofill
     document.addEventListener('keydown', function(e) {
         const isCtrl = e.ctrlKey || e.metaKey;
