@@ -344,3 +344,52 @@ fn records_written_on_the_network_runtime_carry_no_query() {
     let json = serde_json::to_string(&rig.records()).unwrap();
     assert!(!json.contains("SECRET") && !json.contains("frag"), "{json}");
 }
+
+// LAT17 R1 nit 3: a leaving page's queued requests that are not sent are
+// still recorded, one terminal record each.
+
+fn leaving_request(rig: &Rig, id: u64, path: &str) -> NetRequest {
+    NetRequest {
+        id,
+        method: "GET".into(),
+        url: format!("http://127.0.0.1:{}{path}", rig.port),
+        headers: Vec::new(),
+        body_b64: None,
+        mode: "cors".into(),
+        credentials: "same-origin".into(),
+        redirect: "follow".into(),
+        destination: "fetch".into(),
+    }
+}
+
+#[test]
+fn a_leaving_page_on_the_page_polled_path_records_what_it_does_not_send() {
+    let rig = rig();
+    crate::script_net::force_page_polled_for_test(true);
+    let requests = vec![leaving_request(&rig, 1, "/a"), leaving_request(&rig, 2, "/b")];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let sent = crate::script_net::send_for_leaving_page(&rig.policy, &rig.loader, requests, deadline, &rig.inspector);
+    crate::script_net::force_page_polled_for_test(false);
+    assert_eq!(sent, 0);
+    let terminals = rig.terminals();
+    assert_eq!(terminals.len(), 2, "each request has a record: {:?}", rig.records());
+    assert!(terminals.iter().all(|(_, k)| *k == 1), "{terminals:?}");
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(rig.hits.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_leaving_page_past_the_task_cap_records_every_request() {
+    let rig = rig();
+    let n = MAX_LIVE_NET_TASKS as u64 + 3;
+    let requests: Vec<NetRequest> = (1..=n).map(|id| leaving_request(&rig, id, "/hello")).collect();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let _ = crate::script_net::send_for_leaving_page(&rig.policy, &rig.loader, requests, deadline, &rig.inspector);
+    let all = rig.wait_for(Duration::from_secs(20), |rig| {
+        let t = rig.terminals();
+        t.len() == n as usize && t.iter().all(|(_, k)| *k >= 1)
+    });
+    let terminals = rig.terminals();
+    assert!(all, "{} of {n} requests have a record", terminals.len());
+    assert!(terminals.iter().all(|(_, k)| *k == 1), "a request has two terminal records");
+}

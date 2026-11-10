@@ -98,11 +98,11 @@ document.head.appendChild(s);
     assert_eq!(
         lifecycle_lines(&records(&engine, view), server.port),
         vec![
-            // Scripts that will not run are recorded as the load sorts its
-            // scripts, before any runs; the rest in the order they ran.
+            // In document order (LAT17): a script that will not run is
+            // recorded when its turn comes, between the ones around it.
+            "script parser inline#1 ran held=DOMContentLoaded event=-",
             "script parser /missing.js fetch_failed (HTTP 404) held=DOMContentLoaded event=-",
             "script parser inline#6 skipped (nomodule) held=DOMContentLoaded event=-",
-            "script parser inline#1 ran held=DOMContentLoaded event=-",
             "script parser /huge.js skipped (too large to run inside the script budget) held=DOMContentLoaded event=-",
             "script parser inline#8 threw held=DOMContentLoaded event=-",
             "script parser inline#9 ran held=DOMContentLoaded event=-",
