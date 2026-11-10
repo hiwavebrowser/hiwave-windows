@@ -105,6 +105,16 @@ jobs:
           print(f"OK: {m['tests']['passed']} tests passed, suite complete")
           PY
 
+      # The native-win32 shell (the RustKit window the Windows port is built around) is behind a
+      # cargo feature, and the metrics run above builds and tests default features only, so CI
+      # never compiled or ran a line of src/native/*. Every native change was gated by a local
+      # run alone. This builds hiwave-app with the feature and runs its tests (the shell logic,
+      # the tab/workspace model, the session file). It runs after the metrics are recorded and
+      # fails the job on its own, so a native break still leaves the data point.
+      - name: Native shell tests (native-win32)
+        shell: bash
+        run: cargo test -p hiwave-app --features native-win32
+
       # Runs on EVERY branch so the logic is actually exercised in review; only
       # the final push is master-gated. The previous version gated the whole
       # step on master, which meant no PR could ever execute it — so it shipped
