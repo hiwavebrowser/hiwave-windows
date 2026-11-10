@@ -57,6 +57,7 @@ const SIDEBAR_WIDTH: f64 = 220.0;
 // Core modules (needed by both modes)
 mod import;
 mod autofill_guard;
+mod content_ipc_guard;
 mod state;
 
 // Native platform module (no wry/tao/WebView)
@@ -594,7 +595,9 @@ fn load_report_page(content: &impl IWebView) {
         "<!-- Chart.js is injected by Rust before page load -->",
         &format!("<script>{}</script>", CHART_JS),
     );
-    content.load_html(&report_with_chartjs);
+    // A fresh nonce per load: only this document knows it (content_ipc_guard).
+    let nonce = content_ipc_guard::new_report_nonce();
+    content.load_html(&content_ipc_guard::with_nonce(&report_with_chartjs, &nonce));
 }
 
 #[cfg(not(feature = "native-win32"))]
@@ -1258,7 +1261,7 @@ fn main() {
         .with_clipboard(true)
         .with_bounds(content_bounds)
         .with_navigation_handler(move |url| {
-            info!("Content navigating to: {}", url);
+            info!("Content navigating to: {}", content_ipc_guard::url_for_log(&url));
 
             // Check if current tab URL is an internal URL before processing data URLs
             // This prevents overwriting hiwave://about when loading the about page via load_html()
@@ -1611,7 +1614,15 @@ fn main() {
                     | IpcMessage::GetWorkspaceStats
                     | IpcMessage::ResetAnalyticsData
                     | IpcMessage::ExportAnalyticsData { .. } => {
-                        info!("Analytics command from content: {:?}", msg);
+                        // IPC hardening: answered for the app's own report document only (the
+                        // nonce embedded in it at load), not for a page that merely looks like it.
+                        let nonce = serde_json::from_str::<serde_json::Value>(body)
+                            .ok()
+                            .and_then(|v| v.get("nonce").and_then(|n| n.as_str()).map(str::to_string));
+                        if !content_ipc_guard::analytics_allowed(nonce.as_deref()) {
+                            warn!("Dropped a content-page request");
+                            return;
+                        }
                         let response = ipc::commands::handle_message(&content_state_ipc, msg.clone());
                         let response_json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
                         let script = format!(
