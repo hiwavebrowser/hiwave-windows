@@ -45,7 +45,8 @@ pub(crate) fn analytics_allowed(message_nonce: Option<&str>) -> bool {
 /// A URL as it may be logged: a `data:` URL (how the app loads its own pages, the report with its
 /// nonce included) is logged by size only, and anything else is cut to a sane length.
 pub(crate) fn url_for_log(url: &str) -> String {
-    if url.len() >= 5 && url[..5].eq_ignore_ascii_case("data:") {
+    // `get`, not a slice: byte 5 may sit inside a multi-byte character.
+    if url.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:")) {
         return format!("data: URL ({} bytes)", url.len());
     }
     if url.len() > 200 {
@@ -66,6 +67,16 @@ pub(crate) fn with_nonce(html: &str, nonce: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_for_log_does_not_panic_when_byte_five_is_inside_a_multibyte_char() {
+        // Atlas on #153: `url[..5]` panics if byte 5 is not a char boundary. "abc" + one 3-byte
+        // character (bytes 3..6) puts byte 5 inside it.
+        let url = "abc\u{20AC}tail";
+        assert!(!url.is_char_boundary(5));
+        assert_eq!(url_for_log(url), url);
+        assert_eq!(url_for_log("DATA:text/html,x"), "data: URL (16 bytes)");
+    }
     const MAIN: &str = include_str!("main.rs");
     const REPORT: &str = include_str!("ui/report.html");
 
