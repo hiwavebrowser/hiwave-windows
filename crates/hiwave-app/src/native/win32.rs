@@ -2988,28 +2988,40 @@ mod script_navigation_tests {
 
     /// A page whose first script leaves, then adds an image the server holds for 2 s.
     const LEAVES: &str = "<html><body><p>leaving</p><script>location.href = '/next';</script><script>var i = document.createElement('img'); i.src = '/slow.png'; document.body.appendChild(i);</script></body></html>";
-    const STAYS: &str = "<html><body><p>staying</p><script>var i = document.createElement('img'); i.src = '/slow.png'; document.body.appendChild(i);</script></body></html>";
+    const STAYS: &str = "<html><body><p>staying</p><script>var i = document.createElement('img'); i.src = '/slowstay.png'; document.body.appendChild(i);</script></body></html>";
 
-    /// Five pages, four left while loading: each leaves within a second without asking for
-    /// its slow image, and the last one stays and does fetch it.
+    /// Five pages, four left while loading: each leaves without asking for its slow image, and the
+    /// last one stays and does fetch its own.
+    ///
+    /// The signal is "did not wait for the slow image": that image answers after 10 s, and a
+    /// leaving page must come back in under 5 s (half of it) and must not have requested it at
+    /// all. The old bound (1 s) measured the machine as much as the engine: the full native test
+    /// run executes tests in parallel, and CI saw 1.67 s.
     #[test]
     fn four_pages_left_mid_load_leave_at_once_and_the_fifth_finishes() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let slow_hits = Arc::new(AtomicUsize::new(0));
         let hits = slow_hits.clone();
+        let stay_count = Arc::new(AtomicUsize::new(0));
+        let stay_hits = stay_count.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let hits = hits.clone();
+                let stay_hits = stay_hits.clone();
                 std::thread::spawn(move || {
                     let mut stream = stream;
                     let mut buf = [0u8; 2048];
                     let n = stream.read(&mut buf).unwrap_or(0);
                     let req = String::from_utf8_lossy(&buf[..n]).to_string();
                     let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
-                    let (ctype, body): (&str, Vec<u8>) = if path.starts_with("/slow") {
-                        hits.fetch_add(1, Ordering::SeqCst);
+                    let (ctype, body): (&str, Vec<u8>) = if path.starts_with("/slowstay") {
+                        stay_hits.fetch_add(1, Ordering::SeqCst);
                         std::thread::sleep(Duration::from_secs(2));
+                        ("image/png", Vec::new())
+                    } else if path.starts_with("/slow") {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_secs(10));
                         ("image/png", Vec::new())
                     } else if path.starts_with("/stay") {
                         ("text/html", STAYS.as_bytes().to_vec())
@@ -3035,7 +3047,11 @@ mod script_navigation_tests {
             let url = url::Url::parse(&format!("http://127.0.0.1:{port}/leave{page}")).unwrap();
             let started = Instant::now();
             rt.block_on(engine.load_url(view, url)).expect("load");
-            assert!(started.elapsed() < Duration::from_secs(1), "page {page} took {:?}", started.elapsed());
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "page {page} took {:?}: it waited for an image that answers after 10 s",
+                started.elapsed()
+            );
             assert!(engine.take_script_navigation(view).is_some_and(|u| u.ends_with("/next")), "page {page} asked to leave");
         }
         assert_eq!(slow_hits.load(Ordering::SeqCst), 0, "no left page asked for its image");
@@ -3046,6 +3062,7 @@ mod script_navigation_tests {
         let url = url::Url::parse(&format!("http://127.0.0.1:{port}/stay")).unwrap();
         rt.block_on(engine.load_url(view, url)).expect("load");
         assert_eq!(engine.take_script_navigation(view), None);
-        assert_eq!(slow_hits.load(Ordering::SeqCst), 1, "the page that stayed fetched its image");
+        assert_eq!(stay_count.load(Ordering::SeqCst), 1, "the page that stayed fetched its image");
+        assert_eq!(slow_hits.load(Ordering::SeqCst), 0, "and still no left page asked for its image");
     }
 }
