@@ -80,3 +80,5 @@ tokio = { version = "1.42", features = ["rt", "time", "sync"], optional = true }
 # Without this, `cargo test` fails to compile in every feature config that
 # doesn't happen to pull wry's http re-export into scope.
 http = "1.2"
+# The native shell's engine-builder tests load pages into headless views.
+rustkit-engine = { workspace = true, features = ["headless"] }

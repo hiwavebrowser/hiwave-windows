@@ -2359,6 +2359,11 @@ fn engine_builder(shield: &Arc<crate::shield_adapter::ShieldInterceptHandler>) -
         .cookies_enabled(true)
         .script_budget_ms(script_budget_ms())
         .interrupt_scripts_at_budget(true)
+        // The event loop loads what a page's script asks for (`take_script_navigation`), so a
+        // page that has asked to leave is not kept waiting for images its scripts added, and
+        // its queued fetches are not sent (LAT17). Without this the engine's leave-early
+        // branches never fire: macOS sets it (webview_rustkit.rs), this builder did not.
+        .follows_script_navigation(true)
         .request_interceptor(interceptor)
 }
 
@@ -2795,5 +2800,88 @@ mod chrome_message_tests {
     #[test]
     fn a_key_up_is_passed_on() {
         assert_eq!(key_action(&KeyEvent::new(KeyEventType::KeyUp, KeyCode::KeyA, Modifiers::default())), KeyAction::Pass);
+    }
+}
+
+#[cfg(test)]
+mod script_navigation_tests {
+    use super::engine_builder;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn shield() -> Arc<crate::shield_adapter::ShieldInterceptHandler> {
+        Arc::new(crate::shield_adapter::ShieldInterceptHandler::new())
+    }
+
+    #[test]
+    fn the_native_builder_follows_a_pages_own_navigation() {
+        assert!(engine_builder(&shield()).config().follows_script_navigation);
+        assert!(!rustkit_engine::EngineConfig::default().follows_script_navigation);
+    }
+
+    /// A page whose first script leaves, then adds an image the server holds for 2 s.
+    const LEAVES: &str = "<html><body><p>leaving</p><script>location.href = '/next';</script><script>var i = document.createElement('img'); i.src = '/slow.png'; document.body.appendChild(i);</script></body></html>";
+    const STAYS: &str = "<html><body><p>staying</p><script>var i = document.createElement('img'); i.src = '/slow.png'; document.body.appendChild(i);</script></body></html>";
+
+    /// Five pages, four left while loading: each leaves within a second without asking for
+    /// its slow image, and the last one stays and does fetch it.
+    #[test]
+    fn four_pages_left_mid_load_leave_at_once_and_the_fifth_finishes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let slow_hits = Arc::new(AtomicUsize::new(0));
+        let hits = slow_hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let hits = hits.clone();
+                std::thread::spawn(move || {
+                    let mut stream = stream;
+                    let mut buf = [0u8; 2048];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let (ctype, body): (&str, Vec<u8>) = if path.starts_with("/slow") {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_secs(2));
+                        ("image/png", Vec::new())
+                    } else if path.starts_with("/stay") {
+                        ("text/html", STAYS.as_bytes().to_vec())
+                    } else {
+                        ("text/html", LEAVES.as_bytes().to_vec())
+                    };
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&body);
+                });
+            }
+        });
+
+        let mut engine = engine_builder(&shield()).build().expect("engine");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        for page in 0..4 {
+            let view = engine
+                .create_headless_view(rustkit_viewhost::Bounds { x: 0, y: 0, width: 200, height: 100 })
+                .expect("view");
+            let url = url::Url::parse(&format!("http://127.0.0.1:{port}/leave{page}")).unwrap();
+            let started = Instant::now();
+            rt.block_on(engine.load_url(view, url)).expect("load");
+            assert!(started.elapsed() < Duration::from_secs(1), "page {page} took {:?}", started.elapsed());
+            assert!(engine.take_script_navigation(view).is_some_and(|u| u.ends_with("/next")), "page {page} asked to leave");
+        }
+        assert_eq!(slow_hits.load(Ordering::SeqCst), 0, "no left page asked for its image");
+
+        let view = engine
+            .create_headless_view(rustkit_viewhost::Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        let url = url::Url::parse(&format!("http://127.0.0.1:{port}/stay")).unwrap();
+        rt.block_on(engine.load_url(view, url)).expect("load");
+        assert_eq!(engine.take_script_navigation(view), None);
+        assert_eq!(slow_hits.load(Ordering::SeqCst), 1, "the page that stayed fetched its image");
     }
 }
