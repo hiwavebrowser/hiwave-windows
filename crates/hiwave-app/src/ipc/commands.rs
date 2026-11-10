@@ -246,8 +246,9 @@ pub fn handle_message(state: &Arc<Mutex<AppState>>, message: IpcMessage) -> IpcR
             // This is handled in main.rs via UserEvent
             IpcResponse::success(serde_json::json!({ "action": "trigger_autofill" }))
         }
-        IpcMessage::GetCredentialsForAutofill { ref domain } => {
-            handle_get_credentials_for_autofill(state, domain)
+        // Autofill hardening: nothing is returned on this route.
+        IpcMessage::GetCredentialsForAutofill { .. } => {
+            IpcResponse::error("Autofill is unavailable on this route")
         }
 
         // UI shortcuts (handled via main.rs UserEvents)
@@ -262,40 +263,6 @@ pub fn handle_message(state: &Arc<Mutex<AppState>>, message: IpcMessage) -> IpcR
         IpcMessage::ActivateTabByIndex { .. } => {
             IpcResponse::success(serde_json::json!({ "action": "activate_tab_by_index" }))
         }
-    }
-}
-
-fn handle_get_credentials_for_autofill(state: &Arc<Mutex<AppState>>, domain: &str) -> IpcResponse {
-    let state = state.lock().unwrap();
-
-    if !state.vault.is_unlocked() {
-        return IpcResponse::error("Vault is locked");
-    }
-
-    // Create a URL from the domain to use the vault's get_credentials
-    let url_string = if domain.starts_with("http://") || domain.starts_with("https://") {
-        domain.to_string()
-    } else {
-        format!("https://{}", domain)
-    };
-
-    match Url::parse(&url_string) {
-        Ok(url) => match state.vault.get_credentials(&url) {
-            Ok(credentials) => {
-                let autofill_creds: Vec<super::AutofillCredential> = credentials
-                    .iter()
-                    .map(|c| super::AutofillCredential {
-                        id: c.id,
-                        domain: c.url.clone(),
-                        username: c.username.clone(),
-                        password: c.password.clone(),
-                    })
-                    .collect();
-                IpcResponse::success(autofill_creds)
-            }
-            Err(e) => IpcResponse::error(format!("Failed to get credentials: {}", e)),
-        },
-        Err(e) => IpcResponse::error(format!("Invalid domain: {}", e)),
     }
 }
 

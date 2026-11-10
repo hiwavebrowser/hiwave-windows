@@ -56,6 +56,7 @@ const SIDEBAR_WIDTH: f64 = 220.0;
 
 // Core modules (needed by both modes)
 mod import;
+mod autofill_guard;
 mod content_ipc_guard;
 mod state;
 
@@ -323,9 +324,6 @@ enum UserEvent {
     },
     // Autofill
     TriggerAutofill,
-    SendAutofillCredentials {
-        credentials_json: String,
-    },
     // Vault settings events (from settings webview)
     GetVaultStatus,
     UnlockVault(String),
@@ -1500,7 +1498,11 @@ fn main() {
         })
         .with_ipc_handler(move |message| {
             let body = message.body();
-            info!("Content IPC: {}", body);
+            // The shape only: a content page's message is not logged (it may carry anything).
+            let cmd = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("cmd").and_then(|c| c.as_str()).map(str::to_string));
+            info!(cmd = cmd.as_deref().unwrap_or("?"), len = body.len(), "Content IPC");
             if let Ok(msg) = serde_json::from_str::<IpcMessage>(body) {
                 match &msg {
                     IpcMessage::GoBack => {
@@ -1545,27 +1547,9 @@ fn main() {
                         let _ = content_proxy_ipc.send_event(UserEvent::TabAudioStateChanged { playing: *playing });
                     }
                     IpcMessage::GetCredentialsForAutofill { ref domain } => {
-                        info!("Getting credentials for autofill: {}", domain);
-                        let response = ipc::commands::handle_message(&content_state_ipc, msg.clone());
-                        info!("Autofill response: {:?}", response);
-                        match response {
-                            ipc::IpcResponse::Success { data } => {
-                                let json = serde_json::to_string(&data).unwrap_or_else(|_| "[]".to_string());
-                                info!("Sending {} credentials to page", json.len());
-                                let _ = content_proxy_ipc.send_event(UserEvent::SendAutofillCredentials {
-                                    credentials_json: json,
-                                });
-                            }
-                            ipc::IpcResponse::Error { ref message } => {
-                                warn!("Autofill error: {}", message);
-                                // Show error alert on content page
-                                let script = format!(
-                                    "alert('[HiWave Autofill] {}');",
-                                    message.replace('\'', "\\'")
-                                );
-                                let _ = content_proxy_ipc.send_event(UserEvent::EvaluateContentScript(script));
-                            }
-                        }
+                        // Autofill hardening: credentials are delivered only for a user-requested
+                        // fill on the page's own origin; nothing is returned on this route.
+                        warn!("Dropped a content-page autofill request");
                     }
                     // Handle focus mode from content (keyboard shortcuts)
                     IpcMessage::ExitFocusMode => {
@@ -3674,15 +3658,6 @@ fn main() {
                         content_for_events.evaluate_script(
                             "if(window.hiwaveAutofill) { hiwaveAutofill.trigger(); }"
                         );
-                    }
-                    UserEvent::SendAutofillCredentials { ref credentials_json } => {
-                        info!("Sending autofill credentials to page");
-                        // Send credentials to the page via window.postMessage
-                        let script = format!(
-                            "window.postMessage({{ type: 'hiwave_autofill_credentials', credentials: {} }}, '*');",
-                            credentials_json
-                        );
-                        content_for_events.evaluate_script(&script);
                     }
                 }
             }
