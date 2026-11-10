@@ -1542,7 +1542,7 @@ fn main() {
                     IpcMessage::GetCredentialsForAutofill { ref domain } => {
                         // Autofill hardening: credentials are delivered only for a user-requested
                         // fill on the page's own origin; nothing is returned on this route.
-                        warn!("Dropped a page-originated autofill request for {}", domain);
+                        warn!("Dropped a content-page autofill request");
                     }
                     // Handle focus mode from content (keyboard shortcuts)
                     IpcMessage::ExitFocusMode => {

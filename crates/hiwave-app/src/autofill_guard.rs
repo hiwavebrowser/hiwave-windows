@@ -1,6 +1,6 @@
-//! Autofill hardening: credentials are delivered only for a user-requested fill on the page's
-//! own origin. These pins read the sources on purpose: the handler lives inside the content
-//! WebView's IPC closure in `main.rs`, which a unit test cannot call.
+//! Autofill hardening: content pages no longer receive credentials. These pins read the sources
+//! on purpose where the handler lives inside the content WebView's IPC closure in `main.rs`,
+//! which a unit test cannot call; the shared dispatcher is called for real.
 
 #[cfg(test)]
 mod tests {
@@ -26,6 +26,21 @@ mod tests {
         assert!(!arm.contains("handle_message"), "the arm must not reach the vault handler:\n{arm}");
         assert!(!arm.contains("SendAutofillCredentials"), "the arm must not deliver credentials:\n{arm}");
         assert!(!arm.contains("EvaluateContentScript"), "the arm must not script the page:\n{arm}");
+    }
+
+    #[test]
+    fn the_shared_dispatcher_returns_no_credentials() {
+        use crate::ipc::{commands::handle_message, IpcMessage, IpcResponse};
+        use crate::state::{AppConfig, AppState};
+        use std::sync::{Arc, Mutex};
+        let dir = std::env::temp_dir().join(format!("hiwave_autofill_guard_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = AppConfig::default();
+        config.data_dir = dir.clone();
+        config.download_dir = dir.join("downloads");
+        let state = Arc::new(Mutex::new(AppState::new(config).expect("state")));
+        let response = handle_message(&state, IpcMessage::GetCredentialsForAutofill { domain: "example.com".to_string() });
+        assert!(matches!(response, IpcResponse::Error { .. }), "the dispatcher must not answer with data: {response:?}");
     }
 
     #[test]
