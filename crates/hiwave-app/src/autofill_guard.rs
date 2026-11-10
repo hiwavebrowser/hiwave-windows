@@ -28,6 +28,16 @@ mod tests {
         assert!(!arm.contains("EvaluateContentScript"), "the arm must not script the page:\n{arm}");
     }
 
+    const COMMANDS: &str = include_str!("ipc/commands.rs");
+
+    #[test]
+    fn the_dispatcher_source_has_no_credentials_handler() {
+        // Present in both builds (the module is compiled out of the native build, its source is not).
+        assert!(!COMMANDS.contains("fn handle_get_credentials_for_autofill"), "the credentials handler is gone");
+        assert!(!COMMANDS.contains("get_credentials("), "nothing in the dispatcher reads credentials from the vault");
+    }
+
+    #[cfg(not(feature = "native-win32"))]
     #[test]
     fn the_shared_dispatcher_returns_no_credentials() {
         use crate::ipc::{commands::handle_message, IpcMessage, IpcResponse};
