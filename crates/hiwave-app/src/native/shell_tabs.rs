@@ -173,15 +173,68 @@ pub fn take_from_shelf(
     id: &str,
     target: Option<hiwave_core::types::WorkspaceId>,
 ) -> Option<(String, hiwave_core::types::WorkspaceId)> {
+    take_from_shelf_undoable(state, id, target).map(|taken| (taken.url, taken.workspace))
+}
+
+/// An item taken off the shelf, with what `put_back_on_shelf` needs to undo it.
+pub struct ShelfTake {
+    pub url: String,
+    pub workspace: hiwave_core::types::WorkspaceId,
+    item: crate::state::ShelfItem,
+    shelf: String,
+    index: usize,
+    previous: Option<hiwave_core::types::WorkspaceId>,
+}
+
+/// `take_from_shelf`, but reversible: when the page then cannot be opened (no view could be
+/// made), `put_back_on_shelf` returns the item to its place and the earlier active workspace.
+pub fn take_from_shelf_undoable(
+    state: &mut AppState,
+    id: &str,
+    target: Option<hiwave_core::types::WorkspaceId>,
+) -> Option<ShelfTake> {
     let (url, workspace) = peek_shelf_item(state, id, target)?;
-    for items in state.shelves.values_mut() {
+    let previous = state.shell.get_active_workspace().map(|w| w.id);
+    let mut taken = None;
+    for (shelf, items) in state.shelves.iter_mut() {
         if let Some(index) = items.iter().position(|item| item.id == id) {
-            items.remove(index);
+            taken = Some((shelf.clone(), index, items.remove(index)));
             break;
         }
     }
+    let (shelf, index, item) = taken?;
     let _ = state.shell.set_active_workspace(workspace);
-    Some((url, workspace))
+    Some(ShelfTake { url, workspace, item, shelf, index, previous })
+}
+
+/// Undo `take_from_shelf_undoable`.
+pub fn put_back_on_shelf(state: &mut AppState, taken: ShelfTake) {
+    let items = state.shelves.entry(taken.shelf).or_default();
+    let at = taken.index.min(items.len());
+    items.insert(at, taken.item);
+    if let Some(previous) = taken.previous {
+        let _ = state.shell.set_active_workspace(previous);
+    }
+}
+
+/// Give each saved tab a view: `open` makes one (`None`: it could not), `label` records that
+/// the view now carries the saved tab. Stops at the first failure, so a view that was not made
+/// is never labelled (that would hand the saved id to whatever view was already active); the
+/// tabs after it stay saved, untouched. Returns the saved tabs that got a view.
+pub fn adopt_each<V: Copy>(
+    saved: &[SavedTab],
+    mut open: impl FnMut() -> Option<V>,
+    mut label: impl FnMut(V, &SavedTab),
+) -> Vec<u64> {
+    let mut adopted = Vec::new();
+    for tab in saved {
+        let Some(view) = open() else {
+            break;
+        };
+        label(view, tab);
+        adopted.push(tab.id);
+    }
+    adopted
 }
 
 /// The file the native shell keeps its workspaces and tabs in. Not `workspace_state.json`:
@@ -189,15 +242,81 @@ pub fn take_from_shelf(
 /// restore nor has any business deleting.
 pub const NATIVE_STATE_FILE: &str = "workspace_state.native.json";
 
-/// Forget every tab the model has. The native shell starts with one fresh tab and cannot
-/// reopen tabs saved by an earlier native session; left in the model they were saved and
-/// reloaded forever. Returns how many were dropped.
+/// The content-thread path (HIWAVE_CONTENT_THREAD=1) restores no tabs, so it keeps its own file:
+/// it can neither reopen the engine-view session nor erase it.
+pub const NATIVE_CT_STATE_FILE: &str = "workspace_state.native-ct.json";
+
+/// The state file for this run of the native shell.
+pub fn state_file(content_thread: bool) -> &'static str {
+    if content_thread {
+        NATIVE_CT_STATE_FILE
+    } else {
+        NATIVE_STATE_FILE
+    }
+}
+
+/// Forget every tab the model has. The content-thread path (HIWAVE_CONTENT_THREAD=1) cannot
+/// reopen saved tabs but still saves its own, so without this each such session would add its
+/// tabs to the native file for ever. Returns how many were dropped.
 pub fn drop_unreopenable_tabs(state: &mut AppState) -> usize {
     let ids: Vec<TabId> = state.shell.list_tabs(None).iter().map(|t| t.id).collect();
     for id in &ids {
         let _ = state.shell.close_tab(*id);
     }
     ids.len()
+}
+
+/// What to do with a saved tab's address when its tab is first shown.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Restore {
+    /// The app's own start page: load the About document.
+    About,
+    /// A page to load, exactly as saved.
+    Page(String),
+    /// Nothing to load (a blank tab, or an address that is not a page).
+    Nothing,
+}
+
+/// A saved address is a `Url` the shell wrote itself, not typed text: it is parsed, never run
+/// through the address bar's resolver (which would turn a `file:` URL into `https://file:///`
+/// or a search). Only http, https and file pages are loaded.
+pub fn restore_action(saved: &str) -> Restore {
+    if saved == "hiwave://about" {
+        return Restore::About;
+    }
+    match url::Url::parse(saved) {
+        Ok(u) if matches!(u.scheme(), "http" | "https" | "file") => Restore::Page(u.to_string()),
+        _ => Restore::Nothing,
+    }
+}
+
+/// A tab in the shared model that this shell has no view for yet (restored from a
+/// previous session).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedTab {
+    pub id: u64,
+    pub url: String,
+}
+
+/// The tabs of `workspace` that are in the shared model but not owned by this shell, in the
+/// workspace's order, and the workspace's own active tab among them.
+pub fn unowned_tabs(
+    state: &AppState,
+    native: &HashSet<u64>,
+    workspace: hiwave_core::types::WorkspaceId,
+) -> (Vec<SavedTab>, Option<u64>) {
+    let Some(ws) = state.shell.get_workspace(workspace) else {
+        return (Vec::new(), None);
+    };
+    let tabs: Vec<SavedTab> = ws
+        .tabs
+        .iter()
+        .filter(|id| !native.contains(&id.0))
+        .filter_map(|id| state.shell.get_tab(*id))
+        .map(|tab| SavedTab { id: tab.id.0, url: tab.url.to_string() })
+        .collect();
+    let active = ws.active_tab.map(|t| t.0).filter(|id| tabs.iter().any(|t| t.id == *id));
+    (tabs, active)
 }
 
 /// Make the workspace that owns tab `id` the active one (the sidebar lists every workspace's
@@ -313,8 +432,8 @@ mod tests {
     }
 
     #[test]
-    fn startup_drops_every_tab_of_the_native_file_and_leaves_no_workspace_entry() {
-        let mut s = state("drop_native_file");
+    fn the_content_thread_path_drops_the_tabs_it_cannot_reopen() {
+        let mut s = state("drop_ct");
         for n in 0..3 {
             saved_tab(&mut s, &format!("https://old{n}.test/"));
         }
@@ -322,6 +441,160 @@ mod tests {
         assert!(s.shell.list_tabs(None).is_empty());
         assert!(s.shell.get_active_workspace().unwrap().tabs.is_empty());
         assert_eq!(drop_unreopenable_tabs(&mut s), 0);
+    }
+
+    #[test]
+    fn a_saved_address_is_parsed_not_typed() {
+        assert_eq!(restore_action("hiwave://about"), Restore::About);
+        assert_eq!(restore_action("https://a.test/x?y=1"), Restore::Page("https://a.test/x?y=1".into()));
+        assert_eq!(restore_action("http://localhost:8765/a.html"), Restore::Page("http://localhost:8765/a.html".into()));
+        // The typed-address resolver would turn this into https://file:///... or a search.
+        assert_eq!(restore_action("file:///C:/docs/a.html"), Restore::Page("file:///C:/docs/a.html".into()));
+        for nothing in ["about:blank", "data:text/html,hi", "javascript:alert(1)", "hiwave://settings", "not a url", ""] {
+            assert_eq!(restore_action(nothing), Restore::Nothing, "{nothing:?}");
+        }
+    }
+
+    #[test]
+    fn the_content_thread_path_never_touches_the_engine_view_session_file() {
+        assert_ne!(state_file(true), state_file(false));
+        assert_ne!(state_file(true), "workspace_state.json");
+        let mut s = state("ct_file");
+        s.workspace_state_file = state_file(false).to_string();
+        saved_tab(&mut s, "https://kept.test/");
+        s.save_workspace_state().unwrap();
+        let kept = std::fs::read(s.config.data_dir.join(state_file(false))).unwrap();
+        // A content-thread run drops its own tabs and saves to its own file.
+        s.workspace_state_file = state_file(true).to_string();
+        assert!(drop_unreopenable_tabs(&mut s) >= 1);
+        s.save_workspace_state().unwrap();
+        assert_eq!(std::fs::read(s.config.data_dir.join(state_file(false))).unwrap(), kept);
+    }
+
+    #[test]
+    fn a_saved_session_round_trips_and_nothing_is_wiped_before_it_is_adopted() {
+        let dir = std::env::temp_dir().join(format!("hiwave_shell_tabs_roundtrip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cfg = || {
+            let mut c = AppConfig::default();
+            c.data_dir = dir.clone();
+            c.download_dir = dir.join("downloads");
+            c
+        };
+        let mut first = AppState::new(cfg()).unwrap();
+        first.workspace_state_file = NATIVE_STATE_FILE.to_string();
+        let mut mirrored = HashSet::new();
+        let (a, b, c) = (alloc_tab_id(), alloc_tab_id(), alloc_tab_id());
+        reconcile(&mut first, &mut mirrored, &[tab(a, "https://a.test/", "A", false), tab(b, "https://b.test/", "B", true)]);
+        let default_ws = first.shell.get_active_workspace().map(|w| w.id).unwrap();
+        let work = first.shell.create_workspace("Work".to_string());
+        first.shell.set_active_workspace(work).unwrap();
+        reconcile(&mut first, &mut mirrored, &[tab(a, "https://a.test/", "A", false), tab(b, "https://b.test/", "B", false), tab(c, "https://c.test/", "C", true)]);
+        first.save_workspace_state().unwrap();
+
+        // The next run loads the file.
+        let mut next = AppState::new(cfg()).unwrap();
+        next.workspace_state_file = NATIVE_STATE_FILE.to_string();
+        assert!(next.load_workspace_state().unwrap(), "the file loads");
+        let names: Vec<String> = next.shell.list_workspaces().iter().map(|w| w.name.clone()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        let ws_of = |s: &AppState, n: &str| s.shell.list_workspaces().iter().find(|w| w.name == n).map(|w| w.id).unwrap();
+        let (d2, w2) = (ws_of(&next, "Default"), ws_of(&next, "Work"));
+        let _ = default_ws;
+
+        let none = HashSet::new();
+        let (saved, active) = unowned_tabs(&next, &none, d2);
+        assert_eq!(saved.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://a.test/", "https://b.test/"]);
+        assert_eq!(active, saved.get(1).map(|t| t.id), "the active tab comes back active");
+        let (saved_w, _) = unowned_tabs(&next, &none, w2);
+        assert_eq!(saved_w.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://c.test/"]);
+
+        // Nothing is wiped before it is adopted: a shell that owns none of them reconciles an
+        // empty (or start-page-only) strip and every saved tab is still there to save back.
+        let mut mirrored = HashSet::new();
+        let start = alloc_tab_id();
+        reconcile(&mut next, &mut mirrored, &[tab(start, "about:blank", "New Tab", true)]);
+        next.save_workspace_state().unwrap();
+        assert_eq!(unowned_tabs(&next, &mirrored, d2).0.len(), 2);
+        assert_eq!(unowned_tabs(&next, &mirrored, w2).0.len(), 1);
+
+        // Adopting a tab and then closing it is a user close; its siblings are untouched.
+        let adopted = unowned_tabs(&next, &mirrored, d2).0[0].id;
+        mirrored.insert(adopted);
+        reconcile(&mut next, &mut mirrored, &[tab(start, "about:blank", "New Tab", true)]);
+        assert!(next.shell.get_tab(TabId(adopted)).is_none(), "the adopted-then-closed tab is gone");
+        assert_eq!(unowned_tabs(&next, &mirrored, d2).0.len(), 1, "its sibling stays saved");
+        assert_eq!(unowned_tabs(&next, &mirrored, w2).0.len(), 1, "the other workspace stays saved");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_view_creation_labels_nothing_and_leaves_the_rest_saved() {
+        let saved: Vec<SavedTab> = (1..=4).map(|id| SavedTab { id, url: format!("https://t{id}.test/") }).collect();
+        let mut made = 0;
+        let mut labelled: Vec<(u32, u64)> = Vec::new();
+        // The third creation fails.
+        let adopted = adopt_each(
+            &saved,
+            || {
+                made += 1;
+                if made == 3 { None } else { Some(made) }
+            },
+            |view, tab| labelled.push((view, tab.id)),
+        );
+        assert_eq!(adopted, vec![1, 2], "only the tabs that got a view");
+        assert_eq!(labelled, vec![(1, 1), (2, 2)], "the failed creation labelled no view");
+        assert_eq!(made, 3, "it stops at the first failure");
+
+        // Every creation fails (no window): nothing is labelled, nothing is adopted.
+        let mut labelled = 0;
+        assert!(adopt_each(&saved, || None::<u32>, |_, _| labelled += 1).is_empty());
+        assert_eq!(labelled, 0);
+    }
+
+    #[test]
+    fn a_shelf_item_that_cannot_be_opened_goes_back_where_it_was() {
+        let mut s = state("shelf_undo");
+        let mut mirrored = HashSet::new();
+        let (a, b) = (alloc_tab_id(), alloc_tab_id());
+        reconcile(&mut s, &mut mirrored, &[tab(a, "https://a.test/", "A", false), tab(b, "https://b.test/", "B", true)]);
+        let first = s.add_to_shelf(TabId(a)).unwrap().unwrap();
+        let second = s.add_to_shelf(TabId(b)).unwrap().unwrap();
+        let work = s.shell.create_workspace("Work".to_string());
+        s.shell.set_active_workspace(work).unwrap();
+        let before: Vec<String> = s.shelf_items_all().iter().map(|i| i.id.clone()).collect();
+
+        let taken = take_from_shelf_undoable(&mut s, &first.id, None).expect("on the shelf");
+        assert_eq!(s.shelf_count_all(), 1);
+        assert_ne!(s.shell.get_active_workspace().map(|w| w.id), Some(work), "the item's workspace is active");
+        // No view could be made: undo.
+        put_back_on_shelf(&mut s, taken);
+        assert_eq!(s.shelf_count_all(), 2, "the item is back");
+        let after: Vec<String> = s.shelf_items_all().iter().map(|i| i.id.clone()).collect();
+        assert_eq!(after, before);
+        assert!(after.contains(&second.id));
+        assert_eq!(s.shell.get_active_workspace().map(|w| w.id), Some(work), "the earlier workspace is active again");
+        let default_items = s.shelf_items_for_workspace("Default");
+        assert_eq!(default_items.first().map(|i| i.id.clone()), Some(first.id), "and in its place");
+    }
+
+    #[test]
+    fn saving_the_native_session_leaves_an_existing_default_file_byte_for_byte() {
+        let mut s = state("default_bytes");
+        std::fs::create_dir_all(&s.config.data_dir).unwrap();
+        let default = s.config.data_dir.join("workspace_state.json");
+        let bytes = b"{\"shell\":{\"workspaces\":[],\"active_workspace_index\":0},\"note\":\"the WebView2 session\"}".to_vec();
+        std::fs::write(&default, &bytes).unwrap();
+        s.workspace_state_file = NATIVE_STATE_FILE.to_string();
+        let mut mirrored = HashSet::new();
+        let id = alloc_tab_id();
+        reconcile(&mut s, &mut mirrored, &[tab(id, "https://n.test/", "N", true)]);
+        s.save_workspace_state().unwrap();
+        // The content-thread run, its drop and its save: the default file is still untouched.
+        s.workspace_state_file = state_file(true).to_string();
+        drop_unreopenable_tabs(&mut s);
+        s.save_workspace_state().unwrap();
+        assert_eq!(std::fs::read(&default).unwrap(), bytes);
     }
 
     #[test]
@@ -449,6 +722,41 @@ mod tests {
         let no_active = WorkspaceView { visible: vec![4, 5], active: None };
         assert_eq!(after_switch(&no_active, None), AfterSwitch::Activate(4));
         assert_eq!(after_switch(&WorkspaceView::default(), Some(9)), AfterSwitch::NewTab);
+    }
+
+    #[test]
+    fn saved_tabs_are_the_workspaces_tabs_this_shell_does_not_own() {
+        let mut s = state("saved");
+        let ws = s.shell.get_active_workspace().map(|w| w.id).unwrap();
+        let mut ids = Vec::new();
+        for url in ["https://one.test/", "https://two.test/"] {
+            let id = TabId::new();
+            ids.push(id);
+            s.shell
+                .create_tab(TabInfo {
+                    id,
+                    url: url::Url::parse(url).unwrap(),
+                    title: Some("T".into()),
+                    favicon: None,
+                    workspace_id: ws,
+                    suspended: false,
+                    loading: false,
+                    locked: false,
+                    last_visited: None,
+                })
+                .unwrap();
+        }
+        s.shell.set_active_tab(ids[1]).unwrap();
+
+        let (saved, active) = unowned_tabs(&s, &HashSet::new(), ws);
+        assert_eq!(saved.iter().map(|t| t.url.as_str()).collect::<Vec<_>>(), ["https://one.test/", "https://two.test/"]);
+        assert_eq!(active, Some(ids[1].0));
+
+        // Once the shell owns one, it is no longer "saved".
+        let owned: HashSet<u64> = [ids[0].0].into_iter().collect();
+        let (saved, _) = unowned_tabs(&s, &owned, ws);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, ids[1].0);
     }
 
     #[test]

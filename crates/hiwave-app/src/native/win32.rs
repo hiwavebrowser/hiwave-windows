@@ -140,6 +140,9 @@ pub struct NativeBrowser {
     needs_settle: bool,
     /// The workspaces script the chrome was last sent, so it is sent again only when it changes.
     last_workspaces: String,
+    /// Restored tabs that have a view but have not been loaded: the page is loaded the first
+    /// time the tab is shown (the WebView2 shell restores tabs suspended too).
+    pending_load: HashMap<u64, String>,
     /// Which shelf the chrome last asked for (`"workspace"` or `"all"`).
     shelf_scope: String,
     /// The view that last had the keyboard focus. Win32 can leave focus on the
@@ -189,15 +192,19 @@ impl NativeBrowser {
         // Initialize app state
         // The native shell keeps its own workspace file: it cannot restore the default build's
         // tabs, and must not delete them either.
-        let mut state = AppState::with_workspace_state_file(shell_tabs::NATIVE_STATE_FILE)
+        let mut state = AppState::with_workspace_state_file(shell_tabs::state_file(content_page::enabled()))
             .map_err(|e| format!("Failed to initialize app state: {}", e))?;
-        // Tabs an earlier native session saved cannot be reopened here: drop them instead of
-        // letting them pile up in the file every run.
-        let dropped = shell_tabs::drop_unreopenable_tabs(&mut state);
-        if dropped > 0 {
-            info!(dropped, "Dropped tabs saved by an earlier native session");
-            if let Err(e) = state.save_workspace_state() {
-                warn!(error = %e, "Failed to persist workspace state");
+        // Tabs an earlier native session saved are reopened by `restore_session` once the
+        // views exist (their pages load when first shown). The content-thread path (an
+        // opt-in experiment) restores nothing but still saves its tabs, so it drops them
+        // instead, or every such session would add its tabs to the file for ever.
+        if content_page::enabled() {
+            let dropped = shell_tabs::drop_unreopenable_tabs(&mut state);
+            if dropped > 0 {
+                info!(dropped, "Dropped tabs saved by an earlier native session (content-thread path)");
+                if let Err(e) = state.save_workspace_state() {
+                    warn!(error = %e, "Failed to persist workspace state");
+                }
             }
         }
         let app_state = Arc::new(Mutex::new(state));
@@ -225,6 +232,7 @@ impl NativeBrowser {
             mirrored_tabs: std::collections::HashSet::new(),
             needs_settle: false,
             last_workspaces: String::new(),
+            pending_load: HashMap::new(),
             shelf_scope: "workspace".to_string(),
             last_focus: std::cell::Cell::new(None),
             chrome_ready: false,
@@ -281,6 +289,7 @@ impl NativeBrowser {
 
         // Load initial content
         self.load_initial_content()?;
+        self.restore_session();
 
         info!("Native browser initialized");
         Ok(())
@@ -620,15 +629,25 @@ impl NativeBrowser {
             shell_tabs::RestoreKind::Page | shell_tabs::RestoreKind::StartPage => {}
         }
         let taken = match self.app_state.lock() {
-            Ok(mut state) => shell_tabs::take_from_shelf(&mut state, item, target),
+            Ok(mut state) => shell_tabs::take_from_shelf_undoable(&mut state, item, target),
             Err(_) => None,
         };
-        let Some((url, _)) = taken else {
+        let Some(taken) = taken else {
             return;
         };
-        // The workspace is active now; the new tab lands in it on the next turn.
-        self.new_tab();
-        if kind == shell_tabs::RestoreKind::Page {
+        let (url, workspace) = (taken.url.clone(), taken.workspace);
+        // The workspace is active now. Tabs it kept from an earlier session get their views
+        // first (they load when shown), so the restore never leaves one blank behind it.
+        self.adopt_workspace_tabs(workspace);
+        // The new tab lands in it on the next turn. When no tab could be made, the item goes
+        // back on the shelf: navigating would load the page over whichever tab is showing.
+        if !self.open_tab_checked() {
+            warn!(url, "Shelf restore could not open a tab; the item stays on the shelf");
+            if let Ok(mut state) = self.app_state.lock() {
+                shell_tabs::put_back_on_shelf(&mut state, taken);
+            }
+            self.needs_settle = true;
+        } else if kind == shell_tabs::RestoreKind::Page {
             self.navigate(&url);
         }
         self.save_and_sync_workspaces();
@@ -819,6 +838,10 @@ impl NativeBrowser {
         self.views.insert(ViewType::Content, switch.current);
         self.engine_view_types
             .insert(switch.current, ViewType::Content);
+        // A restored tab is loaded the first time it is shown.
+        if let Some(url) = self.tab_ids.get(&switch.current).and_then(|id| self.pending_load.remove(id)) {
+            self.load_restored(&url);
+        }
         // Focus follows the active tab, or the next shortcut goes to a window
         // that is no longer showing.
         match self.engine.borrow().focus_view(switch.current) {
@@ -829,6 +852,23 @@ impl NativeBrowser {
 
     /// Open a new tab and select it.
     fn new_tab(&mut self) {
+        self.open_tab();
+    }
+
+    /// Open a new tab and select it; whether a tab was made (either path). Callers that then
+    /// navigate must check this: a failed creation leaves the old tab active, and navigating
+    /// would load the page over it.
+    fn open_tab_checked(&mut self) -> bool {
+        let count = |s: &Self| s.page_tabs.as_ref().map(|t| t.count()).or_else(|| s.tabs.as_ref().map(|t| t.count()));
+        let before = count(self);
+        self.open_tab();
+        count(self) > before
+    }
+
+    /// Open a new tab and select it; the view it created. `None` when no view was made
+    /// (the content-thread path has no engine view, and a creation can fail): callers that
+    /// label or navigate the new tab must not do it to whatever tab was already active.
+    fn open_tab(&mut self) -> Option<EngineViewId> {
         if self.page_tabs.is_some() {
             match self.spawn_page() {
                 Ok(id) => {
@@ -841,11 +881,11 @@ impl NativeBrowser {
                 }
                 Err(e) => error!(error = %e, "Failed to start a page for the new tab"),
             }
-            return;
+            return None;
         }
         let Some(parent) = self.viewhost.get_main_hwnd() else {
             warn!("No main window — cannot open a tab");
-            return;
+            return None;
         };
         let bounds = to_bounds(self.layout().content);
         let created = self.engine.borrow_mut().create_view(parent, bounds);
@@ -856,17 +896,18 @@ impl NativeBrowser {
             Ok(v) => v,
             Err(e) => {
                 error!(error = %e, "Failed to create a view for the new tab");
-                return;
+                return None;
             }
         };
         let Some(tabs) = self.tabs.as_mut() else {
             warn!("Tab model not initialised — cannot open a tab");
-            return;
+            return None;
         };
         let switch = tabs.push(view);
         let count = tabs.count();
         self.apply_switch(switch);
         info!(?view, count, "New tab");
+        Some(view)
     }
 
     /// Close the active tab.
@@ -1455,6 +1496,94 @@ impl NativeBrowser {
         *self.tab_ids.entry(view).or_insert_with(shell_tabs::alloc_tab_id)
     }
 
+    /// Open a view for each tab of `workspace` that is in the shared model but not here
+    /// (restored from a previous session), under the id the model already has. Pages load
+    /// when their tab is first shown. Returns the workspace's own active tab, if restored.
+    /// The engine-view path only: the content-thread path (an experiment) restores nothing.
+    fn adopt_workspace_tabs(&mut self, workspace: hiwave_core::types::WorkspaceId) -> Option<u64> {
+        if self.page_tabs.is_some() {
+            return None;
+        }
+        let (saved, active) = match self.app_state.lock() {
+            Ok(state) => shell_tabs::unowned_tabs(&state, &self.mirrored_tabs, workspace),
+            Err(_) => return None,
+        };
+        let mut opened: Vec<(EngineViewId, u64, String)> = Vec::new();
+        let adopted = shell_tabs::adopt_each(
+            &saved,
+            || {
+                let view = self.open_tab();
+                if view.is_none() {
+                    warn!("Could not open a view for a saved tab; it and the rest stay saved");
+                }
+                view
+            },
+            |view, tab| opened.push((view, tab.id, tab.url.clone())),
+        );
+        for (view, id, url) in opened {
+            self.tab_ids.insert(view, id);
+            self.mirrored_tabs.insert(id);
+            self.pending_load.insert(id, url);
+        }
+        if !adopted.is_empty() {
+            info!(opened = adopted.len(), saved = saved.len(), "Restored tabs opened");
+        }
+        // Only a tab that got a view can be the one to show.
+        active.filter(|id| adopted.contains(id)).or_else(|| adopted.first().copied())
+    }
+
+    /// Load a restored tab's page into the content view that is showing. The saved address
+    /// is parsed (`shell_tabs::restore_action`), never run through the typed-address
+    /// resolver; the app's own start page is the About document.
+    fn load_restored(&self, saved: &str) {
+        let Some(&content_id) = self.views.get(&ViewType::Content) else {
+            return;
+        };
+        match shell_tabs::restore_action(saved) {
+            shell_tabs::Restore::About => {
+                if let Err(e) = self.engine.borrow_mut().load_html(content_id, ABOUT_HTML) {
+                    warn!(error = %e, "Failed to load the About page into a restored tab");
+                }
+            }
+            // `navigate_view` still checks the blocklist.
+            shell_tabs::Restore::Page(url) => self.navigate_view(content_id, &url),
+            shell_tabs::Restore::Nothing => {}
+        }
+    }
+
+    /// Load the active tab's page if it is a restored tab that has not loaded yet. Showing a
+    /// tab loads it (see `apply_switch`), but activating the tab that is already showing is a
+    /// no-op, so a tab made active by being opened has to be loaded by hand.
+    fn load_pending_for_active(&mut self) {
+        let Some(id) = self.active_native_id() else {
+            return;
+        };
+        if let Some(url) = self.pending_load.remove(&id) {
+            self.load_restored(&url);
+        }
+    }
+
+    /// Reopen the previous session's tabs in the active workspace: the first start page tab
+    /// is dropped when there is something to restore, and the workspace's own active tab is
+    /// shown.
+    fn restore_session(&mut self) {
+        let Some(workspace) = self.app_state.lock().ok().and_then(|s| s.shell.get_active_workspace().map(|w| w.id)) else {
+            return;
+        };
+        let start_view = self.tabs.as_ref().map(|t| t.active_view());
+        let Some(active) = self.adopt_workspace_tabs(workspace) else {
+            return;
+        };
+        if let Some(view) = start_view {
+            let start_id = self.tab_id_for(view);
+            self.close_tab_by_id(start_id);
+        }
+        if let Some(index) = self.tab_index_for_id(active) {
+            self.activate_tab_by_index(index);
+        }
+        self.load_pending_for_active();
+    }
+
     /// The id the chrome knows the active tab by.
     fn active_native_id(&self) -> Option<u64> {
         if let Some(tabs) = self.page_tabs.as_ref() {
@@ -1467,6 +1596,16 @@ impl NativeBrowser {
     /// After the active workspace changed, or a tab left it: make the active tab one the
     /// workspace shows (its own active tab, else its first), or open a new tab in it.
     fn settle_workspace(&mut self) {
+        // Tabs this workspace kept from an earlier session get their views first, so every way
+        // of switching to it (the sidebar, deleting the active workspace, a click on another
+        // workspace's tab) reopens them, not only the activate_workspace command.
+        let active_ws = self.app_state.lock().ok().and_then(|s| s.shell.get_active_workspace().map(|w| w.id));
+        if let Some(own) = active_ws.and_then(|ws| self.adopt_workspace_tabs(ws)) {
+            if let Some(index) = self.tab_index_for_id(own) {
+                self.activate_tab_by_index(index);
+            }
+            self.load_pending_for_active();
+        }
         let view = match self.app_state.lock() {
             Ok(state) => shell_tabs::active_workspace_view(&state, &self.mirrored_tabs),
             Err(_) => return,
@@ -1498,6 +1637,9 @@ impl NativeBrowser {
         let Some(index) = self.tab_index_for_id(id) else {
             return;
         };
+        // A restored tab that was never shown is closed unloaded: activating it below must not
+        // load its page first (a blocking load on the UI thread, just to close it).
+        self.pending_load.remove(&id);
         let active = self.tabs.as_ref().map(|t| t.active_index());
         if active != Some(index) {
             // Closing is defined on the active tab: make it the active one first.
@@ -1648,6 +1790,19 @@ impl NativeBrowser {
     /// Keep the shared `BrowserShell` in step with this shell's tabs, save it when it
     /// changed, and take each tab's lock flag from it (the lock lives in the model).
     fn mirror_tabs(&mut self, rows: &mut Vec<TabRow>) {
+        let Ok(mut state) = self.app_state.lock() else {
+            return;
+        };
+        // A restored tab that has not loaded yet shows a blank page: its saved address and
+        // title stay as they are (and are what the strip shows) until it is first shown.
+        for row in rows.iter_mut() {
+            if let Some(url) = self.pending_load.get(&row.id) {
+                row.url = url.clone();
+                if let Some(saved) = state.shell.get_tab(hiwave_core::types::TabId(row.id)) {
+                    row.title = saved.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| url.clone());
+                }
+            }
+        }
         let tabs: Vec<shell_tabs::NativeTab> = rows
             .iter()
             .map(|r| shell_tabs::NativeTab {
@@ -1657,9 +1812,6 @@ impl NativeBrowser {
                 active: r.active,
             })
             .collect();
-        let Ok(mut state) = self.app_state.lock() else {
-            return;
-        };
         let done = shell_tabs::reconcile(&mut state, &mut self.mirrored_tabs, &tabs);
         if done.changed {
             if let Err(e) = state.save_workspace_state() {
@@ -2031,11 +2183,15 @@ impl NativeBrowser {
             // sync sends them all.
             "get_tabs" => self.chrome_synced = None,
             "create_tab" => {
-                self.new_tab();
-                if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
-                    if !url.is_empty() {
-                        self.navigate(url);
+                // A failed creation leaves the old tab active: navigating would load over it.
+                if self.open_tab_checked() {
+                    if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                        if !url.is_empty() {
+                            self.navigate(url);
+                        }
                     }
+                } else {
+                    warn!("create_tab: no tab could be opened");
                 }
             }
             "close_tab" => match tab_id_of(&json) {
@@ -2051,8 +2207,16 @@ impl NativeBrowser {
                         .lock()
                         .map(|mut state| shell_tabs::switch_to_tab_workspace(&mut state, id))
                         .unwrap_or(false);
+                    // A saved tab of that workspace has no view until the workspace is adopted.
+                    if switched {
+                        let ws = self.app_state.lock().ok().and_then(|s| s.shell.get_active_workspace().map(|w| w.id));
+                        if let Some(ws) = ws {
+                            self.adopt_workspace_tabs(ws);
+                        }
+                    }
                     if let Some(index) = self.tab_index_for_id(id) {
                         self.activate_tab_by_index(index);
+                        self.load_pending_for_active();
                     }
                     if switched {
                         self.save_and_sync_workspaces();
