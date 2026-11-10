@@ -49,6 +49,7 @@ tracing-log = { workspace = true }
 
 # URL handling
 url = { workspace = true }
+rand = { workspace = true }
 urlencoding = "2.1"
 
 # Platform

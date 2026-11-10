@@ -597,7 +597,9 @@ fn load_report_page(content: &impl IWebView) {
         "<!-- Chart.js is injected by Rust before page load -->",
         &format!("<script>{}</script>", CHART_JS),
     );
-    content.load_html(&report_with_chartjs);
+    // A fresh nonce per load: only this document knows it (content_ipc_guard).
+    let nonce = content_ipc_guard::new_report_nonce();
+    content.load_html(&content_ipc_guard::with_nonce(&report_with_chartjs, &nonce));
 }
 
 #[cfg(not(feature = "native-win32"))]
@@ -1628,12 +1630,12 @@ fn main() {
                     | IpcMessage::GetWorkspaceStats
                     | IpcMessage::ResetAnalyticsData
                     | IpcMessage::ExportAnalyticsData { .. } => {
-                        // IPC hardening: answered for the app's own report page only.
-                        let active_url = content_state_ipc
-                            .lock()
+                        // IPC hardening: answered for the app's own report document only (the
+                        // nonce embedded in it at load), not for a page that merely looks like it.
+                        let nonce = serde_json::from_str::<serde_json::Value>(body)
                             .ok()
-                            .and_then(|s| s.shell.get_active_tab().map(|t| t.url.to_string()));
-                        if !content_ipc_guard::analytics_allowed(active_url.as_deref()) {
+                            .and_then(|v| v.get("nonce").and_then(|n| n.as_str()).map(str::to_string));
+                        if !content_ipc_guard::analytics_allowed(nonce.as_deref()) {
                             warn!("Dropped a content-page request");
                             return;
                         }

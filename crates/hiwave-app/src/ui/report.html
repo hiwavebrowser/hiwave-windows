@@ -889,9 +889,12 @@ Taking back control of my attention with @HiWaveBrowser
             }
         }
 
+        // The app replaces this at load; only this document knows it.
+        const REPORT_NONCE = '__HIWAVE_REPORT_NONCE__';
+
         function sendIpc(cmd, data) {
             return new Promise((resolve, reject) => {
-                const message = { cmd, ...data };
+                const message = { cmd, nonce: REPORT_NONCE, ...data };
                 window.ipc.postMessage(JSON.stringify(message));
 
                 // Listen for response
