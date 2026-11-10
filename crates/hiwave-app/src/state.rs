@@ -1080,7 +1080,33 @@ impl AppState {
         Ok(state)
     }
 
+    /// Remove `<name>.<pid>.tmp` files a crashed run left behind. A file touched in the last
+    /// minute is left alone: another instance may be about to rename it (there is no
+    /// single-instance guard).
+    fn sweep_stale_workspace_state_temps(&self) {
+        let Ok(entries) = std::fs::read_dir(&self.config.data_dir) else {
+            return;
+        };
+        let prefix = format!("{}.", self.workspace_state_file);
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !(name.starts_with(&prefix) && name.ends_with(".tmp")) {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > std::time::Duration::from_secs(60));
+            if stale && entry.path().is_file() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
     pub fn load_workspace_state(&mut self) -> HiWaveResult<bool> {
+        self.sweep_stale_workspace_state_temps();
         let path = self.workspace_state_path();
         // Only NotFound means "no session yet". Any other error (access denied, a sharing
         // violation, a cloud placeholder) says nothing about the file's content: keep it, and
@@ -2008,6 +2034,7 @@ mod workspace_state_file_tests {
         assert!(s.load_workspace_state().is_err());
         assert!(file(&s).is_dir(), "the session path is left where it was");
         assert!(!s.config.data_dir.join("workspace_state.json.corrupt").exists(), "not treated as corruption");
+        assert!(s.workspace_state_save_blocked, "the read error itself blocked saving");
         assert!(s.save_workspace_state().is_err(), "and nothing is saved over it");
     }
 
@@ -2023,7 +2050,7 @@ mod workspace_state_file_tests {
     }
 
     #[test]
-    fn a_failed_save_leaves_the_good_file_and_no_temp_file() {
+    fn a_save_that_cannot_create_its_temp_file_leaves_the_good_file() {
         let mut s = fresh("failed_save");
         s.shell.create_workspace("Kept".to_string());
         s.save_workspace_state().unwrap();
@@ -2035,6 +2062,40 @@ mod workspace_state_file_tests {
         assert!(s.save_workspace_state().is_err());
         assert_eq!(std::fs::read(file(&s)).unwrap(), good, "the old file is untouched");
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn a_save_whose_rename_fails_removes_its_temp_file() {
+        // A directory where the session file should be: the temp file is written and synced,
+        // then the rename over a directory fails. The temp file must not be left behind.
+        let mut s = fresh("rename_cleanup");
+        std::fs::create_dir_all(file(&s)).unwrap();
+        assert!(s.save_workspace_state().is_err());
+        assert!(file(&s).is_dir(), "what was at the path is untouched");
+        let leftovers: Vec<_> = std::fs::read_dir(&s.config.data_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp file left after the failed rename: {leftovers:?}");
+    }
+
+    #[test]
+    fn a_stale_temp_file_from_a_crashed_run_is_swept_at_load_and_a_fresh_one_is_not() {
+        let mut s = fresh("sweep");
+        let stale = s.config.data_dir.join("workspace_state.json.4242.tmp");
+        let fresh_tmp = s.config.data_dir.join("workspace_state.json.4343.tmp");
+        let other = s.config.data_dir.join("something_else.4242.tmp");
+        for p in [&stale, &fresh_tmp, &other] {
+            std::fs::write(p, "{}").unwrap();
+        }
+        // The stale one was last written an hour ago.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::OpenOptions::new().write(true).open(&stale).unwrap().set_modified(old).unwrap();
+        let _ = s.load_workspace_state();
+        assert!(!stale.exists(), "swept");
+        assert!(fresh_tmp.exists(), "a recent one may belong to a live instance");
+        assert!(other.exists(), "another file's temp is not ours to remove");
     }
 
     #[test]
@@ -2064,6 +2125,7 @@ mod workspace_state_file_tests {
         assert!(s.load_workspace_state().is_err());
         assert!(file(&s).exists(), "the rename failed, the file is where it was");
         assert!(!s.config.data_dir.join("workspace_state.json.corrupt").exists());
+        assert!(s.workspace_state_save_blocked, "the failed rename itself blocked saving");
         assert!(s.save_workspace_state().is_err(), "and nothing may overwrite it");
         drop(_hold);
         assert_eq!(std::fs::read_to_string(file(&s)).unwrap(), "{ truncated");

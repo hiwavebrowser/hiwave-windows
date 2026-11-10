@@ -401,7 +401,9 @@ mod tests {
             &[tab(a, "https://a.test/", "A", false), tab(b, "https://b.test/", "B", false), tab(c, "https://c.test/", "C", true)],
         );
         // Shelve the middle tab, then reopen it the way the native shell does: take it off the
-        // shelf and let reconcile add the tab the shell opens.
+        // shelf and let reconcile add the tab the shell opens. This pins the MODEL and its view
+        // (the workspace's order and `active_workspace_view`); what puts the reopened tab last
+        // in the native strip itself is `restore_shelf_item` calling `new_tab`, which appends.
         let item = s.add_to_shelf(TabId(b)).unwrap().expect("shelved");
         mirrored.remove(&b);
         let (url, _) = take_from_shelf(&mut s, &item.id, None).expect("on the shelf");
