@@ -41,8 +41,9 @@ AGPL-3.0-or-later larger work (MPL-2.0 section 3.3).
 Files in first-party crates kept on their upstream licence
 -----------------------------------------------------------
   crates/rustkit-bindings/src/web_intl.js (the "CLDR en" patterns only)
-      Unicode CLDR locale data, Unicode License v3; the rest of the file is
-      AGPL-3.0-or-later.
+      Unicode CLDR locale data (https://cldr.unicode.org), Copyright (c)
+      Unicode, Inc., under the Unicode License v3 (text in
+      LICENSES/Unicode-3.0.txt); the rest of the file is AGPL-3.0-or-later.
   crates/rustkit-text/tests/fixtures/Ahem.{ttf,woff,woff2}
       Ahem test font from web-platform-tests; tests only, not shipped.
 
