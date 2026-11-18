@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "GPU compositor with per-view swapchain support for RustKit"
 authors = ["HiWave Team"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 # GPU abstraction

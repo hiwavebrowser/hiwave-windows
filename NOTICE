@@ -22,11 +22,29 @@ Earlier versions
 ----------------
 Versions of HiWave published before the commit that added this file were
 released under the Mozilla Public License 2.0 (MPL-2.0) and remain available
-under it.
+under it. The RustKit engine crates (crates/rustkit-*) declared the MIT
+licence in those versions; those earlier versions remain available under MIT.
+From this commit on, the RustKit engine crates are licensed under
+AGPL-3.0-or-later like the rest of HiWave.
 
 Files under MPL-2.0
 -------------------
-None in this repository.
+The file below contains code contributed under MPL-2.0 by an outside
+contributor. That code stays under MPL-2.0, so the file is marked
+"SPDX-License-Identifier: MPL-2.0" and is distributed under the Mozilla Public
+License 2.0 (text in LICENSES/MPL-2.0.txt; also at
+https://mozilla.org/MPL/2.0/). MPL-2.0 files may be combined into this
+AGPL-3.0-or-later larger work (MPL-2.0 section 3.3).
+
+  crates/hiwave-app/src/platform/linux.rs
+
+Files in first-party crates kept on their upstream licence
+-----------------------------------------------------------
+  crates/rustkit-bindings/src/web_intl.js (the "CLDR en" patterns only)
+      Unicode CLDR locale data, Unicode License v3; the rest of the file is
+      AGPL-3.0-or-later.
+  crates/rustkit-text/tests/fixtures/Ahem.{ttf,woff,woff2}
+      Ahem test font from web-platform-tests; tests only, not shipped.
 
 Third-party works
 -----------------

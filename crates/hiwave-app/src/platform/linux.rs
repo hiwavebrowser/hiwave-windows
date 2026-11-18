@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+// Contains code contributed under MPL-2.0 by an outside contributor; see NOTICE.
 //! Linux platform implementation
 //!
 //! GTK WebKit on Linux has moderate popup behavior. The xdg-open

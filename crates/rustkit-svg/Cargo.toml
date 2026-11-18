@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "SVG parsing and rendering for RustKit browser engine"
 authors = ["HiWave Team"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 # RustKit crates
