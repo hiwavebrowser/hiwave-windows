@@ -92,10 +92,11 @@ macOS-only files (`ipc/autofill.rs`, `ipc/inspector_payload.rs`, `tab_shortcuts.
    new here) and the CLDR tables of `web_intl.js` (weekData beside the "CLDR en" patterns), Unicode
    License v3. The Ahem fonts were already listed.
 
-**Open, for the owner:** hiwave-macos marks `crates/hiwave-app/src/ui/context_menu.js` MPL-2.0 (an
-outside contribution) and lists it in its NOTICE. Windows' copy has the same content without the
-marking. This sync leaves Windows' copy unmarked, as it was; marking it (SPDX lines and a NOTICE
-line) is a licence decision.
+**`crates/hiwave-app/src/ui/context_menu.js` stays unmarked (AGPL-3.0-or-later).** hiwave-macos marks it
+MPL-2.0 for an outside contribution, its commit `6ae459ed` (2026-01-05, the DevTools Inspector). Windows'
+copy is older: it is hiwave-macos `87ee6562` (2025-12-29) plus Windows' own shortcut handler, from the
+first Windows commit (2025-12-30), and unchanged since. None of the 44 lines the contribution added is in
+it, so it holds no MPL-2.0 code and is not marked.
 
 ## Gates (this machine, own target directory)
 
@@ -105,13 +106,17 @@ line) is a licence decision.
   hiwave-shield 25, hiwave-shield-intercept 11, the rest as logged. `rustkit-renderer`'s
   `fifty_opacity_layers_fit_a_frame_budget` failed once under the parallel suite (34.5 ms/frame) and
   passes alone (0.19 ms, three runs, RTX 4090).
-- **rustkit-engine `--features headless --lib`** (8 test threads): 2,496 passed, 8 failed, 63 ignored.
-  Each of the 8 fails the same on a clean hiwave-macos `295ce9f4` on this machine:
+- **rustkit-engine `--features headless --lib`** (8 test threads): 2,494 passed, 10 failed, 63 ignored as
+  synced; patch 652 fixed two. Each of the remaining 8 fails the same on a clean hiwave-macos `295ce9f4` on this machine:
   `paint_only_web_font_tests` x5 and `incremental_layout_tests::a_web_font_landing_after_layout_measures_text_afresh`
   (the page's web face is not used on Windows: a gap, row filed);
-  `dom1_attr_order_hit_tests::a_box_outside_its_ancestors_box_is_hit` (1 px) and
-  `flex_aspect_ratio_tests::aspect_ratio_minimum_size_inherit_and_the_card_are_as_in_chrome` (a text
-  line 11 vs 13 px): Chrome pins measured on macOS fonts.
+  `flex_aspect_ratio_tests::aspect_ratio_minimum_size_inherit_and_the_card_are_as_in_chrome` passes now: its
+  `inherit-em` row was pinned on macOS fonts (13 px), and Chrome for Testing 148 win64 gives 11, as the engine
+  does (`docs/diagnostics/2026-11-18/flex_inherit_em_cft148_win64.txt`; the Windows expectation is an
+  `apply_windows_patches.py` edit). `dom1_attr_order_hit_tests::a_box_outside_its_ancestors_box_is_hit`
+  stays failing: Chrome on Windows reports what it does on macOS (`rect menu: 10 284 120 40`,
+  `docs/diagnostics/2026-11-18/dom1_hit_outside_ancestor_cft148_win64.txt`), so the engine's 285 is a real
+  1 px difference on Windows (row). Net: 2,497 passed, 7 failed.
 - **native-win32** (`hiwave-app --no-default-features --features native-win32`): 150 passed.
 - **Builds:** release `hiwave-app`, parity-profile `parity-capture`.
 - **Parity campaign** (`scripts/parity_test.py`, 26 cases, against `baselines/chrome-148`, captured on
