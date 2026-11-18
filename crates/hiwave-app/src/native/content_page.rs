@@ -254,7 +254,9 @@ impl ContentPage {
     /// A wheel over a point: the box under it may take it. Pixels; positive `dy`
     /// scrolls up (the engine's convention).
     pub fn scroll_at(&self, x: f32, y: f32, dx: f32, dy: f32) {
-        self.thread.input(PageInput::ScrollAt { x, y, dx, dy });
+        // WM_MOUSEWHEEL carries no gesture phase (a precision touchpad arrives as wheel messages
+        // too), so each is a wheel on its own: not a gesture step, and no gesture begins.
+        self.thread.input(PageInput::ScrollAt { x, y, dx, dy, gesture: false, began: false });
     }
 
     /// A key for the page's focused element (or the page itself, which scrolls an
