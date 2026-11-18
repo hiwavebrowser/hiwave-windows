@@ -65,7 +65,9 @@ pub(crate) enum Setting {
 
 pub(crate) fn setting(value: &std::ffi::OsStr) -> Setting {
     let bytes = value.as_encoded_bytes();
-    if bytes.contains(&b'/') {
+    // A separator makes it a path: `/`, and on Windows `\` too, which every path there uses
+    // (`C:\logs\c.jsonl` named no file and the variable did nothing).
+    if bytes.contains(&b'/') || (cfg!(windows) && bytes.contains(&b'\\')) {
         return Setting::File(PathBuf::from(value));
     }
     // `1`, `0`, and the bare words people set a switch to (`true`, `on`).

@@ -1,0 +1,49 @@
+Windows: HIWAVE_CONSOLE_LOG named no file for a Windows path. console_file::setting() takes a value
+with a `/` as a path and nothing else (upstream R1 nit 4 lists `C:\logs\console.jsonl` as "not a path"), so
+`C:\logs\c.jsonl`, the way every path is written here, did nothing. On Windows a backslash makes it a path
+too. Found by refresh #20: console_file_tests::the_variable_alone_names_the_file and
+the_process_reads_the_variable_and_set_path_wins (their temp-dir paths have backslashes) failed here, as
+they do on a clean hiwave-macos 295ce9f4 on this machine.
+
+Remove when upstream takes the Windows separator (row filed from refresh #20).
+
+--- a/crates/rustkit-engine/src/console_file.rs
++++ b/crates/rustkit-engine/src/console_file.rs
+@@ -65,7 +65,9 @@ pub(crate) enum Setting {
+ 
+ pub(crate) fn setting(value: &std::ffi::OsStr) -> Setting {
+     let bytes = value.as_encoded_bytes();
+-    if bytes.contains(&b'/') {
++    // A separator makes it a path: `/`, and on Windows `\` too, which every path there uses
++    // (`C:\logs\c.jsonl` named no file and the variable did nothing).
++    if bytes.contains(&b'/') || (cfg!(windows) && bytes.contains(&b'\\')) {
+         return Setting::File(PathBuf::from(value));
+     }
+     // `1`, `0`, and the bare words people set a switch to (`true`, `on`).
+--- a/crates/rustkit-engine/src/console_file_tests.rs
++++ b/crates/rustkit-engine/src/console_file_tests.rs
+@@ -109,6 +109,9 @@ fn only_a_value_with_a_slash_names_a_file() {
+     }
+     assert_eq!(setting(OsStr::new("/tmp/c.jsonl")), Setting::File(PathBuf::from("/tmp/c.jsonl")));
+     assert_eq!(setting(OsStr::new("./c.jsonl")), Setting::File(PathBuf::from("./c.jsonl")));
++    // Windows: a path there is written with backslashes.
++    #[cfg(windows)]
++    assert_eq!(setting(OsStr::new(r"C:\logs\c.jsonl")), Setting::File(PathBuf::from(r"C:\logs\c.jsonl")));
+ }
+ 
+ // ---- The process's own sink: `set_path`, the variable, a file that
+@@ -548,7 +551,13 @@ impl Drop for RemoveDir {
+ fn a_value_that_is_neither_a_word_nor_a_path_is_not_a_path() {
+     use crate::console_file::{setting, Setting};
+     use std::ffi::OsStr;
+-    for wrong in ["console.jsonl", "C:\\logs\\console.jsonl", "console log", "~"] {
++    // On Windows a backslash is a separator, so `C:\logs\console.jsonl` is a path there.
++    let wrongs: &[&str] = if cfg!(windows) {
++        &["console.jsonl", "console log", "~"]
++    } else {
++        &["console.jsonl", "C:\\logs\\console.jsonl", "console log", "~"]
++    };
++    for wrong in wrongs {
+         assert_eq!(setting(OsStr::new(wrong)), Setting::NotAPath, "{wrong:?}");
+     }
+ }
