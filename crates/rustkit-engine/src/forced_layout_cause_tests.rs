@@ -237,8 +237,9 @@ fn a_read_in_an_animation_frame_during_a_css_animation_forces_no_layout() {
 
 /// LAT7c: a page whose element `#s` runs a Web Animation of `keyframes`
 /// while a frame callback evaluates `expr` for 10 frames.
-/// Returns (reads that ran, forced layouts).
-fn waapi_frames(keyframes: &str, expr: &str) -> (u32, u64) {
+/// Returns (reads that ran, forced layouts, reads answered from an
+/// animation frame over the published boxes: LAT19).
+fn waapi_frames(keyframes: &str, expr: &str) -> (u32, u64, u64) {
     let page = "<html><head><style>body{margin:0} #s{width:20px;height:20px;background:red}</style></head><body>\
         <div id=s></div><div id=a style='width:100px;height:20px'></div>\
         <script>var a = document.getElementById('a'), s = document.getElementById('s');</script></body></html>";
@@ -266,11 +267,14 @@ fn waapi_frames(keyframes: &str, expr: &str) -> (u32, u64) {
         )
         .unwrap();
     let before = forced(&engine, view);
+    let framed = || engine.relayout_stats(view).unwrap().forced_frames;
+    let framed_before = framed();
     for _ in 0..12 {
         rt.block_on(engine.pump_live(view, 16));
     }
+    let framed = engine.relayout_stats(view).unwrap().forced_frames - framed_before;
     let reads: u32 = read(&mut engine, view, "window.__reads").parse().unwrap();
-    (reads, forced(&engine, view) - before)
+    (reads, forced(&engine, view) - before, framed)
 }
 
 /// LAT7c: a Web Animations frame of a paint property (opacity, colour,
@@ -286,7 +290,8 @@ fn a_read_in_an_animation_frame_during_a_web_animation_of_a_paint_property_force
         "[{backgroundColor: 'red'}, {backgroundColor: 'blue'}]",
         "[{transform: 'translateX(0px)'}, {transform: 'translateX(50px)'}]",
     ] {
-        let (reads, forced) = waapi_frames(keyframes, "a.offsetWidth + a.clientHeight");
+        let (reads, forced, framed) = waapi_frames(keyframes, "a.offsetWidth + a.clientHeight");
+        assert_eq!(framed, 0, "{keyframes}: nor is a frame placed for them");
         assert!(reads >= 5, "{keyframes}: the frame callback ran: {reads}");
         assert_eq!(forced, 0, "{keyframes}: a paint-property animation frame leaves offset/client reads clean");
     }
@@ -295,20 +300,28 @@ fn a_read_in_an_animation_frame_during_a_web_animation_of_a_paint_property_force
 /// LAT7c's other side: what the animated value does reach still lays out.
 /// A width animation moves boxes; the computed opacity and a transformed
 /// rect read the animated value (Chromium answers both at the current time).
+/// LAT19: a paint value is placed by an animation frame over the published
+/// boxes (`forced_frames`), not a build; a layout value is a forced layout.
 #[test]
 fn reads_that_see_a_web_animation_value_still_force_a_layout() {
-    let (reads, forced) = waapi_frames("[{width: '20px'}, {width: '60px'}]", "a.offsetWidth");
+    let (reads, forced, _) = waapi_frames("[{width: '20px'}, {width: '60px'}]", "a.offsetWidth");
     assert!(reads >= 5, "{reads}");
     assert!(forced >= 3, "a width animation moves boxes: {forced}");
-    let (_, forced) = waapi_frames("[{opacity: 0}, {opacity: 1}]", "getComputedStyle(s).opacity");
-    assert!(forced >= 3, "the computed opacity reads the animated value: {forced}");
-    let (_, forced) = waapi_frames(
+    let (_, forced, framed) = waapi_frames("[{opacity: 0}, {opacity: 1}]", "getComputedStyle(s).opacity");
+    assert!(framed >= 3, "the computed opacity reads the animated value: {framed}");
+    assert_eq!(forced, 0, "from a frame, not a build");
+    // The count before LAT19 (a forced layout per read) moved, it did not
+    // vanish: neither path absorbs the other.
+    assert!(forced + framed >= 3, "{forced} + {framed}");
+    let (_, forced, framed) = waapi_frames(
         "[{transform: 'translateX(0px)'}, {transform: 'translateX(50px)'}]",
         "s.getBoundingClientRect().left",
     );
-    assert!(forced >= 3, "a transformed rect reads the animated value: {forced}");
-    let (_, forced) = waapi_frames("[{opacity: 0}, {opacity: 1}]", "s.getBoundingClientRect().left");
-    assert_eq!(forced, 0, "opacity moves no rect");
+    assert!(framed >= 3, "a transformed rect reads the animated value: {framed}");
+    assert_eq!(forced, 0, "from a frame, not a build");
+    assert!(forced + framed >= 3, "every such read is brought up to date one way or the other");
+    let (_, forced, framed) = waapi_frames("[{opacity: 0}, {opacity: 1}]", "s.getBoundingClientRect().left");
+    assert_eq!((forced, framed), (0, 0), "opacity moves no rect");
 }
 
 #[test]
@@ -398,3 +411,60 @@ fn a_thousand_reads_between_writes_that_change_nothing_lay_out_nothing() {
     assert_eq!(read(&mut engine, view, "window.__s"), "100100");
     assert_eq!(forced(&engine, view), 0);
 }
+
+/// The number after ` key=` on a log line.
+fn number(line: &str, key: &str) -> Option<f64> {
+    let at = line.find(&format!(" {key}="))? + key.len() + 2;
+    let rest = &line[at..];
+    rest[..rest.find(' ').unwrap_or(rest.len())].trim_matches('"').parse().ok()
+}
+
+/// FORCED-READ: the line for a read that builds the tree says which read it was, how many elements
+/// the build styled, and what it cost, split into the build and the layout. The view's summary
+/// carries the two sums. The figures are checked for being there and for how they relate, never
+/// against a time.
+#[test]
+fn a_forced_reads_line_carries_the_builds_cost_and_its_element_count() {
+    let more: String = (0..10).map(|i| format!("<div class=x>{i}</div>")).collect();
+    let bigger = PAGE.replace("</body>", &format!("{more}</body>"));
+    let mut elements = Vec::new();
+    for page in [PAGE, bigger.as_str()] {
+        let (mut engine, view) = engine_with(page);
+        let lines = capture_lines("Forced read builds the tree", || {
+            engine
+                .execute_script(
+                    view,
+                    "var a = document.getElementById('a'); a.style.width = '70px'; a.offsetWidth;\
+                     a.className = 'k2'; a.getBoundingClientRect();",
+                )
+                .unwrap();
+        });
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        for (line, read) in lines.iter().zip(["offset", "rect"]) {
+            assert!(line.contains(&format!("read=\"{read}\"")), "{line}");
+            let took = number(line, "took_ms").unwrap_or_else(|| panic!("no took_ms: {line}"));
+            let build = number(line, "build_ms").unwrap_or_else(|| panic!("no build_ms: {line}"));
+            let layout = number(line, "layout_ms").unwrap_or_else(|| panic!("no layout_ms: {line}"));
+            let prepare = number(line, "prepare_ms").unwrap_or_else(|| panic!("no prepare_ms: {line}"));
+            assert!(build > 0.0 && layout >= 0.0 && prepare >= 0.0, "{line}");
+            // The parts are inside the whole (0.05 ms for the rounding of four printed figures).
+            assert!(took + 0.05 >= build + layout + prepare, "{line}");
+            assert_eq!(number(line, "passes"), Some(1.0), "{line}");
+        }
+        elements.push(number(&lines[0], "elements").unwrap_or_else(|| panic!("no elements: {}", lines[0])));
+        assert_eq!(number(&lines[1], "elements"), Some(elements[elements.len() - 1]), "{lines:#?}");
+        let summary = capture_lines("relayout summary url=", || {
+            engine.load_html(view, "<p>next</p>").expect("navigate away");
+        });
+        assert_eq!(summary.len(), 1, "{summary:#?}");
+        assert!(summary[0].contains(" forced_layouts=2 "), "{}", summary[0]);
+        let forced = number(&summary[0], "forced_ms").unwrap();
+        let build = number(&summary[0], "forced_build_ms").unwrap_or_else(|| panic!("no forced_build_ms: {}", summary[0]));
+        let layout = number(&summary[0], "forced_layout_ms").unwrap_or_else(|| panic!("no forced_layout_ms: {}", summary[0]));
+        assert!(build > 0.0 && forced + 0.1 >= build + layout, "{}", summary[0]);
+    }
+    // Ten more elements in the page are ten more in the count.
+    assert!(elements[0] >= 2.0, "{elements:?}");
+    assert_eq!(elements[1] - elements[0], 10.0, "{elements:?}");
+}
+

@@ -73,7 +73,7 @@ pub struct ImageElement {
 
 impl ImageElement {
     /// Create a new image element from DOM attributes
-    pub fn from_attributes(node_id: NodeId, attrs: &HashMap<String, String>) -> Self {
+    pub fn from_attributes(node_id: NodeId, attrs: &crate::AttrMap) -> Self {
         Self {
             node_id,
             src: attrs.get("src").cloned(),
@@ -326,7 +326,7 @@ pub struct PictureSource {
 
 impl PictureSource {
     /// Create from attributes
-    pub fn from_attributes(node_id: NodeId, attrs: &HashMap<String, String>) -> Self {
+    pub fn from_attributes(node_id: NodeId, attrs: &crate::AttrMap) -> Self {
         Self {
             node_id,
             srcset: attrs.get("srcset").cloned(),
@@ -370,7 +370,7 @@ pub struct FaviconLink {
 
 impl FaviconLink {
     /// Create from link element attributes
-    pub fn from_attributes(attrs: &HashMap<String, String>) -> Option<Self> {
+    pub fn from_attributes(attrs: &crate::AttrMap) -> Option<Self> {
         let rel = attrs.get("rel")?;
 
         // Only process icon-related rels
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_image_element_from_attributes() {
-        let mut attrs = HashMap::new();
+        let mut attrs = crate::AttrMap::new();
         attrs.insert("src".to_string(), "image.png".to_string());
         attrs.insert("alt".to_string(), "A picture".to_string());
         attrs.insert("width".to_string(), "100".to_string());
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_image_aspect_ratio() {
-        let mut img = ImageElement::from_attributes(NodeId::new(1), &HashMap::new());
+        let mut img = ImageElement::from_attributes(NodeId::new(1), &crate::AttrMap::new());
         img.width = Some(400);
         img.height = Some(200);
 
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_image_loading_state() {
-        let mut img = ImageElement::from_attributes(NodeId::new(1), &HashMap::new());
+        let mut img = ImageElement::from_attributes(NodeId::new(1), &crate::AttrMap::new());
         assert_eq!(img.loading_state, ImageLoadingState::Pending);
 
         img.set_loading();

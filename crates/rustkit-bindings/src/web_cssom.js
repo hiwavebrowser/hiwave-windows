@@ -10,7 +10,7 @@
 // libraries (emotion, styled-components) inject styles.
 //
 // Constructed sheets adopted by the document or a shadow root are published
-// to the engine (`__rkSetAdoptedStyles`) and applied on the next layout,
+// to the engine (`__rk.setAdoptedStyles`) and applied on the next layout,
 // after that tree's `<style>` and `<link>` sheets. `disabled` is honoured
 // at publish time (an empty string) and a `media` list wraps the rules in
 // `@media`. A later `replaceSync`, `insertRule`, `deleteRule`, declaration
@@ -304,13 +304,13 @@
     // the element's children change or it is inserted or removed (CSSOM
     // "update a style block" makes a new, enabled sheet each time).
     function sheetGeneration(el) {
-        return typeof g.__rkSheetGeneration === 'function' ? g.__rkSheetGeneration(el) : 0;
+        return typeof __rk.sheetGeneration === 'function' ? __rk.sheetGeneration(el) : 0;
     }
     // A <style>'s sheet.disabled goes to the engine, which leaves that sheet
     // out of the cascade for as long as it is the one the element owns.
     function publishDisabled(sheet) {
-        if (isStyle(sheet) && typeof g.__rkSetSheetDisabled === 'function') {
-            g.__rkSetSheetDisabled(sheet._owner, !!sheet._disabled);
+        if (isStyle(sheet) && typeof __rk.setSheetDisabled === 'function') {
+            __rk.setSheetDisabled(sheet._owner, !!sheet._disabled);
         }
     }
     function checkIndex(sheet, index, max) {
@@ -464,7 +464,7 @@
         var list = entry ? entry.raw : [];
         var texts = [];
         for (var i = 0; i < list.length; i++) if (list[i] instanceof CSSStyleSheet) texts.push(sheetCss(list[i]));
-        if (typeof g.__rkSetAdoptedStyles === 'function') g.__rkSetAdoptedStyles(node, JSON.stringify(texts));
+        if (typeof __rk.setAdoptedStyles === 'function') __rk.setAdoptedStyles(node, JSON.stringify(texts));
     }
     function checkAdoptable(s) {
         if (!(s instanceof CSSStyleSheet)) throw new TypeError("Failed to set 'adoptedStyleSheets': element is not a CSSStyleSheet.");

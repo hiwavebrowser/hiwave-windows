@@ -135,6 +135,27 @@ pub struct FlexItem<'a> {
     /// laid-out height for exactly these items.
     pub main_size_from_content: bool,
 
+    /// The flex basis is the item's content size (`flex-basis: auto` with an
+    /// auto main size, `content`, or a percentage of an indefinite main
+    /// size), whatever the box: `main_size_from_content` without its
+    /// non-replaced condition. A preferred `aspect-ratio` replaces that
+    /// content size with one transferred from a definite cross size
+    /// (css-flexbox-1 §9.2 step 3B), for an image as for a box (LAY1).
+    pub content_basis: bool,
+
+    /// The item's height is the one its `aspect-ratio` gives its width, in a
+    /// row (css-sizing-4 §5.1): it is not stretched and its own `height`
+    /// computes to `auto`. `None` otherwise. Its contents' flow does not
+    /// change it, except that under `min-height: auto` taller content grows
+    /// it (the automatic minimum, css-sizing-4 §5.2). Set in
+    /// `calculate_cross_sizes` (LAY1).
+    pub ratio_cross: Option<f32>,
+
+    /// The flex base size came through the item's `aspect-ratio` from its
+    /// cross size (`aspect_ratio_flex_base`). In a column its height is
+    /// then known before its contents are laid out (LAY1).
+    pub main_from_ratio: bool,
+
     /// §4.5's automatic minimum applies on the VERTICAL main axis: a
     /// non-replaced item with `min-height: auto` and `overflow-y: visible`.
     /// The number needs laid-out children, so step 11d applies it.
@@ -439,6 +460,11 @@ fn layout_flex_container_at(
     used_inner_height: Option<f32>,
     resolved_percent_inner_height: Option<f32>,
 ) {
+    // A flex item is a formatting root (css-flexbox-1 §3): it encloses its
+    // floats. Marked before anything lays an item out.
+    for child in &mut container.children {
+        child.formatting_root = true;
+    }
     // Resolved once, up front, and read by both the main-size choice below
     // and step 11d's redistribution: these take `&LayoutBox`, and from the
     // moment the item list borrows `container.children` mutably no whole-box
@@ -469,6 +495,17 @@ fn layout_flex_container_at(
         Axis::Vertical
     };
     let cross_axis = main_axis.cross();
+    // Pete's option 2 (CH2.B19): an out-of-flow container whose main size
+    // is `auto` and comes out 0 does not justify an overflowing line
+    // unsafely (see `distribute_main_axis`).
+    let zero_main_from_containing_block = matches!(container.position, crate::Position::Fixed | crate::Position::Absolute)
+        && matches!(
+            match main_axis {
+                Axis::Horizontal => &style.width,
+                Axis::Vertical => &style.height,
+            },
+            rustkit_css::Length::Auto
+        );
 
     // CSS2 §10.6.4, resolved before anything reads a main size: an
     // out-of-flow box with both insets set is definite, and only the
@@ -537,8 +574,16 @@ fn layout_flex_container_at(
             // definite, a wrapping row stretched its lines over the height
             // the block pre-pass had stacked its items to: linkedin's topic
             // pills were 570 tall each.
+            //
+            // Nor is a percentage the block pass could not resolve: it
+            // computes to `auto` (css-sizing-3 §5.1), and counted as definite
+            // the line took the block pre-pass's stack of the items as its
+            // height. A result card's `display: flex; height: 100%` row under
+            // an auto-height wrapper gave its `height: 100%; aspect-ratio: 1`
+            // link 30px, its picture's height, where Chrome 148 has 294 (LAY1).
             used_inner_cross_height.is_some()
-                || !matches!(container.style.height, Length::Auto | Length::FitContent)
+                || (!matches!(container.style.height, Length::Auto | Length::FitContent)
+                    && !container.percent_height_computes_to_auto())
         }
         // A block-level flex container with `width: auto` still has a
         // DEFINITE used width — it resolves against its containing block.
@@ -550,8 +595,16 @@ fn layout_flex_container_at(
         // The height case is deliberately NOT symmetric: an auto-height row
         // container really is indefinite (it is sized BY its content), and
         // test_auto_height_stretch depends on that staying true.
+        //
+        // A used width of 0 on the container's OWN box is as definite as any
+        // other: a column stretched into a `width: 0` parent (HiWave's
+        // collapsed right sidebar) stretches its own items to 0, and their
+        // content overflows (Chrome for Testing 148). Reading the 0 as
+        // indefinite stretched them to the widest item's content instead (CB6).
         Axis::Horizontal => {
-            !matches!(container.style.width, Length::Auto) || container_cross_size > 0.0
+            !matches!(container.style.width, Length::Auto)
+                || container_cross_size > 0.0
+                || is_own_box(container_box, container)
         }
     };
 
@@ -599,7 +652,7 @@ fn layout_flex_container_at(
             // `padding: 16px` column card 656 wide resolved `width: 100%` to
             // 624 and stretched its rows to 624 (Chromium 143: 656 and 656).
             None if cross_axis == Axis::Horizontal
-                && container_cross_size > 0.0
+                && container_cross_size >= 0.0
                 && is_own_box(container_box, container) =>
             {
                 Some(container_cross_size)
@@ -797,6 +850,7 @@ fn layout_flex_container_at(
             main_gap,
             style.justify_content,
             direction.is_reverse(),
+            zero_main_from_containing_block,
         );
     }
 
@@ -861,7 +915,13 @@ fn layout_flex_container_at(
                     let resolved_percent = cross_axis == Axis::Vertical
                         && item.explicit_cross_size.is_some()
                         && matches!(item.layout_box.style.height, Length::Percent(_));
-                    let used_inner_height = (stretched || flexed || resolved_percent)
+                    // An item whose height its `aspect-ratio` gave it (LAY1):
+                    // the inner pass centres and grows against that height,
+                    // not against its content (a result card's picture sits
+                    // in the middle of the 294px link in Chrome 148).
+                    let from_ratio = (cross_axis == Axis::Vertical && item.ratio_cross.is_some())
+                        || (main_axis == Axis::Vertical && item.main_from_ratio);
+                    let used_inner_height = (stretched || flexed || resolved_percent || from_ratio)
                         .then_some(item.layout_box.dimensions.content.height);
                     let child_containing = item.layout_box.dimensions.clone();
                     layout_flex_container_at(
@@ -1032,6 +1092,18 @@ fn layout_flex_container_at(
                     if let Some(height) = definite_cross_height {
                         item.layout_box.dimensions.content.height = height;
                     }
+                    // So does a height the item's `aspect-ratio` gave it
+                    // (LAY1), but for the automatic minimum: under
+                    // `min-height: auto` taller content grows it, and 11b
+                    // takes the grown height into the line.
+                    if let (Some(border), Axis::Vertical) = (item.ratio_cross, cross_axis) {
+                        let ratio_height = (border - item.cross_pb()).max(0.0);
+                        let flowed = item.layout_box.dimensions.content.height;
+                        let min_auto = matches!(item.layout_box.style.min_height, Length::Auto)
+                            && matches!(item.layout_box.style.overflow_y, rustkit_css::Overflow::Visible);
+                        item.layout_box.dimensions.content.height =
+                            if min_auto { ratio_height.max(flowed) } else { ratio_height };
+                    }
                     // So does the size a stretch fixed, for an item whose
                     // children resolved percentages against it.
                     if let Some(height) = stretch_target {
@@ -1119,6 +1191,49 @@ fn layout_flex_container_at(
                     }
                 };
 
+                // An unstretched item in a row is as tall as step 11 laid it
+                // out, also when that is LESS than the hypothetical cross
+                // size: that number is a one-line guess from the item's own
+                // font (`get_content_cross_height`), and a 16px-font item
+                // holding a 12px line or a 5px block kept the 18px guess as
+                // the line's height (Chrome for Testing 148: the line is the
+                // laid-out 14 / 5; CB6b, HiWave's `.shelf-item-header`).
+                //
+                // So does a STRETCHED item while the line itself is still
+                // that guess (the container's height is auto, so nothing
+                // fixed it): the line is then re-derived from the laid-out
+                // items below and the re-stretch grows every stretched item
+                // to it (Chrome for Testing 148: one item holding a 5px block
+                // is 5; 5px and 9px items are both 9). A definite line keeps
+                // its stretched items. An item whose content flows to 0 is 0
+                // (a `height: 0` child; CB6c).
+                let laid_out = children_height + item.cross_pb();
+                if cross_axis == Axis::Vertical
+                    && laid_out < item.cross_size
+                    && (!item.stretches(style.align_items)
+                        || (definite_inner_cross.is_none()
+                            // A stretched item with a preferred aspect ratio
+                            // takes its cross size from the ratio, not from
+                            // the one-line guess: it keeps it (Chrome for
+                            // Testing 148, flex_aspect_ratio_tests: 294 and
+                            // 40 tall around a 30px picture). Keyed on
+                            // the declared ratio, not on whether the ratio
+                            // sized this item (`ratio_cross`): conservative,
+                            // an item with an unused ratio keeps the guess
+                            // as it did before CB6c.
+                            && item.layout_box.style.aspect_ratio.is_none()))
+                {
+                    // Only an AUTHORED minimum floors it: without one,
+                    // `min_cross_size` is that same one-line content floor.
+                    let authored_min = resolve_length(
+                        item.layout_box,
+                        &item.layout_box.style.min_height,
+                        definite_inner_cross.unwrap_or(0.0),
+                    ) > 0.0;
+                    let floor = if authored_min { item.min_cross_size } else { 0.0 };
+                    item.cross_size = laid_out.max(floor).min(item.max_cross_size);
+                }
+
                 // children_height is a content measure; item.cross_size is
                 // border-box, so compare and store with padding+border added.
                 if children_height > 0.0 && children_height + item.cross_pb() > item.cross_size {
@@ -1199,19 +1314,28 @@ fn layout_flex_container_at(
                 // `align-items: flex-start`, Chromium 32). Only an authored
                 // minimum counts here: without one `min_cross_size` is the
                 // one-line content floor, which is not a size to grow to.
-                let target = if item.stretches(style.align_items) {
-                    line.cross_size - item.cross_margin_start - item.cross_margin_end
-                } else if resolve_length(
+                let authored_min = resolve_length(
                     item.layout_box,
                     &item.layout_box.style.min_height,
                     definite_inner_cross.unwrap_or(0.0),
-                ) > 0.0
-                {
+                ) > 0.0;
+                let target = if item.stretches(style.align_items) {
+                    line.cross_size - item.cross_margin_start - item.cross_margin_end
+                } else if authored_min {
                     item.min_cross_size
                 } else {
                     continue;
                 };
-                let target = target.max(item.min_cross_size).min(item.max_cross_size);
+                // Only an authored `min-height` floors the stretch: without
+                // one `min_cross_size` is the one-line content guess, and a
+                // stretched item in a 5px line is 5 (CB6c; Chrome for
+                // Testing 148), not that guess.
+                let floor = if authored_min || item.layout_box.style.aspect_ratio.is_some() {
+                    item.min_cross_size
+                } else {
+                    0.0
+                };
+                let target = target.max(floor).min(item.max_cross_size);
                 let content_height = (target - item.cross_pb()).max(0.0);
                 if content_height > item.layout_box.dimensions.content.height {
                     item.cross_size = target;
@@ -1312,7 +1436,7 @@ fn layout_flex_container_at(
                 if !item.auto_min_main || item.layout_box.children.is_empty() {
                     continue;
                 }
-                let mut auto_min = content_border_height(item.layout_box);
+                let mut auto_min = content_suggestion_border_height(item.layout_box);
                 // Specified size suggestion: a definite height caps it.
                 if let Some(h) = item.specified_main {
                     auto_min = auto_min.min(h);
@@ -1409,6 +1533,7 @@ fn layout_flex_container_at(
                     main_gap,
                     style.justify_content,
                     direction.is_reverse(),
+                    zero_main_from_containing_block,
                 );
                 for item in &mut line.items {
                     if item.main_margin_auto != (false, false) {
@@ -1510,8 +1635,22 @@ fn layout_flex_container_at(
         } else if matches!(
             container.style.height,
             rustkit_css::Length::Auto | rustkit_css::Length::FitContent
-        ) {
-            container.dimensions.content.height = content_size;
+        ) || container.percent_height_computes_to_auto()
+        {
+            // A percentage height with nothing definite to resolve against
+            // is `auto` (css-sizing-3 §5.1), and is sized by the items. The
+            // block pre-pass's stack of them, left in `content.height`, is
+            // not that: a result card's `height: 100%` row kept the 30px of
+            // its picture while its link was 294 tall (LAY1). Its
+            // `min-height` and `max-height` hold as for `auto`.
+            container.dimensions.content.height = if matches!(
+                container.style.height,
+                rustkit_css::Length::Auto | rustkit_css::Length::FitContent
+            ) {
+                content_size
+            } else {
+                content_size.min(style_max_inner_main).max(style_min_inner_main)
+            };
         } else if container.dimensions.content.height == 0.0 {
             let explicit = match container.style.height {
                 rustkit_css::Length::Px(px) => Some(px),
@@ -1820,19 +1959,24 @@ fn create_flex_item<'a>(
     // A text input / textarea keeps its UA padding and border folded into
     // its border box (`dimensions` has none), so a content-box author size
     // gains them here as in block flow (CH2.B17).
-    let (control_main_pb, control_cross_pb) = match &layout_box.box_type {
+    // `control_*_edges` is the same extent whatever the box-sizing: the
+    // least the control's border box can be (CSS Sizing 3 floors the
+    // content box at zero), so a border-box `max-width: 10px` on 20px
+    // padding and 3px borders is 46 here as in block flow (CH2.B17b).
+    let (control_main_pb, control_cross_pb, control_main_edges, control_cross_edges) = match &layout_box.box_type {
         crate::BoxType::FormControl(control) => {
             let cb_width = match main_axis {
                 Axis::Horizontal => container_main,
                 Axis::Vertical => container_cross,
             };
             let (w, h) = layout_box.content_box_control_extra(control, cb_width);
+            let (ew, eh) = layout_box.control_edge_extent(control, cb_width);
             match main_axis {
-                Axis::Horizontal => (w, h),
-                Axis::Vertical => (h, w),
+                Axis::Horizontal => (w, h, ew, eh),
+                Axis::Vertical => (h, w, eh, ew),
             }
         }
-        _ => (0.0, 0.0),
+        _ => (0.0, 0.0, 0.0, 0.0),
     };
     let spec_main_to_border_box =
         |v: f32| if is_border_box { v } else { v + main_pb + control_main_pb };
@@ -1845,6 +1989,7 @@ fn create_flex_item<'a>(
         crate::BoxType::Block | crate::BoxType::Inline | crate::BoxType::AnonymousBlock
     );
     let mut main_size_from_content = false;
+    let mut content_basis = false;
     let flex_basis = match flex_basis_value {
         FlexBasis::Auto => {
             // Use main size property, or intrinsic size for replaced elements
@@ -1862,6 +2007,7 @@ fn create_flex_item<'a>(
             if main_size_is_auto(main_length, explicit_size, main_is_definite) {
                 // Get intrinsic size for replaced elements (form controls, images)
                 main_size_from_content = content_sized_box;
+                content_basis = true;
                 get_intrinsic_main_size(layout_box, main_axis, definite_inner_cross) + main_pb
             } else {
                 spec_main_to_border_box(explicit_size)
@@ -1870,6 +2016,7 @@ fn create_flex_item<'a>(
         FlexBasis::Content => {
             // Use content size - for replaced elements, use intrinsic size
             main_size_from_content = content_sized_box;
+            content_basis = true;
             get_intrinsic_main_size(layout_box, main_axis, definite_inner_cross) + main_pb
         }
         FlexBasis::Length(len) => spec_main_to_border_box(len),
@@ -1878,6 +2025,7 @@ fn create_flex_item<'a>(
         // auto-height column is as tall as what it holds.
         FlexBasis::Percent(_) if !main_is_definite => {
             main_size_from_content = content_sized_box;
+            content_basis = true;
             get_intrinsic_main_size(layout_box, main_axis, definite_inner_cross) + main_pb
         }
         FlexBasis::Percent(pct) => spec_main_to_border_box(pct / 100.0 * container_main),
@@ -1959,9 +2107,19 @@ fn create_flex_item<'a>(
         spec_main_to_border_box(css_min_main)
     } else if specified_min_is_auto && main_overflow_is_visible {
         let content_min = match main_axis {
+            // A size container (`container-type: inline-size` or `size`)
+            // has inline-size containment: its content does not size it,
+            // so its automatic minimum is its padding and border alone
+            // (css-contain-2 §3.2; Chromium 148: two `flex: 1` containers
+            // in a 200px row are 100 each though one holds 300px).
+            Axis::Horizontal
+                if layout_box.style.has_inline_size_containment() =>
+            {
+                crate::grid::horizontal_padding_border(&layout_box.style)
+            }
             Axis::Horizontal => {
                 crate::grid::replaced_min_content_width_in_row(layout_box, definite_inner_cross)
-                    .unwrap_or_else(|| crate::grid::estimate_min_content_width(layout_box))
+                    .unwrap_or_else(|| crate::grid::content_min_content_width(layout_box))
             }
             // No min-content HEIGHT estimator exists yet. Returning 0.0 keeps
             // the previous behaviour on the vertical main axis rather than
@@ -2015,7 +2173,19 @@ fn create_flex_item<'a>(
             crate::BoxType::Block | crate::BoxType::Inline | crate::BoxType::AnonymousBlock
         );
     let max_main = if max_main.is_finite() {
-        spec_main_to_border_box(max_main)
+        spec_main_to_border_box(max_main).max(main_pb + control_main_edges)
+    } else {
+        max_main
+    };
+    // CSS Sizing 3 §5.2: an author minimum above the maximum wins. Raising
+    // the maximum to it once here makes every later clamp agree, whatever
+    // its order (the frozen hypothetical size, `flex: none`, the cross and
+    // stretch paths all did max(min).min(max) and took the max: an input
+    // with `min-width: 80px; max-width: 50px` in a 300px row was 50,
+    // Chromium 148 80; #985's last R1 HOLD). Only a specified minimum: the
+    // automatic one is itself clamped by the maximum (css-flexbox-1 §4.5).
+    let max_main = if css_min_main > 0.0 {
+        max_main.max(spec_main_to_border_box(css_min_main))
     } else {
         max_main
     };
@@ -2050,9 +2220,21 @@ fn create_flex_item<'a>(
     };
     let has_explicit_cross_size = !matches!(explicit_cross_length, rustkit_css::Length::Auto);
 
+    // An author's `min-height: 0` (or `min-width: 0` in a column) is a
+    // minimum too, not the absence of one: the intrinsic floor below is
+    // for items that said nothing. A 5px row stretching an input with
+    // `min-height: 0` reaches the input's padding and border, not its
+    // intrinsic height (Chromium 148: 24, not 39; #985 second HOLD).
+    let specified_min_cross_is_auto = matches!(
+        match main_axis {
+            Axis::Horizontal => &layout_box.style.min_height,
+            Axis::Vertical => &layout_box.style.min_width,
+        },
+        rustkit_css::Length::Auto
+    );
     let min_cross = if css_min_cross > 0.0 {
         spec_cross_to_border_box(css_min_cross)
-    } else if explicit_cross_size.is_some() {
+    } else if explicit_cross_size.is_some() || !specified_min_cross_is_auto {
         // An author-specified cross size is used as specified. The intrinsic
         // floor below is for CONTENT-sized items; applying it to an explicit
         // size makes any control smaller than its intrinsic box impossible to
@@ -2062,11 +2244,27 @@ fn create_flex_item<'a>(
         // 24x24 close button 36 tall (font_size*1.5+12, the intrinsic button
         // height) and inflated the header to 53 against Chrome's 41.
         0.0
+    } else if main_axis == Axis::Horizontal
+        && layout_box.style.aspect_ratio.is_none()
+        && natural_image_ratio(layout_box).is_some()
+    {
+        // IMG1: a row image's height follows its used width through its
+        // ratio (`aspect_ratio_cross`); its natural height is not a floor
+        // (a 400x200 image shrunk to 300 wide is 150 tall in Chrome 148).
+        0.0
     } else {
         intrinsic_cross + cross_pb
     };
     let max_cross = if max_cross.is_finite() {
-        spec_cross_to_border_box(max_cross)
+        spec_cross_to_border_box(max_cross).max(cross_pb + control_cross_edges)
+    } else {
+        max_cross
+    };
+    // The same on the cross axis: `min-height: 40px; max-height: 30px` in a
+    // row is 40 stretched or not (Chromium 148). The intrinsic floor above
+    // is not an author minimum and does not raise the maximum.
+    let max_cross = if css_min_cross > 0.0 {
+        max_cross.max(spec_cross_to_border_box(css_min_cross))
     } else {
         max_cross
     };
@@ -2080,7 +2278,7 @@ fn create_flex_item<'a>(
     // same way: the base was then "past the hypothetical size", the item
     // froze before it could grow, and its siblings were placed as if it
     // were 0 wide.
-    let hypothetical_main_size = flex_basis.max(min_main).min(max_main).max(main_pb);
+    let hypothetical_main_size = flex_basis.max(min_main).min(max_main).max(main_pb + control_main_edges);
 
     FlexItem {
         layout_box,
@@ -2094,9 +2292,15 @@ fn create_flex_item<'a>(
         cross_size: 0.0,
         main_position: 0.0,
         cross_position: 0.0,
-        min_main_size: min_main,
+        // CSS Sizing 3: the content box floors at zero, so no size an item
+        // takes, however it is clamped (the final shrink, a frozen
+        // hypothetical, the cross size), goes below its padding and border;
+        // for a text control that includes the frame it folds into its box
+        // (#985 second HOLD: a 10px row shrank a border-box input with 20px
+        // padding and 3px borders to 10, Chromium keeps 46).
+        min_main_size: min_main.max(main_pb + control_main_edges),
         max_main_size: max_main,
-        min_cross_size: min_cross,
+        min_cross_size: min_cross.max(cross_pb + control_cross_edges),
         max_cross_size: max_cross,
         align_self,
         main_margin_start,
@@ -2112,6 +2316,9 @@ fn create_flex_item<'a>(
         cross_pb_start,
         cross_pb_end,
         main_size_from_content,
+        content_basis,
+        ratio_cross: None,
+        main_from_ratio: false,
         auto_min_main,
         specified_main,
     }
@@ -2391,7 +2598,11 @@ fn calculate_cross_sizes(
             // the block pre-pass laid it out at: `flex: 0 0 120px;
             // aspect-ratio: 2/1` in a 400px row was 200 tall (Chromium 60).
             None if cross_axis == Axis::Vertical && aspect_ratio_cross(item).is_some() => {
-                aspect_ratio_cross(item).unwrap_or(0.0)
+                let ratio = aspect_ratio_cross(item).unwrap_or(0.0);
+                if !item.stretches(align_items) || item.has_explicit_cross_size {
+                    item.ratio_cross = Some(ratio.max(item.min_cross_size).min(item.max_cross_size));
+                }
+                ratio
             }
             None => get_content_cross_size(item.layout_box, cross_axis) + item.cross_pb(),
         };
@@ -2833,6 +3044,7 @@ fn distribute_main_axis(
     main_gap: f32,
     justify_content: JustifyContent,
     reverse: bool,
+    zero_main_from_containing_block: bool,
 ) {
     if line.items.is_empty() {
         return;
@@ -2851,7 +3063,11 @@ fn distribute_main_axis(
 
     let total_item_size: f32 = line.items.iter().map(|i| i.outer_main_size()).sum();
     let total_gaps = main_gap * (line.items.len().saturating_sub(1)) as f32;
-    let free_space = (container_main - total_item_size - total_gaps).max(0.0);
+    // Signed: an overflowing line has negative free space, which
+    // `center` / `flex-end` place unsafely (CH2.B19, Box Align §4.4 and
+    // Chromium 143: a 300px item centred in 100px starts at -100).
+    let signed_free_space = container_main - total_item_size - total_gaps;
+    let free_space = signed_free_space.max(0.0);
 
     // §8.1/§9.5.12: positive free space goes to the auto margins in equal
     // shares, before `justify-content`, which then has nothing to place.
@@ -2875,10 +3091,27 @@ fn distribute_main_axis(
         free_space
     };
 
+    // Pete's option 2 (11-06), only for the case it covers: an out-of-flow
+    // (fixed or absolute) container with an `auto` main size that came out
+    // 0. A `position: fixed; inset: 0` overlay inside a zero-size fixed
+    // wrapper is still sized against the wrapper here, not the viewport
+    // (CH2.B15), and unsafe centring there pushed a consent dialog off the
+    // left edge where nothing can click it. In-flow and explicitly sized
+    // zero-size containers are unsafe as in Chrome. Remove with B15 (the
+    // gap page in flex_justify_overflow_tests says when).
+    let b15_zero_size = zero_main_from_containing_block && container_main <= 0.0;
+    let unsafe_space = if signed_free_space < 0.0 && !b15_zero_size {
+        signed_free_space
+    } else {
+        free_space
+    };
     let (initial_offset, spacing) = match justify_content {
         JustifyContent::FlexStart => (0.0, main_gap),
-        JustifyContent::FlexEnd => (free_space, main_gap),
-        JustifyContent::Center => (free_space / 2.0, main_gap),
+        // `center` / `flex-end` place the signed space (auto margins take
+        // none of a negative one, §9.5.12); the space-* values read the
+        // clamped one, so they fall back to the start, as in Chromium.
+        JustifyContent::FlexEnd => (unsafe_space, main_gap),
+        JustifyContent::Center => (unsafe_space / 2.0, main_gap),
         JustifyContent::SpaceBetween => {
             if line.items.len() > 1 {
                 (0.0, free_space / (line.items.len() - 1) as f32 + main_gap)
@@ -2896,8 +3129,22 @@ fn distribute_main_axis(
         }
     };
 
-    // Position items
-    let mut main_pos = initial_offset;
+    // Position items. `initial_offset` is measured from the main-start
+    // edge. A reverse line's main start is the far physical edge (right in
+    // row-reverse, bottom in column-reverse), and `main_position` is a
+    // physical offset, so the line is mirrored: its physical start sits at
+    // `container_main - initial_offset - extent`. Without it a reverse line
+    // was justified from the near edge: `row-reverse` flex-start packed
+    // left and flex-end right, the opposite of Chrome 148, fitting or not
+    // (from #1051's review, nit 2).
+    let main_pos_from_start = if reverse {
+        let extent: f32 = line.items.iter().map(|i| i.outer_main_size()).sum::<f32>()
+            + spacing * (line.items.len().saturating_sub(1)) as f32;
+        container_main - initial_offset - extent
+    } else {
+        initial_offset
+    };
+    let mut main_pos = main_pos_from_start;
     let items_to_position: Vec<_> = if reverse {
         (0..line.items.len()).rev().collect()
     } else {
@@ -3111,9 +3358,28 @@ fn spec_height_to_border_box(b: &LayoutBox, h: f32) -> f32 {
 /// viewport, and reading that as content floored x's `flex-1` main row at
 /// 1011, pushing its footer out of the first viewport.
 fn content_border_height(b: &LayoutBox) -> f32 {
+    content_border_height_impl(b, false)
+}
+
+/// §4.5's content size suggestion for step 11d: the border-box height the
+/// item's CONTENT needs, whatever its own `height` says. With
+/// `content_border_height` a `height: 300px` item measured its specified
+/// 300, so its automatic minimum, min(content, specified), was 300 even
+/// around 100px of content and the item never shrank (FX1: two 300px items
+/// in a 500px column stayed 300/300; Chrome 148 300/200).
+fn content_suggestion_border_height(b: &LayoutBox) -> f32 {
+    content_border_height_impl(b, true)
+}
+
+fn content_border_height_impl(b: &LayoutBox, ignore_own_height: bool) -> f32 {
     let d = &b.dimensions;
     let pb = d.padding.vertical() + d.border_with_gutter().vertical();
-    let pct_height = match b.style.height {
+    let pct_height = if ignore_own_height {
+        // The box's used height is not a content measure here, so an empty
+        // extent means no content: never fall back to `content.height`
+        // unless the height is `auto` (as `content_border_height` does).
+        !matches!(b.style.height, Length::Auto | Length::FitContent)
+    } else { match b.style.height {
         Length::Px(h) => return spec_height_to_border_box(b, h),
         // `fit-content` is content-sized like `auto`. On the `_` arm it read
         // the box's own height, which for a squeezed `flex: 1` item is the 0
@@ -3124,7 +3390,7 @@ fn content_border_height(b: &LayoutBox) -> f32 {
         Length::Percent(_) => true,
         // Any other length (vh, em, calc…) is already resolved.
         _ => return d.content.height + pb,
-    };
+    } };
     let min = match b.style.min_height {
         Length::Px(h) => spec_height_to_border_box(b, h),
         ref l if crate::grid::is_font_or_viewport_relative(l) => {
@@ -3225,19 +3491,51 @@ fn aspect_ratio_flex_base(
     definite_inner_cross: Option<f32>,
     single_line: bool,
 ) {
-    if !item.main_size_from_content {
+    if !item.content_basis {
         return;
     }
     let style = &item.layout_box.style;
-    let Some(ratio) = style.aspect_ratio.filter(|r| *r > 0.0 && r.is_finite()) else {
+    let css_ratio = style.aspect_ratio.filter(|r| *r > 0.0 && r.is_finite());
+    // IMG1: an image with no `aspect-ratio` of its own has its natural
+    // one. In a column its height follows a specified or stretched width
+    // through it (Chrome 148: a 400x200 image stretched in a 500px column
+    // is 500x250, and with `width="300"` 300x150; the engine kept the
+    // natural 200). The fit-content arm below stays for `aspect-ratio`
+    // boxes only: an unstretched auto-width image is its natural size.
+    let natural_ratio = natural_image_ratio(item.layout_box).filter(|_| css_ratio.is_none());
+    let Some(ratio) = css_ratio.or(natural_ratio) else {
         return;
     };
+    if natural_ratio.is_some()
+        && item.explicit_cross_size.is_none()
+        && !(main_axis == Axis::Vertical && single_line && item.stretches(align_items))
+    {
+        return;
+    }
     let cross_border_box = match item.explicit_cross_size {
         Some(c) => c,
         None if main_axis == Axis::Vertical && single_line && item.stretches(align_items) => match definite_inner_cross {
             Some(w) => (w - item.cross_margin_start - item.cross_margin_end).max(0.0),
             None => return,
         },
+        // A column item that is not stretched is as wide as its content
+        // (fit-content), and the ratio gives its height from that width
+        // (LAY1; Chrome 148: a 40px-wide image in an `aspect-ratio: 1` box
+        // under `align-items: flex-start` makes a 40 x 40 box). An image
+        // is its own content: the replaced path sizes it below.
+        None if main_axis == Axis::Vertical && !item.stretches(align_items) => {
+            let Some(available) = definite_inner_cross else {
+                return;
+            };
+            let available = (available - item.cross_margin_start - item.cross_margin_end).max(0.0);
+            let cross_pb = item.cross_pb();
+            if matches!(item.layout_box.box_type, crate::BoxType::Image { .. }) {
+                let intrinsic = get_intrinsic_cross_size(item.layout_box, main_axis) + cross_pb;
+                intrinsic.min(available)
+            } else {
+                fit_content_cross_width(item.layout_box, available, cross_pb)
+            }
+        }
         None => return,
     };
     // Min wins over max (css-sizing-3 §5.2).
@@ -3248,6 +3546,12 @@ fn aspect_ratio_flex_base(
     item.flex_basis = main_border_box;
     item.hypothetical_main_size = main_border_box.max(item.min_main_size).min(item.max_main_size).max(main_pb);
     item.target_main_size = item.hypothetical_main_size;
+    // The basis is the ratio's now, not the content's: step 11 keeps it
+    // through the item's own flow, and step 11d no longer re-derives it
+    // from that flow; under `min-height: auto` taller content still grows
+    // it there (the automatic minimum).
+    item.main_size_from_content = false;
+    item.main_from_ratio = true;
 }
 
 /// The border-box main size a preferred `aspect-ratio` gives a border-box
@@ -3283,10 +3587,16 @@ fn ratio_main_from_cross(
 /// path.
 fn aspect_ratio_cross(item: &FlexItem) -> Option<f32> {
     let b = &item.layout_box;
-    if !matches!(b.box_type, crate::BoxType::Block | crate::BoxType::AnonymousBlock) {
-        return None;
-    }
-    let ratio = b.style.aspect_ratio.filter(|r| *r > 0.0 && r.is_finite())?;
+    let css_ratio = b.style.aspect_ratio.filter(|r| *r > 0.0 && r.is_finite());
+    let ratio = match b.box_type {
+        crate::BoxType::Block | crate::BoxType::AnonymousBlock => css_ratio?,
+        // IMG1: a row image with an auto height takes it from its USED
+        // width through its natural ratio (Chrome 148: a 400x200 image
+        // shrunk to 300 is 150 tall; the engine kept 200). An image with
+        // its own `aspect-ratio` keeps the replaced path.
+        crate::BoxType::Image { .. } if css_ratio.is_none() => natural_image_ratio(b)?,
+        _ => return None,
+    };
     let main_pb = item.main_pb_start + item.main_pb_end;
     let cross_pb = item.cross_pb_start + item.cross_pb_end;
     let width = item.target_main_size;
@@ -3295,6 +3605,16 @@ fn aspect_ratio_cross(item: &FlexItem) -> Option<f32> {
     } else {
         ((width - main_pb).max(0.0) / ratio) + cross_pb
     })
+}
+
+/// An image's natural width over its natural height, when it has both.
+fn natural_image_ratio(b: &crate::LayoutBox) -> Option<f32> {
+    match b.box_type {
+        crate::BoxType::Image { natural_width, natural_height, .. } if natural_width > 0.0 && natural_height > 0.0 => {
+            Some(natural_width / natural_height)
+        }
+        _ => None,
+    }
 }
 
 /// The border-box width a COLUMN item's preferred `aspect-ratio` gives it
@@ -3371,6 +3691,15 @@ fn get_intrinsic_main_size(layout_box: &crate::LayoutBox, main_axis: Axis, defin
                 // Nothing to measure is a 0 max-content width, not a line
                 // height: an empty `<div>` row item is 0 wide in Chrome 148.
                 Axis::Horizontal if layout_box.children.is_empty() => 0.0,
+                // CQ2: a size container's content does not size it
+                // (inline-size containment): its content size is 0, not the
+                // line-height fallback below (Chromium 148: a `flex: 0 0
+                // auto` container around 300px with `padding: 0 5px` is 10).
+                Axis::Horizontal
+                    if style.has_inline_size_containment() =>
+                {
+                    0.0
+                }
                 Axis::Horizontal => {
                     let border_box = crate::grid::estimate_max_content_width(layout_box);
                     let content =
@@ -4575,6 +4904,7 @@ mod tests {
                 value: String::new(),
                 placeholder: String::new(),
                 input_type: "text".to_string(),
+                size: 20,
             }),
             control_style,
         ));
@@ -4628,6 +4958,7 @@ mod tests {
                 value: String::new(),
                 placeholder: String::new(),
                 input_type: "text".to_string(),
+                size: 20,
             }),
             control_style,
         ));
@@ -6019,6 +6350,46 @@ mod tests {
     }
 
 
+    /// FX1: step 11d's automatic minimum for a column item measures content,
+    /// not the item's own `height`. With `content_border_height`, two
+    /// `height: 300px` items in a 500px column kept `min(content, specified)`
+    /// at 300 and overflowed; Chrome 148 shrinks them to 250/250 when each
+    /// item's content is only 100px.
+    #[test]
+    fn a_column_flex_items_automatic_minimum_measures_content_not_height() {
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Column;
+        style.height = Length::Px(500.0);
+        let mut container = LayoutBox::new(BoxType::Block, style);
+        for _ in 0..2 {
+            let mut item_style = ComputedStyle::new();
+            item_style.height = Length::Px(300.0);
+            item_style.flex_shrink = 1.0;
+            let mut item = LayoutBox::new(BoxType::Block, item_style);
+            let mut child_style = ComputedStyle::new();
+            child_style.height = Length::Px(100.0);
+            item.children
+                .push(LayoutBox::new(BoxType::Block, child_style));
+            container.children.push(item);
+        }
+        // Pre-pass cursor: the two specified bases stacked (not the used 500).
+        container.dimensions.content = Rect::new(0.0, 0.0, 200.0, 600.0);
+        let containing = container.dimensions.clone();
+        layout_flex_container(&mut container, &containing);
+
+        let a = container.children[0].dimensions.border_box().height;
+        let b = container.children[1].dimensions.border_box().height;
+        assert!(
+            (a - 250.0).abs() < 0.5,
+            "first item shrinks to 250 once content (not height) is the automatic minimum, got {a}"
+        );
+        assert!(
+            (b - 250.0).abs() < 0.5,
+            "second item shrinks to 250 once content (not height) is the automatic minimum, got {b}"
+        );
+    }
+
     #[test]
     fn a_column_flex_item_grows_into_the_containers_definite_height() {
         // css-flexbox-1 §9.7: free space is the container's inner MAIN size
@@ -6065,6 +6436,33 @@ mod tests {
         assert!(
             (b_y - 370.0).abs() < 0.5,
             "the sibling sits after the grown item, got {b_y}"
+        );
+    }
+
+    /// CH2.B25 / #983: a column flex container's auto height runs to the
+    /// last item's MARGIN-box end. Without `main_margin_end` a single
+    /// margined block was 16+20 tall where Chromium gives 16+20+16.
+    #[test]
+    fn a_column_flex_content_extent_includes_the_last_items_end_margin() {
+        let mut style = ComputedStyle::new();
+        style.display = rustkit_css::Display::Flex;
+        style.flex_direction = FlexDirection::Column;
+
+        let mut child_style = ComputedStyle::new();
+        child_style.height = Length::Px(20.0);
+        child_style.margin_top = Length::Px(16.0);
+        child_style.margin_bottom = Length::Px(16.0);
+
+        let mut container = LayoutBox::new(BoxType::Block, style);
+        container.children.push(LayoutBox::new(BoxType::Block, child_style));
+        container.dimensions.content = Rect::new(0.0, 0.0, 200.0, 0.0);
+        let containing = container.dimensions.clone();
+        layout_flex_container(&mut container, &containing);
+
+        let h = container.dimensions.content.height;
+        assert!(
+            (h - 52.0).abs() < 0.5,
+            "column content height should be 16+20+16, got {h}"
         );
     }
 

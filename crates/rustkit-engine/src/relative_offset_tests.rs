@@ -276,7 +276,6 @@ fn hit_testing_uses_the_offset_position() {
 /// hit (`overflow: visible` or not). The frame is right (see
 /// `the_box_paints_at_its_offset_position`). Pinned for the hit-test row.
 #[test]
-#[ignore = "a child overflowing its parent's border box is not hit (hit_test_internal prunes at the parent)"]
 #[cfg(all(target_os = "macos", feature = "headless"))]
 fn hit_testing_reaches_a_relative_box_that_overflows_its_parent() {
     let (mut engine, view) = page();

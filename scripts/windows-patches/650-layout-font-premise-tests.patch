@@ -21,7 +21,7 @@ Remove when upstream guards or parameterises both (hiwave-macos row filed from r
 
 --- a/crates/rustkit-layout/src/lib.rs
 +++ b/crates/rustkit-layout/src/lib.rs
-@@ -13283,6 +13283,14 @@
+@@ -15169,6 +15169,14 @@ mod tests {
          style.padding_bottom = Length::Px(8.0);
          style.padding_left = Length::Px(16.0);
          style.padding_right = Length::Px(16.0);
@@ -33,10 +33,10 @@ Remove when upstream guards or parameterises both (hiwave-macos row filed from r
 +            eprintln!("SKIP: this platform does not unite fallback faces into a line");
 +            return;
 +        }
-         let plain = FormControlType::Button {
-             label: "Export as JSON".to_string(),
-             button_type: "button".to_string(),
-@@ -13401,6 +13409,7 @@
+         // The page declares `border: none` too (the cascade flags both axes, CB3b).
+         style.padding_v_declared = true;
+         style.border_v_declared = true;
+@@ -15379,6 +15387,7 @@ mod tests {
      }
  
      #[test]

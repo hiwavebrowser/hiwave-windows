@@ -387,7 +387,23 @@ fn an_image_past_the_subresource_budget_is_over_budget() {
     ]);
     let config = EngineConfig { subresource_budget_ms: 200, ..EngineConfig::default() };
     let (mut engine, view) = engine(config, None);
-    runtime().block_on(engine.load_url(view, server.url("/"))).unwrap();
+    let rt = runtime();
+    rt.block_on(engine.load_url(view, server.url("/"))).unwrap();
+    // The image's budget starts when it takes a load slot, a little after
+    // the load's own wait began, so the load can return with the image
+    // still out: its `over_budget` failure is recorded when its budget ends,
+    // on the network runtime. Wait for that, not for a wall-clock guess
+    // (FLK1: read at once, the record was missing on a busy machine). The
+    // server answers at 1.5 s; the failure is due at about 0.2 s.
+    let started = std::time::Instant::now();
+    let answered = |engine: &Engine| {
+        outcomes(&records(engine, view), server.port).iter().any(|l| l.starts_with("image /slow.png") && l.contains(" -> "))
+    };
+    while !answered(&engine) {
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the image's request was never answered");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        rt.block_on(engine.pump_live(view, 10));
+    }
     let records = records(&engine, view);
     assert_each_request_answered_once(&records);
     assert!(outcomes(&records, server.port).contains(&"image /slow.png by=parser -> failed over_budget".to_string()));

@@ -46,5 +46,12 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Sample texture and return all 4 channels (proper RGBA blit)
     let tex_color = textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    // A red of -1 (PREMULTIPLIED_TEXELS) marks premultiplied texels (a
+    // canvas bitmap): they were filtered premultiplied, and are returned
+    // straight for the straight-alpha image blend.
+    if (in.color.r < 0.0) {
+        let rgb = tex_color.rgb / max(tex_color.a, 1e-6);
+        return vec4<f32>(rgb, tex_color.a * in.color.a);
+    }
     return tex_color * in.color;
 }

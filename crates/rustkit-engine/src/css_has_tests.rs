@@ -305,7 +305,7 @@ fn a_dom_change_under_the_anchor_restyles_it_both_ways() {
     assert_eq!(shown_in(&engine, &document), Vec::<String>::new());
 
     let nav = document.get_element_by_id("n").expect("nav");
-    let mut attributes = HashMap::new();
+    let mut attributes = rustkit_dom::AttrMap::new();
     attributes.insert("class".to_string(), "on".to_string());
     let on = document.create_node(NodeType::Element {
         tag_name: "i".into(),

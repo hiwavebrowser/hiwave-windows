@@ -42,7 +42,7 @@
         // document's own URL without one loads it again (HTML §7.4.2.2
         // step 12), as `location.href = location.href` does in Chrome.
         if (!sameDocument(current, target) || target.href.indexOf('#') < 0) return requestNavigation(target);
-        if (target.href !== current.href) g.__rustkit_fragment_navigation(target.href);
+        if (target.href !== current.href) __rk.fragmentNavigation(target.href);
     }
     // `location.reload()`: the same URL again, as a request like the rest.
     loc.reload = function () {
@@ -121,7 +121,7 @@
         },
         enumerable: true, configurable: true
     });
-    g.__rustkit_location_hash_sync = function (hash) { hashValue = hash; };
+    __rk.locationHashSync = function (hash) { hashValue = hash; };
     // Location's stringifier is its href (HTML §7.3). `new URL(path, location)`
     // and `String(location)` use it; without it the base is "[object Object]"
     // and the URL constructor throws Invalid URL.
@@ -148,13 +148,13 @@
         });
     } catch (e) {}
     // The engine's own write of a new document's URL.
-    g.__rustkit_location_sync = function (href) {
+    __rk.locationSync = function (href) {
         syncing = true;
         try { loc.href = href; } finally { syncing = false; }
     };
     // A new document: one entry, the current URL, no state.
     var listening = false;
-    g.__rustkit_history_reset = function () {
+    __rk.historyReset = function () {
         entries = [{ url: loc.href, state: null }];
         index = 0;
         // Listened for once the document is bound: window's listeners
@@ -164,7 +164,7 @@
             g.addEventListener('load', refreshOnLoad);
         }
     };
-    g.__rustkit_history_reset();
+    __rk.historyReset();
 
     // "Can have its URL rewritten": same origin, and for a non-http(s) URL
     // only the fragment may change.
@@ -219,7 +219,7 @@
     // The engine followed a link to a fragment of this document (HTML
     // §7.4.2.3.3): a new entry, the new URL, then `hashchange`.
     // The same URL again adds no entry and hears no `hashchange`, but scrolls.
-    g.__rustkit_fragment_navigation = function (href) {
+    __rk.fragmentNavigation = function (href) {
         var oldURL = loc.href;
         if (oldURL !== href) {
             entries.length = index + 1;
@@ -227,16 +227,16 @@
             index++;
             setLocation(href);
         }
-        g.__rustkit_scroll_to_location_fragment();
+        __rk.scrollToLocationFragment();
         if (oldURL !== href) {
             g.dispatchEvent(new HashChangeEvent('hashchange', { oldURL: oldURL, newURL: loc.href }));
         }
     };
     // Scroll to what the URL's fragment names, if it has one (a URL ending in
     // a bare `#` has an empty one, whose `hash` reads as none).
-    g.__rustkit_scroll_to_location_fragment = function () {
+    __rk.scrollToLocationFragment = function () {
         var at = loc.href.indexOf('#');
-        if (at >= 0 && typeof g.__rkScrollToFragment === 'function') g.__rkScrollToFragment(loc.href.slice(at + 1));
+        if (at >= 0 && typeof __rk.scrollToFragment === 'function') __rk.scrollToFragment(loc.href.slice(at + 1));
     };
 
     // What script's `link.click()` does once no listener cancelled it: the
@@ -246,7 +246,7 @@
     // form control between the target and the link has the click's
     // activation itself, so the link is not followed.
     var OWN_ACTIVATION = /^(button|input|select|textarea)$/;
-    g.__rustkit_follow_link = function (el) {
+    __rk.followLink = function (el) {
         var a = el;
         while (a && !(a.nodeType === 1 && (a.localName === 'a' || a.localName === 'area') && a.hasAttribute('href'))) {
             if (a.nodeType === 1 && OWN_ACTIVATION.test(a.localName)) return;

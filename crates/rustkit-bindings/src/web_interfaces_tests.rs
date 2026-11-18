@@ -190,10 +190,10 @@ fn existing_singletons_get_their_interfaces_and_the_rest_are_interface_only() {
     assert_eq!(ev(&b, "var t; try { new ShadowRoot(); t = 'no throw'; } catch (e) { t = e.name; } t"), "TypeError");
     assert_eq!(ev(&b, "var w; try { new Window(); w = 'no throw'; } catch (e) { w = e.name; } w"), "TypeError");
     // Constructors for features the engine does not have stay UNDEFINED, so
-    // `typeof Worker` style feature detection keeps working.
+    // `typeof WebAssembly` style feature detection keeps working.
     assert_eq!(
-        ev(&b, "[typeof Worker, typeof WebAssembly, typeof Notification, typeof AudioContext, typeof OffscreenCanvas, typeof BroadcastChannel].join()"),
-        "undefined,undefined,undefined,undefined,undefined,undefined"
+        ev(&b, "[typeof WebAssembly, typeof Notification, typeof AudioContext, typeof OffscreenCanvas, typeof BroadcastChannel].join()"),
+        "undefined,undefined,undefined,undefined,undefined"
     );
 }
 
@@ -257,3 +257,38 @@ fn window_inherits_from_window_prototype_and_event_target_prototype() {
     );
 }
 
+
+/// The interfaces the SVG transform DOM adds (#1171), as Chrome for Testing 148.0.7778.216 has them: each a
+/// global function that cannot be constructed, inheriting from what Chrome's does, and the paint servers'
+/// elements instances of theirs. There is no published list of global names in this repository; this pins
+/// the seven.
+#[test]
+fn the_svg_transform_and_paint_server_interfaces_exist_as_in_chrome() {
+    let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+    bindings
+        .set_document(Rc::new(
+            Document::parse_html(
+                "<!DOCTYPE html><svg><linearGradient id=lg></linearGradient><radialGradient id=rg></radialGradient><pattern id=pt></pattern></svg>",
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        ev(
+            &bindings,
+            "var names = ['SVGTransform', 'SVGTransformList', 'SVGAnimatedTransformList', 'SVGGradientElement', \
+               'SVGLinearGradientElement', 'SVGRadialGradientElement', 'SVGPatternElement']; \
+             var out = names.map(function (n) { var C = window[n], t; try { new C(); t = 'no'; } catch (e) { t = e.name; } \
+               return n + ':' + typeof C + ':' + t + ':' + Object.getPrototypeOf(C.prototype).constructor.name; }); \
+             var $ = function (i) { return document.getElementById(i); }; \
+             out.push([$('lg') instanceof SVGLinearGradientElement, $('lg') instanceof SVGGradientElement, \
+               $('rg') instanceof SVGRadialGradientElement, $('pt') instanceof SVGPatternElement, \
+               $('pt') instanceof SVGGradientElement].join(',')); \
+             out.join(' ')"
+        ),
+        "SVGTransform:function:TypeError:Object SVGTransformList:function:TypeError:Object \
+         SVGAnimatedTransformList:function:TypeError:Object SVGGradientElement:function:TypeError:SVGElement \
+         SVGLinearGradientElement:function:TypeError:SVGGradientElement SVGRadialGradientElement:function:TypeError:SVGGradientElement \
+         SVGPatternElement:function:TypeError:SVGElement true,true,true,true,false"
+    );
+}

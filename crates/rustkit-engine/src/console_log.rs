@@ -32,7 +32,9 @@ const SNIPPET_CAP: usize = 400;
 const CALLEE_CAP: usize = 120;
 
 struct AliasMap {
-    entries: VecDeque<(String, String)>,
+    /// The view, the label, the URL it stands for. Labels (`script#1`,
+    /// `inserted#<node>`) repeat from one view to the next.
+    entries: VecDeque<(u64, String, String)>,
 }
 
 /// Run `f` on the label map. The process shares one; each test thread has
@@ -98,25 +100,50 @@ pub(crate) fn swap_test_hooks(hooks: TestHooks) -> TestHooks {
     before
 }
 
-/// `name` (an engine script label) was loaded from `url`. Ignored when the
-/// switch is off.
-pub(crate) fn alias(name: &str, url: &str) {
-    if !enabled() {
+/// In `view`, `name` (an engine script label) was loaded from `url`.
+/// Ignored when the switch and the console file (`console_file`) are both
+/// off.
+pub(crate) fn alias(view: u64, name: &str, url: &str) {
+    if !enabled() && !crate::console_file::enabled() {
         return;
     }
     with_aliases(|map| {
         if map.entries.len() >= ALIAS_CAP {
             map.entries.pop_front();
         }
-        map.entries.push_back((name.to_string(), url.to_string()));
+        map.entries.push_back((view, name.to_string(), url.to_string()));
     });
 }
 
-/// The URL an engine script label stands for, or `path` itself; either
+/// The URL an engine script label stands for in `view`, or `path` itself; either
 /// way through [`brief_place`].
-fn resolve(path: &str) -> String {
-    let url = with_aliases(|map| map.entries.iter().rev().find(|(name, _)| name == path).map(|(_, url)| url.clone()));
+pub(crate) fn resolve(view: u64, path: &str) -> String {
+    let url = with_aliases(|map| {
+        map.entries.iter().rev().find(|(of, name, _)| *of == view && name == path).map(|(_, _, url)| url.clone())
+    });
     brief_place(url.flatten().as_deref().unwrap_or(path))
+}
+
+/// `text` for a log line: every control character and line or paragraph
+/// separator written as an escape (`\n`, `\r`, `\t`, `\u{..}`), and
+/// a backslash doubled so that an escape is never mistaken for text, so
+/// that text a page chose (a console call, a message, a specifier) stays
+/// inside the one line of its record.
+pub(crate) fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn emit(line: String) {
@@ -131,7 +158,7 @@ fn emit(line: String) {
     tracing::info!(target: "hiwave::console", "{line}");
 }
 
-pub(crate) fn console_message(level: LogLevel, message: &str, at: Option<&ScriptPosition>) {
+pub(crate) fn console_message(view: u64, level: LogLevel, message: &str, at: Option<&ScriptPosition>) {
     if !enabled() {
         return;
     }
@@ -143,8 +170,9 @@ pub(crate) fn console_message(level: LogLevel, message: &str, at: Option<&Script
         LogLevel::Debug => "debug",
     };
     let (message, _) = cap(message, MAX_MESSAGE_CHARS);
+    let message = plain(&message);
     let where_at = match at {
-        Some(at) => format!("{}:{}:{}", resolve(&at.path), at.line, at.column),
+        Some(at) => format!("{}:{}:{}", resolve(view, &at.path), at.line, at.column),
         None => "-".to_string(),
     };
     emit(format!("console {level} {where_at} {message}"));
@@ -193,7 +221,7 @@ pub(crate) fn excerpt(source: &str, line: u32, column: u32) -> Option<SourceWind
 fn flatten(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
-        if ch == '\n' || ch == '\r' || ch == '\t' || ch.is_control() {
+        if ch.is_control() || ch == '\u{2028}' || ch == '\u{2029}' {
             out.push(' ');
         } else {
             out.push(ch);
@@ -245,20 +273,30 @@ fn is_callee_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' || ch == '.' || ch == '?'
 }
 
-pub(crate) fn page_error(report: &ErrorReport, script: &str, window: Option<SourceWindow>) {
+pub(crate) fn page_error(view: u64, report: &ErrorReport, script: &str, window: Option<SourceWindow>) {
     if !enabled() {
         return;
     }
-    let kind = if report.rejection { "unhandled rejection" } else { "uncaught" };
+    // An error the page cancelled is written all the same, and says so: a
+    // page must not be able to keep its errors out of a run's record. The
+    // line still starts with `uncaught` or `unhandled rejection`, which is
+    // what readers match on.
+    let kind = match (report.rejection, report.canceled) {
+        (true, true) => "unhandled rejection (cancelled by the page)",
+        (true, false) => "unhandled rejection",
+        (false, true) => "uncaught (cancelled by the page)",
+        (false, false) => "uncaught",
+    };
     let name = report.name.unwrap_or("Error");
     let (message, _) = cap(report.message.as_deref().unwrap_or(""), MAX_MESSAGE_CHARS);
-    let (url, line, column) = report.frames.first().map(|frame| (resolve(&frame.path), frame.line, frame.column)).unwrap_or_else(
-        || (resolve(report.module.as_deref().unwrap_or(script)), 0, 0),
+    let message = plain(&message);
+    let (url, line, column) = report.frames.first().map(|frame| (resolve(view, &frame.path), frame.line, frame.column)).unwrap_or_else(
+        || (resolve(view, report.module.as_deref().unwrap_or(script)), 0, 0),
     );
     let around = match window {
         Some(window) => {
             let callee = window.callee.map(|name| format!(" callee {name}")).unwrap_or_default();
-            format!("{callee} source {}", window.snippet)
+            format!("{callee} source {}", plain(&window.snippet))
         }
         None => String::new(),
     };
@@ -268,7 +306,7 @@ pub(crate) fn page_error(report: &ErrorReport, script: &str, window: Option<Sour
         let lines: Vec<String> = report
             .frames
             .iter()
-            .map(|frame| format!("    at {}:{}:{}", resolve(&frame.path), frame.line, frame.column))
+            .map(|frame| format!("    at {}:{}:{}", resolve(view, &frame.path), frame.line, frame.column))
             .collect();
         let (stack, _) = cap(&lines.join("\n"), MAX_STACK_CHARS);
         format!("\n{stack}")
@@ -323,6 +361,10 @@ pub(crate) fn sync_diag_armed() {
 /// string the parser found no scheme in is cut by hand, as a relative
 /// string: a `://` in its query is not a scheme.
 pub(crate) fn brief_url(url: &str) -> String {
+    plain(&brief_url_as_parsed(url))
+}
+
+fn brief_url_as_parsed(url: &str) -> String {
     match url::Url::parse(url) {
         Ok(parsed) => cap_url(crate::inspector::scrub_url(&parsed, false)),
         // The parser's verdict on whether there is a scheme is the only one
@@ -446,9 +488,8 @@ fn on_host_stack(depth: usize, histogram: &str, frames: &str) {
     if !enabled() {
         return;
     }
-    emit(format!(
-        "host stack depth={depth} histogram=\"{histogram}\" frames=\"{frames}\""
-    ));
+    // The names are the page's own (a property's, a function's).
+    emit(format!("host stack depth={depth} histogram=\"{}\" frames=\"{}\"", plain(histogram), plain(frames)));
 }
 
 fn on_interrupt(site: &'static str, message: &'static str, limit: &'static str) {
@@ -492,6 +533,7 @@ pub(crate) fn dynamic_import_failed(specifier: &str, url: &str, reason: &str) {
     }
     let url = if url.is_empty() { "-".to_string() } else { brief_place(url) };
     let (reason, _) = cap(reason, MAX_MESSAGE_CHARS);
+    let reason = plain(&reason);
     let reason = reason.replace(['\n', '\r'], " ");
     emit(format!("dynamic import {} -> {url}: {reason}", brief_place(specifier)));
 }
@@ -516,24 +558,24 @@ mod tests {
     fn a_label_recorded_on_another_test_thread_does_not_resolve_here() {
         let _reset = Reset;
         force_for_test(Some(true));
-        alias("inserted#90001", "https://mine.example/a.js");
+        alias(0, "inserted#90001", "https://mine.example/a.js");
         std::thread::spawn(|| {
             force_for_test(Some(true));
-            alias("inserted#90001", "https://theirs.example/b.js");
+            alias(0, "inserted#90001", "https://theirs.example/b.js");
             force_for_test(None);
         })
         .join()
         .unwrap();
-        assert_eq!(resolve("inserted#90001"), "https://mine.example/a.js");
+        assert_eq!(resolve(0, "inserted#90001"), "https://mine.example/a.js");
     }
 
     #[test]
     fn forcing_the_switch_starts_with_no_labels() {
         let _reset = Reset;
         force_for_test(Some(true));
-        alias("inserted#90002", "https://old.example/a.js");
+        alias(0, "inserted#90002", "https://old.example/a.js");
         force_for_test(Some(true));
-        assert_eq!(resolve("inserted#90002"), "inserted#90002");
+        assert_eq!(resolve(0, "inserted#90002"), "inserted#90002");
     }
 
     #[test]
@@ -542,19 +584,22 @@ mod tests {
         force_for_test(Some(true));
         let sink = Arc::new(Mutex::new(Vec::new()));
         install_sink(Some(Arc::clone(&sink)));
-        alias("chunk#console-log-unit", "https://cdn.example/ok.js");
-        alias("inline#console-log-unit", "https://page.example/");
+        alias(0, "chunk#console-log-unit", "https://cdn.example/ok.js");
+        alias(0, "inline#console-log-unit", "https://page.example/");
         console_message(
+            0,
             LogLevel::Warn,
             "hello-console",
             Some(&ScriptPosition { path: "inline#console-log-unit".into(), line: 2, column: 5 }),
         );
         console_message(
+            0,
             LogLevel::Log,
             "from-chunk",
             Some(&ScriptPosition { path: "chunk#console-log-unit".into(), line: 1, column: 1 }),
         );
         page_error(
+            0,
             &ErrorReport {
                 value: "error",
                 name: Some("Error"),
@@ -565,11 +610,13 @@ mod tests {
                 located: true,
                 rejection: false,
                 module: None,
+                canceled: false,
             },
             "inline#console-log-unit",
             None,
         );
         page_error(
+            0,
             &ErrorReport {
                 value: "error",
                 name: Some("Error"),
@@ -580,6 +627,7 @@ mod tests {
                 located: true,
                 rejection: true,
                 module: None,
+                canceled: false,
             },
             "inline#console-log-unit",
             None,
@@ -593,6 +641,7 @@ mod tests {
         assert!(window.snippet.chars().count() <= 400, "{}", window.snippet.chars().count());
         assert!(!window.snippet.contains('\n'), "{}", window.snippet);
         page_error(
+            0,
             &ErrorReport {
                 value: "error",
                 name: Some("TypeError"),
@@ -603,6 +652,7 @@ mod tests {
                 located: true,
                 rejection: false,
                 module: None,
+                canceled: false,
             },
             "inline#console-log-unit",
             Some(window),
@@ -632,8 +682,9 @@ mod tests {
 
         force_for_test(Some(false));
         let before = sink.lock().unwrap().len();
-        console_message(LogLevel::Log, "quiet", None);
+        console_message(0, LogLevel::Log, "quiet", None);
         page_error(
+            0,
             &ErrorReport {
                 value: "error",
                 name: Some("Error"),
@@ -644,13 +695,14 @@ mod tests {
                 located: false,
                 rejection: false,
                 module: None,
+                canceled: false,
             },
             "inline#1",
             None,
         );
         inserted_script("https://cdn.example/ok.js", "load");
         dynamic_import_failed("./gone.js", "https://cdn.example/gone.js", "not found");
-        alias("chunk#console-log-unit", "https://cdn.example/other.js");
+        alias(0, "chunk#console-log-unit", "https://cdn.example/other.js");
         assert_eq!(sink.lock().unwrap().len(), before);
     }
 
@@ -901,6 +953,43 @@ mod tests {
         assert!(!brief.contains('\t') && !brief.contains('S'), "{brief:?}");
     }
 
+    /// Log lines escape control characters: the source excerpt of an
+    /// error's line and the names in a host-stack line are on one line
+    /// whatever separators the page's text holds.
+    #[test]
+    fn a_source_excerpt_and_a_host_stack_line_stay_on_one_line() {
+        let breaks = |text: &str| text.chars().any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}');
+        let window = excerpt("var s = 'a\u{2028}b\u{2029}c\u{85}d'; throw new Error('x');", 1, 22).expect("an excerpt");
+        assert!(!breaks(&window.snippet), "{:?}", window.snippet);
+        assert!(window.snippet.contains("throw new Error"), "{:?}", window.snippet);
+
+        let _reset = Reset;
+        force_for_test(Some(true));
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        install_sink(Some(Arc::clone(&sink)));
+        on_host_stack(256, "set a\nb=255\u{2028}set c=1", "set a\nb > 2026-11-16T00:00:00.0Z  INFO hiwave::console: uncaught Error: named\r > set c\u{2029}");
+        let lines = sink.lock().unwrap().clone();
+        assert_eq!(lines.len(), 1, "{lines:#?}");
+        assert!(!breaks(&lines[0]), "{:?}", lines[0]);
+        assert!(lines[0].starts_with("host stack depth=256 histogram=\"set a\\nb=255\\u{2028}set c=1\" frames=\"set a\\nb > 2026"), "{:?}", lines[0]);
+    }
+
+    #[test]
+    fn plain_writes_control_characters_as_escapes() {
+        assert_eq!(plain("a b\u{e9}\u{4e2d} \"'"), "a b\u{e9}\u{4e2d} \"'");
+        // A backslash is doubled: the two characters `\n` in page text are not a line break's escape.
+        assert_eq!(plain("a\\nb\nc"), "a\\\\nb\\nc");
+        assert_eq!(plain("a\nb\r\nc\td"), "a\\nb\\r\\nc\\td");
+        assert_eq!(plain("\u{0}\u{1b}[0m\u{7f}\u{85}\u{2028}\u{2029}\u{b}\u{c}"), "\\u{0}\\u{1b}[0m\\u{7f}\\u{85}\\u{2028}\\u{2029}\\u{b}\\u{c}");
+        for ch in (0u32..0x3000).filter_map(char::from_u32) {
+            let out = plain(&ch.to_string());
+            assert!(!out.chars().any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}'), "{:x}", ch as u32);
+        }
+        // A URL or a label in a line goes through it too.
+        assert!(!brief_place("a\nb#1\u{2028}").contains(['\n', '\u{2028}']));
+        assert!(!brief_url("rel\u{85}ative/\u{1b}x\ny").chars().any(char::is_control));
+    }
+
     #[test]
     fn brief_place_keeps_only_numbered_engine_labels() {
         // T7a R1 delta (Atlas 5): `word#` is a label only when digits follow.
@@ -918,11 +1007,11 @@ mod tests {
         force_for_test(Some(true));
         let sink = Arc::new(Mutex::new(Vec::new()));
         install_sink(Some(Arc::clone(&sink)));
-        alias("chunk#q-unit", "https://cdn.example/c.js?token=SECRET");
+        alias(0, "chunk#q-unit", "https://cdn.example/c.js?token=SECRET");
         let at = ScriptPosition { path: "chunk#q-unit".into(), line: 2, column: 3 };
-        console_message(LogLevel::Log, "hi", Some(&at));
+        console_message(0, LogLevel::Log, "hi", Some(&at));
         let inline = ScriptPosition { path: "inline#1".into(), line: 1, column: 1 };
-        console_message(LogLevel::Log, "hi", Some(&inline));
+        console_message(0, LogLevel::Log, "hi", Some(&inline));
         inserted_script("https://cdn.example/i.js?token=SECRET#f", "load");
         dynamic_import_failed("./m.js?token=SECRET", "https://u:SECRET@cdn.example/m.js;s=SECRET", "not found");
         let text = sink.lock().unwrap().join("\n");
@@ -1028,6 +1117,108 @@ throw new Error('boom-inline');
             "/missing.js" => (404, "text/plain", vec![], "missing".into()),
             _ => (200, "text/html", vec![], PAGE.into()),
         }
+    }
+
+    /// The lines of the log that are an uncaught error's, once `done` of
+    /// them are there: the view is turned at most `turns` times.
+    fn uncaught_lines(config: EngineConfig, site: crate::error_page_script_tests::Handler, done: usize, turns: usize) -> Vec<String> {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        install_sink(Some(Arc::clone(&sink)));
+        let server = serve(site);
+        let mut engine = Engine::new(config).expect("engine");
+        let view = engine.create_headless_view(Bounds { x: 0, y: 0, width: 400, height: 800 }).expect("view");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(engine.load_url(view, server.url("/"))).expect("load");
+        let lines = || -> Vec<String> { sink.lock().unwrap().iter().filter(|line: &&String| line.starts_with("uncaught")).cloned().collect() };
+        for _ in 0..turns {
+            if lines().len() >= done {
+                break;
+            }
+            rt.block_on(engine.pump_live(view, 50));
+        }
+        lines()
+    }
+
+    /// Log lines escape control characters: whatever text a page puts in a
+    /// console call, an error's message or a rejection's reason, each is
+    /// one record on one line, and a reader of the log finds exactly the
+    /// errors there were.
+    #[test]
+    fn log_lines_escape_control_characters() {
+        fn site(_: &str, _: &str) -> (u16, &'static str, Vec<(&'static str, &'static str)>, String) {
+            let page = "<!doctype html><body><script>var odd = 'first\\n2026-11-16T00:00:00.0Z  INFO hiwave::console: uncaught Error: second at inline#9:1:1\\r\\nthird\\u2028fourth\\u0085fifth\\u001b[0m\\ttab';\
+                        console.log(odd); Promise.reject(new RangeError(odd)); throw new Error(odd);</script></body>";
+            (200, "text/html", vec![], page.into())
+        }
+        let _reset = Reset;
+        force_for_test(Some(true));
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        install_sink(Some(Arc::clone(&sink)));
+        let server = serve(site);
+        let mut engine = Engine::new(EngineConfig { timer_horizon_ms: 0, ..EngineConfig::default() }).expect("engine");
+        let view = engine.create_headless_view(Bounds { x: 0, y: 0, width: 400, height: 800 }).expect("view");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(engine.load_url(view, server.url("/"))).expect("load");
+        rt.block_on(engine.pump_live(view, 50));
+        let records: Vec<String> = sink.lock().unwrap().iter().filter(|line: &&String| line.contains("first")).cloned().collect();
+        assert_eq!(records.len(), 3, "{records:#?}");
+        // The log as it is written, and what a reader of it counts (the
+        // stress runner's rule: a line whose record starts with one of the
+        // two words).
+        let written: String = records.iter().map(|record| format!("2026-11-16T00:00:00.0Z  INFO hiwave::console: {record}\n")).collect();
+        let found: Vec<&str> = written
+            .split(['\n', '\r', '\u{2028}', '\u{2029}', '\u{85}', '\u{b}', '\u{c}'])
+            .filter_map(|line| line.split_once("hiwave::console: ").map(|(_, record)| record))
+            .filter(|record| record.starts_with("uncaught ") || record.starts_with("unhandled rejection "))
+            .collect();
+        assert_eq!(found.len(), 2, "{written}");
+        assert!(found.iter().any(|record| record.starts_with("uncaught Error: first\\n2026-11-16T00:00:00.0Z")), "{written}");
+        assert!(found.iter().any(|record| record.starts_with("unhandled rejection RangeError: first\\n")), "{written}");
+        for record in &records {
+            // The message is on one line; the lines after it are the stack's.
+            let head = record.split("\n    at ").next().unwrap();
+            assert!(!head.chars().any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}'), "{head:?}");
+            assert!(head.contains("\\r\\nthird\\u{2028}fourth\\u{85}fifth\\u{1b}[0m\\ttab"), "{head:?}");
+        }
+    }
+
+    /// An error thrown in a timer that `window.onerror` cancels is still in
+    /// the engine's log, marked.
+    #[test]
+    fn a_timers_error_the_page_cancelled_is_logged_with_its_mark() {
+        fn site(_: &str, _: &str) -> (u16, &'static str, Vec<(&'static str, &'static str)>, String) {
+            let page = "<!doctype html><body><script>window.onerror = function () { return true; }; \
+                        setTimeout(function () { throw new Error('boom-cancelled-timer'); }, 10);</script></body>";
+            (200, "text/html", vec![], page.into())
+        }
+        let _reset = Reset;
+        force_for_test(Some(true));
+        let lines = uncaught_lines(EngineConfig { timer_horizon_ms: 0, ..EngineConfig::default() }, site, 1, 100);
+        assert_eq!(lines.len(), 1, "{lines:#?}");
+        assert!(lines[0].starts_with("uncaught (cancelled by the page) Error: boom-cancelled-timer at "), "{lines:#?}");
+    }
+
+    /// What a script of a same-origin frame throws, at its top level and in
+    /// a timer, is in the engine's log like the top document's.
+    #[test]
+    fn a_frames_uncaught_errors_are_logged() {
+        fn site(path: &str, _: &str) -> (u16, &'static str, Vec<(&'static str, &'static str)>, String) {
+            let body = match path {
+                "/frame.html" => "<!doctype html><body><script>setTimeout(function () { throw new RangeError('boom-frame-timer'); }, 10);</script>\
+                                  <script>throw new TypeError('boom-frame-inline');</script></body>",
+                _ => "<!doctype html><body><iframe src=/frame.html></iframe></body>",
+            };
+            (200, "text/html", vec![], body.into())
+        }
+        let _reset = Reset;
+        force_for_test(Some(true));
+        let config = EngineConfig { timer_horizon_ms: 0, nested_contexts: true, post_load_requests_live: true, ..EngineConfig::default() };
+        let lines = uncaught_lines(config, site, 2, 200);
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        // A frame's inline script is named as the engine names it
+        // (`frame-inline#n`), not by the frame's URL: as it is today.
+        assert!(lines.iter().any(|line| line.starts_with("uncaught TypeError: boom-frame-inline at frame-inline#2:")), "{lines:#?}");
+        assert!(lines.iter().any(|line| line.starts_with("uncaught RangeError: boom-frame-timer at frame-inline#1:")), "{lines:#?}");
     }
 
     #[test]

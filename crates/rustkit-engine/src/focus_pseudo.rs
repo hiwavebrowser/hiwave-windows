@@ -225,6 +225,22 @@ impl Engine {
         }
     }
 
+    /// A checkbox or a radio button: Space clicks it at the keyup, as it
+    /// does a button, and no key types into it (Chrome 148).
+    pub(crate) fn is_checkable_input(&self, id: EngineViewId, raw: usize) -> bool {
+        let Some(node) = self.node(id, raw) else {
+            return false;
+        };
+        let NodeType::Element { tag_name, attributes, .. } = &node.node_type else {
+            return false;
+        };
+        tag_name.eq_ignore_ascii_case("input")
+            && !attributes.contains_key("disabled")
+            && attributes
+                .get("type")
+                .is_some_and(|t| matches!(t.to_ascii_lowercase().as_str(), "checkbox" | "radio"))
+    }
+
     /// Tab (Shift+Tab: `backward`): the focus moves to the next (previous)
     /// element of the page's sequential focus order, from the focused one
     /// (from the start, or the end, when nothing is focused). Past the

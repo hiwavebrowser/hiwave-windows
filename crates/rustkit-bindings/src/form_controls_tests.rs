@@ -362,3 +362,31 @@ fn script_selection_reaches_the_engine_as_option_checkedness() {
     // No events for a script change.
     assert_eq!(ev(&b, "String(log.length)"), "0");
 }
+
+/// The engine's entry points for the user's typing, option pick and Enter
+/// are the engine's alone: nothing of them is on `document` for a page to
+/// call (they dispatch trusted events at a node id it can guess) or to
+/// replace, and the events of a pick are not built with `window.Event`.
+#[test]
+fn the_engines_form_entry_points_are_not_the_pages() {
+    let (b, s) = bound_pick();
+    assert_eq!(
+        ev(
+            &b,
+            "['__rkFireInput', '__rkPickOption', '__rkImplicitSubmit'].map(function (k) { \
+             return typeof document[k] + ':' + (k in Document.prototype); }).join(' ')"
+        ),
+        "undefined:false undefined:false undefined:false"
+    );
+    // A page that defines them, and replaces Event, changes nothing.
+    ev(
+        &b,
+        "window.hits = 0; ['__rkFireInput', '__rkPickOption', '__rkImplicitSubmit'].forEach(function (k) { \
+         document[k] = Document.prototype[k] = function () { window.hits++; return true; }; }); \
+         window.Event = function () { window.hits++; }; ''",
+    );
+    assert!(b.pick_option(s, 2).unwrap());
+    b.fire_input_event(s, Some("x")).unwrap();
+    b.implicit_submit(s).unwrap();
+    assert_eq!(ev(&b, "hits + ' ' + log.join(' ')"), "0 input:s:true:true:2 change:s:true:true:2 input:s:true:true:2");
+}

@@ -14,7 +14,7 @@ fn before_content(value: &str) -> Option<String> {
     let css = format!(".k::before {{ content: {value} }}");
     let sheet = Stylesheet::parse(&css).expect("css");
     let engine = Engine::new(EngineConfig::default()).expect("engine");
-    let mut attributes = HashMap::new();
+    let mut attributes = rustkit_dom::AttrMap::new();
     attributes.insert("class".to_string(), "k".to_string());
     engine
         .lctx.pseudo_element_style(

@@ -2,7 +2,7 @@
 //! commits, the Edit menu's commands and Cmd chords, as the content view's
 //! `NSTextInputClient` and responder methods hand them to the page.
 //!
-//! The composition's events are script's (`document.__rkCompose` in
+//! The composition's events are script's (`__rk.compose` in
 //! rustkit-bindings' `dom/editing.js`); the order is Chrome 143's, logged
 //! by `tools/parity_oracle/composition_log.mjs`.
 
@@ -40,7 +40,7 @@ impl Engine {
         (self.focused_is_text_control(id) && !self.is_editing_host(id, focused)).then_some(focused)
     }
 
-    /// Run `__rkCompose` in the focused text control, then lay out what
+    /// Run `__rk.compose` in the focused text control, then lay out what
     /// its listeners and the edit changed. `None` when no text control has
     /// focus or script answered nothing.
     fn compose(&mut self, id: EngineViewId, action: &str, text: &str) -> Option<serde_json::Value> {
@@ -199,6 +199,29 @@ impl Engine {
         shift: bool,
         alt: bool,
     ) -> bool {
+        self.handle_command_key_if(id, key_code, key, shift, alt, &mut || true)
+    }
+
+    /// [`handle_command_key`](Self::handle_command_key), with the chord's
+    /// editing default run only if `default_is_ours` says so. It is asked
+    /// once, after the keydown went uncancelled and only when there is an
+    /// edit to run. The window stops waiting for the page's answer after
+    /// 100 ms and gives the chord to the menu (M1e); the menu's Paste or
+    /// Undo then edits the field, and a page that reaches the chord late
+    /// must not edit again (#1015 R1 nit 1). A refused default is not a
+    /// claim. (Since M1g the page protocol dispatches a chord only if its
+    /// wait has not run out, and a chord whose keydown has started no
+    /// longer goes to the menu at the deadline, so on that path this is a
+    /// guard that holds.)
+    pub fn handle_command_key_if(
+        &mut self,
+        id: EngineViewId,
+        key_code: u32,
+        key: &str,
+        shift: bool,
+        alt: bool,
+        default_is_ours: &mut dyn FnMut() -> bool,
+    ) -> bool {
         let _hold = wgate::hold("key");
         let focused = self.views.get(&id).and_then(|v| v.lay.focused_node.get()).map(|n| n.raw());
         if !self.fire_key_mods(id, focused, "keydown", key_code, key, (false, shift, alt, true)) {
@@ -216,8 +239,17 @@ impl Engine {
             if command.is_none() && !CMD_EDIT_KEYS.contains(&key_code) {
                 return false;
             }
+            if !default_is_ours() {
+                return false;
+            }
             self.editable_key(id, node, key_code, key, true);
             return true;
+        }
+        if command.is_none() && !CMD_EDIT_KEYS.contains(&key_code) {
+            return false;
+        }
+        if !default_is_ours() {
+            return false;
         }
         if let Some(command) = command {
             if self.user_edit_command(id, node, &command).is_none() {
@@ -225,11 +257,8 @@ impl Engine {
             }
             return true;
         }
-        if CMD_EDIT_KEYS.contains(&key_code) {
-            self.text_key_default(id, node, key_code, key, true, shift, alt);
-            return true;
-        }
-        false
+        self.text_key_default(id, node, key_code, key, true, shift, alt);
+        true
     }
 
     /// An Edit menu item (`copy:`, `cut:`, `paste:`, `undo:`, `redo:`,

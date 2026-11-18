@@ -199,9 +199,25 @@
         needArg(arguments.length, 'parse');
         try { return new URL(url, base); } catch (e) { return null; }
     };
-    var blobCount = 0;
-    URL.createObjectURL = function () { return 'blob:' + (g.location && g.location.origin || 'null') + '/' + (++blobCount); };
-    URL.revokeObjectURL = function () {};
+    // Blob URLs: the bytes behind one are copied into the host's store
+    // here, in the page's turn (anything the page hooked on the way runs
+    // under its own budget), and only a real Blob's own bytes go in.
+    // Anything that is not a Blob (a MediaSource) gets a URL nothing
+    // stands behind.
+    // The host names the URL (`blob:<origin>/<uuid>`, with the origin the
+    // engine knows for this document) and keeps the record for that origin.
+    var blobInternals = g.__rkBlobInternals, blobUrl = __rk.blobUrl, blobRevoke = __rk.blobRevoke, realm = __realm;
+    delete g.__rkBlobInternals;
+    URL.createObjectURL = function (object) {
+        var record = blobInternals ? blobInternals.record(object) : null;
+        var made = record ? blobUrl(realm, record.bytes, record.type) : blobUrl(realm);
+        // Not kept (the store is full): the URL has nothing behind it.
+        if (!made[1]) __rk.unsupported('URL', 'createObjectURL (blob store full)');
+        return made[0];
+    };
+    URL.revokeObjectURL = function (url) {
+        blobRevoke(realm, String(url).split('#')[0]);
+    };
 
     g.URL = URL;
     g.URLSearchParams = URLSearchParams;

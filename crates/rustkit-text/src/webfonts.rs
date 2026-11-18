@@ -9,12 +9,19 @@
 //! SCOPE, STATED: the registry holds the faces of ONE document at a time —
 //! the engine installs a view's partition slice of its (partitioned)
 //! `FontLoader` immediately before laying out or painting that view. It is a
-//! process-wide slot, not a process-wide cache: two documents never see each
-//! other's faces because the engine swaps the slot per view, and the loader
-//! it swaps from is keyed by top-level site. Handing every `create_font`
-//! call a partition parameter would have been the pure design; it also
-//! touches a dozen call sites across four crates for the same guarantee,
-//! which this gives by construction.
+//! slot, not a cache: two documents never see each other's faces because the
+//! engine swaps the slot per view, and the loader it swaps from is keyed by
+//! top-level site. Handing every `create_font` call a partition parameter
+//! would have been the pure design; it also touches a dozen call sites across
+//! four crates for the same guarantee, which this gives by construction.
+//!
+//! The slot is PER THREAD (E56). An engine lays out and paints on the one
+//! thread that owns it, and the app runs one engine per tab on its own
+//! content thread plus the chrome's engine on the window thread. While the
+//! slot was process-wide, another thread's install could land between this
+//! thread's install and its shaping, and this page's lines were shaped in
+//! the fallback face on that frame only: on ebay with nine tabs open the
+//! text switched face from frame to frame once the page's faces had arrived.
 //!
 //! Formats: TrueType/OpenType sfnt (`.ttf`/`.otf`/`.ttc`), WOFF and WOFF2.
 //! On macOS `CGFontCreateWithDataProvider` decodes all of them, so this
@@ -234,17 +241,34 @@ fn content_id(data: &[u8]) -> u64 {
     hasher.finish().max(1)
 }
 
-static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Bumped for every thread: something process-wide that family-name
+/// resolutions depend on changed (the shaped-face table started over).
+static EPOCH: AtomicU64 = AtomicU64::new(0);
 
-/// Changes whenever the installed face set does (an install of a different
-/// set, or a clear). Anything that caches a family-name resolution keys it
-/// on this, because the same name can resolve to a different face after.
-pub fn generation() -> u64 {
-    GENERATION.load(Ordering::Acquire)
+thread_local! {
+    /// Bumped when THIS thread's installed face set changes.
+    static LOCAL_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// Changes whenever this thread's installed face set does (an install of a
+/// different set, or a clear), or when process-wide face state is reset.
+/// Anything that caches a family-name resolution keys it on this, because
+/// the same name can resolve to a different face after. Another thread's
+/// install does not move it: that thread has a slot of its own.
+pub fn generation() -> u64 {
+    // Both parts only grow, so the sum changes whenever either does.
+    EPOCH.load(Ordering::Acquire) + LOCAL_GENERATION.with(std::cell::Cell::get)
+}
+
+/// Invalidate every thread's family-name resolutions.
 pub(crate) fn bump_generation() {
-    GENERATION.fetch_add(1, Ordering::AcqRel);
+    EPOCH.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Invalidate this thread's family-name resolutions (its slot changed).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn bump_local_generation() {
+    LOCAL_GENERATION.with(|g| g.set(g.get() + 1));
 }
 
 /// One face as the engine hands it over: raw bytes plus the descriptors the
@@ -263,8 +287,8 @@ mod imp {
     use super::WebFontFace;
     use core_graphics::data_provider::CGDataProvider;
     use core_graphics::font::CGFont;
+    use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::sync::{OnceLock, RwLock};
 
     struct Face {
         weight: u16,
@@ -281,14 +305,17 @@ mod imp {
         families: HashMap<String, Vec<Face>>,
     }
 
-    fn slot() -> &'static RwLock<Active> {
-        static SLOT: OnceLock<RwLock<Active>> = OnceLock::new();
-        SLOT.get_or_init(|| {
-            RwLock::new(Active {
-                tag: String::new(),
-                families: HashMap::new(),
-            })
-        })
+    thread_local! {
+        /// This thread's slot (see the module docs: one per thread, E56).
+        /// Dropped with the thread, so a closed tab's faces go with it.
+        static SLOT: RefCell<Active> = RefCell::new(Active {
+            tag: String::new(),
+            families: HashMap::new(),
+        });
+    }
+
+    fn with_slot<R>(f: impl FnOnce(&mut Active) -> R) -> R {
+        SLOT.with(|slot| f(&mut slot.borrow_mut()))
     }
 
     fn key(family: &str) -> String {
@@ -300,11 +327,12 @@ mod imp {
     /// `inspect` or that Core Graphics cannot decode is dropped and counted
     /// against that number, never silently kept as a name with no glyphs.
     pub fn install(tag: &str, faces: &[WebFontFace]) -> usize {
-        {
-            let active = slot().read().unwrap();
-            if !tag.is_empty() && active.tag == tag {
-                return active.families.values().map(Vec::len).sum();
-            }
+        let installed = with_slot(|active| {
+            (!tag.is_empty() && active.tag == tag)
+                .then(|| active.families.values().map(Vec::len).sum())
+        });
+        if let Some(count) = installed {
+            return count;
         }
         let mut families: HashMap<String, Vec<Face>> = HashMap::new();
         let mut accepted = 0usize;
@@ -324,27 +352,31 @@ mod imp {
                 cgfont,
             });
         }
-        let mut active = slot().write().unwrap();
-        active.tag = tag.to_string();
-        active.families = families;
-        super::bump_generation();
+        with_slot(|active| {
+            active.tag = tag.to_string();
+            active.families = families;
+        });
+        super::bump_local_generation();
         accepted
     }
 
     /// Drop the active set. After this no family resolves through the registry.
     pub fn clear() {
-        let mut active = slot().write().unwrap();
-        if !active.tag.is_empty() || !active.families.is_empty() {
-            super::bump_generation();
+        let changed = with_slot(|active| {
+            let changed = !active.tag.is_empty() || !active.families.is_empty();
+            active.tag.clear();
+            active.families.clear();
+            changed
+        });
+        if changed {
+            super::bump_local_generation();
         }
-        active.tag.clear();
-        active.families.clear();
     }
 
     /// Does the active document declare `family`? Case-insensitive, as CSS
     /// family matching is.
     pub fn is_installed(family: &str) -> bool {
-        slot().read().unwrap().families.contains_key(&key(family))
+        with_slot(|active| active.families.contains_key(&key(family)))
     }
 
     /// CSS Fonts 4 §5.2 reduced to the two axes the loader records: an exact
@@ -358,9 +390,10 @@ mod imp {
 
     /// The registered face of `family` closest to the requested style.
     pub fn lookup(family: &str, weight: u16, italic: bool) -> Option<CGFont> {
-        let active = slot().read().unwrap();
-        let faces = active.families.get(&key(family))?;
-        select(faces, weight, italic).map(|f| f.cgfont.clone())
+        with_slot(|active| {
+            let faces = active.families.get(&key(family))?;
+            select(faces, weight, italic).map(|f| f.cgfont.clone())
+        })
     }
 
     /// Identity of the registered face a CSS family LIST resolves to for this
@@ -370,26 +403,28 @@ mod imp {
     /// neither whether the face has arrived yet nor which document's file it
     /// is.
     pub fn face_id(family_list: &str, weight: u16, italic: bool) -> u64 {
-        let active = slot().read().unwrap();
-        if active.families.is_empty() {
-            return 0;
-        }
-        for family in family_list.split(',') {
-            let family = family.trim().trim_matches('"').trim_matches('\'');
-            if let Some(faces) = active.families.get(&key(family)) {
-                return select(faces, weight, italic).map_or(0, |f| f.id);
+        with_slot(|active| {
+            if active.families.is_empty() {
+                return 0;
             }
-        }
-        0
+            for family in family_list.split(',') {
+                let family = family.trim().trim_matches('"').trim_matches('\'');
+                if let Some(faces) = active.families.get(&key(family)) {
+                    return select(faces, weight, italic).map_or(0, |f| f.id);
+                }
+            }
+            0
+        })
     }
 
     /// The `(weight, italic)` descriptors of the face `lookup` would return.
     /// Same selection code, exposed so the rule is testable and debuggable
     /// without comparing font objects.
     pub fn lookup_descriptor(family: &str, weight: u16, italic: bool) -> Option<(u16, bool)> {
-        let active = slot().read().unwrap();
-        let faces = active.families.get(&key(family))?;
-        select(faces, weight, italic).map(|f| (f.weight, f.italic))
+        with_slot(|active| {
+            let faces = active.families.get(&key(family))?;
+            select(faces, weight, italic).map(|f| (f.weight, f.italic))
+        })
     }
 }
 
@@ -418,7 +453,68 @@ mod imp {
     }
 }
 
-pub use imp::{clear, face_id, install, is_installed, lookup_descriptor};
+pub use imp::{face_id, is_installed, lookup_descriptor};
+
+/// A thread's installed face set as it was handed over (tag and faces), so
+/// that a frame built on one thread can be drawn on another with the same
+/// faces: the app lays a page out on its content thread and draws the
+/// committed frame on the window thread, whose slot holds other faces or
+/// none. Empty: no web faces.
+#[derive(Debug, Clone, Default)]
+pub struct FaceSet(Option<Arc<(String, Vec<WebFontFace>)>>);
+
+impl FaceSet {
+    pub fn is_empty(&self) -> bool {
+        self.0.as_ref().map_or(true, |set| set.1.is_empty())
+    }
+}
+
+thread_local! {
+    /// What this thread installed last, for [`current`].
+    static CURRENT: std::cell::RefCell<FaceSet> = std::cell::RefCell::new(FaceSet::default());
+}
+
+/// Install `faces` as this thread's document font set, replacing whatever
+/// was there. Returns how many faces were accepted; a face that fails
+/// `inspect` or that the platform cannot decode is dropped and counted
+/// against that number, never silently kept as a name with no glyphs.
+/// Installing the set already installed (same non-empty `tag`) is a no-op.
+pub fn install(tag: &str, faces: &[WebFontFace]) -> usize {
+    let accepted = imp::install(tag, faces);
+    CURRENT.with(|current| {
+        let mut current = current.borrow_mut();
+        let same = current.0.as_ref().is_some_and(|set| !tag.is_empty() && set.0 == tag);
+        if !same {
+            *current = FaceSet(Some(Arc::new((tag.to_string(), faces.to_vec()))));
+        }
+    });
+    accepted
+}
+
+/// Drop this thread's set. After this no family resolves through the registry.
+pub fn clear() {
+    imp::clear();
+    CURRENT.with(|current| *current.borrow_mut() = FaceSet::default());
+}
+
+/// The set this thread has installed, to hand to the thread that draws
+/// what this one built ([`install_set`]).
+pub fn current() -> FaceSet {
+    CURRENT.with(|current| current.borrow().clone())
+}
+
+/// Install a set another thread handed over ([`current`]); an empty set
+/// clears this thread's, so no family resolves to a face another document
+/// installed here. Returns how many faces were accepted.
+pub fn install_set(set: &FaceSet) -> usize {
+    match &set.0 {
+        Some(set) => install(&set.0, &set.1),
+        None => {
+            clear();
+            0
+        }
+    }
+}
 
 #[cfg(target_os = "macos")]
 pub use imp::lookup;
@@ -568,7 +664,9 @@ mod tests {
         }
     }
 
-    // The slot is process-wide and cargo runs tests on parallel threads.
+    // History: the slot was process-wide until E56 made it per thread, so
+    // the guard below is now belt and braces (the generation's epoch part
+    // is still process-wide). While it was shared:
     // "Re-install before every positive check" was not enough: another
     // test's install() can land BETWEEN this test's install() and its
     // lookup(), replacing the set, and the positive assertion fails — seen

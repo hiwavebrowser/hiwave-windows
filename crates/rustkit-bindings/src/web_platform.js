@@ -43,12 +43,15 @@
     }
 
     // ---- performance (High Resolution Time, Performance Timeline, Navigation Timing).
+    // The engine's monotonic clock (STR-9), taken off the window.
+    var nowMs = g.__rustkit_now_ms;
+    try { delete g.__rustkit_now_ms; } catch (_) {}
     if (typeof g.performance === 'undefined') {
         var origin = Date.now();
         var entries = [];
         var performance = {
             timeOrigin: origin,
-            now: function () { return Date.now() - origin; },
+            now: typeof nowMs === 'function' ? nowMs : function () { return Date.now() - origin; },
             mark: function (name) {
                 var e = { name: String(name), entryType: 'mark', startTime: performance.now(), duration: 0 };
                 entries.push(e);

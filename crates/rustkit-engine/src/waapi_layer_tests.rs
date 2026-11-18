@@ -305,7 +305,10 @@ fn animation_constructor_and_document_timeline() {
         "progress {progress} is the opacity {mid}"
     );
     let t1 = num(&mut engine, view, "document.timeline.currentTime");
-    assert!(t1 >= t0 + 40.0, "the timeline moved {t0} -> {t1}");
+    // Read in a task, the timeline is the grid point at or before the task's time (TIMELINE1, as
+    // Chrome's: `timeline_probe_cft148.json` "idle"), so two reads 50 ms of turns apart are at least
+    // 50 - 16.7 ms apart. It was the live clock, and asked for 40.
+    assert!(t1 >= t0 + 33.0, "the timeline moved {t0} -> {t1}");
     pump(&mut engine, view, 100, 10);
     assert_eq!(read(&mut engine, view, "a.playState"), "finished");
     assert_eq!(opacity(&mut engine, view), 1.0);

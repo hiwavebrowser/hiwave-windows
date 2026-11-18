@@ -106,6 +106,8 @@ struct BuildState {
     /// Shadow trees with the same `<style>` text (every instance of one
     /// component) share one parse.
     by_text: HashMap<String, Rc<TreeStyle>>,
+    /// The view's styles across builds, when the build is a view's.
+    view: Option<Rc<RefCell<ViewTreeStyles>>>,
 }
 
 /// One tree's sheets.
@@ -122,6 +124,49 @@ pub(crate) struct TreeStyle {
     host_args: Vec<(String, bool)>,
     /// Does any rule read the host as an ancestor?
     host_in_chain: bool,
+    /// The rule index of `sheets` (LAT22), built by the first build that
+    /// meets the tree and kept with it.
+    index: std::cell::OnceCell<Rc<crate::RuleIndex>>,
+}
+
+/// What names a shadow root's sheets without reading their text: each
+/// `<style>` in tree order with its sheet's lifetime (its children, its
+/// text and its connection: `Node::sheet_generation`) and its `media`
+/// attribute, the root's `adoptedStyleSheets` generation, and what the
+/// parse reads besides (the viewport's `@media` answers, scripting).
+#[derive(Clone, PartialEq, Debug)]
+struct RootStamp {
+    styles: Vec<(usize, u64, Option<String>)>,
+    adopted: u64,
+    viewport: Option<(u32, u32)>,
+    javascript: bool,
+}
+
+/// LAT22: a view's shadow tree styles across builds. A root whose stamp
+/// is what it was takes its tree style without reading a sheet's text;
+/// another with the same sheet text shares the parse (and its rule
+/// index). Dropped with the document; bounded.
+#[derive(Default)]
+pub(crate) struct ViewTreeStyles {
+    by_root: HashMap<usize, (RootStamp, Rc<TreeStyle>)>,
+    by_text: HashMap<String, Rc<TreeStyle>>,
+}
+
+impl ViewTreeStyles {
+    pub(crate) fn clear(&mut self) {
+        self.by_root.clear();
+        self.by_text.clear();
+    }
+}
+
+thread_local! {
+    /// Test switch: build without the view's cache.
+    static VIEW_CACHE_OFF: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_view_cache_off_for_test(off: bool) {
+    VIEW_CACHE_OFF.with(|c| c.set(off));
 }
 
 /// A rule of a shadow sheet that styles an element outside the tree.
@@ -192,6 +237,7 @@ impl BuildScope {
         sheets: &Rc<Vec<Stylesheet>>,
         viewport: Option<(f32, f32)>,
         javascript_enabled: bool,
+        view: Option<Rc<RefCell<ViewTreeStyles>>>,
     ) -> Self {
         DEFINED.with(|d| *d.borrow_mut() = document.defined_custom_elements());
         let settled_before = SETTLED.with(|s| s.replace(document.settled_custom_elements()));
@@ -208,11 +254,13 @@ impl BuildScope {
                 slotted_rules: Vec::new(),
                 host_args: Vec::new(),
                 host_in_chain: false,
+                index: std::cell::OnceCell::new(),
             })],
             viewport,
             javascript_enabled,
             by_root: HashMap::new(),
             by_text: HashMap::new(),
+            view: view.filter(|_| !VIEW_CACHE_OFF.with(Cell::get)),
         };
         let previous = BUILD.with(|b| b.borrow_mut().replace(state));
         let was_active = ACTIVE.replace(true);
@@ -254,6 +302,28 @@ fn pop_tree() {
     });
 }
 
+/// LAT22 probe: what the shadow trees' sheets cost the build in progress
+/// (or the last one): roots whose sheets were looked up, sheets parsed,
+/// and the time in both, text collection included.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ShadowBuildStats {
+    pub(crate) roots: u32,
+    /// Roots whose sheet text was read (not answered by the view's cache).
+    pub(crate) texts_read: u32,
+    pub(crate) parsed: u32,
+    pub(crate) ms: f64,
+}
+
+thread_local! {
+    static STATS: Cell<ShadowBuildStats> =
+        const { Cell::new(ShadowBuildStats { roots: 0, texts_read: 0, parsed: 0, ms: 0.0 }) };
+}
+
+/// The probe's counts since the last take.
+pub(crate) fn take_build_stats() -> ShadowBuildStats {
+    STATS.with(|s| s.replace(ShadowBuildStats::default()))
+}
+
 /// The sheets of the shadow tree under `root`, parsed once per build.
 fn tree_style(root: &Rc<Node>) -> Option<Rc<TreeStyle>> {
     let (viewport, javascript_enabled) = BUILD.with(|b| {
@@ -264,20 +334,93 @@ fn tree_style(root: &Rc<Node>) -> Option<Rc<TreeStyle>> {
     if let Some(hit) = BUILD.with(|b| b.borrow().as_ref()?.by_root.get(&root.id.raw()).cloned()) {
         return Some(hit);
     }
-    let texts = style_texts(root, javascript_enabled);
-    let key = texts.join("\u{0}");
-    let cached = BUILD.with(|b| b.borrow().as_ref()?.by_text.get(&key).cloned());
-    let tree = match cached {
-        Some(tree) => tree,
-        None => Rc::new(parse_tree_style(&texts, viewport)),
+    let started = std::time::Instant::now();
+    let view = BUILD.with(|b| b.borrow().as_ref()?.view.clone());
+    // The view's cache first: a root whose sheets are named as they were
+    // reads no text.
+    let stamp = view.as_ref().map(|_| root_stamp(root, viewport, javascript_enabled));
+    let kept = view.as_ref().zip(stamp.as_ref()).and_then(|(view, stamp)| {
+        view.borrow()
+            .by_root
+            .get(&root.id.raw())
+            .filter(|(was, _)| was == stamp)
+            .map(|(_, tree)| tree.clone())
+    });
+    let (tree, read_text, parsed) = match kept {
+        Some(tree) => (tree, false, false),
+        None => {
+            let texts = style_texts(root, javascript_enabled);
+            let key = texts.join("\u{0}");
+            let cached = BUILD.with(|b| b.borrow().as_ref()?.by_text.get(&key).cloned()).or_else(|| {
+                // Across builds the parse also depends on the viewport.
+                let view = view.as_ref()?;
+                let view_key = format!("{viewport:?}\u{0}{key}");
+                view.borrow().by_text.get(&view_key).cloned()
+            });
+            let parsed = cached.is_none();
+            let tree = match cached {
+                Some(tree) => tree,
+                None => Rc::new(parse_tree_style(&texts, viewport)),
+            };
+            if let (Some(view), Some(stamp)) = (view.as_ref(), stamp) {
+                let mut view = view.borrow_mut();
+                // Bounded: a page that keeps making new sheets starts over.
+                if view.by_text.len() > 256 || view.by_root.len() > 16384 {
+                    view.clear();
+                }
+                view.by_text.insert(format!("{viewport:?}\u{0}{key}"), tree.clone());
+                view.by_root.insert(root.id.raw(), (stamp, tree.clone()));
+            }
+            BUILD.with(|b| {
+                if let Some(s) = b.borrow_mut().as_mut() {
+                    s.by_text.insert(key, tree.clone());
+                }
+            });
+            (tree, true, parsed)
+        }
     };
+    STATS.with(|s| {
+        let mut stats = s.get();
+        stats.roots += 1;
+        stats.texts_read += u32::from(read_text);
+        stats.parsed += u32::from(parsed);
+        stats.ms += started.elapsed().as_secs_f64() * 1000.0;
+        s.set(stats);
+    });
     BUILD.with(|b| {
         if let Some(s) = b.borrow_mut().as_mut() {
             s.by_root.insert(root.id.raw(), tree.clone());
-            s.by_text.insert(key, tree.clone());
         }
     });
     Some(tree)
+}
+
+/// See [`RootStamp`]. The same walk as `style_texts`, without the text.
+fn root_stamp(root: &Rc<Node>, viewport: Option<(f32, f32)>, javascript_enabled: bool) -> RootStamp {
+    fn walk(node: &Rc<Node>, in_noscript: bool, javascript_enabled: bool, out: &mut Vec<(usize, u64, Option<String>)>) {
+        for child in node.children() {
+            let NodeType::Element { tag_name, attributes, .. } = &child.node_type else {
+                continue;
+            };
+            let noscript = in_noscript || tag_name.eq_ignore_ascii_case("noscript");
+            if tag_name.eq_ignore_ascii_case("style") {
+                if noscript && javascript_enabled {
+                    continue;
+                }
+                out.push((child.id.raw(), child.sheet_generation(), attributes.get("media").cloned()));
+                continue;
+            }
+            walk(&child, noscript, javascript_enabled, out);
+        }
+    }
+    let mut styles = Vec::new();
+    walk(root, false, javascript_enabled, &mut styles);
+    RootStamp {
+        styles,
+        adopted: root.adopted_generation(),
+        viewport: viewport.map(|(w, h)| (w.to_bits(), h.to_bits())),
+        javascript: javascript_enabled,
+    }
 }
 
 /// The text of every `<style>` in the tree under `root`, in tree order;
@@ -328,6 +471,7 @@ fn parse_tree_style(texts: &[String], viewport: Option<(f32, f32)>) -> TreeStyle
         slotted_rules: Vec::new(),
         host_args: Vec::new(),
         host_in_chain: false,
+        index: std::cell::OnceCell::new(),
     };
     for sheet in &mut sheets {
         let rules = std::mem::take(&mut sheet.rules);
@@ -607,7 +751,7 @@ fn host_matches(
     selector: &str,
     context: bool,
     tag: &str,
-    attributes: &HashMap<String, String>,
+    attributes: &rustkit_dom::AttrMap,
     ancestors: &[Ancestor],
     sib: SiblingContext,
 ) -> bool {
@@ -633,7 +777,7 @@ impl HostScope {
     pub(crate) fn enter(
         node: &Rc<Node>,
         tag: &str,
-        attributes: &HashMap<String, String>,
+        attributes: &rustkit_dom::AttrMap,
         sib: SiblingContext,
         light_chain: &[Ancestor],
     ) -> Self {
@@ -671,9 +815,21 @@ impl HostScope {
         HostScope { entered: true, tree: Some(tree), chain }
     }
 
+    /// The rule index of the tree's sheets, built with `build` by the
+    /// first build that meets the tree.
+    pub(crate) fn index(&self, build: impl FnOnce(&[Stylesheet]) -> crate::RuleIndex) -> Option<Rc<crate::RuleIndex>> {
+        let tree = self.tree.as_ref()?;
+        Some(tree.index.get_or_init(|| Rc::new(build(tree.sheets.as_slice()))).clone())
+    }
+
     /// The sheets the host's shadow children are matched against.
     pub(crate) fn sheets(&self) -> Option<&[Stylesheet]> {
         self.tree.as_ref().map(|t| t.sheets.as_slice())
+    }
+
+    /// The owner of `sheets()`, for a cache keyed by their address.
+    pub(crate) fn sheets_owner(&self) -> Option<Rc<Vec<Stylesheet>>> {
+        self.tree.as_ref().map(|t| t.sheets.clone())
     }
 
     /// The chain the host's shadow children start from.
@@ -706,7 +862,7 @@ impl SlotScope {
     /// `None` for anything but a slot showing assigned nodes.
     pub(crate) fn enter(
         slot: &Rc<Node>,
-        attributes: &HashMap<String, String>,
+        attributes: &rustkit_dom::AttrMap,
         ancestors: &[Ancestor],
         sib: SiblingContext,
         flat: &[Rc<Node>],
@@ -775,7 +931,7 @@ impl OwnRules {
     pub(crate) fn install(
         node: &Rc<Node>,
         tag: &str,
-        attributes: &HashMap<String, String>,
+        attributes: &rustkit_dom::AttrMap,
         ancestors: &[Ancestor],
         sib: SiblingContext,
     ) -> Self {

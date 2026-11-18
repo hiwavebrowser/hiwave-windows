@@ -365,9 +365,14 @@ fn a_document_with_no_observer_is_unchanged() {
             document.getElementById('x').remove();
             document.getElementById('out').innerHTML = '<b>b</b>';
             document.getElementById('out').textContent = 'o';
-            [typeof __rkDomHooks.mutation, root.outerHTML, document.getElementById('out').outerHTML].join('|')"#
+            [root.outerHTML, document.getElementById('out').outerHTML].join('|')"#
         ),
-        "undefined|<div id=\"root\"><i id=\"y\"></i><p class=\"c\" data-q=\"1\" id=\"a\" style=\"color: red;\" title=\"t\">AA</p><i id=\"r\"></i>t<i id=\"z\"></i></div>|<span id=\"out\">o</span>"
+        "<div id=\"root\"><i id=\"y\"></i><p id=\"a\" title=\"t\" class=\"c\" data-q=\"1\" style=\"color: red;\">AA</p><i id=\"r\"></i>t<i id=\"z\"></i></div>|<span id=\"out\">o</span>"
     );
+    // (The hook is on the host object, out of the page's reach.)
+    assert!(matches!(
+        b.host_turn("return typeof __rk.domHooks.mutation;", &[]).unwrap(),
+        JsValue::String(s) if s == "undefined"
+    ));
     assert_eq!(ev(&b, "String(calls)"), "0");
 }

@@ -126,5 +126,7 @@ pub(crate) fn install(runtime: &mut JsRuntime) -> Result<(), JsError> {
             }
         }),
     )?;
-    runtime.evaluate_script(include_str!("web_url.js")).map(|_| ())
+    // Blob URLs are named from the OS random source.
+    runtime.set_blob_random(crate::web_crypto::random_bytes);
+    runtime.evaluate_with_host(include_str!("web_url.js")).map(|_| ())
 }

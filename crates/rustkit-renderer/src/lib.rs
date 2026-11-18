@@ -48,14 +48,24 @@ use std::sync::Arc;
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
+/// A shadow mesh cell whose alpha nowhere reaches this is not drawn: under
+/// a quarter of a level.
+const SHADOW_ALPHA_FLOOR: f32 = 0.25 / 255.0;
+
+
 pub mod dither;
+mod canvas_gpu;
+pub use canvas_gpu::{CanvasReplay, CANVAS_OVER_CAP_LIMIT, CANVAS_SCRATCH_BUDGET, CANVAS_TEXTURE_BUDGET, CANVAS_VERTEX_CAP};
 mod cull;
+mod shadow_blur;
 mod frame_stats;
 mod glyph_grid;
 #[cfg(test)]
 mod scroll_cost_tests;
 #[cfg(test)]
 mod layer_cost_tests;
+#[cfg(test)]
+mod clip_mask_cache_tests;
 #[cfg(all(test, target_os = "macos"))]
 mod face_cache_tests;
 pub use frame_stats::FrameStats;
@@ -67,6 +77,21 @@ pub use screenshot::CaptureMetadata;
 mod shaders;
 
 pub use glyph::*;
+/// The smoothing probe the glyph-mask law follows (`glyph::coverage_for`).
+#[cfg(target_os = "macos")]
+pub use rustkit_text::macos::{smooth_behavior, smooth_behavior_of, SmoothBehavior};
+
+/// Log the CoreGraphics smoothing probe the glyph-mask law follows, once
+/// per process (a `None` from a font that failed to load is otherwise
+/// silent: every glyph would take the undilated outline).
+#[cfg(target_os = "macos")]
+fn log_smooth_probe_once() {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| {
+        let (behavior, how) = rustkit_text::macos::smooth_probe();
+        tracing::info!(?behavior, how, "CoreGraphics font smoothing probe (glyph-mask law)");
+    });
+}
 pub use pipeline::*;
 pub use screenshot::*;
 
@@ -198,7 +223,14 @@ pub struct CachedTexture {
     pub bind_group: wgpu::BindGroup,
     pub width: u32,
     pub height: u32,
+    /// The texels are premultiplied by alpha (a canvas bitmap), so a quad
+    /// filters them premultiplied and unpremultiplies after (blit.wgsl).
+    pub premultiplied: bool,
 }
+
+/// The vertex colour's red channel that marks a quad's texture as
+/// premultiplied for blit.wgsl (a real colour channel is never negative).
+pub(crate) const PREMULTIPLIED_TEXELS: f32 = -1.0;
 
 /// The screen rect and texture coordinates `[u0, v0, u1, v1]` a replaced
 /// image paints with: `object-fit`/`object-position` (CSS Images 3 §5.5,
@@ -368,6 +400,7 @@ impl TextureCache {
                 bind_group,
                 width,
                 height,
+                premultiplied: false,
             });
         }
 
@@ -393,6 +426,11 @@ impl TextureCache {
     pub fn remove(&mut self, key: &str) {
         self.textures.remove(key);
     }
+
+    /// Keep only the textures whose key `keep` accepts.
+    pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.textures.retain(|k, _| keep(k));
+    }
 }
 
 // ==================== Renderer ====================
@@ -413,6 +451,8 @@ pub struct Renderer {
     color_glyph_pipeline: wgpu::RenderPipeline,
     // CSS `filter` colour-matrix layer composite
     filter_matrix_pipeline: pipeline::FilterMatrixPipeline,
+    // `clip-path` outline layer composite (C8b)
+    clip_mask_pipeline: pipeline::ClipMaskPipeline,
     // Image pipeline: the blit shader composited source-over (straight alpha)
     image_pipeline: wgpu::RenderPipeline,
 
@@ -447,6 +487,8 @@ pub struct Renderer {
     image_vertices: Vec<TextureVertex>,
     image_indices: Vec<u32>,
     image_runs: Vec<(String, u32)>,
+    /// Blurred box shadow meshes by shape (`shadow_mesh`).
+    shadow_meshes: shadow_blur::MeshCache,
 
     // GPU gradient queues for batched rendering
     gradient_queue: Vec<QueuedLinearGradient>,
@@ -514,6 +556,13 @@ pub struct Renderer {
     /// between frames and dropped when the size changes. The pass-per-layer
     /// path uses the first at each depth.
     layer_slots: Vec<Vec<LayerSlot>>,
+    /// The coverage masks of the `PushClipPath` layers of the list being
+    /// drawn, indexed by `LayerEffect::ClipMask`.
+    clip_masks: Vec<ClipMask>,
+    /// Rasterised outlines by shape (see `CachedClipMask`), and the count
+    /// of layered lists drawn, which ages them.
+    clip_mask_cache: HashMap<u64, CachedClipMask>,
+    clip_mask_frame: u64,
     opacity_layer_size: (u32, u32),
     /// Tests: draw every list with layers a pass per layer (the path lists
     /// with a `backdrop-filter` take), the reference the deferred path is
@@ -527,6 +576,9 @@ pub struct Renderer {
 
     // Caches
     texture_cache: TextureCache,
+    /// GPU canvas A1: pipelines and scratch for canvas replays, made on the
+    /// first one (`canvas_gpu.rs`).
+    canvas_gpu: Option<Box<canvas_gpu::CanvasGpu>>,
     glyph_cache: GlyphCache,
 
     // Texture bind group layout (for sharing)
@@ -613,6 +665,8 @@ impl Renderer {
         queue: Arc<wgpu::Queue>,
         surface_format: wgpu::TextureFormat,
     ) -> Result<Self, RendererError> {
+        #[cfg(target_os = "macos")]
+        log_smooth_probe_once();
         // Create uniform buffer
         let uniforms = Uniforms {
             viewport_size: [800.0, 600.0],
@@ -718,6 +772,13 @@ impl Renderer {
             &texture_bind_group_layout,
         );
 
+        let clip_mask_pipeline = pipeline::create_clip_mask_pipeline(
+            &device,
+            surface_format,
+            &uniform_bind_group_layout,
+            &texture_bind_group_layout,
+        );
+
         // Image pipeline: blit shader + source-over blend for straight alpha.
         let image_pipeline = pipeline::create_image_pipeline(
             &device,
@@ -783,6 +844,7 @@ impl Renderer {
             blit_pipeline,
             color_glyph_pipeline,
             filter_matrix_pipeline,
+            clip_mask_pipeline,
             image_pipeline,
             backdrop_filter_pipelines,
             gradient_pipeline,
@@ -799,6 +861,7 @@ impl Renderer {
             image_vertices: Vec::with_capacity(256),
             image_indices: Vec::with_capacity(512),
             image_runs: Vec::with_capacity(64),
+            shadow_meshes: shadow_blur::MeshCache::default(),
             gradient_queue: Vec::with_capacity(64),
             radial_gradient_queue: Vec::with_capacity(16),
             conic_gradient_queue: Vec::with_capacity(16),
@@ -825,11 +888,15 @@ impl Renderer {
             reference: false,
             opacity_scopes: OpacityScopes::default(),
             layer_slots: Vec::new(),
+            clip_masks: Vec::new(),
+            clip_mask_cache: HashMap::new(),
+            clip_mask_frame: 0,
             opacity_layer_size: (0, 0),
             #[cfg(test)]
             legacy_layers: false,
             per_pass: false,
             texture_cache,
+            canvas_gpu: None,
             glyph_cache,
             texture_bind_group_layout,
             intermediate_texture: None,
@@ -1132,6 +1199,10 @@ impl Renderer {
                         pass.set_pipeline(&self.filter_matrix_pipeline.pipeline);
                         pass.set_bind_group(2, matrix, &[]);
                     }
+                    DrawKind::ClipMask(mask) => {
+                        pass.set_pipeline(&self.clip_mask_pipeline.pipeline);
+                        pass.set_bind_group(2, mask, &[]);
+                    }
                 }
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 if let Some(group) = &draw.group {
@@ -1358,6 +1429,8 @@ impl Renderer {
         target: &wgpu::TextureView,
     ) -> Result<(), RendererError> {
         self.last_list = (commands.as_ptr() as usize, commands.len());
+        // A frame: the shadow meshes' build budget starts over.
+        self.shadow_meshes.begin_frame();
         #[cfg(test)]
         {
             self.glyph_grid.scan_only = self.reference;
@@ -1519,7 +1592,19 @@ impl Renderer {
                 <= MAX_OPACITY_LAYERS;
             let grouped = commands
                 .iter()
-                .any(|cmd| matches!(cmd, DisplayCommand::PushOpacity(_) | DisplayCommand::PushFilter(_)));
+                .any(|cmd| matches!(cmd, DisplayCommand::PushOpacity(_) | DisplayCommand::PushFilter(_) | DisplayCommand::PushClipPath { .. }));
+            // Outlines no list drew in the last `CLIP_MASK_KEEP_FRAMES` are
+            // dropped. Not just the last one: a fractional scroll cycles an
+            // outline through its sub-pixel phases, and a phase comes back
+            // a few frames later (#1052 R1 nit 1). Past the count or byte
+            // budget the cache starts over.
+            self.clip_mask_frame += 1;
+            let frame = self.clip_mask_frame;
+            let bytes: usize = self.clip_mask_cache.values().map(|m| m.bytes).sum();
+            if self.clip_mask_cache.len() > MAX_CACHED_CLIP_MASKS || bytes > MAX_CACHED_CLIP_MASK_BYTES {
+                self.clip_mask_cache.clear();
+            }
+            self.clip_mask_cache.retain(|_, mask| mask.used + CLIP_MASK_KEEP_FRAMES >= frame);
             if layered && grouped && !has_backdrop && self.defer_layers() {
                 let sticky = (
                     self.window_sticky,
@@ -1541,11 +1626,52 @@ impl Renderer {
                 (self.window_sticky, self.window_sticky_outer, self.window_sticky_outside_fixed) = sticky;
                 self.begin_frame_state();
             }
+            // Outline clips drawn as layers so far; past the budget the
+            // rest clip to their bounding boxes.
+            let mut clip_path_layers = 0usize;
             let mut cleared = false;
             let mut layers: Vec<(wgpu::TextureView, LayerEffect)> = Vec::new();
+            // One entry per open clip: whether its `PopClip` closes a
+            // `PushClipPath` layer.
+            let mut clip_layers: Vec<bool> = Vec::new();
+            self.clip_masks.clear();
             for (i, cmd) in commands.iter().enumerate() {
                 if layered {
                     match cmd {
+                        // An outline clip is a layer composited through the
+                        // outline's coverage. Its bounding box is pushed as a
+                        // rect clip as well, so what is drawn into the layer
+                        // stays inside it (and outer clips still cut it).
+                        DisplayCommand::PushClipPath { rect, contours, even_odd }
+                            if clip_path_layers < MAX_CLIP_PATH_LAYERS =>
+                        {
+                            let mask = self.clip_mask(contours, *even_odd);
+                            if mask.key.is_none() {
+                                // Off screen: nothing inside can show.
+                                self.push_clip(Rect::new(0.0, 0.0, 0.0, 0.0));
+                                clip_layers.push(false);
+                                continue;
+                            }
+                            clip_path_layers += 1;
+                            self.clip_masks.push(mask);
+                            let effect = LayerEffect::ClipMask(self.clip_masks.len() - 1);
+                            self.begin_opacity_layer(target, &mut layers, effect, &mut cleared)?;
+                            self.push_clip(*rect);
+                            clip_layers.push(true);
+                            continue;
+                        }
+                        DisplayCommand::PushClip(_)
+                        | DisplayCommand::PushClipRounded { .. }
+                        | DisplayCommand::PushClipPath { .. } => {
+                            clip_layers.push(false);
+                        }
+                        DisplayCommand::PopClip => {
+                            if clip_layers.pop() == Some(true) {
+                                self.pop_clip();
+                                self.end_opacity_layer(target, &mut layers, &mut cleared)?;
+                                continue;
+                            }
+                        }
                         DisplayCommand::PushOpacity(alpha) => {
                             let fade = LayerEffect::Fade(alpha.clamp(0.0, 1.0));
                             self.begin_opacity_layer(target, &mut layers, fade, &mut cleared)?;
@@ -2229,9 +2355,44 @@ impl Renderer {
         target: &wgpu::TextureView,
     ) -> Result<bool, RendererError> {
         self.size_layer_slots();
+        self.clip_masks.clear();
         let mut frame = DeferredFrame::default();
+        let mut clip_path_layers = 0usize;
+        let mut clip_layers: Vec<bool> = Vec::new();
         for (i, cmd) in commands.iter().enumerate() {
             match cmd {
+                DisplayCommand::PushClipPath { rect, contours, even_odd }
+                    if clip_path_layers < MAX_CLIP_PATH_LAYERS =>
+                {
+                    let mask = self.clip_mask(contours, *even_odd);
+                    if mask.key.is_none() {
+                        self.push_clip(Rect::new(0.0, 0.0, 0.0, 0.0));
+                        clip_layers.push(false);
+                        continue;
+                    }
+                    clip_path_layers += 1;
+                    self.clip_masks.push(mask);
+                    self.defer_flush(&mut frame);
+                    frame.open.push(OpenLayer::new(LayerEffect::ClipMask(self.clip_masks.len() - 1)));
+                    self.push_clip(*rect);
+                    clip_layers.push(true);
+                    continue;
+                }
+                DisplayCommand::PushClip(_)
+                | DisplayCommand::PushClipRounded { .. }
+                | DisplayCommand::PushClipPath { .. } => {
+                    clip_layers.push(false);
+                }
+                DisplayCommand::PopClip => {
+                    if clip_layers.pop() == Some(true) {
+                        self.pop_clip();
+                        if !self.close_deferred_layer(&mut frame) {
+                            self.abandon_deferred_frame();
+                            return Ok(false);
+                        }
+                        continue;
+                    }
+                }
                 DisplayCommand::PushOpacity(alpha) => {
                     self.defer_flush(&mut frame);
                     frame.open.push(OpenLayer::new(LayerEffect::Fade(alpha.clamp(0.0, 1.0))));
@@ -2354,7 +2515,7 @@ impl Renderer {
     fn place_layer(&mut self, depth: usize, layer: OpenLayer) -> Option<Option<(Draw, [u32; 4])>> {
         let (vw, vh) = self.viewport_size;
         let exclusive = matches!(layer.effect, LayerEffect::ColorMatrix(_));
-        let rect = if exclusive {
+        let mut rect = if exclusive {
             [0, 0, vw, vh]
         } else {
             match layer.bounds.and_then(|b| pixel_rect(b, vw, vh)) {
@@ -2362,6 +2523,14 @@ impl Renderer {
                 _ => return Some(None),
             }
         };
+        // A clip-path layer is read over its mask's rect: the slot keeps
+        // that too, so no other group's pixels are under it.
+        let mut composite_rect = rect;
+        if let LayerEffect::ClipMask(index) = layer.effect {
+            let [x, y, w, h] = self.clip_masks[index].rect;
+            composite_rect = [x, y, x + w, y + h];
+            rect = [rect[0].min(x), rect[1].min(y), rect[2].max(x + w), rect[3].max(y + h)];
+        }
         while self.layer_slots.len() <= depth {
             self.layer_slots.push(Vec::new());
         }
@@ -2387,6 +2556,9 @@ impl Renderer {
         slot.exclusive |= exclusive;
         slot.draws.extend(layer.draws);
         let group = slot.group.clone();
+        if let LayerEffect::ClipMask(index) = layer.effect {
+            return Some(self.clip_mask_draw(&group, index).map(|draw| (draw, composite_rect)));
+        }
         Some(Some((self.layer_draw(&group, rect, layer.effect), rect)))
     }
 
@@ -2764,6 +2936,10 @@ impl Renderer {
         effect: LayerEffect,
         clear: bool,
     ) {
+        if let LayerEffect::ClipMask(index) = effect {
+            self.composite_clip_mask_layer(layer, target, index, clear);
+            return;
+        }
         let (vw, vh) = self.viewport_size;
         let group = self.layer_bind_group(layer);
         let draw = self.layer_draw(&group, [0, 0, vw, vh], effect);
@@ -2798,6 +2974,7 @@ impl Renderer {
     /// pass-per-layer path), each texel onto the pixel it came from.
     fn layer_draw(&self, group: &wgpu::BindGroup, rect: [u32; 4], effect: LayerEffect) -> Draw {
         let (alpha, kind) = match effect {
+            LayerEffect::ClipMask(_) => unreachable!("clip_mask_draw"),
             LayerEffect::Fade(alpha) => (alpha, DrawKind::Layer),
             LayerEffect::ColorMatrix(m) => {
                 // Rows of the first four columns, then the offsets column.
@@ -2842,8 +3019,283 @@ impl Renderer {
         }
     }
 
+    /// The coverage mask of an outline clip pushed now: the contours mapped
+    /// through the transform in force (so a rotated or scaled box clips to
+    /// its outline where it lands) and rasterised over their bounding box,
+    /// cut to the viewport.
+    fn clip_mask(&mut self, contours: &[Vec<(f32, f32)>], even_odd: bool) -> ClipMask {
+        use std::hash::{Hash, Hasher};
+        let m = self.current_transform();
+        let screen: Vec<Vec<(f32, f32)>> = contours
+            .iter()
+            .map(|c| c.iter().map(|&(x, y)| (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])).collect())
+            .collect();
+        let (mut x0, mut y0) = (f32::INFINITY, f32::INFINITY);
+        let (mut x1, mut y1) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for &(x, y) in screen.iter().flatten() {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+        let (vw, vh) = self.viewport_size;
+        let empty = ClipMask { key: None, rect: [0, 0, 0, 0], origin: [0, 0] };
+        if !(x0 < x1 && y0 < y1) {
+            return empty;
+        }
+        let left = x0.floor().max(0.0) as i64;
+        let top = y0.floor().max(0.0) as i64;
+        let right = (x1.ceil() as i64).min(vw as i64);
+        let bottom = (y1.ceil() as i64).min(vh as i64);
+        if right <= left || bottom <= top {
+            return empty;
+        }
+        // What is drawn: the outline's box cut to the viewport.
+        let rect = [left as u32, top as u32, (right - left) as u32, (bottom - top) as u32];
+        // What is rasterised: the whole outline, in its own pixels, so the
+        // mask does not change while the page scrolls. Keyed on the clamped
+        // corner, a box across the viewport edge missed on every scrolled
+        // frame (#1052 R1 nit 1). The outline is placed at its own sub-pixel
+        // phase, snapped to 1/16 px, so a fractional (trackpad) scroll finds
+        // one of at most 256 masks rather than none; the snap moves an edge
+        // by under 1/32 px. A box far bigger than the viewport keeps the
+        // clamped mask, so no texture outgrows the device.
+        let snap = |f: f32| (f * CLIP_MASK_PHASES).round() / CLIP_MASK_PHASES;
+        let (phase_x, phase_y) = (snap(x0 - x0.floor()), snap(y0 - y0.floor()));
+        let (whole_w, whole_h) = ((x1 - x0 + phase_x).ceil() as i64, (y1 - y0 + phase_y).ceil() as i64);
+        let whole = whole_w <= (vw as i64).max(1) * 2
+            && whole_h <= (vh as i64).max(1) * 2
+            && whole_w <= MAX_CLIP_MASK_DIM
+            && whole_h <= MAX_CLIP_MASK_DIM;
+        let (origin, w, h, local): (_, u32, u32, Vec<Vec<(f32, f32)>>) = if whole {
+            // Rounded to 1/256 px: `(x - scroll) - (x0 - scroll)` is not the
+            // same float at every scroll, and a key over raw bits missed
+            // every fractional frame.
+            let q = |v: f32| (v * 256.0).round() / 256.0;
+            let local = screen
+                .iter()
+                .map(|c| c.iter().map(|&(x, y)| (q(x - x0) + phase_x, q(y - y0) + phase_y)).collect())
+                .collect();
+            // Texel (0, 0) of the mask sits at the snapped corner on screen.
+            let origin = [(x0.floor() as i32), (y0.floor() as i32)];
+            (origin, whole_w as u32, whole_h as u32, local)
+        } else {
+            let local = screen
+                .iter()
+                .map(|c| c.iter().map(|&(x, y)| (x - left as f32, y - top as f32)).collect())
+                .collect();
+            ([left as i32, top as i32], rect[2], rect[3], local)
+        };
+        // The same outline in the same mask pixels is the same mask.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (whole, w, h, even_odd, local.len()).hash(&mut hasher);
+        for contour in &local {
+            contour.len().hash(&mut hasher);
+            for &(x, y) in contour {
+                (x.to_bits(), y.to_bits()).hash(&mut hasher);
+            }
+        }
+        let key = hasher.finish();
+        let frame = self.clip_mask_frame;
+        if let Some(cached) = self.clip_mask_cache.get_mut(&key) {
+            cached.used = frame;
+            return ClipMask { key: Some(key), rect, origin };
+        }
+        self.stats.clip_masks_rasterized += 1;
+        let coverage = clip_mask_coverage(&local, even_odd, 0, 0, w, h);
+        let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Clip Mask Texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &coverage,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w), rows_per_image: Some(h) },
+            size,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Clip Mask Bind Group"),
+            layout: &self.clip_mask_pipeline.mask_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
+        });
+        let bytes = (w as usize) * (h as usize);
+        self.clip_mask_cache.insert(key, CachedClipMask { _texture: texture, bind_group, used: frame, bytes });
+        ClipMask { key: Some(key), rect, origin }
+    }
+
+    /// The draw that lays the layer `layer_group` samples over its target
+    /// through clip mask `index`, over the mask's rect; `None` when the mask
+    /// is not cached.
+    fn clip_mask_draw(&self, layer_group: &wgpu::BindGroup, index: usize) -> Option<Draw> {
+        let mask = &self.clip_masks[index];
+        let mask_group = mask.key.and_then(|key| self.clip_mask_cache.get(&key)).map(|m| m.bind_group.clone())?;
+        let [x, y, w, h] = mask.rect;
+        let (x0, y0, x1, y1) = (x as f32, y as f32, (x + w) as f32, (y + h) as f32);
+        // Texture coordinates: the mask's own pixels, from its origin.
+        let (u0, v0) = (x0 - mask.origin[0] as f32, y0 - mask.origin[1] as f32);
+        let (u1, v1) = (u0 + w as f32, v0 + h as f32);
+        let color = [1.0; 4];
+        let vertices = [
+            TextureVertex { position: [x0, y0], tex_coords: [u0, v0], color },
+            TextureVertex { position: [x1, y0], tex_coords: [u1, v0], color },
+            TextureVertex { position: [x1, y1], tex_coords: [u1, v1], color },
+            TextureVertex { position: [x0, y1], tex_coords: [u0, v1], color },
+        ];
+        let indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
+        Some(Draw {
+            kind: DrawKind::ClipMask(mask_group),
+            group: Some(layer_group.clone()),
+            vertices: self.arena_push(bytemuck::cast_slice(&vertices)),
+            indices: self.arena_push(bytemuck::cast_slice(&indices)),
+            range: 0..6,
+        })
+    }
+
+    /// `PopClip` of a `PushClipPath`: lay the layer over `target` through
+    /// the mask, drawing only the mask's rect (`shaders/clip_mask.wgsl`).
+    fn composite_clip_mask_layer(&self, layer: &wgpu::TextureView, target: &wgpu::TextureView, index: usize, clear: bool) {
+        let mask = &self.clip_masks[index];
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Clip Mask Composite Encoder"),
+        });
+        {
+            let load = if clear {
+                wgpu::LoadOp::Clear(self.first_clear())
+            } else {
+                wgpu::LoadOp::Load
+            };
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Clip Mask Composite Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if let Some(mask_group) = mask.key.and_then(|key| self.clip_mask_cache.get(&key)).map(|m| &m.bind_group) {
+                let [x, y, w, h] = mask.rect;
+                let layer_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Clip Mask Layer Bind Group"),
+                    layout: &self.texture_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(layer) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.filter_sampler) },
+                    ],
+                });
+                let (x0, y0, x1, y1) = (x as f32, y as f32, (x + w) as f32, (y + h) as f32);
+                // Texture coordinates: the mask's own pixels, from its origin.
+                let (u0, v0) = (x0 - mask.origin[0] as f32, y0 - mask.origin[1] as f32);
+                let (u1, v1) = (u0 + w as f32, v0 + h as f32);
+                let color = [1.0; 4];
+                let vertices = [
+                    TextureVertex { position: [x0, y0], tex_coords: [u0, v0], color },
+                    TextureVertex { position: [x1, y0], tex_coords: [u1, v0], color },
+                    TextureVertex { position: [x1, y1], tex_coords: [u1, v1], color },
+                    TextureVertex { position: [x0, y1], tex_coords: [u0, v1], color },
+                ];
+                let indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
+                let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Clip Mask Vertex Buffer"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+                let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Clip Mask Index Buffer"),
+                    contents: bytemuck::cast_slice(&indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+                render_pass.set_pipeline(&self.clip_mask_pipeline.pipeline);
+                render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+                render_pass.set_bind_group(1, &layer_group, &[]);
+                render_pass.set_bind_group(2, mask_group, &[]);
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..6, 0, 0..1);
+            }
+        }
+        self.submit(encoder);
+    }
+
     /// Process a single display command.
     fn process_command(&mut self, cmd: &DisplayCommand) {
+        // The vector primitives push their triangles straight into the
+        // color batch, so the clip in force is applied to what they pushed
+        // (CB1a: the Mode select's arrow, a `Polyline`, painted over the
+        // toolbar from inside chrome.html's collapsed, `overflow: hidden`
+        // sidebar; radios leaked the same way). Rects and glyphs clip as
+        // they are emitted. `Polyline` and `StrokePolygon` clip through the
+        // `Line`s they become.
+        if matches!(
+            cmd,
+            DisplayCommand::Line { .. }
+                | DisplayCommand::FillPolygon { .. }
+                | DisplayCommand::FillCircle { .. }
+                | DisplayCommand::StrokeCircle { .. }
+                | DisplayCommand::FillEllipse { .. }
+        ) {
+            let (v0, i0) = (self.color_vertices.len(), self.color_indices.len());
+            self.process_command_unclipped(cmd);
+            self.clip_pushed_triangles(v0, i0);
+            return;
+        }
+        self.process_command_unclipped(cmd);
+    }
+
+    /// Clip the color triangles pushed since `(v0, i0)` (vertices, indices)
+    /// to the clip rect in force, in screen space, where those primitives
+    /// put their vertices. A rounded clip's corners are not applied (its
+    /// rect is): no vector primitive reached a rounded clip on the board.
+    fn clip_pushed_triangles(&mut self, v0: usize, i0: usize) {
+        let Some(clip) = self.clip_stack.last().map(|e| e.rect) else {
+            return;
+        };
+        let new = &self.color_vertices[v0..];
+        if new.is_empty() {
+            return;
+        }
+        let inside = new.iter().all(|v| {
+            let [x, y] = v.position;
+            x >= clip.x && x <= clip.x + clip.width && y >= clip.y && y <= clip.y + clip.height
+        });
+        if inside {
+            return;
+        }
+        let vertices: Vec<ColorVertex> = self.color_vertices.drain(v0..).collect();
+        let indices: Vec<u32> = self.color_indices.drain(i0..).collect();
+        for tri in indices.chunks_exact(3) {
+            let poly: Vec<ColorVertex> = tri
+                .iter()
+                .map(|&i| vertices[i as usize - v0])
+                .collect();
+            let kept = clip_polygon_to_rect(&poly, clip);
+            if kept.len() < 3 {
+                continue;
+            }
+            let base = self.color_vertices.len() as u32;
+            self.color_vertices.extend_from_slice(&kept);
+            for k in 1..kept.len() as u32 - 1 {
+                self.color_indices.extend_from_slice(&[base, base + k, base + k + 1]);
+            }
+        }
+    }
+
+    fn process_command_unclipped(&mut self, cmd: &DisplayCommand) {
         match cmd {
             DisplayCommand::SolidColor(color, rect) => {
                 self.draw_solid_rect(*rect, *color);
@@ -2886,6 +3338,7 @@ impl Renderer {
                 ascent,
                 run,
                 faces,
+                undilated,
             } => {
                 // SHAPED-RUN CONTRACT (S0): a command that carries its run
                 // is painted from the run. The family-list path below is
@@ -2894,7 +3347,7 @@ impl Renderer {
                 // record (`faces`) for which face draws each character.
                 let painted_from_run = run
                     .as_deref()
-                    .is_some_and(|run| self.draw_glyph_run(run, *x, *y, *color, *ascent));
+                    .is_some_and(|run| self.draw_glyph_run(run, *x, *y, *color, *ascent, *undilated));
                 if !painted_from_run {
                     self.draw_text_with_metrics(
                         text,
@@ -2908,6 +3361,7 @@ impl Renderer {
                         advances.as_deref(),
                         *ascent,
                         faces.as_deref(),
+                        *undilated,
                     );
                 }
             }
@@ -3120,6 +3574,13 @@ impl Renderer {
 
             DisplayCommand::PushClipRounded { rect, radius } => {
                 self.push_clip_rounded(*rect, *radius);
+            }
+
+            // Off the layered path (past `MAX_OPACITY_LAYERS` opacity scopes,
+            // past `MAX_CLIP_PATH_LAYERS` outline clips, or the GPU-gradient
+            // path) an outline clips to its bounding box.
+            DisplayCommand::PushClipPath { rect, .. } => {
+                self.push_clip(*rect);
             }
 
             DisplayCommand::PopClip => {
@@ -3459,6 +3920,16 @@ impl Renderer {
             base, base + 1, base + 2,
             base, base + 2, base + 3,
         ]);
+    }
+
+    /// `push_screen_corners` with a colour per corner, interpolated across
+    /// the quad.
+    fn push_screen_corners_shaded(&mut self, p: [[f32; 2]; 4], c: [[f32; 4]; 4]) {
+        let base = self.color_vertices.len() as u32;
+        for (position, color) in p.into_iter().zip(c) {
+            self.color_vertices.push(ColorVertex { position, color });
+        }
+        self.color_indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
     /// Draw a rounded rectangle using SDF-based rendering.
@@ -4004,71 +4475,165 @@ impl Renderer {
         if color.a == 0.0 {
             return;
         }
-        
-        // Calculate shadow rectangle
-        let shadow_rect = if inset {
-            // Inset shadow is inside the box
-            Rect::new(
-                rect.x + offset_x.max(0.0),
-                rect.y + offset_y.max(0.0),
-                rect.width - spread_radius * 2.0 - offset_x.abs(),
-                rect.height - spread_radius * 2.0 - offset_y.abs(),
-            )
-        } else {
-            // Outer shadow is outside the box
-            Rect::new(
-                rect.x + offset_x - spread_radius,
-                rect.y + offset_y - spread_radius,
-                rect.width + spread_radius * 2.0,
-                rect.height + spread_radius * 2.0,
-            )
-        };
-        
-        if shadow_rect.width <= 0.0 || shadow_rect.height <= 0.0 {
+        // Nothing sensible to draw from a non-finite length; an infinite blur
+        // is clamped by `sigma_of`.
+        if ![offset_x, offset_y, spread_radius, rect.x, rect.y, rect.width, rect.height]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            return;
+        }
+        let sigma = shadow_blur::sigma_of(blur_radius);
+        if inset {
+            self.draw_inset_shadow(rect, radius, offset_x, offset_y, sigma, spread_radius, color);
             return;
         }
 
-        if !inset {
-            let shadow_radius = radius.spread(spread_radius);
-            for (r, alpha) in Self::outer_shadow_paint_rects(
-                rect,
-                radius,
-                shadow_rect,
-                shadow_radius,
-                blur_radius,
-                color.a,
-            ) {
+        // The shadow shape: the border box moved by the offset and grown by
+        // the spread.
+        let shadow_rect = Rect::new(
+            rect.x + offset_x - spread_radius,
+            rect.y + offset_y - spread_radius,
+            rect.width + spread_radius * 2.0,
+            rect.height + spread_radius * 2.0,
+        );
+        if shadow_rect.width <= 0.0 || shadow_rect.height <= 0.0 {
+            return;
+        }
+        let shadow_radius = radius.spread(spread_radius);
+        if sigma <= 0.0 {
+            for (r, alpha) in
+                Self::outer_shadow_paint_rects(rect, radius, shadow_rect, shadow_radius, 0.0, color.a)
+            {
                 self.draw_solid_rect(r, Color::new(color.r, color.g, color.b, alpha));
             }
             return;
         }
 
-        // Inset: for blur, draw multiple layers with decreasing opacity, shrinking
-        // inward. This is a simplified approximation - real blur would use GPU shaders
-        if blur_radius > 0.0 {
-            let steps = (blur_radius / 2.0).ceil().max(1.0) as u32;
-            let step_size = blur_radius / steps as f32;
-
-            for i in 0..steps {
-                let layer = steps - i; // Draw outer layers first
-                let expansion = step_size * layer as f32;
-                let layer_alpha = color.a / (steps as f32 * 1.5); // Fade out
-
-                let layer_rect = Rect::new(
-                    shadow_rect.x + expansion,
-                    shadow_rect.y + expansion,
-                    shadow_rect.width - expansion * 2.0,
-                    shadow_rect.height - expansion * 2.0,
+        // Blurred: a mesh over the shape grown by the blur's reach, each
+        // cell's corners carrying the exact blurred value, clipped to
+        // outside the border box (CSS Backgrounds 3 §7.1).
+        let shape = shadow_blur::Shape::new(shadow_rect, shadow_radius);
+        let hole = shadow_blur::Shape::new(rect, radius);
+        let origin = (shadow_rect.x, shadow_rect.y);
+        let mesh = self.shadow_mesh(&shape, &hole, sigma, false, origin);
+        for j in 0..mesh.ys.len() - 1 {
+            for i in 0..mesh.xs.len() - 1 {
+                let c = mesh.cell(i, j);
+                if c.iter().fold(0.0f32, |m, v| m.max(*v)) * color.a < SHADOW_ALPHA_FLOOR {
+                    continue;
+                }
+                let cell = Rect::new(
+                    origin.0 + mesh.xs[i],
+                    origin.1 + mesh.ys[j],
+                    mesh.xs[i + 1] - mesh.xs[i],
+                    mesh.ys[j + 1] - mesh.ys[j],
                 );
-
-                if layer_rect.width > 0.0 && layer_rect.height > 0.0 {
-                    let layer_color = Color::new(color.r, color.g, color.b, layer_alpha);
-                    self.draw_solid_rect(layer_rect, layer_color);
+                if cell.intersect(&rect).is_none() {
+                    self.draw_shadow_cell(cell, cell, c, color, 1.0);
+                    continue;
+                }
+                for (piece, coverage) in rounded_difference_pieces(cell, Default::default(), rect, radius) {
+                    self.draw_shadow_cell(piece, cell, c, color, coverage);
                 }
             }
-        } else {
-            // No blur - just draw solid shadow
-            self.draw_solid_rect(shadow_rect, color);
+        }
+    }
+
+    /// The shadow's mesh from `shadow_blur::MeshCache`: cached by shape
+    /// (a grid of cards draws one), built within the frame's budget, or
+    /// coarse past it.
+    fn shadow_mesh(
+        &mut self,
+        shape: &shadow_blur::Shape,
+        other: &shadow_blur::Shape,
+        sigma: f32,
+        inset: bool,
+        origin: (f32, f32),
+    ) -> Arc<shadow_blur::Mesh> {
+        self.shadow_meshes.get(shape, other, sigma, inset, origin)
+    }
+
+    /// An inset shadow (CSS Backgrounds 3 §7.1): inside `clip` (the padding
+    /// box, `radius` its corners), everything outside the shadow shape —
+    /// `clip` moved by the offset and shrunk by the spread — blurred.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_inset_shadow(
+        &mut self,
+        clip: Rect,
+        radius: rustkit_layout::BorderRadius,
+        offset_x: f32,
+        offset_y: f32,
+        sigma: f32,
+        spread: f32,
+        color: Color,
+    ) {
+        if clip.width <= 0.0 || clip.height <= 0.0 {
+            return;
+        }
+        let inner_rect = Rect::new(
+            clip.x + offset_x + spread,
+            clip.y + offset_y + spread,
+            clip.width - spread * 2.0,
+            clip.height - spread * 2.0,
+        );
+        let inner_radius = radius.spread(-spread);
+        if inner_rect.width <= 0.0 || inner_rect.height <= 0.0 {
+            // Nothing is left of the shape: the whole box is shadow.
+            self.draw_rounded_rect(clip, color, radius);
+            return;
+        }
+        if sigma <= 0.0 {
+            for (piece, coverage) in rounded_difference_pieces(clip, radius, inner_rect, inner_radius) {
+                self.draw_solid_rect(piece, Color::new(color.r, color.g, color.b, color.a * coverage));
+            }
+            return;
+        }
+        let inner = shadow_blur::Shape::new(inner_rect, inner_radius);
+        let outer = shadow_blur::Shape::new(clip, radius);
+        let origin = (clip.x, clip.y);
+        let mesh = self.shadow_mesh(&inner, &outer, sigma, true, origin);
+        self.push_clip_rounded(clip, radius);
+        for j in 0..mesh.ys.len() - 1 {
+            for i in 0..mesh.xs.len() - 1 {
+                let c = mesh.cell(i, j);
+                if c.iter().fold(0.0f32, |m, v| m.max(*v)) * color.a < SHADOW_ALPHA_FLOOR {
+                    continue;
+                }
+                let cell = Rect::new(
+                    origin.0 + mesh.xs[i],
+                    origin.1 + mesh.ys[j],
+                    mesh.xs[i + 1] - mesh.xs[i],
+                    mesh.ys[j + 1] - mesh.ys[j],
+                );
+                self.draw_shadow_cell(cell, cell, c, color, 1.0);
+            }
+        }
+        self.pop_clip();
+    }
+
+    /// `piece` of the shadow mesh cell `cell`, whose corners carry the
+    /// blurred values `c` (top-left, top-right, bottom-right, bottom-left):
+    /// clipped like any quad, its colour's alpha scaled by the value
+    /// interpolated at each corner and by `coverage`.
+    fn draw_shadow_cell(&mut self, piece: Rect, cell: Rect, c: [f32; 4], color: Color, coverage: f32) {
+        if piece.width <= 0.0 || piece.height <= 0.0 || cell.width <= 0.0 || cell.height <= 0.0 {
+            return;
+        }
+        let tex = [
+            (piece.x - cell.x) / cell.width,
+            (piece.y - cell.y) / cell.height,
+            (piece.right() - cell.x) / cell.width,
+            (piece.bottom() - cell.y) / cell.height,
+        ];
+        let rgb = [color.r as f32 / 255.0, color.g as f32 / 255.0, color.b as f32 / 255.0];
+        for (corners, t, clip_coverage) in self.textured_pieces(piece, tex) {
+            let at = |u: f32, v: f32| {
+                let a = color.a * shadow_blur::bilinear(c, u, v) * coverage * clip_coverage;
+                [rgb[0], rgb[1], rgb[2], a]
+            };
+            let colors = [at(t[0], t[1]), at(t[2], t[1]), at(t[2], t[3]), at(t[0], t[3])];
+            self.push_screen_corners_shaded(corners, colors);
         }
     }
 
@@ -5520,6 +6085,7 @@ impl Renderer {
                 None,
                 Some(ascent),
                 None,
+                false,
             );
         }
 
@@ -5615,6 +6181,7 @@ impl Renderer {
                 None,
                 Some(ascent),
                 None,
+                false,
             );
         }
         self.pop_clip();
@@ -5693,6 +6260,7 @@ impl Renderer {
                 None,
                 Some(ascent),
                 None,
+                false,
             );
         }
         
@@ -5758,6 +6326,9 @@ impl Renderer {
         layout_ascent: Option<f32>,
         layout_faces: Option<&[rustkit_text::GlyphFace]>,
     ) {
+        // Skia's luminance for a non-plain paint, once per command.
+        let gradient_coverage =
+            crate::glyph::coverage_for(crate::glyph::GRADIENT_TEXT_LUMINANCE, false);
         let stops = match gradient {
             rustkit_css::Gradient::Linear(g) => &g.stops,
             rustkit_css::Gradient::Radial(g) => &g.stops,
@@ -5850,11 +6421,13 @@ impl Renderer {
                 Some(faces) => FaceKey::Recorded(faces[char_idx]),
                 None => FaceKey::Auto(rustkit_text::Variation::after(next)),
             };
+            // TX3: whole-pixel origin and quarter phase (`glyph::skia_glyph_origin`).
+            let (origin_x, phase) = crate::glyph::skia_glyph_origin(cursor_x);
             let key = GlyphKey {
-                // FROZEN AT 0 until the rasterizer can draw at a phase --
-                // see GlyphKey::subpixel_phase. Pixels are bit-identical to
-                // before this field existed.
-                subpixel_phase: 0,
+                // EM1: an emoji sequence layout folded into this character.
+                cluster: Self::emoji_cluster_at(&chars, faces, char_idx),
+                // The quarter phase Skia rounds this glyph to (TX3).
+                subpixel_phase: phase,
                 codepoint: ch,
                 font_family: font_family.to_string(),
                 font_size: (font_size * 10.0) as u32,
@@ -5862,6 +6435,7 @@ impl Renderer {
                 font_style,
                 web_face,
                 face,
+                coverage: gradient_coverage,
             };
             let layout_advance = layout_advances.and_then(|a| a.get(char_idx).copied());
 
@@ -5885,7 +6459,7 @@ impl Renderer {
                 continue;
             };
             {
-                let glyph_x = cursor_x + entry.offset[0];
+                let glyph_x = origin_x + entry.offset[0];
                 let glyph_y = baseline + entry.offset[1];
                 let glyph_w = (entry.tex_coords[2] - entry.tex_coords[0]) * atlas_size;
                 let glyph_h = (entry.tex_coords[3] - entry.tex_coords[1]) * atlas_size;
@@ -5932,6 +6506,51 @@ impl Renderer {
 
                 cursor_x += layout_advance.unwrap_or(entry.advance);
             }
+        }
+    }
+
+    /// The emoji sequence starting at `chars[i]` that layout folded into it
+    /// (EM1): the head is recorded as an emoji fallback and the characters
+    /// it covers, which follow it in its grapheme cluster, as `Ignorable`.
+    /// `None` otherwise, and for a command without layout's face record.
+    fn emoji_cluster_at(
+        chars: &[char],
+        faces: Option<&[rustkit_text::GlyphFace]>,
+        i: usize,
+    ) -> Option<std::sync::Arc<str>> {
+        #[cfg(target_os = "macos")]
+        {
+            let faces = faces?;
+            // An emoji-fallback head, or a head in the run's own face (an
+            // Apple emoji primary; the glyph cache draws a cluster in the
+            // primary face only when that face is a colour face).
+            if !matches!(
+                faces.get(i),
+                Some(rustkit_text::GlyphFace::Fallback { emoji: true }) | Some(rustkit_text::GlyphFace::Primary)
+            ) {
+                return None;
+            }
+            // Nothing folded into this character: the common case, decided
+            // without segmenting graphemes (Prometheus R1 MED 1 on #1076).
+            if faces.get(i + 1) != Some(&rustkit_text::GlyphFace::Ignorable) {
+                return None;
+            }
+            // The head and the characters layout folded into it: the
+            // `Ignorable` ones that follow, within its grapheme cluster.
+            let n = rustkit_text::macos::emoji_cluster_len(&chars[i..]).min(chars.len() - i);
+            let folded = faces[i + 1..i + n]
+                .iter()
+                .take_while(|f| **f == rustkit_text::GlyphFace::Ignorable)
+                .count();
+            if folded == 0 {
+                return None;
+            }
+            Some(chars[i..i + 1 + folded].iter().collect::<String>().into())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (chars, faces, i);
+            None
         }
     }
 
@@ -6019,22 +6638,33 @@ impl Renderer {
         y: f32,
         color: Color,
         layout_ascent: Option<f32>,
+        undilated: bool,
     ) -> bool {
-        // FROZEN AT 0, as on the character path (GlyphKey::subpixel_phase).
-        let key_for = |glyph_id: u16| RunGlyphKey {
+        // The glyph-mask law for the run's colour (`glyph::coverage_for`).
+        let coverage = crate::glyph::coverage_for([color.r, color.g, color.b], undilated);
+        let key_for = |glyph_id: u16, phase: u8| RunGlyphKey {
             face: run.face.id,
             glyph_id,
             font_size: (run.font_size * 10.0) as u32,
-            subpixel_phase: 0,
+            subpixel_phase: phase,
+            coverage,
         };
+        // TX3: each glyph's whole-pixel origin and quarter phase, as Skia
+        // rounds them (`glyph::skia_glyph_origin`).
+        let origins: Vec<(f32, u8)> = run
+            .glyphs
+            .iter()
+            .zip(run.pen_positions(x))
+            .map(|(glyph, pen_x)| crate::glyph::skia_glyph_origin(pen_x + glyph.x_offset))
+            .collect();
 
         // Every glyph's bitmap first, so a missing face is known before a
         // single quad is emitted.
         let mut entries = Vec::with_capacity(run.glyphs.len());
-        for glyph in &run.glyphs {
+        for (glyph, (_, phase)) in run.glyphs.iter().zip(&origins) {
             match self.glyph_cache.get_or_rasterize_run_glyph(
                 &self.queue,
-                &key_for(glyph.glyph_id),
+                &key_for(glyph.glyph_id, *phase),
                 run.font_size,
             ) {
                 Some(entry) => entries.push(entry),
@@ -6051,13 +6681,13 @@ impl Renderer {
         let baseline = (y + layout_ascent.unwrap_or(run.ascent)).round();
         let atlas_size = self.glyph_cache.atlas_size() as f32;
 
-        for ((glyph, pen_x), entry) in run
+        for ((glyph, (origin_x, _)), entry) in run
             .glyphs
             .iter()
-            .zip(run.pen_positions(x))
+            .zip(origins)
             .zip(entries)
         {
-            let glyph_x = pen_x + glyph.x_offset + entry.offset[0];
+            let glyph_x = origin_x + entry.offset[0];
             let glyph_y = baseline + glyph.y_offset + entry.offset[1];
             let glyph_w = (entry.tex_coords[2] - entry.tex_coords[0]) * atlas_size;
             let glyph_h = (entry.tex_coords[3] - entry.tex_coords[1]) * atlas_size;
@@ -6121,8 +6751,12 @@ impl Renderer {
         layout_advances: Option<&[f32]>,
         layout_ascent: Option<f32>,
         layout_faces: Option<&[rustkit_text::GlyphFace]>,
+        undilated: bool,
     ) {
         let mut cursor_x = x;
+        // The glyph-mask law for this colour, once per command
+        // (`glyph::coverage_for` costs three `powf`).
+        let coverage = crate::glyph::coverage_for([color.r, color.g, color.b], undilated);
         let c = [
             color.r as f32 / 255.0,
             color.g as f32 / 255.0,
@@ -6177,11 +6811,13 @@ impl Renderer {
                 Some(faces) => FaceKey::Recorded(faces[char_idx]),
                 None => FaceKey::Auto(rustkit_text::Variation::after(next)),
             };
+            // TX3: whole-pixel origin and quarter phase (`glyph::skia_glyph_origin`).
+            let (origin_x, phase) = crate::glyph::skia_glyph_origin(cursor_x);
             let key = GlyphKey {
-                // FROZEN AT 0 until the rasterizer can draw at a phase --
-                // see GlyphKey::subpixel_phase. Pixels are bit-identical to
-                // before this field existed.
-                subpixel_phase: 0,
+                // EM1: an emoji sequence layout folded into this character.
+                cluster: Self::emoji_cluster_at(&chars, faces, char_idx),
+                // The quarter phase Skia rounds this glyph to (TX3).
+                subpixel_phase: phase,
                 codepoint: ch,
                 font_family: font_family.to_string(),
                 font_size: (font_size * 10.0) as u32,
@@ -6189,6 +6825,7 @@ impl Renderer {
                 font_style,
                 web_face,
                 face,
+                coverage,
             };
             // ADVANCE CONTRACT: layout's advance wins when present so
             // painted ink tracks measured width 1:1; the atlas advance is
@@ -6238,7 +6875,7 @@ impl Renderer {
                 continue;
             };
 
-            let glyph_x = cursor_x + entry.offset[0];
+            let glyph_x = origin_x + entry.offset[0];
             let glyph_y = baseline + entry.offset[1];
             let glyph_w = (entry.tex_coords[2] - entry.tex_coords[0]) * atlas_size;
             let glyph_h = (entry.tex_coords[3] - entry.tex_coords[1]) * atlas_size;
@@ -6341,10 +6978,10 @@ impl Renderer {
         object_position: (f32, f32),
         object_position_offset: (f32, f32),
     ) {
-        let Some(natural) = self
+        let Some((natural, premultiplied)) = self
             .texture_cache
             .get(url)
-            .map(|cached| (cached.width, cached.height))
+            .map(|cached| ((cached.width, cached.height), cached.premultiplied))
         else {
             // If image not loaded, skip (async loading handled elsewhere)
             return;
@@ -6362,7 +6999,8 @@ impl Renderer {
         for ([[x0, y0], [x1, y1], [x2, y2], [x3, y3]], tex, coverage) in
             self.textured_pieces(rect, uv)
         {
-            let color = [1.0, 1.0, 1.0, coverage];
+            let red = if premultiplied { PREMULTIPLIED_TEXELS } else { 1.0 };
+            let color = [red, 1.0, 1.0, coverage];
             self.push_image_quad(
                 url,
                 [
@@ -6561,6 +7199,24 @@ impl Renderer {
         Ok(())
     }
     
+    /// Upload premultiplied RGBA (a canvas bitmap, STR-7b). Its quads
+    /// filter the premultiplied texels, as Chrome composites a canvas, so a
+    /// scaled bitmap blends an opaque texel with a transparent neighbour
+    /// toward what is behind it, not toward the neighbour's black.
+    pub fn upload_premultiplied_image(
+        &mut self,
+        url: &str,
+        width: u32,
+        height: u32,
+        rgba_data: &[u8],
+    ) -> Result<(), RendererError> {
+        self.upload_image(url, width, height, rgba_data)?;
+        if let Some(t) = self.texture_cache.textures.get_mut(url) {
+            t.premultiplied = true;
+        }
+        Ok(())
+    }
+
     /// Upload a decoded raster image (RGBA) for use as a mask image: it is
     /// stored under [`mask_texture_key`] with its colour made white and its
     /// alpha kept (`mask-mode: alpha`, the initial for an image).
@@ -6587,6 +7243,13 @@ impl Renderer {
     /// Remove an image from the cache.
     pub fn remove_image(&mut self, url: &str) {
         self.texture_cache.remove(url);
+        self.forget_canvases(|k| k != url);
+    }
+
+    /// Drop the uploaded images whose key `keep` rejects.
+    pub fn retain_images(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.texture_cache.retain(&mut keep);
+        self.forget_canvases(keep);
     }
 
 
@@ -6692,6 +7355,9 @@ impl Renderer {
                 fade_premultiplied(self.color_glyph_vertices.iter_mut().map(|v| &mut v.color), starts[2], gain);
                 fade_straight(self.image_vertices.iter_mut().map(|v| &mut v.color), starts[3], gain);
             }
+            // Never an opacity scope: off the layered path an outline clip
+            // is its bounding-box rect clip.
+            LayerEffect::ClipMask(_) => {}
         }
     }
 
@@ -7163,6 +7829,8 @@ enum DrawKind {
     Layer,
     /// A filtered layer; the colour matrix's bind group (group 2).
     Filter(wgpu::BindGroup),
+    /// A clip-path layer through its coverage mask (group 2).
+    ClipMask(wgpu::BindGroup),
 }
 
 /// Most layer textures kept at one depth: overlapping groups at one depth
@@ -7257,6 +7925,123 @@ enum LayerEffect {
     /// `PushFilter`: a 4x5 row-major colour matrix on unpremultiplied
     /// colour, clamped (Filter Effects 1 §13).
     ColorMatrix([f32; 20]),
+    /// `PushClipPath`: every pixel scaled by the outline's coverage, the
+    /// mask at this index of `Renderer::clip_masks`.
+    ClipMask(usize),
+}
+
+/// A `PushClipPath` outline's coverage in the list being drawn: its entry
+/// in `Renderer::clip_mask_cache` (`None` when it covers no pixel of the
+/// target) and `[x, y, width, height]` in the target.
+struct ClipMask {
+    key: Option<u64>,
+    /// Where the mask is drawn: the outline's box cut to the viewport.
+    rect: [u32; 4],
+    /// Where the mask's texel (0, 0) lies on screen (can be off it).
+    origin: [i32; 2],
+}
+
+/// Sub-pixel phases an outline mask is snapped to, per axis.
+const CLIP_MASK_PHASES: f32 = 16.0;
+/// The largest outline mask rasterised whole; past it the mask is cut to
+/// the viewport (and re-made when the page scrolls).
+const MAX_CLIP_MASK_DIM: i64 = 4096;
+
+/// A rasterised outline, kept between frames: a list drawn again (a
+/// repaint, a scroll by whole pixels) finds its masks here instead of
+/// rasterising and uploading them again.
+struct CachedClipMask {
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    /// The `clip_mask_frame` that last used it.
+    used: u64,
+    /// Its size in bytes (one byte a pixel).
+    bytes: usize,
+}
+
+/// Frames a cached outline mask outlives its last use.
+const CLIP_MASK_KEEP_FRAMES: u64 = 64;
+/// The most bytes of outline masks kept between frames.
+const MAX_CACHED_CLIP_MASK_BYTES: usize = 64 << 20;
+
+/// The most `PushClipPath` scopes one list draws as layers; the rest clip
+/// to their bounding boxes. Each costs a layer like an opacity scope's.
+const MAX_CLIP_PATH_LAYERS: usize = 256;
+
+/// The most rasterised outlines kept between frames.
+const MAX_CACHED_CLIP_MASKS: usize = 1024;
+
+/// Where a pixel's coverage samples sit (Chromium paints a clip path's
+/// edge with 4x multisampling at the standard D3D/Metal/Vulkan positions:
+/// its edge pixels come out in quarters, and these positions reproduce
+/// them; a 2:1 edge reads 0.5 on its left side and 0.25 on its right).
+const CLIP_SAMPLES: [(f32, f32); 4] = [(0.375, 0.125), (0.875, 0.375), (0.125, 0.625), (0.625, 0.875)];
+
+/// The coverage (0-255) of the closed `contours` (target pixels) over the
+/// `w` x `h` pixels from `(x0, y0)`, row-major: four samples a pixel
+/// (`CLIP_SAMPLES`), each inside by the nonzero rule, or the even-odd rule
+/// when `even_odd`.
+///
+/// Pure so it can be tested without a device.
+fn clip_mask_coverage(contours: &[Vec<(f32, f32)>], even_odd: bool, x0: i32, y0: i32, w: u32, h: u32) -> Vec<u8> {
+    let (w, h) = (w as usize, h as usize);
+    let mut counts = vec![0u8; w * h];
+    // Edges as (top, bottom, x at top, dx/dy, winding).
+    let mut edges: Vec<(f32, f32, f32, f32, i32)> = Vec::new();
+    for contour in contours {
+        let n = contour.len();
+        for i in 0..n {
+            let (a, b) = (contour[i], contour[(i + 1) % n]);
+            if a.1 == b.1 || !(a.1.is_finite() && b.1.is_finite() && a.0.is_finite() && b.0.is_finite()) {
+                continue;
+            }
+            let (top, bottom, dir) = if a.1 < b.1 { (a, b, 1) } else { (b, a, -1) };
+            edges.push((top.1, bottom.1, top.0, (bottom.0 - top.0) / (bottom.1 - top.1), dir));
+        }
+    }
+    if edges.is_empty() || w == 0 || h == 0 {
+        return counts;
+    }
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut crossings: Vec<(f32, i32)> = Vec::new();
+    for row in 0..h {
+        for &(sx, sy) in &CLIP_SAMPLES {
+            let y = (y0 + row as i32) as f32 + sy;
+            crossings.clear();
+            for &(top, bottom, x, slope, dir) in &edges {
+                if top > y {
+                    break;
+                }
+                if y < bottom {
+                    crossings.push((x + (y - top) * slope, dir));
+                }
+            }
+            if crossings.len() < 2 {
+                continue;
+            }
+            crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut winding = 0;
+            for pair in 0..crossings.len() - 1 {
+                winding += crossings[pair].1;
+                let inside = if even_odd { (pair + 1) % 2 == 1 } else { winding != 0 };
+                if !inside {
+                    continue;
+                }
+                // Pixels whose sample `px + sx` lies in [left, right).
+                let (left, right) = (crossings[pair].0, crossings[pair + 1].0);
+                let first = ((left - sx).ceil() as i64 - x0 as i64).max(0);
+                let end = ((right - sx).ceil() as i64 - x0 as i64).min(w as i64);
+                let line = &mut counts[row * w..(row + 1) * w];
+                for count in line.iter_mut().take(end.max(0) as usize).skip(first as usize) {
+                    *count += 1;
+                }
+            }
+        }
+    }
+    for c in counts.iter_mut() {
+        *c = ((*c as u32 * 255 + 2) / 4) as u8;
+    }
+    counts
 }
 
 /// The open `PushOpacity` and `PushFilter` scopes, innermost last, when
@@ -10052,6 +10837,55 @@ const LIST_BOX_SELECTED_TEXT: Color = Color {
     a: 1.0,
 };
 
+/// Sutherland-Hodgman: the part of convex polygon `poly` inside `clip`,
+/// colours interpolated along the cut edges.
+fn clip_polygon_to_rect(poly: &[ColorVertex], clip: Rect) -> Vec<ColorVertex> {
+    let lerp = |a: &ColorVertex, b: &ColorVertex, t: f32| {
+        let mut v = *a;
+        for i in 0..2 {
+            v.position[i] = a.position[i] + (b.position[i] - a.position[i]) * t;
+        }
+        for i in 0..4 {
+            v.color[i] = a.color[i] + (b.color[i] - a.color[i]) * t;
+        }
+        v
+    };
+    // (axis, bound, keep the side >= bound)
+    let edges = [
+        (0, clip.x, true),
+        (0, clip.x + clip.width, false),
+        (1, clip.y, true),
+        (1, clip.y + clip.height, false),
+    ];
+    let mut out: Vec<ColorVertex> = poly.to_vec();
+    for (axis, bound, keep_above) in edges {
+        if out.is_empty() {
+            break;
+        }
+        let inside = |v: &ColorVertex| {
+            if keep_above {
+                v.position[axis] >= bound
+            } else {
+                v.position[axis] <= bound
+            }
+        };
+        let input = std::mem::take(&mut out);
+        for i in 0..input.len() {
+            let cur = &input[i];
+            let prev = &input[(i + input.len() - 1) % input.len()];
+            let (ci, pi) = (inside(cur), inside(prev));
+            if ci != pi {
+                let t = (bound - prev.position[axis]) / (cur.position[axis] - prev.position[axis]);
+                out.push(lerp(prev, cur, t));
+            }
+            if ci {
+                out.push(*cur);
+            }
+        }
+    }
+    out
+}
+
 /// Centre of a drop-down's arrow in its border box `rect`.
 fn menu_list_arrow_centre(rect: Rect) -> (f32, f32) {
     (rect.x + rect.width - 8.75, rect.y + rect.height / 2.0)
@@ -10085,6 +10919,25 @@ mod select_paint_tests {
         let (bx, by) = menu_list_arrow_centre(big);
         assert_eq!(big.x + big.width - bx, rect.x + rect.width - cx);
         assert_eq!(by, 187.0);
+    }
+
+    fn v(x: f32, y: f32) -> ColorVertex {
+        ColorVertex { position: [x, y], color: [1.0, 1.0, 1.0, 1.0] }
+    }
+
+    /// CB1a: a primitive wholly outside the clip keeps nothing; one cut by
+    /// it keeps only the inside part.
+    #[test]
+    fn a_vector_triangle_is_cut_to_the_clip_rect() {
+        let clip = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let outside = [v(20.0, 0.0), v(30.0, 0.0), v(20.0, 5.0)];
+        assert!(clip_polygon_to_rect(&outside, clip).is_empty());
+        let inside = [v(1.0, 1.0), v(5.0, 1.0), v(1.0, 5.0)];
+        assert_eq!(clip_polygon_to_rect(&inside, clip).len(), 3);
+        let cut = clip_polygon_to_rect(&[v(5.0, 2.0), v(15.0, 2.0), v(5.0, 8.0)], clip);
+        assert!(cut.len() >= 3);
+        assert!(cut.iter().all(|p| p.position[0] <= 10.0 + 1e-4));
+        assert!(cut.iter().any(|p| (p.position[0] - 10.0).abs() < 1e-4));
     }
 
     /// Chrome's option rows stack from the inside of the frame: 16px rows
@@ -10251,6 +11104,7 @@ mod shaped_run_paint_tests {
             glyph_id,
             font_size: (run.font_size * 10.0) as u32,
             subpixel_phase: 0,
+            coverage: 0,
         }
     }
 
@@ -10352,6 +11206,7 @@ mod shaped_run_measured_face_tests {
             glyph_id: run.glyphs[0].glyph_id,
             font_size: 140,
             subpixel_phase: 0,
+            coverage: 0,
         };
         let (bitmap, ..) = rasterize_run_glyph(&key, 14.0).expect("drawn");
         assert!(bitmap.iter().any(|&v| v > 128), "the glyph has ink");
@@ -10382,6 +11237,7 @@ mod shaped_run_windows_paint_tests {
             glyph_id,
             font_size: (run.font_size * 10.0) as u32,
             subpixel_phase: 0,
+            coverage: 0,
         }
     }
 
@@ -10543,6 +11399,7 @@ mod opacity_scope_tests {
         match effect {
             LayerEffect::Fade(alpha) => fade_straight(batch.iter_mut(), start, alpha),
             LayerEffect::ColorMatrix(m) => filter_straight(batch.iter_mut(), start, &m),
+            LayerEffect::ClipMask(_) => {}
         }
     }
 
@@ -10677,5 +11534,82 @@ mod opacity_scope_tests {
         let mut batch = vec![OPAQUE, [0.8, 0.4, 0.2, 0.8]];
         fade_premultiplied(batch.iter_mut(), 1, 0.5);
         assert_eq!(batch, vec![OPAQUE, [0.4, 0.2, 0.1, 0.4]]);
+    }
+}
+
+/// C8b: the outline coverage `PushClipPath` composites through.
+#[cfg(test)]
+mod clip_mask_coverage_tests {
+    use super::clip_mask_coverage;
+
+    /// The triangle of `clip_path_shape_tests` (apex (150, 50), base
+    /// (50, 250)-(250, 250)): row 52 from x 147, as Chromium 148 paints it
+    /// (4x multisampled: 0.5 on the left edge, 0.25 on the right).
+    #[test]
+    fn a_triangle_edge_comes_out_in_chromium_quarters() {
+        let tri = vec![vec![(150.0, 50.0), (250.0, 250.0), (50.0, 250.0)]];
+        let row = clip_mask_coverage(&tri, false, 147, 52, 6, 1);
+        assert_eq!(row, vec![0, 128, 255, 255, 64, 0]);
+    }
+
+    /// A five-point star: its centre pentagon is wound twice, so even-odd
+    /// leaves it open and nonzero fills it; a tip is inside under both.
+    #[test]
+    fn evenodd_opens_a_twice_wound_centre_and_nonzero_fills_it() {
+        let star = vec![vec![(150.0, 50.0), (208.0, 230.0), (54.0, 120.0), (246.0, 120.0), (92.0, 230.0)]];
+        let at = |even_odd: bool, x: i32, y: i32| clip_mask_coverage(&star, even_odd, x, y, 1, 1)[0];
+        assert_eq!(at(true, 150, 140), 0);
+        assert_eq!(at(false, 150, 140), 255);
+        assert_eq!(at(true, 150, 80), 255);
+        assert_eq!(at(false, 150, 80), 255);
+        assert_eq!(at(false, 60, 60), 0);
+    }
+
+    /// Nothing to fill, or no pixels asked for: an empty mask, no panic.
+    #[test]
+    fn degenerate_input_is_an_empty_mask() {
+        assert_eq!(clip_mask_coverage(&[], false, 0, 0, 3, 2), vec![0; 6]);
+        let flat = vec![vec![(0.0, 5.0), (10.0, 5.0), (20.0, 5.0)]];
+        assert_eq!(clip_mask_coverage(&flat, false, 0, 0, 4, 8), vec![0; 32]);
+        let tri = vec![vec![(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)]];
+        assert!(clip_mask_coverage(&tri, false, 0, 0, 0, 0).is_empty());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod emoji_cluster_at_tests {
+    use super::*;
+
+    /// Paint keys a glyph by its emoji sequence only where layout folded
+    /// characters into it, and finds that out without segmenting graphemes
+    /// for every ordinary character every frame (Prometheus R1 MED 1 on
+    /// #1076): a plain primary-face run segments nothing.
+    #[test]
+    fn a_plain_run_segments_no_graphemes() {
+        let chars: Vec<char> = "Downloads and Tabs".chars().collect();
+        let faces = vec![rustkit_text::GlyphFace::Primary; chars.len()];
+        let before = rustkit_text::macos::emoji_cluster_segmentations();
+        for i in 0..chars.len() {
+            assert!(Renderer::emoji_cluster_at(&chars, Some(&faces), i).is_none());
+        }
+        assert_eq!(rustkit_text::macos::emoji_cluster_segmentations(), before);
+    }
+
+    /// A folded sequence is still found: the family's head carries it.
+    #[test]
+    fn a_folded_sequence_is_keyed_at_its_head() {
+        use rustkit_text::GlyphFace::{Fallback, Ignorable};
+        let chars: Vec<char> = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}!".chars().collect();
+        let faces = [
+            Fallback { emoji: true },
+            Ignorable,
+            Ignorable,
+            Ignorable,
+            Ignorable,
+            rustkit_text::GlyphFace::Primary,
+        ];
+        let got = Renderer::emoji_cluster_at(&chars, Some(&faces), 0);
+        assert_eq!(got.as_deref(), Some("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"));
+        assert!(Renderer::emoji_cluster_at(&chars, Some(&faces), 5).is_none());
     }
 }

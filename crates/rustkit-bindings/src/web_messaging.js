@@ -97,9 +97,9 @@
         s.scheduled--;
         if (s.closed || !s.queue.length) return;
         var m = s.queue.shift();
-        var event = new g.MessageEvent('message', { data: m.data, ports: m.ports });
-        event.isTrusted = true;
-        port.dispatchEvent(event);
+        var event = __rk.make('MessageEvent', 'message', { data: m.data, ports: m.ports });
+        __rk.trust(event);
+        __rk.dispatchTo(port, event);
     }
 
     MessagePort.prototype.postMessage = function postMessage(message, options) {
@@ -189,7 +189,7 @@
     MessageEvent.prototype = Object.create(Event.prototype, { constructor: { value: MessageEvent, writable: true, configurable: true } });
     tag(MessageEvent, 'MessageEvent');
     MessageEvent.prototype.initMessageEvent = function (type, bubbles, cancelable, data, origin, lastEventId, source, ports) {
-        if (this.eventPhase !== 0) return;
+        if (__rk.isDispatching(this)) return;
         this.initEvent(type, bubbles, cancelable);
         this.data = data === undefined ? null : data;
         this.origin = origin === undefined ? '' : String(origin);
@@ -198,6 +198,7 @@
         this.ports = portList(ports, "Failed to execute 'initMessageEvent' on 'MessageEvent': ");
     };
     hide(g, 'MessageEvent', MessageEvent);
+    __rk.keepCtor('MessageEvent', MessageEvent, 'Event', [['data', null], ['origin', ''], ['lastEventId', ''], ['source', null], ['ports', []]]);
 
     // ---- window.postMessage (HTML §9.3.3), same window only.
     // '*' matches any origin; '/' the document's own; anything else must
@@ -226,9 +227,9 @@
         post(function () {
             var own = g.location ? String(g.location.origin) : 'null';
             if (origin !== null && (own === 'null' || origin !== own)) return;
-            var event = new MessageEvent('message', { data: data, origin: own, lastEventId: '', source: g, ports: ports });
-            event.isTrusted = true;
-            g.dispatchEvent(event);
+            var event = __rk.make('MessageEvent', 'message', { data: data, origin: own, lastEventId: '', source: g, ports: ports });
+            __rk.trust(event);
+            __rk.dispatchTo(g, event);
         }, 0);
     });
 
@@ -278,7 +279,7 @@
     }
     function idlePeriod() {
         idleTask = null;
-        if (typeof g.__rustkit_next_timer === 'function' && g.__rustkit_next_timer() === 0) {
+        if (typeof __rk.nextTimer === 'function' && __rk.nextTimer() === 0) {
             var now = Date.now();
             idleQueue.slice().forEach(function (entry) {
                 if (entry.expires !== null && now >= entry.expires) invoke(entry, deadline(0, true));

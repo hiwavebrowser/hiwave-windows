@@ -88,6 +88,149 @@ fn clone_and_delete_contents_cover_one_container() {
     );
 }
 
+// ---- Range.surroundContents / insertNode / extractContents (CH2.E47) ----
+// The app's find-in-page wraps each match with `range.surroundContents(mark)`;
+// before this it threw there, after adding its <style>, so nothing highlighted.
+
+const MIXED: &str = "<html><body><p id=p>ab<b id=b>cd</b>ef</p><div id=d><i>x</i><u>y</u></div><span id=s>old</span></body></html>";
+
+fn mixed() -> DomBindings {
+    let b = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+    b.set_document(Rc::new(Document::parse_html(MIXED).unwrap())).unwrap();
+    b
+}
+
+#[test]
+fn surround_contents_wraps_a_text_range_and_selects_the_wrapper() {
+    let (b, _) = bound();
+    assert_eq!(
+        ev(&b, "var p = document.getElementById('inner'); var t = p.firstChild; var r = document.createRange(); r.setStart(t, 2); r.setEnd(t, 5); var m = document.createElement('span'); m.className = 'hit'; r.surroundContents(m); [p.innerHTML, m.textContent, r.startContainer === p, r.startOffset, r.endContainer === p, r.endOffset].join('|')"),
+        "ab<span class=\"hit\">cde</span>f|cde|true|1|true|2"
+    );
+}
+
+#[test]
+fn surround_contents_wraps_whole_elements_and_a_range_across_text_ends() {
+    let b = mixed();
+    assert_eq!(
+        ev(&b, "var d = document.getElementById('d'); var r = document.createRange(); r.selectNodeContents(d); var w = document.createElement('em'); r.surroundContents(w); d.innerHTML"),
+        "<em><i>x</i><u>y</u></em>"
+    );
+    // The ends sit in two different text nodes, with an element between them
+    // that the range contains whole: "b" + <b>cd</b> + "e" move into the wrapper.
+    assert_eq!(
+        ev(&b, "var p = document.getElementById('p'); var r = document.createRange(); r.setStart(p.firstChild, 1); r.setEnd(p.lastChild, 1); var w = document.createElement('mark'); r.surroundContents(w); p.innerHTML"),
+        "a<mark>b<b id=\"b\">cd</b>e</mark>f"
+    );
+}
+
+#[test]
+fn surround_contents_empties_the_new_parent_first() {
+    let b = mixed();
+    assert_eq!(
+        ev(&b, "var p = document.getElementById('p'); var s = document.getElementById('s'); var r = document.createRange(); r.setStart(p.firstChild, 0); r.setEnd(p.firstChild, 2); r.surroundContents(s); [p.innerHTML, s.textContent].join('|')"),
+        "<span id=\"s\">ab</span><b id=\"b\">cd</b>ef|ab"
+    );
+}
+
+#[test]
+fn surround_contents_refuses_a_range_that_cuts_an_element_and_changes_nothing() {
+    let b = mixed();
+    // Starts inside <b>, ends after it: <b> is partially contained.
+    assert_eq!(
+        ev(&b, "var p = document.getElementById('p'); var before = p.innerHTML; var r = document.createRange(); r.setStart(document.getElementById('b').firstChild, 1); r.setEnd(p.lastChild, 1); var name = 'none'; try { r.surroundContents(document.createElement('i')); } catch (e) { name = e.name; } [name, p.innerHTML === before].join()"),
+        "InvalidStateError,true"
+    );
+}
+
+#[test]
+fn surround_contents_refuses_a_document_type_and_a_fragment_as_the_wrapper() {
+    let b = mixed();
+    for wrapper in ["document", "document.createDocumentFragment()"] {
+        let script = format!(
+            "var p = document.getElementById('p'); var r = document.createRange(); r.setStart(p.firstChild, 0); r.setEnd(p.firstChild, 1); var name = 'none'; try {{ r.surroundContents({wrapper}); }} catch (e) {{ name = e.name; }} [name, p.firstChild.data].join()"
+        );
+        assert_eq!(ev(&b, &script), "InvalidNodeTypeError,ab", "{wrapper}");
+    }
+    assert_eq!(
+        ev(&b, "var r = document.createRange(); var name = 'none'; try { r.surroundContents({}); } catch (e) { name = e.name; } name"),
+        "TypeError"
+    );
+}
+
+#[test]
+fn insert_node_splits_a_text_start_and_collapsed_ranges_follow_the_insertion() {
+    let (b, _) = bound();
+    assert_eq!(
+        ev(&b, "var p = document.getElementById('inner'); var r = document.createRange(); r.setStart(p.firstChild, 2); r.collapse(true); var i = document.createElement('i'); r.insertNode(i); [p.childNodes.length, p.innerHTML, r.endContainer === p, r.endOffset].join('|')"),
+        "3|ab<i></i>cdef|true|2"
+    );
+    // A fragment goes in whole; an element start inserts before the child at the offset.
+    assert_eq!(
+        ev(&b, "var o = document.getElementById('outer'); var r = document.createRange(); r.setStart(o, 0); r.collapse(true); var f = document.createDocumentFragment(); f.appendChild(document.createElement('a')); f.appendChild(document.createElement('b')); r.insertNode(f); [o.firstChild.localName, o.childNodes[1].localName, o.childNodes[2].id, r.endOffset].join()"),
+        "a,b,inner,2"
+    );
+}
+
+#[test]
+fn insert_node_refuses_a_comment_start() {
+    let (b, _) = bound();
+    assert_eq!(
+        ev(&b, "var c = document.createComment('x'); document.getElementById('outer').appendChild(c); var r = document.createRange(); r.setStart(c, 0); var name = 'none'; try { r.insertNode(document.createElement('i')); } catch (e) { name = e.name; } name"),
+        "HierarchyRequestError"
+    );
+}
+
+#[test]
+fn extract_contents_hands_back_what_it_removes() {
+    let (b, _) = bound();
+    assert_eq!(
+        ev(&b, "var t = document.getElementById('inner').firstChild; var r = document.createRange(); r.setStart(t, 1); r.setEnd(t, 4); var f = r.extractContents(); [f.nodeType, f.textContent, t.data, r.collapsed].join()"),
+        "11,bcd,aef,true"
+    );
+}
+
+// ---- find_in_page.js must not rewrite the page beyond the wrapped matches (#1024 R1 nit 1) ----
+
+const FIND_JS: &str = include_str!("../../hiwave-app/src/ui/find_in_page.js");
+
+fn find_page(setup: &str) -> DomBindings {
+    let b = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+    let doc = Rc::new(Document::parse_html("<html><head></head><body><div id=keep></div><p id=hit></p></body></html>").unwrap());
+    b.set_document(doc).unwrap();
+    b.evaluate(setup).unwrap();
+    b.evaluate(FIND_JS).unwrap();
+    b
+}
+
+#[test]
+fn find_leaves_the_pages_own_adjacent_text_nodes_alone() {
+    // Two adjacent text nodes the page made on purpose (a framework holds both). The old
+    // find ended with document.body.normalize(), which merged them.
+    let b = find_page(
+        "var k = document.getElementById('keep'); k.appendChild(document.createTextNode('xx ')); k.appendChild(document.createTextNode('yy ')); \
+         document.getElementById('hit').appendChild(document.createTextNode('say hello now'));",
+    );
+    assert_eq!(
+        ev(&b, "var k = document.getElementById('keep'); var a = k.firstChild, c = k.lastChild; var r = window.__hiwaveFind.run({query: 'hello', case_sensitive: false, direction: 'reset'}); [r.count, k.childNodes.length, k.firstChild === a, k.lastChild === c, a.data, c.data].join('|')"),
+        "1|2|true|true|xx |yy "
+    );
+}
+
+#[test]
+fn clearing_a_find_puts_every_node_back_exactly_as_it_was() {
+    let b = find_page(
+        "var h = document.getElementById('hit'); h.appendChild(document.createTextNode('hello a hello b hello')); h.appendChild(document.createElement('i')).textContent = 'hello in i';",
+    );
+    assert_eq!(
+        ev(&b, "var h = document.getElementById('hit'); var t = h.firstChild, i = h.lastChild; var before = h.innerHTML; \
+                var r = window.__hiwaveFind.run({query: 'hello', case_sensitive: false, direction: 'reset'}); var marked = h.querySelectorAll('.zen-find-match').length; \
+                window.__hiwaveFind.run({query: '', direction: 'reset'}); \
+                [r.count, marked, h.childNodes.length, h.firstChild === t, h.lastChild === i, h.innerHTML === before, t.data, h.querySelectorAll('.zen-find-match').length].join('|')"),
+        "4|4|2|true|true|true|hello a hello b hello|0"
+    );
+}
+
 #[test]
 fn create_contextual_fragment_parses_in_context_and_runs_scripts_on_insert() {
     let (b, _) = bound();

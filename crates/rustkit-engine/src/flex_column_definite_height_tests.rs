@@ -146,3 +146,43 @@ fn definite_height_controls() {
         ("block_h0px", one("height:0px"), "c=0+0 kids=0+40,40+44"),
     ]);
 }
+
+/// Flex parity (found by INC5's 6a review, Prometheus #1064): two
+/// `height: 300px` items in a 500px column body overflow it in RustKit
+/// (300 + 300). The items shrink (flex-shrink 1), each no further than its
+/// automatic minimum, min(its content height, its `height`): the first,
+/// holding 320px of content, stays at 300 and the second takes the shrink.
+/// When the first's content drops to 150px its minimum drops, and the two
+/// share the shrink. Expected: Chrome for Testing 148.0.7778.216, headless,
+/// 400x600 (scratch probe, `getBoundingClientRect().height` of each item):
+/// 300/200 before, 250/250 after; padded 1px top and bottom, 302/198 then
+/// 250/250.
+#[test]
+fn column_items_with_a_length_height_shrink_to_their_automatic_minimum() {
+    let page = |pad: &str| {
+        format!(
+            "<style>body{{margin:0;height:500px;display:flex;flex-direction:column}} .i{{height:300px;{pad}}}</style>\
+             <div class=i><div id=t style='height:320px'></div></div><div class=i><div style='height:100px'></div></div>"
+        )
+    };
+    const HEIGHTS: &str = "Array.prototype.map.call(document.querySelectorAll('.i'), function(e){return Math.round(e.getBoundingClientRect().height)}).join('/')";
+    let mut wrong = Vec::new();
+    for (name, pad, before, after) in [("plain", "", "300/200", "250/250"), ("padded", "padding:1px 0", "302/198", "250/250")] {
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let id = engine.create_headless_view(Bounds::new(0, 0, 400, 600)).expect("view");
+        engine.load_html(id, &page(pad)).expect("load");
+        let unquote = |v: String| {
+            v.strip_prefix("String(\"").and_then(|v| v.strip_suffix("\")")).unwrap_or(&v).to_string()
+        };
+        let got_before = unquote(engine.execute_script(id, HEIGHTS).expect("read"));
+        engine
+            .execute_script(id, "document.getElementById('t').style.height = '150px';")
+            .expect("edit");
+        let got_after = unquote(engine.execute_script(id, HEIGHTS).expect("read"));
+        if got_before != before || got_after != after {
+            wrong.push(format!("{name}: {got_before} then {got_after} (Chrome 148: {before} then {after})"));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+

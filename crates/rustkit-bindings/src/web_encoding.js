@@ -1,6 +1,8 @@
 // Text and base64 encoding globals: btoa / atob, escape / unescape,
-// TextEncoder / TextDecoder. Pure string and byte work; nothing here needs
-// the host. Each name is only defined when nothing else has defined it.
+// TextEncoder / TextDecoder. The byte work itself (UTF-8, base64, binary
+// strings) is the host's (`__rk`, rustkit-js bytes.rs): done here a byte per
+// loop turn it took seconds per megabyte. Each name is only defined when
+// nothing else has defined it.
 (function (g) {
     function def(name, value) {
         if (g[name] === undefined) {
@@ -14,22 +16,13 @@
     }
 
     // ---- btoa / atob (HTML §8.3 "forgiving-base64"). Latin-1 only.
-    var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
     def('btoa', function btoa(data) {
         if (arguments.length === 0) throw new TypeError("Failed to execute 'btoa' on 'Window': 1 argument required, but only 0 present.");
-        var s = String(data), out = '';
-        for (var i = 0; i < s.length; i++) {
-            if (s.charCodeAt(i) > 255) {
-                throw domError("Failed to execute 'btoa' on 'Window': The string to be encoded contains characters outside of the Latin1 range.", 'InvalidCharacterError');
-            }
+        var bytes = __rk.binaryEncode(String(data));
+        if (bytes === null) {
+            throw domError("Failed to execute 'btoa' on 'Window': The string to be encoded contains characters outside of the Latin1 range.", 'InvalidCharacterError');
         }
-        for (var j = 0; j < s.length; j += 3) {
-            var a = s.charCodeAt(j), b = s.charCodeAt(j + 1), c = s.charCodeAt(j + 2);
-            var hasB = j + 1 < s.length, hasC = j + 2 < s.length;
-            var n = (a << 16) | ((hasB ? b : 0) << 8) | (hasC ? c : 0);
-            out += B64[(n >> 18) & 63] + B64[(n >> 12) & 63] + (hasB ? B64[(n >> 6) & 63] : '=') + (hasC ? B64[n & 63] : '=');
-        }
-        return out;
+        return __rk.base64Encode(bytes);
     });
     def('atob', function atob(data) {
         if (arguments.length === 0) throw new TypeError("Failed to execute 'atob' on 'Window': 1 argument required, but only 0 present.");
@@ -38,17 +31,11 @@
         if (s.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(s)) {
             throw domError("Failed to execute 'atob' on 'Window': The string to be decoded is not correctly encoded.", 'InvalidCharacterError');
         }
-        var out = '', bits = 0, nbits = 0;
-        for (var i = 0; i < s.length; i++) {
-            bits = (bits << 6) | B64.indexOf(s[i]);
-            nbits += 6;
-            if (nbits >= 8) {
-                nbits -= 8;
-                out += String.fromCharCode((bits >> nbits) & 255);
-                bits &= (1 << nbits) - 1;
-            }
+        var bytes = __rk.base64Decode(s);
+        if (bytes === null) {
+            throw domError("Failed to execute 'atob' on 'Window': The string to be decoded is not correctly encoded.", 'InvalidCharacterError');
         }
-        return out;
+        return __rk.binaryDecode(bytes);
     });
 
     // ---- escape / unescape (ECMA-262 Annex B.2.1).
@@ -104,7 +91,7 @@
     }
     Object.defineProperty(TextEncoder.prototype, 'encoding', { get: function () { return 'utf-8'; }, configurable: true, enumerable: true });
     TextEncoder.prototype.encode = function (input) {
-        return new Uint8Array(utf8Bytes(input === undefined ? '' : String(input)));
+        return __rk.utf8Encode(input === undefined ? '' : String(input));
     };
     TextEncoder.prototype.encodeInto = function (source, dest) {
         var s = String(source), read = 0, written = 0;
@@ -134,36 +121,6 @@
         if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
         throw new TypeError("Failed to execute 'decode' on 'TextDecoder': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'.");
     }
-    // Decode as much of `b` as forms whole sequences; return [text, bytesUsed].
-    function decodeUtf8(b, fatal, flush) {
-        var out = '', i = 0;
-        function bad() {
-            if (fatal) throw new TypeError("Failed to execute 'decode' on 'TextDecoder': The encoded data was not valid for encoding utf-8");
-            out += '�';
-        }
-        while (i < b.length) {
-            var c = b[i], need = 0, cp = 0, lo = 0x80, hi = 0xBF;
-            if (c < 0x80) { out += String.fromCharCode(c); i++; continue; }
-            if (c >= 0xC2 && c <= 0xDF) { need = 1; cp = c & 0x1F; }
-            else if (c >= 0xE0 && c <= 0xEF) { need = 2; cp = c & 0xF; if (c === 0xE0) lo = 0xA0; if (c === 0xED) hi = 0x9F; }
-            else if (c >= 0xF0 && c <= 0xF4) { need = 3; cp = c & 7; if (c === 0xF0) lo = 0x90; if (c === 0xF4) hi = 0x8F; }
-            else { bad(); i++; continue; }
-            var j = i + 1, ok = true;
-            for (var k = 0; k < need; k++, j++) {
-                if (j >= b.length) {
-                    if (!flush) return [out, i];          // incomplete: wait for more input
-                    ok = false; break;
-                }
-                var cc = b[j];
-                if (cc < lo || cc > hi) { ok = false; break; }
-                lo = 0x80; hi = 0xBF;
-                cp = (cp << 6) | (cc & 63);
-            }
-            if (ok) { out += String.fromCodePoint(cp); i = j; }
-            else { bad(); i = j > i + 1 ? j : i + 1; if (j >= b.length && flush) break; }
-        }
-        return [out, i];
-    }
     function TextDecoder(label, options) {
         if (!(this instanceof TextDecoder)) throw new TypeError("Failed to construct 'TextDecoder': Please use the 'new' operator");
         var l = String(label === undefined ? 'utf-8' : label).trim().toLowerCase();
@@ -183,17 +140,27 @@
     Object.defineProperty(TextDecoder.prototype, 'ignoreBOM', { get: function () { return this._ignoreBOM; }, configurable: true, enumerable: true });
     TextDecoder.prototype.decode = function (input, options) {
         var stream = !!(options && options.stream);
-        var fresh = toBytes(input), bytes = this._pending.concat(Array.prototype.slice.call(fresh));
+        var bytes = toBytes(input);
+        if (this._pending.length) {
+            // What the last chunk left unfinished comes first.
+            var joined = new Uint8Array(this._pending.length + bytes.length);
+            joined.set(this._pending, 0);
+            joined.set(bytes, this._pending.length);
+            bytes = joined;
+        }
         var text = '', used = bytes.length;
         if (this._enc === 'utf-8') {
-            var r = decodeUtf8(bytes, this._fatal, !stream);
+            // [text, bytes used, saw a malformed sequence]; an incomplete
+            // tail is left for the next chunk while streaming.
+            var r = __rk.utf8Decode(bytes, !stream);
+            if (r[2] && this._fatal) throw new TypeError("Failed to execute 'decode' on 'TextDecoder': The encoded data was not valid for encoding utf-8");
             text = r[0]; used = r[1];
         } else if (this._enc === 'utf-16le') {
             used = bytes.length - (bytes.length % 2);
             for (var i = 0; i < used; i += 2) text += String.fromCharCode(bytes[i] | (bytes[i + 1] << 8));
-            if (!stream && used < bytes.length) text += '�';
+            if (!stream && used < bytes.length) text += '\ufffd';
         } else {
-            for (var j = 0; j < bytes.length; j++) text += String.fromCharCode(bytes[j]);
+            text = __rk.binaryDecode(bytes);
         }
         this._pending = stream ? bytes.slice(used) : [];
         if (!this._bomSeen && text.length) {

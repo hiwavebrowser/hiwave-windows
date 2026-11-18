@@ -58,9 +58,12 @@ fn border_radius_is_resolved_px_and_the_point_query_stays_finite() {
             return [radii('a'), radii('b'), radii('c'), radii('d'), radii('e'), String(half), again && again.id, String(finite)].join('|');\
         })()",
     );
+    // `#d`'s `50%` stays a percentage: the computed value, as Chrome 148
+    // reads it (border_radius_computed_cft148.json). It read `50px / 25px`,
+    // resolved against the box, until border_radius_computed_tests.
     assert_eq!(
         got,
-        "0px 0px 0px 0px 0px|10px 20px 10px 20px 10px 20px|10px / 4px 10px 4px 10px 4px 10px 4px 10px 4px|50px / 25px 50px 25px 50px 25px 50px 25px 50px 25px|20px 20px 20px 20px 20px|5|b|true",
+        "0px 0px 0px 0px 0px|10px 20px 10px 20px 10px 20px|10px / 4px 10px 4px 10px 4px 10px 4px 10px 4px|50% 50% 50% 50% 50%|20px 20px 20px 20px 20px|5|b|true",
         "{got}"
     );
 }

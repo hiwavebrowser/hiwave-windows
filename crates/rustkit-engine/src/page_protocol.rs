@@ -270,6 +270,10 @@ pub enum PageInput {
         y: f32,
         dx: f32,
         dy: f32,
+        /// A step of a gesture (a trackpad's), not a wheel on its own.
+        gesture: bool,
+        /// The platform says a gesture begins here: a new scroll sequence.
+        began: bool,
     },
     FormSubmit {
         reply: oneshot::Sender<Option<String>>,
@@ -398,8 +402,8 @@ pub(crate) struct EndpointSide {
     /// sent. A new document can reuse a generation; the navigation is what
     /// makes that frame a different one. Scroll-only updates keep both.
     last_commit: Option<(u64, u64, (f32, f32))>,
-    /// `SetVisible`, recorded for the content thread. Nothing reads it yet.
-    #[allow(dead_code)]
+    /// `SetVisible`, recorded for the content thread: only a visible view's timers take the exact
+    /// wait (LINKS-SLOW part 2 R1).
     visible: bool,
     /// The content thread settles an unhandled key as a scroll, because the
     /// window does not wait to find out whether the page consumed it.
@@ -608,7 +612,7 @@ impl EndpointSide {
             }
             PageCmd::PumpLive { elapsed_ms, reply } => {
                 let turn = match live {
-                    Some(runtime) => runtime.block_on(engine.pump_live(self.view, elapsed_ms)),
+                    Some(runtime) => runtime.block_on(engine.pump_live_real(self.view, elapsed_ms)),
                     None => LivePump::default(),
                 };
                 let _ = reply.send(turn);
@@ -737,7 +741,20 @@ impl EndpointSide {
                 }
             }
             PageInput::CommandKey { key_code, key, shift, alt, token } => {
-                let claimed = engine.handle_command_key(view, key_code, &key, shift, alt);
+                // A chord whose wait ran out went to the menu, which is its
+                // one actor: the page does not hear its keydown (M1g; a
+                // timeout-path divergence, Chrome has no timeout). Otherwise
+                // the chord's edit runs only while the window still holds
+                // the chord for this page (M1e: the menu's Paste/Undo is the
+                // edit of a chord that timed out while its keydown ran).
+                let claimed = if rustkit_viewhost::begin_key_equivalent(token) {
+                    engine.handle_command_key_if(view, key_code, &key, shift, alt, &mut || {
+                        rustkit_viewhost::claim_key_equivalent(token)
+                    })
+                } else {
+                    tracing::debug!(token, "Cmd chord's wait ran out: the menu has it, the page does not hear it");
+                    false
+                };
                 self.emit(PageEvent::KeyEquivalentDone { token, claimed });
             }
             PageInput::Ime(input) => {
@@ -804,8 +821,8 @@ impl EndpointSide {
                 let _ = reply.send(changed);
                 self.publish_commit(engine);
             }
-            PageInput::ScrollAt { x, y, dx, dy } => {
-                if let Err(e) = engine.scroll_at(view, x, y, dx, dy) {
+            PageInput::ScrollAt { x, y, dx, dy, gesture, began } => {
+                if let Err(e) = engine.wheel_phase_at(view, x, y, dx, dy, gesture, began) {
                     tracing::debug!(error = %e, "scroll_at failed");
                 }
                 self.publish_commit(engine);
@@ -1246,16 +1263,42 @@ impl EndpointSide {
         coalesce(batch)
     }
 
+    /// LINKS-SLOW part 2 delta R1: take a command that arrived while the loop waited, if any, onto
+    /// the deferred queue. The wake permit its sender left is cleared first (a command sent after
+    /// that leaves its own): taken here, it would end the next runtime wait at once, an extra turn.
+    fn take_waiting_command(&mut self) -> bool {
+        clear_stale_wake(self.cmd_wake.as_deref());
+        match self.rx.try_recv() {
+            Ok(cmd) => {
+                self.deferred.push_back(cmd);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// The content thread's loop. One current-thread runtime, already
     /// entered by the caller: timers and fetches progress on every idle wait.
     pub(crate) async fn run(&mut self, engine: &mut Engine) {
-        let mut clock = tokio::time::Instant::now();
+        let mut clock = LiveClock::new(std::time::Instant::now());
+        let mut overshoot = OvershootEstimate::default();
+        let mut tail_estimate = TailEstimate::default();
+        // LINKS-SLOW part 2, diagnostics only (`HIWAVE_LINKS_TRACE`): the last wait's due
+        // instant, where it was aimed, and whether it was exact.
+        let tracing = crate::links_trace_on();
+        let mut traced_due: Option<(std::time::Instant, std::time::Instant, bool)> = None;
         loop {
             let mut cmds = self.drain_coalesced();
             if cmds.is_empty() {
-                let elapsed = clock.elapsed().as_millis() as u64;
-                clock = tokio::time::Instant::now();
-                let turn = engine.pump_live(self.view, elapsed).await;
+                let woke = std::time::Instant::now();
+                let elapsed = clock.turn(woke);
+                // The real time the clock kept from this turn: the turn's timers count from real
+                // time (LINKS-SLOW).
+                let fraction = clock.behind(woke).as_secs_f64() * 1000.0;
+                let turn = engine.pump_live_real_at(self.view, elapsed, fraction).await;
+                if tracing {
+                    trace_turn(traced_due.take(), woke, fraction, &turn);
+                }
                 self.after_page_change(engine);
                 // A resize (or any other command) that arrived during the
                 // turn is applied before the next timer slice. The frame
@@ -1266,15 +1309,46 @@ impl EndpointSide {
                 // wait until that callback does.
                 cmds = self.drain_coalesced();
                 if cmds.is_empty() {
-                    let wait_ms = turn.next_timer_ms.unwrap_or(50).clamp(2, 50);
-                    let wait = std::time::Duration::from_millis(wait_ms);
+                    // A timer this turn's own timers set is aimed at its exact instant (to the
+                    // microsecond), otherwise the whole-millisecond wait (LINKS-SLOW).
+                    let exact = exact_wait(turn.next_timer_ms, turn.next_timer_exact_us, self.visible);
+                    let wait = exact.unwrap_or_else(|| content_turn_wait(turn.next_timer_ms));
+                    let now = std::time::Instant::now();
+                    let due = clock.deadline(now, wait);
+                    if due <= now {
+                        // Due already: the runtime's timers and sockets get
+                        // their turn first, as a sleep would give them.
+                        tokio::task::yield_now().await;
+                        continue;
+                    }
+                    // An exact wait leaves the runtime `PRECISE_TAIL` before its due instant, then a
+                    // thread sleep aimed early by this thread's sleep overshoot, then a spin to the
+                    // due instant, so nothing runs early (LINKS-SLOW part 2).
+                    let precise = exact.is_some();
+                    let tail = if precise { tail_estimate.tail(&overshoot) } else { std::time::Duration::ZERO };
+                    let leave = runtime_wait_until(now, due, tail);
                     // A command ends the wait (CH3.A9): the chrome's Cmd+T
                     // used to sit here until the chrome's next timer.
-                    match &self.cmd_wake {
-                        Some(wake) => {
-                            let _ = tokio::time::timeout(wait, wake.notified()).await;
+                    let slept = runtime_wait(now, leave, self.cmd_wake.as_deref()).await;
+                    if slept && precise {
+                        let woke = std::time::Instant::now();
+                        if leave > now {
+                            tail_estimate.observe(leave, woke);
                         }
-                        None => tokio::time::sleep(wait).await,
+                        // A command that came while the runtime waited (or in its yield) is taken
+                        // before the tail, not after it (R1), and again between the tail's sleep
+                        // and its spin (delta R1).
+                        if self.take_waiting_command() {
+                            continue;
+                        }
+                        if tracing {
+                            traced_due = Some((due, woke, true));
+                        }
+                        if finish_exact_wait(due, &mut overshoot, &mut ThreadTail, || self.take_waiting_command()).is_none() {
+                            traced_due = None;
+                        }
+                    } else if tracing {
+                        traced_due = Some((due, leave, precise));
                     }
                     continue;
                 }
@@ -1311,7 +1385,7 @@ impl EndpointSide {
                 self.after_page_change(engine);
             }
             PageCmd::PumpLive { elapsed_ms, reply } => {
-                let turn = engine.pump_live(self.view, elapsed_ms).await;
+                let turn = engine.pump_live_real(self.view, elapsed_ms).await;
                 let _ = reply.send(turn);
                 self.after_page_change(engine);
             }
@@ -1323,6 +1397,346 @@ impl EndpointSide {
             other => self.apply(engine, other, None),
         }
     }
+}
+
+/// How long the content thread's loop waits after a turn that left no
+/// command: until the page's next timer, at most 50 ms, and 2 ms when a timer is
+/// due already (a page whose timer is always due).
+/// Nothing in it depends on how long the turn took: a turn that ran one long
+/// callback is followed by the next frame as soon as its timer is due, as
+/// in Chrome. (The window thread's loop with the content thread off,
+/// `hiwave-app` `process_events`, keeps a wait at least as long as the last
+/// turn, so the page cannot hold the window's thread more than half the
+/// time.) parity-capture's live loop paces with this function, so a
+/// headless capture paces as the app does.
+
+pub fn content_turn_wait(next_timer_ms: Option<u64>) -> std::time::Duration {
+    // The 2 ms floor is for a page whose timer is always due (a wait of 0): a timer due in 1 ms is
+    // waited for 1 ms (LINKS-SLOW).
+    let ms = match next_timer_ms {
+        Some(0) => 2,
+        Some(ms) => ms.min(50),
+        None => 50,
+    };
+    std::time::Duration::from_millis(ms)
+}
+
+/// The content thread loop's clock: how much time each live turn is given,
+/// and when the loop wakes for the next (PACE2).
+///
+/// The page's clock moves in whole milliseconds, a turn at a time. Each turn
+/// is given the whole milliseconds since the last turn's time and the
+/// fraction stays for the next, so the page's clock keeps up with real time.
+/// Until PACE2 the clock restarted at every turn and dropped the fraction
+/// (about 0.46 ms a turn), and the loop slept its wait after the turn and its
+/// frame had ended, so a timer or frame due 10 ms after a turn came 10 ms
+/// after its end: with sleeps that end late as well, a requestAnimationFrame
+/// loop beside a 10 ms timer chain got 51-54 frames a second where Chrome
+/// gets 60. parity-capture's live loop paces its content-thread arm with this
+/// clock, so a capture paces as the app does.
+///
+/// A page whose timer is always due (a `setTimeout(0)` chain, a turn that
+/// ran out of budget) waits at least 2 ms from each turn's start
+/// ([`content_turn_wait`]), so cheap turns come at most every 2 ms; turns
+/// follow one another at once only while each takes 2 ms or more of the
+/// page's own work, and the loop takes its commands before every turn.
+pub struct LiveClock {
+    /// The last turn's time: where the page's clock stands, in real time.
+    /// Behind the instant that turn began by the fraction it was not given.
+    turn_at: std::time::Instant,
+}
+
+impl LiveClock {
+    pub fn new(now: std::time::Instant) -> Self {
+        Self { turn_at: now }
+    }
+
+    /// The whole milliseconds since the last turn's time, for the turn that
+    /// begins `now`; the fraction is kept for the next turn.
+    pub fn turn(&mut self, now: std::time::Instant) -> u64 {
+        let ms = now.saturating_duration_since(self.turn_at).as_millis() as u64;
+        self.turn_at += std::time::Duration::from_millis(ms);
+        ms
+    }
+
+    /// When the loop wakes for the next turn: `wait` (the page's next timer
+    /// or frame, from [`content_turn_wait`]) after this turn's time, where
+    /// the page's clock stood when the wait was measured. Not before `now`
+    /// (the loop asks after the turn and its frame): a turn that took longer
+    /// than the wait is followed by the next at once.
+    pub fn deadline(&self, now: std::time::Instant, wait: std::time::Duration) -> std::time::Instant {
+        (self.turn_at + wait).max(now)
+    }
+
+    /// The real time this clock has not given the page yet at `now`: the fraction of a millisecond
+    /// the last turn kept. A real turn is told it, so its timers' clock reads real time
+    /// (LINKS-SLOW).
+    pub fn behind(&self, now: std::time::Instant) -> std::time::Duration {
+        now.saturating_duration_since(self.turn_at)
+    }
+}
+
+/// LINKS-SLOW: how late this content thread's thread sleeps end past the instant they were asked
+/// for (the OS's slack: about 0.3 ms on Windows with 1 ms timers; the runtime's timer, which keeps
+/// whole milliseconds, is no longer used for the last stretch: part 2). The loop aims the last
+/// stretch of an exact wait that much before a timer's due instant, so it wakes near it;
+/// counted from when they are set (CLOCK3), timers otherwise ran one overshoot late every link
+/// (the Mac's 10 ms chain: 236-245 links in 3000 ms, Chrome 278-283).
+///
+/// The estimate starts at 0 (the first wakes behave as before), is capped at
+/// [`Self::CAP_MS`], and tracks a low quantile of the overshoot rather than its mean: a sample
+/// below the estimate pulls it halfway down at once, one above moves it a sixteenth of the way up,
+/// so a machine whose overshoot drops is followed within a few wakes and a rare long sleep barely
+/// moves it. Aiming early never makes a timer early: a wake before the due instant sleeps the rest
+/// ([`after_wake`]), and a timer runs only once the page's clock has reached it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OvershootEstimate {
+    ms: f64,
+}
+
+impl OvershootEstimate {
+    /// The most a sleep is aimed early.
+    pub const CAP_MS: f64 = 2.0;
+
+    /// The current estimate; read by the tests only.
+    #[cfg(test)]
+    pub fn ms(&self) -> f64 {
+        self.ms
+    }
+
+    /// The instant to sleep until for a wake at `due`.
+    pub fn aim(&self, due: std::time::Instant) -> std::time::Instant {
+        due.checked_sub(std::time::Duration::from_secs_f64(self.ms / 1000.0)).unwrap_or(due)
+    }
+
+    /// A sleep asked to end at `aimed` ended at `woke`.
+    pub fn observe(&mut self, aimed: std::time::Instant, woke: std::time::Instant) {
+        let sample = (woke.saturating_duration_since(aimed).as_secs_f64() * 1000.0).min(2.0 * Self::CAP_MS);
+        let step = if sample < self.ms { 0.5 } else { 0.0625 };
+        self.ms = (self.ms + (sample - self.ms) * step).clamp(0.0, Self::CAP_MS);
+    }
+}
+
+/// LINKS-SLOW part 2, diagnostics only (`HIWAVE_LINKS_TRACE`): one line per live turn that ran a
+/// timer, in microseconds, all real time: `late` the turn began past the due instant the loop
+/// waited for (negative: early), `aim` how early that wait was aimed (an exact wait: how long
+/// before the due instant the runtime's wait ended, the stretch the thread was blocked),
+/// `entry` from the turn's start to the engine's live turn, `pre` from the live turn to its timer
+/// slice, `slice` the timer slice (timers, then the frame round), `post` the rest of the turn
+/// (network, layout, paint) and `frac` the fraction of a millisecond the loop's clock kept back.
+fn trace_turn(
+    due: Option<(std::time::Instant, std::time::Instant, bool)>,
+    woke: std::time::Instant,
+    fraction_ms: f64,
+    turn: &crate::LivePump,
+) {
+    let ended = std::time::Instant::now();
+    let [entered, slice_from, slice_to] = crate::links_trace_take();
+    if turn.timers_ran == 0 {
+        return;
+    }
+    let us = |a: std::time::Instant, b: std::time::Instant| -> i64 {
+        if b >= a {
+            b.duration_since(a).as_micros() as i64
+        } else {
+            -(a.duration_since(b).as_micros() as i64)
+        }
+    };
+    let (late, aim, exact) = match due {
+        Some((due, aimed, exact)) => (us(due, woke), us(aimed, due), exact),
+        None => (0, 0, false),
+    };
+    let entry = entered.map_or(-1, |e| us(woke, e));
+    let pre = match (entered, slice_from) {
+        (Some(e), Some(f)) => us(e, f),
+        _ => -1,
+    };
+    let slice = match (slice_from, slice_to) {
+        (Some(f), Some(t)) => us(f, t),
+        _ => -1,
+    };
+    let post = slice_to.map_or(-1, |t| us(t, ended));
+    eprintln!(
+        "LTRACE ran={} waited={} exact={} late={late} aim={aim} entry={entry} pre={pre} slice={slice} post={post} frac={}",
+        turn.timers_ran,
+        due.is_some(),
+        exact,
+        (fraction_ms * 1000.0) as i64
+    );
+}
+
+/// LINKS-SLOW part 2: an exact wait leaves the runtime's timer this long before its due instant
+/// and ends with a thread sleep. The runtime's timer keeps whole milliseconds: a sleep to a
+/// fraction of one ended 1.4 ms late on average, spread over a millisecond
+/// (`docs/diagnostics/2026-11-16/links_slow_part2_windows.md`). Longer than that overshoot's usual
+/// spread, so the runtime wakes before the due instant; the content thread is blocked at most this
+/// long per wait.
+pub const PRECISE_TAIL: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// LINKS-SLOW: until when the content loop's wait for `due` sleeps on the runtime (where commands
+/// and sockets keep their turn), from `now`. An exact wait leaves it `tail` early (at once when
+/// less is left; [`TailEstimate`]) and ends with [`finish_exact_wait`]; a whole-millisecond wait
+/// (`tail` zero) is the runtime's to the end.
+pub fn runtime_wait_until(
+    now: std::time::Instant,
+    due: std::time::Instant,
+    tail: std::time::Duration,
+) -> std::time::Instant {
+    due.checked_sub(tail).unwrap_or(now).max(now)
+}
+
+/// LINKS-SLOW part 2 R1: the wait the content loop aims at a timer's exact instant, or `None` for
+/// the whole-millisecond wait: only a timer this turn's own timers set (`exact_us`, matching the
+/// whole-millisecond wait), and only while the view is visible.
+pub fn exact_wait(
+    next_timer_ms: Option<u64>,
+    exact_us: Option<u64>,
+    visible: bool,
+) -> Option<std::time::Duration> {
+    // A background view's timers are not worth a blocking tail and a spin: they wait whole
+    // milliseconds on the runtime, as before LINKS-SLOW part 2.
+    exact_us
+        .filter(|_| visible)
+        .filter(|us| next_timer_ms == Some(us.div_ceil(1000)))
+        .map(|us| std::time::Duration::from_micros(us.min(50_000)))
+}
+
+/// LINKS-SLOW part 2: the content loop's wait on the runtime from `now` until `leave`, ended early
+/// by a command (`wake`). `false` when a command ended it. A wait with nothing left on the runtime
+/// (an exact wait shorter than its tail) still yields once: the runtime's tasks, timers and
+/// sockets get their turn before the thread blocks in the tail (R1: a 1 ms interval otherwise
+/// never parked).
+pub async fn runtime_wait(
+    now: std::time::Instant,
+    leave: std::time::Instant,
+    wake: Option<&tokio::sync::Notify>,
+) -> bool {
+    if leave <= now {
+        tokio::task::yield_now().await;
+        return true;
+    }
+    match wake {
+        Some(wake) => tokio::time::timeout_at(tokio::time::Instant::from_std(leave), wake.notified())
+            .await
+            .is_err(),
+        None => {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(leave)).await;
+            true
+        }
+    }
+}
+
+/// LINKS-SLOW part 2 delta R1: clear a wake permit a command's sender left (`Notify::notify_one`
+/// with no waiter) once the loop has taken that command another way.
+pub fn clear_stale_wake(wake: Option<&tokio::sync::Notify>) {
+    use futures::FutureExt;
+    if let Some(wake) = wake {
+        // Ready only on a stored permit, which it takes; pending otherwise, and dropped unregistered.
+        let _ = wake.notified().now_or_never();
+    }
+}
+
+/// LINKS-SLOW part 2 R1: how long before a timer's due instant an exact wait leaves the runtime.
+/// The tail has to cover how late the runtime's timer wakes (it keeps whole milliseconds), or the
+/// timer runs that late; past the wake the thread is blocked until the due instant, so the tail is
+/// no longer than this machine needs. It tracks a high quantile of the runtime wake's lateness (a
+/// sample above pulls it halfway up at once, one below a thirty-second of the way down), plus the
+/// thread sleep's overshoot and a margin, and is at most [`PRECISE_TAIL`]. It starts there.
+/// Windows with 1 ms timers: the runtime woke 0.7-2.0 ms late (mean 1.4), so the tail stays 2 ms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TailEstimate {
+    ms: f64,
+}
+
+impl Default for TailEstimate {
+    fn default() -> Self {
+        Self { ms: PRECISE_TAIL.as_secs_f64() * 1000.0 }
+    }
+}
+
+impl TailEstimate {
+    /// Added to the two estimates: what they miss.
+    pub const MARGIN_MS: f64 = 0.1;
+
+    /// The tail for the next exact wait.
+    pub fn tail(&self, overshoot: &OvershootEstimate) -> std::time::Duration {
+        let ms = (self.ms + overshoot.ms + Self::MARGIN_MS).min(PRECISE_TAIL.as_secs_f64() * 1000.0);
+        std::time::Duration::from_secs_f64(ms / 1000.0)
+    }
+
+    /// A runtime wait asked to end at `leave` ended at `woke`.
+    pub fn observe(&mut self, leave: std::time::Instant, woke: std::time::Instant) {
+        let cap = PRECISE_TAIL.as_secs_f64() * 1000.0;
+        let sample = (woke.saturating_duration_since(leave).as_secs_f64() * 1000.0).min(2.0 * cap);
+        let step = if sample > self.ms { 0.5 } else { 1.0 / 32.0 };
+        self.ms = (self.ms + (sample - self.ms) * step).clamp(0.0, cap);
+    }
+}
+
+/// LINKS-SLOW part 2 R1: the most of an exact wait's tail spent spinning.
+pub const SPIN_CAP: std::time::Duration = std::time::Duration::from_micros(500);
+
+/// The clock and sleeps [`finish_exact_wait`] runs on: the thread's, or a test's.
+pub trait TailClock {
+    fn now(&mut self) -> std::time::Instant;
+    fn sleep(&mut self, d: std::time::Duration);
+    fn spin(&mut self);
+}
+
+/// The content thread's own clock and sleeps.
+pub struct ThreadTail;
+
+impl TailClock for ThreadTail {
+    fn now(&mut self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+    fn sleep(&mut self, d: std::time::Duration) {
+        std::thread::sleep(d);
+    }
+    fn spin(&mut self) {
+        std::hint::spin_loop();
+    }
+}
+
+/// LINKS-SLOW part 2: the end of an exact wait, after the runtime: thread sleeps aimed early by
+/// `overshoot`, then a spin of at most [`SPIN_CAP`] to `due`. Returns how long it spun, only at or
+/// after `due` (never early). With more than the cap left and the estimate past it (a few long
+/// sleeps), it sleeps to the cap's distance first rather than spinning the rest (R1). `None`: a
+/// command was waiting after a sleep (`command`, asked before the spin), and the wait ended there
+/// for it (delta R1); the timer is the next turn's, which runs nothing before its due instant.
+pub fn finish_exact_wait(
+    due: std::time::Instant,
+    overshoot: &mut OvershootEstimate,
+    clock: &mut impl TailClock,
+    mut command: impl FnMut() -> bool,
+) -> Option<std::time::Duration> {
+    let mut spin_from = None;
+    loop {
+        let now = clock.now();
+        let Some(due) = after_wake(due, now) else {
+            return Some(spin_from.map_or(std::time::Duration::ZERO, |f| now.saturating_duration_since(f)));
+        };
+        if due - now <= SPIN_CAP {
+            spin_from.get_or_insert(now);
+            clock.spin();
+            continue;
+        }
+        let aimed = overshoot.aim(due);
+        let aimed = if aimed > now { aimed } else { due - SPIN_CAP };
+        // Only a real sleep says how late sleeps end (LINKS-SLOW R1): this one is aimed past now.
+        clock.sleep(aimed - now);
+        let woke = clock.now();
+        overshoot.observe(aimed, woke);
+        if command() {
+            return None;
+        }
+    }
+}
+
+/// LINKS-SLOW: after an aimed sleep that ended at `woke`, the instant to sleep until again so the
+/// turn comes no earlier than `due` (the timer's due instant), or `None` when it may run now.
+pub fn after_wake(due: std::time::Instant, woke: std::time::Instant) -> Option<std::time::Instant> {
+    (woke < due).then_some(due)
 }
 
 impl PageEndpoint {
@@ -1386,7 +1800,7 @@ impl PageEndpoint {
 /// redraws the page. Not what starts or ends a document (a navigation, a
 /// reload, an HTML load, Stop, Close), a live turn (timers must not run
 /// inside a load), or the test hooks.
-fn runs_mid_load(cmd: &PageCmd) -> bool {
+pub(crate) fn runs_mid_load(cmd: &PageCmd) -> bool {
     match cmd {
         PageCmd::Input(_)
         | PageCmd::Resize { .. }
@@ -1710,6 +2124,41 @@ mod tests {
         endpoint.drain(None);
         assert_eq!(handle.last_sent_nav_id(), 1);
         let _ = handle.drain_events();
+    }
+
+    /// CLOCK3: the window thread's live turn (`PumpLive`, the loop with the
+    /// content thread off) is on the real clock: its `elapsed_ms` is real time
+    /// that has passed, so a 1000 ms chain held back for 5000 ms runs its
+    /// overdue link once and sets the next from then. A stepped turn would
+    /// run five (1000 to 5000 ms). The period is long because the turn's
+    /// reach grows with the real time it takes: only a whole-second stall
+    /// inside the turn would let the next link into it.
+    #[test]
+    fn the_window_threads_live_turn_does_not_replay_a_timeout_chain() {
+        let (handle, mut endpoint) = pair();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (tx, _rx) = oneshot::channel();
+        handle.send(PageCmd::LoadHtml { html: "<p>chain</p>".into(), nav_id: 0, reply: tx });
+        endpoint.drain(Some(&rt));
+        let pump = |handle: &PageHandle, endpoint: &mut PageEndpoint, elapsed_ms: u64| {
+            let (tx, mut rx) = oneshot::channel();
+            handle.send(PageCmd::PumpLive { elapsed_ms, reply: tx });
+            endpoint.drain(Some(&rt));
+            rx.try_recv().expect("the turn ran")
+        };
+        // The turn after the load (its timers already ran in the load's pass).
+        pump(&handle, &mut endpoint, 0);
+        // A turn told 5 s passed runs at most one link of the chain, never the five it held back.
+        // The exact count (one link) is pinned on the supplied clock in the bindings
+        // (`a_chain_set_between_real_turns_does_not_replay_a_gap`): here no real time passes, and a
+        // timeout set in a real turn's page waits its delay on the page clock (LINKS-SLOW).
+        eval(&handle, &mut endpoint, "window.n = 0; (function link() { n++; setTimeout(link, 1000); })(); 0");
+        pump(&handle, &mut endpoint, 5000);
+        let n = eval(&handle, &mut endpoint, "String(window.n)");
+        assert!(
+            n == r#"String("1")"# || n == r#"String("2")"#,
+            "the chain replayed the links the 5000 ms held back: {n}"
+        );
     }
 
     /// CH2.E4: what the pointer is over reaches the window as events: the

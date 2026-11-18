@@ -1000,8 +1000,8 @@
     tag(Segmenter.prototype, 'Intl.Segmenter');
 
     // ---- Intl.Locale: the tag's subtags and its `-u-` keywords, with options
-    // overriding them (ECMA-402 §14). No likely-subtags data, so no
-    // maximize()/minimize().
+    // overriding them (ECMA-402 §14); maximize()/minimize() over CLDR's likely
+    // subtags, and the text direction and week data that follow from them.
     var LOCALE_KEYS = [['calendar', 'ca'], ['caseFirst', 'kf'], ['collation', 'co'],
                        ['hourCycle', 'hc'], ['numberingSystem', 'nu'], ['numeric', 'kn']];
     function Locale(tagArg, options) {
@@ -1013,7 +1013,7 @@
         if (i < sub.length && /^([A-Z]{2}|[0-9]{3})$/.test(sub[i])) r.region = sub[i++];
         var rest = sub.slice(i), kw = Object.create(null), other = [], j = 0;
         while (j < rest.length && rest[j].length > 1) j++;
-        var variants = rest.slice(0, j);
+        var variants = rest.slice(0, j).sort();  // canonical order (UTS #35), as Chrome prints them
         while (j < rest.length) {
             if (rest[j] !== 'u') { other.push(rest[j++]); continue; }
             j++;
@@ -1049,9 +1049,76 @@
         r.baseName = [r.language].concat(r.script ? [r.script] : [], r.region ? [r.region] : [], variants).join('-');
         r.kw = kw;
         var u = Object.keys(kw).sort().map(function (k) { return kw[k] === 'true' ? k : k + '-' + kw[k]; });
-        r.tag = r.baseName + (u.length ? '-u-' + u.join('-') : '') + (other.length ? '-' + other.join('-') : '');
+        // What follows the language, script and region: kept by maximize()/minimize().
+        r.variants = variants;
+        r.ext = (u.length ? '-u-' + u.join('-') : '') + (other.length ? '-' + other.join('-') : '');
+        r.tag = r.baseName + r.ext;
         hidden(this, '_intl', r);
     }
+
+    // Likely subtags (UTS #35 §4.3) over CLDR's table, which stays on the Rust
+    // side (web_intl_likely.rs): one exact-key lookup per call, through a host
+    // function kept on the host object, which pages never see.
+    var likelyHost = __rk.likelySubtags;
+    function likely(key) {
+        var v = typeof likelyHost === 'function' ? likelyHost(key) : undefined;
+        return typeof v === 'string' ? v.split('-') : undefined;
+    }
+    // [language, script, region] with the missing ones filled in, or null for
+    // a language CLDR does not know. `s` and `r` are '' when absent. As ICU:
+    // a tag that already has all three is left alone, whatever they are;
+    // otherwise `und`, `Zzzz` and `ZZ` count as absent; the script is matched
+    // before the region (und-Cyrl-US is Russian, not English).
+    function likelyMax(l, s, r) {
+        var lang = l === 'und' ? '' : l;
+        if (lang && s && r) return [l, s, r];
+        if (s === 'Zzzz') s = '';
+        if (r === 'ZZ') r = '';
+        var base = lang || 'und';
+        var hit = (s && r && likely(base + '-' + s + '-' + r)) || (s && likely(base + '-' + s)) ||
+                  (r && likely(base + '-' + r)) || likely(base);
+        if (!hit) return null;
+        return [lang || hit[0], s || hit[1], r || hit[2]];
+    }
+    // The shortest of language, language-region, language-script that
+    // maximizes back to the same tag (region before script: zh-Hant is zh-TW).
+    function likelyMin(l, s, r) {
+        var max = likelyMax(l, s === 'Zzzz' ? '' : s, r === 'ZZ' ? '' : r);
+        if (!max) return null;
+        var want = max.join('-'), trials = [[max[0], '', ''], [max[0], '', max[2]], [max[0], max[1], '']];
+        for (var i = 0; i < trials.length; i++) {
+            var m = likelyMax(trials[i][0], trials[i][1], trials[i][2]);
+            if (m && m.join('-') === want) return trials[i];
+        }
+        return max;
+    }
+    // A new Locale: `r` with its language, script and region replaced by `lsr`
+    // (unchanged when `lsr` is null); variants, keywords and extensions kept.
+    function relocated(r, lsr) {
+        var n = { language: r.language, script: r.script, region: r.region, kw: r.kw, variants: r.variants, ext: r.ext };
+        if (lsr) { n.language = lsr[0]; n.script = lsr[1] || undefined; n.region = lsr[2] || undefined; }
+        n.baseName = [n.language].concat(n.script ? [n.script] : [], n.region ? [n.region] : [], n.variants).join('-');
+        n.tag = n.baseName + n.ext;
+        var out = Object.create(Locale.prototype);
+        hidden(out, '_intl', n);
+        return out;
+    }
+    // The scripts written right to left (ICU's list, as Chrome 148 answers
+    // for `und-<script>`).
+    var RTL_SCRIPTS = ' Adlm Arab Armi Avst Chrs Cprt Elym Gara Hatr Hebr Hung Khar Lydi Mand Mani Mend Merc Mero ' +
+        'Narb Nbat Nkoo Orkh Ougr Palm Phli Phlp Phnx Prti Rohg Samr Sarb Sidt Sogd Sogo Syrc Thaa Yezi ';
+    // Unicode CLDR data (Unicode-3.0): notice and licence text in THIRD_PARTY_NOTICES.md at the repository root.
+    // CLDR 48 supplemental weekData: regions whose week does not start on
+    // Monday (1 = Monday ... 7 = Sunday), and whose weekend is not Saturday
+    // and Sunday. Everything else is the world's default (001).
+    var WEEK_FIRST = {
+        5: ' MV ',
+        6: ' AF BH DJ DZ EG IQ IR JO KW LY OM QA SD SY ',
+        7: ' AG AS BD BR BS BT BW BZ CA CO DM DO ET GT GU HK HN ID IL IN IS JM JP KE KH KR LA MH MM MO MT MX MZ ' +
+           'NI NP PA PE PH PK PR PT PY SA SG SV TH TT TW UM US VE VI WS YE ZA ZW '
+    };
+    var WEEKEND = { AF: [4, 5], IR: [5], IN: [7], UG: [7] }, WEEKEND_FRI_SAT = ' BH DZ EG IL IQ JO KW LY OM QA SA SD SY YE ';
+    var WEEK_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
     function locCheck(self, name) {
         if (!(self instanceof Locale) || !self._intl) {
             throw new TypeError('Method Intl.Locale.prototype.' + name + ' called on incompatible receiver');
@@ -1073,7 +1140,39 @@
         });
     });
     methods(Locale.prototype, {
-        toString: function toString() { return locCheck(this, 'toString').tag; }
+        toString: function toString() { return locCheck(this, 'toString').tag; },
+        maximize: function maximize() {
+            var r = locCheck(this, 'maximize');
+            return relocated(r, likelyMax(r.language, r.script || '', r.region || ''));
+        },
+        minimize: function minimize() {
+            var r = locCheck(this, 'minimize');
+            return relocated(r, likelyMin(r.language, r.script || '', r.region || ''));
+        },
+        getTextInfo: function getTextInfo() {
+            var r = locCheck(this, 'getTextInfo'), script = r.script;
+            if (!script) {
+                var max = likelyMax(r.language, '', r.region || '');
+                script = max ? max[1] : '';
+            }
+            return { direction: script && RTL_SCRIPTS.indexOf(' ' + script + ' ') >= 0 ? 'rtl' : 'ltr' };
+        },
+        getWeekInfo: function getWeekInfo() {
+            var r = locCheck(this, 'getWeekInfo'), region = r.region;
+            // `-u-rg-gbzzzz` asks for another region's conventions.
+            if (/^[a-z]{2}zzzz$/.test(r.kw.rg || '')) region = r.kw.rg.slice(0, 2).toUpperCase();
+            if (!region) {
+                var max = likelyMax(r.language, r.script || '', '');
+                region = max ? max[2] : '001';
+            }
+            var key = ' ' + region + ' ', firstDay = 1;
+            for (var d in WEEK_FIRST) if (WEEK_FIRST[d].indexOf(key) >= 0) firstDay = Number(d);
+            if (r.kw.ca === 'iso8601') firstDay = 1;
+            var fw = WEEK_DAYS.indexOf(r.kw.fw);
+            if (fw >= 0) firstDay = fw + 1;
+            var weekend = WEEKEND[region] || (WEEKEND_FRI_SAT.indexOf(key) >= 0 ? [5, 6] : [6, 7]);
+            return { firstDay: firstDay, weekend: weekend.slice() };
+        }
     });
     tag(Locale.prototype, 'Intl.Locale');
 

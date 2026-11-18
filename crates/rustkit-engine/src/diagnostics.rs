@@ -365,7 +365,7 @@ struct Builder<'a> {
     sibs: Siblings,
 }
 
-fn element_parts(node: &Node) -> Option<(String, &HashMap<String, String>)> {
+fn element_parts(node: &Node) -> Option<(String, &rustkit_dom::AttrMap)> {
     match &node.node_type {
         NodeType::Element { tag_name, attributes, .. } => Some((tag_name.to_lowercase(), attributes)),
         _ => None,
@@ -380,7 +380,7 @@ fn parent_element(node: &Node) -> Option<Rc<Node>> {
     node.parent().filter(|p| matches!(p.node_type, NodeType::Element { .. }))
 }
 
-fn classes_of(attrs: &HashMap<String, String>) -> Vec<String> {
+fn classes_of(attrs: &rustkit_dom::AttrMap) -> Vec<String> {
     attrs.get("class").map(|c| c.split_whitespace().map(str::to_string).collect()).unwrap_or_default()
 }
 

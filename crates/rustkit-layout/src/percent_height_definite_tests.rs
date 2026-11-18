@@ -70,6 +70,7 @@ fn input(height: Length) -> LayoutBox {
             value: String::new(),
             placeholder: String::new(),
             input_type: "text".to_string(),
+            size: 20,
         }),
         s,
     )

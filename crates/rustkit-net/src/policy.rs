@@ -169,7 +169,12 @@ impl Default for FetchLimits {
     fn default() -> Self {
         Self {
             max_redirects: 20,
-            max_response_bytes: 10 * 1024 * 1024,
+            // 64 MiB (Atlas, 2026-11-11; was 10 MiB): what script asks for
+            // with fetch()/XHR and the module scripts it imports. Ordinary
+            // sites ship bundles and data files over 10 MB, and JetStream
+            // 2.2 preloads three of 12 MB. Documents are not fetched under
+            // this cap.
+            max_response_bytes: 64 * 1024 * 1024,
             max_request_body_bytes: 10 * 1024 * 1024,
             timeout: Duration::from_secs(30),
             max_header_count: 64,

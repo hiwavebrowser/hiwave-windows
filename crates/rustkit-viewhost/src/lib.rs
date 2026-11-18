@@ -18,6 +18,7 @@
 
 mod traits;
 
+pub mod chord_wait;
 pub mod input_queue;
 pub mod region;
 pub mod cursor;
@@ -31,9 +32,22 @@ pub use traits::{ViewHostTrait, WindowHandle};
 pub use macos::MacOSViewHost;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    drain_pending_clicks, drain_pending_keys, drain_pending_scrolls, finish_key_equivalent, is_reserved_chord, set_view_cursor,
+    begin_key_equivalent, claim_key_equivalent, drain_pending_clicks, drain_pending_keys, drain_pending_scrolls, finish_key_equivalent, is_reserved_chord,
+    set_view_cursor,
     set_view_tooltip,
 };
+/// No view holds Cmd chords for a menu here: a chord's default is the
+/// page's (see the macOS `claim_key_equivalent`).
+#[cfg(not(target_os = "macos"))]
+pub fn claim_key_equivalent(_token: u64) -> bool {
+    true
+}
+/// No view holds Cmd chords for a menu here: the page hears every chord
+/// (see the macOS `begin_key_equivalent`).
+#[cfg(not(target_os = "macos"))]
+pub fn begin_key_equivalent(_token: u64) -> bool {
+    true
+}
 #[cfg(target_os = "macos")]
 pub use macos::{raise_raw_view_above, raise_raw_view_to_front, set_raw_view_region, set_raw_view_transparent};
 pub use input_queue::{
@@ -41,6 +55,7 @@ pub use input_queue::{
     text_input_state, EditAction,
     ImeInput, InputEvent, InputKind, PendingClick, PendingKey, PendingScroll, PointerInput, TextInputMirror,
 };
+pub use chord_wait::CHORD_ANSWER_TIMEOUT;
 pub use region::{compose_region, region_contains, FrameRegion, RegionRect};
 
 // Screenshot capture (Windows: GPU readback of a hosted view)
@@ -326,6 +341,80 @@ fn clip_view_layer(view: id) {
             let _: () = msg_send![layer, setMasksToBounds: masks];
         }
     }
+}
+
+/// The macOS virtual keycode of Tab.
+const TAB_KEYCODE: u16 = 48;
+
+/// Ctrl+Tab / Ctrl+Shift+Tab, the browser's next/previous tab (M1d).
+/// Chromium reserves it from the page. Cmd or Option held, it is not the
+/// chord: Ctrl+Option+Tab is the page's. The one predicate both the
+/// RustKit view (which claims the chord from the window's key-view loop)
+/// and the app (which switches tabs) use, so the two never disagree
+/// (#1012 R1 nit 2).
+pub fn is_tab_cycle_chord(mac_keycode: u16, ctrl: bool, cmd: bool, alt: bool) -> bool {
+    mac_keycode == TAB_KEYCODE && ctrl && !cmd && !alt
+}
+
+thread_local! {
+    /// Views whose Tab release is owed to a claimed Ctrl+Tab (main thread).
+    static TAB_UP_OWED: std::cell::RefCell<std::collections::HashSet<u64>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// What a RustKit view's `performKeyEquivalent:` does with an event, as
+/// far as Ctrl+Tab goes (M1d).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) enum CtrlTabRoute {
+    /// Not a Ctrl+Tab keyDown: the view's usual handling.
+    NotCtrlTab,
+    /// Ctrl+Option+Tab: to the key stream, for the page.
+    ToPage,
+    /// Ctrl+Tab / Ctrl+Shift+Tab: to the key stream, for the app.
+    Cycle,
+}
+
+/// Route an event of NSEvent `kind` with `flags`. `keycode` is read only
+/// for a keyDown with Ctrl and no Cmd: `-[NSEvent keyCode]` raises on a
+/// non-key event, and AppKit offers `performKeyEquivalent:` other events
+/// too (#1012 delta R1 nit b).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn ctrl_tab_route(kind: u64, flags: u64, keycode: impl FnOnce() -> u16) -> CtrlTabRoute {
+    const KEY_DOWN: u64 = 10;
+    let ctrl = flags & (1 << 18) != 0;
+    let cmd = flags & (1 << 20) != 0;
+    let alt = flags & (1 << 19) != 0;
+    if kind != KEY_DOWN || !ctrl || cmd {
+        return CtrlTabRoute::NotCtrlTab;
+    }
+    let keycode = keycode();
+    if keycode != TAB_KEYCODE {
+        CtrlTabRoute::NotCtrlTab
+    } else if is_tab_cycle_chord(keycode, ctrl, cmd, alt) {
+        CtrlTabRoute::Cycle
+    } else {
+        CtrlTabRoute::ToPage
+    }
+}
+
+/// A view claimed a Ctrl+Tab press: its Tab release is swallowed too,
+/// whichever key the user lets go first (#1012 R1 nit 1: with Ctrl
+/// released first the release carries no Ctrl and reached the page as a
+/// stray Tab keyup).
+/// Kept per view: all tabs share one content view, so a Ctrl+Tab switch
+/// leaves the keyboard on the view that owes the release (#1012 delta R1
+/// nit a).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn owe_tab_up(view: u64) {
+    TAB_UP_OWED.with(|owed| owed.borrow_mut().insert(view));
+}
+
+/// Whether this key release is the one a claimed Ctrl+Tab owes (and so
+/// is swallowed). Consumes the debt.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn take_tab_up(view: u64, mac_keycode: u16) -> bool {
+    mac_keycode == TAB_KEYCODE && TAB_UP_OWED.with(|owed| owed.borrow_mut().remove(&view))
 }
 
 /// Move an existing `NSView` and clip its layer. Does not touch the engine,
@@ -1867,6 +1956,43 @@ impl ViewHostTrait for ViewHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_cycle_chord_is_ctrl_tab_without_cmd_or_option() {
+        assert!(is_tab_cycle_chord(48, true, false, false));
+        assert!(!is_tab_cycle_chord(48, true, false, true), "Ctrl+Option+Tab is the page's");
+        assert!(!is_tab_cycle_chord(48, true, true, false), "Cmd+Ctrl+Tab");
+        assert!(!is_tab_cycle_chord(48, false, false, false), "plain Tab");
+        assert!(!is_tab_cycle_chord(0, true, false, false), "Ctrl+A");
+    }
+
+    #[test]
+    fn ctrl_tab_route_reads_the_keycode_of_key_downs_only() {
+        let ctrl = 1u64 << 18;
+        let never = || -> u16 { panic!("keyCode read for an event that is not a Ctrl keyDown") };
+        // A mouse-down (1), a flags-changed (12), a key-up (11): keyCode is not read.
+        for kind in [1u64, 11, 12, 14] {
+            assert_eq!(ctrl_tab_route(kind, ctrl, never), CtrlTabRoute::NotCtrlTab, "kind {kind}");
+        }
+        // A keyDown without Ctrl, or with Cmd, is not read either.
+        assert_eq!(ctrl_tab_route(10, 0, never), CtrlTabRoute::NotCtrlTab);
+        assert_eq!(ctrl_tab_route(10, ctrl | (1 << 20), never), CtrlTabRoute::NotCtrlTab);
+        assert_eq!(ctrl_tab_route(10, ctrl, || 48), CtrlTabRoute::Cycle);
+        assert_eq!(ctrl_tab_route(10, ctrl | (1 << 17), || 48), CtrlTabRoute::Cycle, "Ctrl+Shift+Tab");
+        assert_eq!(ctrl_tab_route(10, ctrl | (1 << 19), || 48), CtrlTabRoute::ToPage, "Ctrl+Option+Tab");
+        assert_eq!(ctrl_tab_route(10, ctrl, || 0), CtrlTabRoute::NotCtrlTab, "Ctrl+A");
+    }
+
+    #[test]
+    fn a_claimed_ctrl_tab_swallows_exactly_its_tab_release() {
+        let (a, b) = (0xA1D0_0001, 0xA1D0_0002);
+        assert!(!take_tab_up(a, 48), "nothing owed yet");
+        owe_tab_up(a);
+        assert!(!take_tab_up(b, 48), "another view owes nothing");
+        assert!(!take_tab_up(a, 59), "the Ctrl release is not it");
+        assert!(take_tab_up(a, 48), "the Tab release is swallowed, Ctrl down or not");
+        assert!(!take_tab_up(a, 48), "once");
+    }
 
     #[test]
     fn test_view_id_uniqueness() {

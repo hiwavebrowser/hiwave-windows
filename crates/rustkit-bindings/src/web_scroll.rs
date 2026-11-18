@@ -68,5 +68,5 @@ pub(crate) fn install(
             JsValue::String(format!("{x} {y}"))
         }),
     )?;
-    runtime.evaluate_script(include_str!("web_scroll.js")).map(|_| ())
+    runtime.evaluate_with_host(include_str!("web_scroll.js")).map(|_| ())
 }

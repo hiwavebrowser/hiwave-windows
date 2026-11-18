@@ -489,6 +489,7 @@ impl SelectPopup {
                 ascent: None,
                 run: None,
                 faces: None,
+                undilated: false,
             });
         }
         if scrolls {

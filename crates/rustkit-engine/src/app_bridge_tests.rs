@@ -158,3 +158,28 @@ fn a_web_page_enumerates_no_engine_globals_on_window() {
         ""
     );
 }
+
+/// The same inside a dedicated worker's scope: a worker script enumerates no engine plumbing (`__`
+/// names) on its global, as a page enumerates none on `window` (worker scope hardening, #1105).
+#[test]
+fn a_worker_scope_enumerates_no_engine_globals() {
+    let (mut engine, id) = page_engine();
+    engine.load_html(id, "<p>web</p>").unwrap();
+    js(
+        &mut engine,
+        id,
+        "var seen = null; \
+         var src = \"postMessage(Object.getOwnPropertyNames(self).filter(function (n) { return n.indexOf('__') === 0; }).join(' '))\"; \
+         var w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))); \
+         w.onmessage = function (e) { seen = e.data; }; 'started'",
+    );
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut seen = String::from("pending");
+    while seen == "pending" && std::time::Instant::now() < end {
+        rt.block_on(engine.pump_live(id, 16));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        seen = js(&mut engine, id, "seen === null ? 'pending' : seen");
+    }
+    assert_eq!(seen, "");
+}

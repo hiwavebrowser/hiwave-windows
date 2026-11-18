@@ -104,31 +104,22 @@ def patch_text(text: str, state: list) -> str:
             .with_fallback(second)
             .with_fallback("Helvetica")
 ''', state)
-    # 2. from_css_value(): skip the macOS-only aliases on Windows.
+    # 2. from_css_value(): on Windows `BlinkMacSystemFont` is an unknown family too. Upstream skips
+    #    `-apple-system` everywhere (CB7b) and maps `BlinkMacSystemFont` to system-ui, which is what
+    #    Chrome on macOS does; Chrome for Testing 148 on Windows (win64) treats it as unknown:
+    #    "BlinkMacSystemFont" alone is the default serif (67.266 px for "Hello world" at 14px, as
+    #    serif), "BlinkMacSystemFont, sans-serif" is Arial (69.250), system-ui is Segoe UI (70.906).
+    #    docs/diagnostics/2026-11-18/font_alias_win148.json.
     text = edit(
-        text, "text.rs skips -apple-system / BlinkMacSystemFont on Windows",
-        "l != \"-apple-system\" && l != \"blinkmacsystemfont\"",
-        "            .collect();\n\n        if families.is_empty() {\n            return Self::sans_serif();\n        }\n",
-        '''            .collect();
-
-        // `-apple-system` and `BlinkMacSystemFont` are macOS-only aliases.
-        // Chrome on Windows does not recognise them, so they are skipped like
-        // any other family that is not installed and the stack falls through
-        // (`-apple-system, BlinkMacSystemFont, sans-serif` becomes plain
-        // `sans-serif`). Treating them as `system-ui` picked Segoe UI where
-        // Chrome picked Arial.
-        #[cfg(windows)]
-        let families: Vec<&str> = families
-            .into_iter()
-            .filter(|f| {
-                let l = f.to_lowercase();
-                l != "-apple-system" && l != "blinkmacsystemfont"
-            })
-            .collect();
-
-        if families.is_empty() {
-            return Self::sans_serif();
-        }
+        text, "text.rs skips BlinkMacSystemFont on Windows",
+        'cfg!(windows) && f.eq_ignore_ascii_case("BlinkMacSystemFont")',
+        '''            .filter(|f| !f.eq_ignore_ascii_case("-apple-system"))
+''',
+        '''            .filter(|f| !f.eq_ignore_ascii_case("-apple-system"))
+            // Windows: Chrome there does not know `BlinkMacSystemFont` either (macOS's name for the
+            // system font), so it is skipped too (Chrome for Testing 148 win64:
+            // docs/diagnostics/2026-11-18/font_alias_win148.json).
+            .filter(|f| !(cfg!(windows) && f.eq_ignore_ascii_case("BlinkMacSystemFont")))
 ''', state)
     # 3. tests.
     text = edit(
@@ -147,38 +138,47 @@ def patch_text(text: str, state: list) -> str:
         assert_eq!(sans.primary, "Segoe UI");
 ''', state)
     text = edit(
-        text, "text.rs alias tests",
-        "fn macos_only_aliases_fall_through_on_windows",
-        '''        let apple = FontFamilyChain::from_css_value("-apple-system");
-        #[cfg(target_os = "macos")]
-        assert_eq!(apple.primary, ".AppleSystemUIFont");
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(apple.primary, "Segoe UI");
+        text, "text.rs alias tests: BlinkMacSystemFont",
+        "Chrome on Windows does not know `BlinkMacSystemFont`",
+        '''        let blink = FontFamilyChain::from_css_value("BlinkMacSystemFont");
+        assert_eq!(blink.primary, system.primary);
     }
 ''',
-        '''        let apple = FontFamilyChain::from_css_value("-apple-system");
-        #[cfg(target_os = "macos")]
-        assert_eq!(apple.primary, ".AppleSystemUIFont");
-        // Windows: the alias is skipped, so it falls through to `sans-serif`.
+        '''        let blink = FontFamilyChain::from_css_value("BlinkMacSystemFont");
+        #[cfg(not(windows))]
+        assert_eq!(blink.primary, system.primary);
+        // Chrome on Windows does not know `BlinkMacSystemFont`: alone it is the default serif.
         #[cfg(windows)]
-        assert_eq!(apple.primary, "Arial");
-        #[cfg(all(not(target_os = "macos"), not(windows)))]
-        assert_eq!(apple.primary, "Segoe UI");
+        assert_eq!(blink.primary, FontFamilyChain::serif().primary);
     }
 
     #[cfg(windows)]
     #[test]
     fn macos_only_aliases_fall_through_on_windows() {
-        // The css-selectors stack: Chrome on Windows resolves it to Arial.
+        // Chrome for Testing 148 win64 (docs/diagnostics/2026-11-18/font_alias_win148.json).
         let c = FontFamilyChain::from_css_value("-apple-system, BlinkMacSystemFont, sans-serif");
+        assert_eq!(c.primary, "Arial");
+        let c = FontFamilyChain::from_css_value("BlinkMacSystemFont, sans-serif");
         assert_eq!(c.primary, "Arial");
         // A real family after the aliases still wins.
         let c = FontFamilyChain::from_css_value("-apple-system, 'Segoe UI', sans-serif");
         assert_eq!(c.primary, "Segoe UI");
-        // system-ui is not an alias of the two above: it stays Segoe UI.
+        // system-ui is not one of them: it stays Segoe UI.
         let c = FontFamilyChain::from_css_value("system-ui, sans-serif");
         assert_eq!(c.primary, "Segoe UI");
     }
+''', state)
+    text = edit(
+        text, "text.rs alias tests: -apple-system, BlinkMacSystemFont",
+        "on Windows both are unknown: the default serif",
+        '''        let then_blink = FontFamilyChain::from_css_value("-apple-system, BlinkMacSystemFont");
+        assert_eq!(then_blink.primary, system.primary, "the next family, the system font");
+''',
+        '''        let then_blink = FontFamilyChain::from_css_value("-apple-system, BlinkMacSystemFont");
+        #[cfg(not(windows))]
+        assert_eq!(then_blink.primary, system.primary, "the next family, the system font");
+        #[cfg(windows)]
+        assert_eq!(then_blink.primary, serif.primary, "on Windows both are unknown: the default serif");
 ''', state)
     del quote
     return text

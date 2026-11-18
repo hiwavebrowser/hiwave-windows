@@ -49,6 +49,11 @@ pub(crate) struct LayoutCtx {
     /// rejects them as "Unknown image format") and are spliced into the
     /// display list as vector commands at build time.
     pub(crate) svg_cache: RefCell<HashMap<String, rustkit_svg::SvgDocument>>,
+    /// The SVG images of `svg_cache` (fetched or data: URLs, not inline
+    /// `<svg>`), shared with the canvas image loader: a canvas
+    /// `drawImage` of an SVG `<img>` rasterizes its path list (STR-7
+    /// slice 3).
+    pub(crate) canvas_svgs: crate::canvas_paint::CanvasSvgs,
     /// The SVG paint declarations (`fill`, `stroke`, `stop-color`, ...)
     /// author rules give each element inside an inline `<svg>`, by raw
     /// NodeId. Filled by `cache_svg_paint_styles` before each build (a
@@ -61,6 +66,9 @@ pub(crate) struct LayoutCtx {
     /// What the inline svg pre-pass keeps between builds: the id index,
     /// each svg's markup key and the paint maps (`svg_prepass`, LAT4b).
     pub(crate) svg_prepass: RefCell<crate::svg_prepass::SvgPrepass>,
+    /// `EngineConfig::nested_contexts`, for the build: an `<iframe>` is a
+    /// replaced box with a 2px border only with it on.
+    pub(crate) nested_contexts: std::cell::Cell<bool>,
 }
 
 impl Default for LayoutCtx {
@@ -71,14 +79,22 @@ impl Default for LayoutCtx {
             style_trace: RefCell::default(),
             building: RefCell::default(),
             svg_cache: RefCell::default(),
+            canvas_svgs: Default::default(),
             svg_paint_styles: RefCell::default(),
             svg_prepass: RefCell::default(),
+            nested_contexts: std::cell::Cell::new(false),
         }
     }
 }
 
 /// What a build reads of the view it is for, taken by the engine when the
 /// build starts.
+///
+/// `Engine::build_view` is the one place a `BuildView` is made from the
+/// engine's view; a build that starts later from one already taken (the
+/// forced read, #1057) goes through [`BuildView::for_build`], so a field
+/// added here is carried along without touching those call sites.
+#[derive(Clone)]
 pub(crate) struct BuildView {
     pub(crate) id: EngineViewId,
     /// `None` when the view is not (or no longer) in the engine.
@@ -87,6 +103,8 @@ pub(crate) struct BuildView {
     pub(crate) url: Option<Url>,
     /// The viewport in CSS px: the headless bounds, else the host surface.
     pub(crate) viewport: Option<(f32, f32)>,
+    /// The device pixel ratio an `<img>`'s `srcset` is selected for (E54b).
+    pub(crate) dpr: f32,
     /// Focus is per-VIEW but the recursive layout builder is view-agnostic,
     /// so the alternative was checking "is this node focused in ANY view",
     /// which would mark a node focused in one view while building another.
@@ -94,6 +112,21 @@ pub(crate) struct BuildView {
     /// The view's `<link>` sheets: the rule-index fingerprint vouches for
     /// them only when the build was handed this very list.
     pub(crate) external_sheets: Rc<Vec<rustkit_css::Stylesheet>>,
+    /// The `<link>` that owns each of `external_sheets`, for its place
+    /// among the `<style>` sheets (`sheet_document_order`).
+    pub(crate) external_sheet_owners: Rc<Vec<rustkit_dom::NodeId>>,
+}
+
+impl BuildView {
+    /// This view for a build that starts now: every per-build field copied,
+    /// with what can change between builds (the focused node) read afresh
+    /// from the view's layout state.
+    pub(crate) fn for_build(&self) -> BuildView {
+        BuildView {
+            focus: self.lay.as_ref().and_then(|lay| lay.focused_node.get()),
+            ..self.clone()
+        }
+    }
 }
 
 impl LayoutCtx {
@@ -150,9 +183,11 @@ impl LayoutCtx {
         // A pointer restyle sets this before its builds and takes it
         // after them: read before `build`, while it is certainly set.
         let partial_build = crate::restyle_build_active();
+        crate::relayout_cause::set_last_build_partial(false);
         let prev = self.building.replace(Some(Rc::new(view)));
         let _restore = Restore { ctx: self, prev };
         let built = build();
+        let partial_build = build_was_partial(partial_build);
         // What the build did not visit has no computed style: its
         // transitions end here. Not after a build that took the kept box
         // tree (it visited nothing) or a partial restyle build (it skipped
@@ -169,20 +204,22 @@ impl LayoutCtx {
     /// view being built (`Animations::on_style`); nothing outside a build.
     /// A `@keyframes` an animation names is resolved here: each block's
     /// declarations applied to the element's cascaded style, and the values
-    /// of the properties they set read back.
+    /// of the properties they set read back. True when the element animates or
+    /// may (it names an animation or a transition, script animates it, or it
+    /// has running records): its style is then more than its cascade.
     pub(crate) fn animate_style(
         &self,
         node: usize,
         style: &mut crate::ComputedStyle,
         stylesheets: &[rustkit_css::Stylesheet],
-    ) {
+    ) -> bool {
         let lay = self
             .building
             .borrow()
             .as_ref()
             .and_then(|view| view.lay.clone());
         let Some(lay) = lay else {
-            return;
+            return false;
         };
         let resolve =
             |name: &str, base: &crate::ComputedStyle| -> Option<Vec<crate::animations::Frame>> {
@@ -229,10 +266,10 @@ impl LayoutCtx {
             .animations
             .iter()
             .any(|item| !item.name.trim().is_empty() && !item.name.trim().eq_ignore_ascii_case("none"));
-        let cascaded = (named || !style.transitions.is_empty() || entries.is_some() || {
+        let may_animate = named || !style.transitions.is_empty() || entries.is_some() || {
             lay.animations.borrow().has_records(node)
-        })
-        .then(|| style.clone());
+        };
+        let cascaded = may_animate.then(|| style.clone());
         lay.animations.borrow_mut().on_style(node, style, &resolve);
         // Script's animated values, above the CSS ones: each entry parsed
         // against the style as it stands and composed on it.
@@ -254,6 +291,7 @@ impl LayoutCtx {
                 anims.captured.remove(&node);
             }
         }
+        may_animate
     }
 
     /// Script's animated-style entries for one element (Web Animations),
@@ -441,8 +479,18 @@ impl LayoutCtx {
         self.building.borrow().as_ref().and_then(|b| b.focus)
     }
 
+    pub(crate) fn building_dpr(&self) -> f32 {
+        self.building.borrow().as_ref().map_or(1.0, |b| b.dpr)
+    }
+
     pub(crate) fn building_viewport(&self) -> Option<(f32, f32)> {
         self.building.borrow().as_ref().and_then(|b| b.viewport)
+    }
+
+    /// The owners of the building view's external sheets; empty outside
+    /// a view build.
+    pub(crate) fn building_external_sheet_owners(&self) -> Rc<Vec<rustkit_dom::NodeId>> {
+        self.building.borrow().as_ref().map(|b| b.external_sheet_owners.clone()).unwrap_or_default()
     }
 
     pub(crate) fn building_url(&self) -> Option<Url> {
@@ -557,11 +605,230 @@ pub(crate) struct ViewLayout {
     /// Chrome. Cleared with the document.
     pub(crate) scrollbar_marks: RefCell<HashMap<usize, (bool, bool)>>,
     pub(crate) root_scrollbar: Cell<bool>,
+    /// CQ1: the content-box size of every size container in this view's
+    /// last layout (raw NodeId → inline, block). The next build answers
+    /// `@container` queries with them (`container_query`), and
+    /// `lay_out_document` lays out again while they move. Cleared with the
+    /// document.
+    pub(crate) container_sizes: RefCell<crate::container_query::MeasuredContainers>,
+    /// Whether the last build's sheets had any `@container` rule.
+    pub(crate) container_rules: Cell<bool>,
+    /// The extra build-and-layout passes container sizes have cost this
+    /// view, and the layouts that hit the pass cap still moving (#1070 R1).
+    /// What the last walk left: the size containers `container_sizes`
+    /// measures, and what the build asked of them
+    /// (`container_query::take_build_facts`).
+    pub(crate) container_facts: RefCell<crate::container_query::BuildFacts>,
+    pub(crate) container_passes: Cell<u32>,
+    /// LAT22 probe: why reads built the tree instead of being answered
+    /// from an animation frame, by reason.
+    pub(crate) forced_build_reasons: RefCell<std::collections::BTreeMap<String, u32>>,
+    /// LAT22 probe: the shadow trees' sheet cost in the view's last build.
+    pub(crate) last_shadow_build: Cell<crate::shadow_tree::ShadowBuildStats>,
+    /// FORCED-READ: the elements the view's last build walked (styled and given an identity).
+    pub(crate) last_build_elements: Cell<u32>,
+    /// FORCED-READ: the document's forced builds so far, the time in their build stage and in
+    /// their layout stage, in ms (the relayout summary takes them).
+    pub(crate) forced_stage_ms: Cell<(f64, f64)>,
+    /// Element cascades of the view's last build that had no rule index.
+    pub(crate) last_unindexed_cascades: Cell<u32>,
+    /// LAT22: the document's shadow tree styles across builds.
+    pub(crate) tree_styles: Rc<RefCell<crate::shadow_tree::ViewTreeStyles>>,
+    pub(crate) container_unsettled: Cell<u32>,
+    /// Builds of this view that told the walk they replay memoized styles
+    /// (`container_query::note_replaying`); read by the wiring test.
+    pub(crate) container_replays: Cell<u32>,
     /// How many layout passes this view's builds have run in all (one per
     /// build, or more while styled bars appear or go), and how many builds
     /// ran them. Read by tests to pin that a relayout takes one pass.
     pub(crate) layout_passes: Cell<u32>,
     pub(crate) layout_builds: Cell<u32>,
+    /// INC5: this view's last layout, kept for the incremental path while
+    /// `RUSTKIT_INCREMENTAL_LAYOUT` is not `off`, and what that path did.
+    pub(crate) incremental_layout: RefCell<Option<crate::incremental_layout::Retained>>,
+    pub(crate) incremental_stats: RefCell<crate::incremental_layout::Stats>,
+    /// INC5 stage 2: the coming relayout's dirty set changed no style and no
+    /// box, so its build may be skipped (`Engine::relayout` sets it, the
+    /// next build takes it).
+    pub(crate) incremental_skip_build: Cell<bool>,
+    /// LPF1: the view's last full build as built (before layout), kept while script writes
+    /// change only paint (`want_script_unlaid`), so a relayout for such writes builds only the
+    /// written elements and compares them with their boxes here; patched along with the laid-out
+    /// tree. `None` after any full build that was not asked to keep it.
+    pub(crate) script_unlaid: RefCell<Option<rustkit_layout::LayoutBox>>,
+    pub(crate) want_script_unlaid: Cell<bool>,
+    /// TREE-REUSE (PR 3): the elements this relayout's script writes reached, when its build may
+    /// build them alone and splice them into `script_unlaid` (`Engine::relayout` sets it while
+    /// `RUSTKIT_RETAINED_STYLES=boxes`; the relayout's own build takes it).
+    pub(crate) splice_roots: RefCell<Option<Vec<usize>>>,
+    /// A transition or animation was moving when the kept tree (`script_unlaid`) was built, so
+    /// boxes no later write reaches may hold a value it has moved on from, or that went when it
+    /// ended: the kept tree is not spliced into (#1247 R1 item 2).
+    pub(crate) script_unlaid_animated: Cell<bool>,
+    /// The script animation layer's generation (`animated.generation`) when the kept tree was
+    /// built. Script animations (`element.animate`) are applied in the build from that layer and
+    /// can start, move or fill in paint-only frames no build sees; when the layer has been written
+    /// since, the kept tree is not spliced into (#1247 delta R1).
+    pub(crate) script_unlaid_generation: Cell<u64>,
+    /// TREE-REUSE step (1): set by a forced layout (a geometry read after a write) for its own
+    /// build while `RUSTKIT_RETAINED_STYLES=boxes`: that build keeps its tree, built from the DOM as
+    /// it was at the read, so the end-of-task relayout splices the task's writes into it instead of
+    /// building the whole document a second time. Its dirty set holds every write of the task, those
+    /// before the read too, so building them again over the forced tree is exact.
+    pub(crate) keep_forced_tree_now: Cell<bool>,
+    /// The kept tree is a forced layout's, not the one the view laid out and published. LPF1's short
+    /// path compares written boxes with the kept tree and patches the published tree to match, which
+    /// is right only when the two are the same tree: it does not take a forced read's.
+    pub(crate) script_unlaid_unpublished: Cell<bool>,
+    /// Set by `Engine::relayout_uncounted` for its own build only: the tree a relayout builds and
+    /// publishes is the one kept. Any other build (a forced layout for a geometry read) drops the
+    /// kept tree, since the published boxes were not laid out from it, except a forced layout's
+    /// in `boxes` mode (`keep_forced_tree_now`).
+    pub(crate) retain_script_unlaid_now: Cell<bool>,
+    /// After a script write that changed more than paint, the relayouts the short path sits out
+    /// (no kept tree, no attempt) before it tries again: a page that keeps changing layout does
+    /// not pay for a kept copy of its tree every frame.
+    pub(crate) script_cooldown: Cell<u32>,
+    /// LPF3: the cooldown the short path's last miss set, while its run of misses goes on; `None`
+    /// once it has ended (a hit, `SCRIPT_RESTYLE_IDLE` relayouts with no script paint write, a
+    /// navigation). A miss with a run going is one in a row: it sits out twice the last cooldown
+    /// (at least 1, at most `SCRIPT_RESTYLE_COOLDOWN`); a one-off miss sits out none. A relayout
+    /// the path refuses leaves the run as it is (R1: a scroll between two misses ended it).
+    pub(crate) script_last_cooldown: Cell<Option<u32>>,
+    /// A window or element scroll happened in the task that dirtied the page: the short path,
+    /// which re-stamps no scroll offset, is not taken for the relayout (R1). Cleared by it.
+    pub(crate) scrolled_in_task: Cell<bool>,
+    /// Relayouts in a row that no script paint write asked for; at 8 the kept tree is let go.
+    pub(crate) script_idle: Cell<u32>,
+    /// The written elements (raw NodeIds) the coming relayout may restyle alone
+    /// (`Engine::relayout` sets it, `relayout_uncounted` takes it), and the child nodes the last
+    /// such restyle's build went into.
+    pub(crate) script_roots: RefCell<Option<Vec<usize>>>,
+    pub(crate) script_walked: Cell<Option<usize>>,
+    /// LAT9: the URL each `<img>` (raw NodeId) last painted with a loaded
+    /// image. When script swaps its `src`, the box keeps painting this one
+    /// while the new image is in flight, so a card does not go blank
+    /// between the two. Once the new one has settled as failed
+    /// ([`Self::failed_images`]) the old image goes, as in Chrome. Per view
+    /// and cleared with the document, like the other NodeId tables.
+    pub(crate) shown_images: RefCell<HashMap<usize, ImgSource>>,
+    /// LAT9-r1: the image URLs of this document whose load has settled as
+    /// failed, and which `<img>` elements have heard `error` for theirs.
+    pub(crate) failed_images: RefCell<FailedImages>,
+    /// E54: which `<img>` elements have heard `load`, and for which image.
+    pub(crate) loaded_images: RefCell<LoadedImages>,
+}
+
+impl ViewLayout {
+    /// A navigation committed: the script restyle path starts the new document afresh. No kept
+    /// tree (its node ids were the old document's), no cooldown, and no run of misses (LPF3 R1).
+    pub(crate) fn forget_script_restyle(&self) {
+        self.script_unlaid.borrow_mut().take();
+        self.script_unlaid_animated.set(false);
+        self.script_unlaid_unpublished.set(false);
+        self.want_script_unlaid.set(false);
+        self.script_cooldown.set(0);
+        self.script_last_cooldown.set(None);
+        self.script_idle.set(0);
+    }
+}
+
+/// The current document's loaded images, as its script has been told of
+/// them ([`ViewLayout::loaded_images`]). An `<img>` whose image is in
+/// hears `load` once for that image; script reads `complete`,
+/// `naturalWidth`/`naturalHeight` and `currentSrc` from what the event
+/// brought, so an image reads as in flight until its `load`.
+#[derive(Default)]
+pub(crate) struct LoadedImages {
+    /// An image arrived, an `<img>` was found showing a loaded image it has
+    /// not heard of, or script wrote a `src`: the next live turn (or the
+    /// load, before the window's `load`) has events to send.
+    pub(crate) due: bool,
+    /// The URL each `<img>` (raw NodeId) has heard `load` for, as its
+    /// [`Self::key`]. An element whose `src` moves on, or is written again,
+    /// is dropped, so it hears the next one.
+    pub(crate) heard: HashMap<usize, u64>,
+    /// The `<img>` elements (raw NodeId) script gave a `src` that are in
+    /// no document tree (`new Image()`, a created element not inserted): a
+    /// preload or a pixel. Each is fetched and hears `load` or `error`
+    /// like one in the document; it leaves the list once it has heard, and
+    /// comes back if its `src` is written again.
+    pub(crate) detached: Vec<usize>,
+    /// The URLs the engine gave up on (an image's budget ran out, or it got
+    /// no slot within its pass's cap) and which `<img>` elements were told
+    /// so, by [`Self::key`]. Not a failure: no event fires, and the element
+    /// reads as loading, but a `decode()` waiting on it resolves (E54 R1).
+    /// A pass that asks for such a URL again takes it out.
+    pub(crate) gave_up: std::collections::HashSet<String>,
+    pub(crate) gave_up_heard: HashMap<usize, u64>,
+}
+
+impl LoadedImages {
+    /// What [`Self::heard`] keeps of a URL: a hash. A `data:` URL can be
+    /// megabytes, and a page can show hundreds of them, each looked at on
+    /// every planning pass (R1 nit 4), so a long URL is hashed by its length
+    /// and its first and last 256 bytes, not all of it.
+    pub(crate) fn key(url: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let bytes = url.as_bytes();
+        if bytes.len() <= 1024 {
+            bytes.hash(&mut hasher);
+        } else {
+            bytes.len().hash(&mut hasher);
+            bytes[..256].hash(&mut hasher);
+            bytes[bytes.len() - 256..].hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
+/// The current document's failed image loads ([`ViewLayout::failed_images`]).
+///
+/// A URL is in `urls` only once its load has failed: an error status, a
+/// failed connection, bytes that do not decode (`FetchedImages::failed`).
+/// A request that is still out is not in here, however long it has been
+/// out, nor is one the load stopped waiting for (that one goes on as live
+/// work). Nor is one the engine gave up on, its own budget spent or no slot
+/// within the pass's cap (`FetchedImages::gave_up`): that image was slow,
+/// not broken, Chrome would still load it, and its element keeps what it
+/// paints and hears nothing. A pass that asks for a failed URL again takes
+/// it out when it starts the request.
+///
+/// `error` goes to the `<img>` elements in the document and to those
+/// script gave a `src` outside it ([`LoadedImages::detached`]).
+#[derive(Default)]
+pub(crate) struct FailedImages {
+    /// Absolute URLs.
+    pub(crate) urls: std::collections::HashSet<String>,
+    /// A failure arrived, or the document's images were looked over again,
+    /// since `error` was last sent: the next live turn has events to send.
+    pub(crate) due: bool,
+    /// The failed URL each `<img>` (raw NodeId) has heard `error` for. An
+    /// element whose `src` moves on is dropped, so it hears the next one.
+    pub(crate) heard: HashMap<usize, String>,
+}
+
+/// An `<img>`'s `src` and the image it painted last ([`ViewLayout::shown_images`]).
+pub(crate) struct ImgSource {
+    /// The absolute URL its `src` (or `srcset` pick) names now.
+    pub(crate) wanted: String,
+    /// The density (image pixels per CSS pixel) of the pick `wanted` names (E54b): `srcset` picks
+    /// a 2x image for a 1x box, and its natural size is the decoded size over that density.
+    pub(crate) wanted_density: f32,
+    /// The last loaded image it painted.
+    pub(crate) shown: Option<String>,
+    /// The density of the pick `shown` came from. During a pending swap the box paints `shown`,
+    /// so its natural size divides by THIS, never by the new pick's `wanted_density`.
+    pub(crate) shown_density: f32,
+}
+
+/// An image with no pick yet is 1x: a derived `Default` would be 0.0, which divides a natural
+/// size by zero.
+impl Default for ImgSource {
+    fn default() -> Self {
+        Self { wanted: String::new(), wanted_density: 1.0, shown: None, shown_density: 1.0 }
+    }
 }
 
 /// What `getComputedStyle` reads for an element with no layout box
@@ -579,15 +846,46 @@ pub(crate) struct BoxlessStyle {
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_img_source_with_no_pick_yet_is_1x() {
+        // A derived Default gave 0.0, which divides a natural size by zero if either density is
+        // read before a pick records one (Prometheus LOW on #1039).
+        let source = ImgSource::default();
+        assert_eq!(source.wanted_density, 1.0);
+        assert_eq!(source.shown_density, 1.0);
+    }
+
     fn build_view(lay: &Rc<ViewLayout>) -> BuildView {
         BuildView {
             id: EngineViewId::new(),
             lay: Some(lay.clone()),
             url: None,
+            dpr: 1.0,
             viewport: None,
             focus: None,
             external_sheets: Rc::default(),
+            external_sheet_owners: Rc::default(),
         }
+    }
+
+    #[test]
+    fn a_view_for_a_later_build_keeps_the_per_build_fields_and_rereads_focus() {
+        let lay = Rc::new(ViewLayout::default());
+        let mut taken = build_view(&lay);
+        taken.dpr = 2.0;
+        taken.viewport = Some((800.0, 600.0));
+        taken.url = Url::parse("https://example.com/a").ok();
+        let focused = rustkit_dom::NodeId::new(7);
+        lay.focused_node.set(Some(focused));
+        let later = taken.for_build();
+        assert_eq!(later.id, taken.id);
+        assert!(Rc::ptr_eq(later.lay.as_ref().unwrap(), &lay));
+        assert_eq!(later.url, taken.url);
+        assert_eq!(later.viewport, Some((800.0, 600.0)));
+        assert_eq!(later.dpr, 2.0);
+        assert_eq!(later.focus, Some(focused));
+        assert!(Rc::ptr_eq(&later.external_sheets, &taken.external_sheets));
+        assert!(Rc::ptr_eq(&later.external_sheet_owners, &taken.external_sheet_owners));
     }
 
     #[test]
@@ -645,4 +943,26 @@ pub(crate) struct FrameChange {
     pub(crate) props: Vec<(usize, crate::animations::AnimValue, crate::animations::AnimValue)>,
     /// `animation_settled_opacity`, painted last and now.
     pub(crate) settled: Option<(Option<f32>, Option<f32>)>,
+}
+
+/// Whether the build `with_building` just ran visited only part of the document, so the animation
+/// state keeps what it did not visit (`Animations::end_build`): `started_partial` (a pointer
+/// restyle set its restyle build before the build), or the last build ran under a restyle build. A
+/// kept-tree splice (TREE-REUSE) starts its restyle build inside the build, so only the second
+/// sees it; a splice that missed after its partial build, and `boxes-verify`, build in full
+/// afterwards, which says otherwise. `boxes-verify` asks it too, for what a splice's sweep would
+/// drop (`Animations::would_sweep`).
+pub(crate) fn build_was_partial(started_partial: bool) -> bool {
+    #[cfg(test)]
+    if IGNORE_LAST_BUILD_PARTIAL.with(|c| c.get()) {
+        return started_partial;
+    }
+    started_partial || crate::relayout_cause::last_build_partial()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook: `build_was_partial` as before #1257's fix (a splice swept like a full build), so a
+    /// test can show that `boxes-verify` sees that class of bug.
+    pub(crate) static IGNORE_LAST_BUILD_PARTIAL: Cell<bool> = const { Cell::new(false) };
 }

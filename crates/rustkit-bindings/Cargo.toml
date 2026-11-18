@@ -8,6 +8,7 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 # Core crates
+rustkit-common = { path = "../rustkit-common" }
 rustkit-dom = { path = "../rustkit-dom" }
 rustkit-js = { path = "../rustkit-js" }
 rustkit-core = { path = "../rustkit-core" }

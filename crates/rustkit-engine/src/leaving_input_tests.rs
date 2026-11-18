@@ -45,17 +45,23 @@ fn over_budget(engine: &Engine, view: EngineViewId) -> Vec<String> {
         .collect()
 }
 
-/// A page whose load spends its whole script budget (six timers of 100 ms
-/// of host calls each, inside the load's timer horizon, against a 300 ms
-/// budget) still runs a click listener dispatched after `load`, and the
-/// listener's DOM change is visible. The load budget is the load's; the
-/// listener runs on a live-turn deadline of its own. Green before S2's
-/// reopening: there is no page-life cumulative budget to replace.
+/// A page whose load spends its whole script budget still runs a click
+/// listener dispatched after `load`, and the listener's DOM change is
+/// visible. The load budget is the load's; the listener runs on a
+/// live-turn deadline of its own. Green before S2's reopening: there is no
+/// page-life cumulative budget to replace.
+///
+/// FLK2 (2026-11-13): the load's timer used to be six of 100 ms each
+/// against a 300 ms budget. The horizon runs them one frame slice at a
+/// time, each slice its own execution, so on a busy machine the slices
+/// could use up the budget between them with none of them stopped, and no
+/// `timers` record was over budget (the premise failed only inside full
+/// suites). The timer now never ends by itself: the slice that runs it is
+/// always the one the budget stops, whatever the machine's speed.
 #[test]
 fn premise_a_load_that_spends_its_script_budget_still_runs_a_click_listener_after_load() {
     let page = "<html><body style=\"margin:0\"><p id=p style=\"margin:0;height:100px\">alive</p><script>
-function burn(ms) { var t = Date.now(); while (Date.now() - t < ms) { document.getElementById('p'); } }
-for (var i = 0; i < 6; i++) { setTimeout(function () { burn(100); }, i * 10); }
+setTimeout(function () { for (;;) { document.getElementById('p'); } }, 0);
 document.getElementById('p').addEventListener('click', function () {
   document.title = 'clicked';
   document.getElementById('p').textContent = 'clicked';

@@ -8,7 +8,11 @@
 //!
 //! The engine is constructed on the content thread. The presenter is not:
 //! a page engine publishes [`crate::FrameCommit`]s and the window draws
-//! them. Per-tab threads are M6; this is the one shared content thread.
+//! them. Each content view gets its own thread (`ContentThread::spawn` per
+//! tab), so the window draws frames built on several threads. Anything a
+//! frame's drawing reads from thread-local state goes in the commit: the
+//! `@font-face` set it was built with (`FrameCommit::web_fonts`, E56) is
+//! installed on the window thread before it is drawn.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -23,7 +27,7 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use crate::nav_cancel::NavCanceller;
-use crate::page_protocol::{adopt, coalesce};
+use crate::page_protocol::{adopt, coalesce, runs_mid_load};
 use crate::devtools_service::{
     ask_console as devtools_ask_console, ask_network as devtools_ask_network, watch as devtools_watch, DevtoolsCount, DevtoolsCounters,
 };
@@ -144,6 +148,8 @@ impl ContentThread {
             .name("page".into())
             .stack_size(stack_bytes)
             .spawn(move || {
+                // Half the stack is the native-recursion budget (JSON, parser, proxy chains).
+                rustkit_js::set_thread_native_stack_budget(Some(stack_bytes / 2));
                 let built = (|| -> Result<(), String> {
                     let mut engine = builder
                         .build_page(nav_for_thread)
@@ -1528,6 +1534,70 @@ mod tests {
         assert!(recovered.contains('2'), "{recovered}");
     }
 
+    /// LAT15 / #1006: mid-load safe points may apply input/eval/render, never
+    /// navigate/stop/close/live turns. The headless load_turns suite covers
+    /// the yield loop; this pins the filter itself on default `--lib`.
+    #[test]
+    fn runs_mid_load_allows_input_and_refuses_navigation() {
+        assert!(runs_mid_load(&PageCmd::Input(PageInput::MouseLeave)));
+        assert!(runs_mid_load(&PageCmd::Render { every: false }));
+        assert!(runs_mid_load(&PageCmd::Relayout));
+        assert!(runs_mid_load(&PageCmd::SetVisible { visible: true }));
+        assert!(runs_mid_load(&PageCmd::GrabKeyboard));
+        assert!(runs_mid_load(&PageCmd::NoteInput {
+            at: Instant::now(),
+            seq: 1,
+            kind: crate::InputClass::Move,
+        }));
+
+        let (eval_reply, _) = oneshot::channel();
+        assert!(runs_mid_load(&PageCmd::Eval {
+            script: "1".into(),
+            reply: eval_reply,
+        }));
+        let (resize_reply, _) = oneshot::channel();
+        assert!(runs_mid_load(&PageCmd::Resize {
+            bounds: Bounds {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            scale: 1.0,
+            reply: resize_reply,
+        }));
+
+        assert!(!runs_mid_load(&PageCmd::Navigate {
+            url: Url::parse("https://example.test/").unwrap(),
+            nav_id: 1,
+        }));
+        assert!(!runs_mid_load(&PageCmd::Close));
+        let (stop_reply, _) = oneshot::channel();
+        assert!(!runs_mid_load(&PageCmd::Stop { reply: stop_reply }));
+        let (reload_reply, _) = oneshot::channel();
+        assert!(!runs_mid_load(&PageCmd::Reload {
+            nav_id: 1,
+            reply: reload_reply,
+        }));
+        let (html_reply, _) = oneshot::channel();
+        assert!(!runs_mid_load(&PageCmd::LoadHtml {
+            html: "<p>x</p>".into(),
+            nav_id: 1,
+            reply: html_reply,
+        }));
+        let (live_reply, _) = oneshot::channel();
+        assert!(!runs_mid_load(&PageCmd::PumpLive {
+            elapsed_ms: 0,
+            reply: live_reply,
+        }));
+        assert!(!runs_mid_load(&PageCmd::SetAppOwned { owned: true }));
+        assert!(!runs_mid_load(&PageCmd::SetHostReentry { limit: 8 }));
+        let (probe_reply, _) = oneshot::channel();
+        assert!(!runs_mid_load(&PageCmd::InstallReentryProbe {
+            reply: probe_reply,
+        }));
+    }
+
     #[test]
     fn coalesce_collapses_adjacent_resizes_and_keeps_the_click() {
         let (a, _) = oneshot::channel();
@@ -1840,6 +1910,68 @@ mod tests {
             }),
             "the default document replaced the restore: {kept:?}"
         );
+    }
+
+    /// The titles the page reported, in order.
+    fn titles(events: &[PageEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                PageEvent::Title { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The tab's title follows the document's. The engine reported a title
+    /// once, at load: a page that set `document.title` later (an unread
+    /// count, a single-page app's route) kept its first title in the tab.
+    /// Every change is reported, once per script turn however many writes
+    /// the turn made, with the text `document.title` reads.
+    #[test]
+    fn a_title_script_changes_reaches_the_app_once_per_turn() {
+        let page = page();
+        let mut loaded = page.load_html("<title>  base \n title </title><p id=\"t\">x</p>");
+        assert!(wait_recv(&mut loaded, Duration::from_secs(10)).unwrap().is_ok());
+        let mut events = poll_until(&page, Duration::from_secs(10), |events| !titles(events).is_empty());
+        // (The load reports its title with the commit and again when it
+        // finishes: let both arrive.)
+        std::thread::sleep(Duration::from_millis(200));
+        events.extend(page.poll());
+        let at_load = titles(&events);
+        assert!(
+            !at_load.is_empty() && at_load.iter().all(|t| t == "base title"),
+            "the title at load, as document.title reads it: {at_load:?}"
+        );
+
+        // Three writes in one turn: one report, of the last.
+        let mut done = page.eval("document.title = 'one'; document.title = 'two'; document.title = '  three \\n four '; 0");
+        assert!(wait_recv(&mut done, Duration::from_secs(10)).unwrap().is_ok());
+        let events = poll_until(&page, Duration::from_secs(10), |events| titles(events).iter().any(|t| t == "three four"));
+        assert_eq!(titles(&events), ["three four"]);
+
+        // The element's text changed, not the property.
+        let mut done = page.eval("document.querySelector('title').textContent = 'by element'; 0");
+        assert!(wait_recv(&mut done, Duration::from_secs(10)).unwrap().is_ok());
+        let events = poll_until(&page, Duration::from_secs(10), |events| !titles(events).is_empty());
+        assert_eq!(titles(&events), ["by element"]);
+
+        // From a timer, with no script call from the app.
+        let mut done = page.eval("setTimeout(function () { document.title = 'later'; }, 30); 0");
+        assert!(wait_recv(&mut done, Duration::from_secs(10)).unwrap().is_ok());
+        let events = poll_until(&page, Duration::from_secs(10), |events| !titles(events).is_empty());
+        assert_eq!(titles(&events), ["later"]);
+
+        // A write that changes nothing reports nothing; removing the
+        // element reports the empty title.
+        let mut done = page.eval("document.title = 'later'; document.getElementById('t').textContent = 'y'; 0");
+        assert!(wait_recv(&mut done, Duration::from_secs(10)).unwrap().is_ok());
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(titles(&page.poll()), Vec::<String>::new());
+        let mut done = page.eval("document.querySelector('title').remove(); 0");
+        assert!(wait_recv(&mut done, Duration::from_secs(10)).unwrap().is_ok());
+        let events = poll_until(&page, Duration::from_secs(10), |events| !titles(events).is_empty());
+        assert_eq!(titles(&events), [""]);
     }
 
     #[test]

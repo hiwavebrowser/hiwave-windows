@@ -6,7 +6,7 @@
 // Interception: every DOM write the bindings expose ends in one of the two
 // host calls in dom.rs, `write` (insert, remove) and `setData` (attributes,
 // character data, textContent/innerHTML/innerText). Each asks the
-// `__rkDomHooks.mutation` hook, which this file installs at the first
+// `__rk.domHooks.mutation` hook, which this file installs at the first
 // observe(): until then a write pays that one check. The custom-element
 // wrappers (web_components.js) sit above the same calls, on the public
 // methods, and are unchanged; their reactions run as before.
@@ -20,7 +20,7 @@
 // template rather than on its content; observers are held strongly while
 // they observe something.
 (function (g) {
-    var HOOKS = g.__rkDomHooks, Node = g.Node;
+    var HOOKS = __rk.domHooks, Node = g.Node;
     if (!HOOKS || !Node) return;
     var HTML_NS = 'http://www.w3.org/1999/xhtml';
 

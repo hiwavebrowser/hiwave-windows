@@ -55,10 +55,9 @@ const BOXES: &str = "Array.prototype.map.call(document.querySelectorAll('[id]'),
 /// percentage (`html, body, #x { height: 100% }`). The block pass resolves
 /// that height and hands it to the flex pass, so a `height: 25%` item, a
 /// `flex: 1` item, `justify-content: center` and a border-box column with
-/// padding are as in Chromium. One neighbour is not:
-///
-/// `percent-height-column-items-shrink`: a `height: 200px` item in an 80px
-/// column stays 200; Chromium shrinks it to 60 beside its 20px sibling.
+/// padding are as in Chromium. So is `percent-height-column-items-shrink`
+/// since FX1: a `height: 200px` item in an 80px column shrinks to 60 beside
+/// its 20px sibling.
 ///
 /// (`percent-height-row-is-not-touched`, a `height: 50%` item of a 400px
 /// row, left this list with CH2.B1: a row hands its resolved percentage
@@ -81,15 +80,19 @@ const BOXES: &str = "Array.prototype.map.call(document.querySelectorAll('[id]'),
 /// The `auto-tracks-*-in-a-narrow-row` and `-inline-block` four are the
 /// same `auto` columns in two more hosts.
 ///
-/// The rest are the two track shapes the shrink-to-fit estimate leaves to
-/// the generic walk (`grid_columns_content_width` returns `None`): a
-/// `fit-content()` column, and a flexible column with a factor below 1.
-/// The grid is then as wide as before the estimate existed, which is wrong
-/// in its own way but was nearer Chromium than the estimate on these: two
-/// `fit-content(80px)` columns of 150px words in `overflow: hidden` items
-/// are 150 in a 100px float (Chromium 100; the estimate gave 300). Each of
-/// these pages has `engine_boxes` in the case file, the walk's answer, and
-/// the tests hold the engine to it until the estimate covers the shape.
+/// The rest are the track shape the shrink-to-fit estimate leaves to the
+/// generic walk (`grid_columns_content_width` returns `None`): a flexible
+/// column with a factor below 1. The grid is then as wide as before the
+/// estimate existed. Each of these pages has `engine_boxes` in the case
+/// file, the walk's answer, and the tests hold the engine to it until the
+/// estimate covers the shape.
+///
+/// `fit-content()` columns were the other shape until GR2: the estimate
+/// sizes them now, and five of their seven pages match Chromium. The two
+/// `min-width-20px` pages have the float's width right (100 and 160) but
+/// still size each column 150 where Chromium has 50 and 80: track sizing
+/// floors a `min-width: 20px` item's column at its content. Their
+/// `engine_boxes` carry the new float width.
 ///
 /// The last is the header over two of three flexible columns in a 100px
 /// inline-block: with a spanning item over a flexible column the whole
@@ -102,7 +105,6 @@ const GAPS: &[&str] = &[
     "percent-height-item-sharing-an-area-in-a-row",
     "bing-textarea-and-its-replica-in-a-row",
     "bing-textarea-and-its-replica-in-a-block",
-    "percent-height-column-items-shrink",
     "auto-tracks-min-width-0-items-flex-1-beside-a-sibling",
     "auto-tracks-min-width-0-items-in-a-narrow-float",
     "auto-tracks-min-width-20px-items-flex-1-beside-a-sibling",
@@ -115,13 +117,8 @@ const GAPS: &[&str] = &[
     "auto-tracks-min-width-20px-items-in-a-narrow-inline-block",
     "half-and-quarter-fr-tracks-in-a-row",
     "tenth-fr-tracks-in-a-float",
-    "fit-content-tracks-overflow-hidden-items-in-a-narrow-float",
-    "fit-content-tracks-overflow-hidden-items-in-a-wide-float",
     "fit-content-tracks-min-width-20px-items-in-a-narrow-float",
     "fit-content-tracks-min-width-20px-items-in-a-wide-float",
-    "fit-content-tracks-overflow-hidden-items-with-a-gap-in-a-narrow-row",
-    "fit-content-tracks-two-word-items-in-a-narrow-float",
-    "fit-content-tracks-two-word-items-in-a-wide-float",
     "zero-fr-and-2fr-tracks-min-width-20px-item-in-a-narrow-float",
     "zero-fr-and-2fr-tracks-min-width-20px-item-in-a-wide-float",
     "zero-fr-and-2fr-tracks-overflow-hidden-item-in-a-wide-float",

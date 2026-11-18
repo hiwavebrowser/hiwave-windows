@@ -336,6 +336,11 @@ pub struct ImageManager {
 
     /// Where fetched images are decoded, off the page thread.
     decode_pool: DecodePool,
+
+    /// The URLs of the responses images came from (each redirect hop and
+    /// the final URL), by the URL asked for: a canvas that draws one is
+    /// origin-clean only if all are of the page's origin.
+    response_urls: Arc<RwLock<HashMap<Url, Vec<Url>>>>,
 }
 
 impl ImageManager {
@@ -350,6 +355,26 @@ impl ImageManager {
             max_dimensions: (16384, 16384),
             max_cache_bytes: 256 * 1024 * 1024, // 256MB
             decode_pool: DecodePool::new(),
+            response_urls: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// The URLs of the response `url` was decoded from: each redirect hop
+    /// and the final URL. Empty when none were recorded.
+    pub fn response_urls(&self, url: &Url) -> Vec<Url> {
+        self.response_urls.read().unwrap().get(url).cloned().unwrap_or_default()
+    }
+
+    /// Record that `url` was answered through `urls` (each hop and the
+    /// final URL). Added to what was recorded before, never replacing it:
+    /// a response answered from a cache may not repeat its redirects.
+    pub fn record_response_urls(&self, url: &Url, urls: impl IntoIterator<Item = Url>) {
+        let mut map = self.response_urls.write().unwrap();
+        let kept = map.entry(url.clone()).or_default();
+        for u in urls {
+            if !kept.contains(&u) {
+                kept.push(u);
+            }
         }
     }
 

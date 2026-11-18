@@ -581,6 +581,10 @@ pub struct Inspector {
     /// Console calls the page's runtime holds for its next flush, kept by
     /// the runtime (`set_console_held_counter`) and read without the page.
     console_held: Arc<std::sync::atomic::AtomicUsize>,
+    /// The engine's id for the view this records, for the console file's
+    /// lines and for script labels, which repeat from view to view
+    /// (`console_file`, `console_log`); 0 until a document is attached.
+    view: AtomicU64,
     state: Mutex<State>,
 }
 
@@ -623,6 +627,14 @@ impl Drop for Locked<'_> {
 }
 
 impl Inspector {
+    pub(crate) fn set_view_id(&self, view: u64) {
+        self.view.store(view, Ordering::Relaxed);
+    }
+
+    pub(crate) fn view_id(&self) -> u64 {
+        self.view.load(Ordering::Relaxed)
+    }
+
     pub fn new(config: &InspectorConfig) -> Arc<Self> {
         Arc::new(Self {
             active: AtomicBool::new(config.buffer),
@@ -632,6 +644,7 @@ impl Inspector {
             watermark: AtomicU64::new(0),
             watched: AtomicBool::new(false),
             console_held: Arc::default(),
+            view: AtomicU64::new(0),
             state: Mutex::new(State {
                 buffer: config.buffer,
                 buffer_default: config.buffer,

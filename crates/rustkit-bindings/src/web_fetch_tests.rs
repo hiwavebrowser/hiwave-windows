@@ -335,9 +335,9 @@ fn abort_rejects_with_the_signals_reason_and_cancels_the_request() {
 #[test]
 fn a_full_queue_rejects_the_overflow() {
     let b = bindings();
-    b.evaluate("var rejected = 0; for (var i = 0; i < 70; i++) fetch('/q' + i).catch(function () { rejected++; });").unwrap();
+    b.evaluate("var rejected = 0; for (var i = 0; i < 1030; i++) fetch('/q' + i).catch(function () { rejected++; });").unwrap();
     assert_eq!(ev(&b, "rejected"), "6");
-    assert_eq!(b.take_net_requests().len(), 64);
+    assert_eq!(b.take_net_requests().len(), 1024);
 }
 
 /// Prometheus #898 must-fix: a `no-cors` request keeps only the

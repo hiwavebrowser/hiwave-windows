@@ -25,7 +25,7 @@ fn load(config: EngineConfig, routes: Vec<(&'static str, &'static str, String)>)
 const ORIGIN_PAGE: &str = r#"<html><head><script>
 var log = [];
 function ask(path, tag) {
-    window.__rustkit_net.request({ url: location.origin + path }, function (r) { log.push(tag + ':' + (r.ok ? r.status : r.error)); });
+    fetch(location.origin + path).then(function (r) { log.push(tag + ':' + r.status); }, function (e) { log.push(tag + ':' + e.name); });
 }
 ask('/script', 'script');
 window.addEventListener('load', function () { ask('/load', 'load'); });
@@ -53,8 +53,8 @@ fn with_script_network_off_the_page_has_no_bridge() {
         vec![("/", "text/html", "<html><body>hi</body></html>".to_string())],
     );
     assert_eq!(
-        engine.execute_script(view, "typeof window.__rustkit_net").unwrap(),
-        r#"String("undefined")"#
+        engine.execute_script(view, "typeof fetch + typeof window.__rustkit_net").unwrap(),
+        r#"String("undefinedundefined")"#
     );
     assert_eq!(server.hits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -68,8 +68,8 @@ fn a_page_loaded_from_a_string_has_no_bridge() {
         .expect("view");
     engine.load_html(view, "<html><body>hi</body></html>").unwrap();
     assert_eq!(
-        engine.execute_script(view, "typeof window.__rustkit_net").unwrap(),
-        r#"String("undefined")"#
+        engine.execute_script(view, "typeof window.__rustkit_net + typeof window.__net").unwrap(),
+        r#"String("undefinedundefined")"#
     );
 }
 
