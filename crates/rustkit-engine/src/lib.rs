@@ -52,6 +52,12 @@ pub(crate) fn test_compositor() -> Result<Compositor, rustkit_compositor::Compos
     static SHARED_COMPOSITOR: OnceLock<Compositor> = OnceLock::new();
     test_gpu::hold_for_this_test();
     if let Some(shared) = SHARED_COMPOSITOR.get() {
+        // wgpu frees what a dropped engine held (textures, buffers, bind groups) only when its
+        // device is maintained. With one device for the whole process, the previous test's are
+        // freed here, before this test allocates its own: on a software adapter (WARP, a hosted
+        // Windows runner) they are process memory, and ~10 MB a test reached 9 GB and ended the
+        // test binary partway through the suite.
+        shared.device().poll(wgpu::Maintain::Wait);
         return Ok(shared.share_device());
     }
     let compositor = Compositor::new()?;
