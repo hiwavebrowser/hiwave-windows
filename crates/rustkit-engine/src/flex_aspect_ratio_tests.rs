@@ -342,7 +342,16 @@ fn a_column_item_image_with_an_aspect_ratio_is_sized_as_in_chrome() {
 /// The automatic minimum size, `inherit`, and the card as the page has it.
 #[test]
 fn aspect_ratio_minimum_size_inherit_and_the_card_are_as_in_chrome() {
-    let wrong = mismatches(CHROME_EXTRA, "", extra_page);
+    // Windows: inherit-em's Windows expectation, Chrome for Testing 148 win64 (the default font's
+    // line is 11 tall there, 13 on macOS): docs/diagnostics/2026-11-18/flex_inherit_em_cft148_win64.txt.
+    #[cfg(windows)]
+    let table = CHROME_EXTRA.replace(
+        "inherit-em c=0,0,200,0 it=0,0,200,0 im=- txt=0,0,800,13",
+        "inherit-em c=0,0,200,0 it=0,0,200,0 im=- txt=0,0,800,11",
+    );
+    #[cfg(not(windows))]
+    let table = CHROME_EXTRA.to_string();
+    let wrong = mismatches(&table, "", extra_page);
     assert!(wrong.is_empty(), "{} differ from Chrome:\n{}", wrong.len(), wrong.join("\n"));
 }
 

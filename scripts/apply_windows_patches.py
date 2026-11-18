@@ -48,6 +48,7 @@ REPO = Path(__file__).resolve().parent.parent
 TEXT = REPO / "crates" / "rustkit-layout" / "src" / "text.rs"
 LIB = REPO / "crates" / "rustkit-layout" / "src" / "lib.rs"
 MATRIX = REPO / "crates" / "rustkit-engine" / "src" / "nested_layout_matrix_tests.rs"
+FLEX_AR = REPO / "crates" / "rustkit-engine" / "src" / "flex_aspect_ratio_tests.rs"
 BS = chr(92)  # a backslash, built here so no literal backslash sits in this source
 
 
@@ -251,6 +252,29 @@ def patch_matrix(text: str, state: list) -> str:
 ''', state)
 
 
+def patch_flex_ar(text: str, state: list) -> str:
+    # flex_aspect_ratio_tests' `inherit-em` row was pinned on Chrome for macOS: its text line (body 10px,
+    # the default font) is 13 tall there. Chrome for Testing 148 on Windows (win64) lays it out 11 tall
+    # (docs/diagnostics/2026-11-18/flex_inherit_em_cft148_win64.txt), as the engine does here. On
+    # Windows the row is compared with the Windows expectation; every other row is unchanged.
+    return edit(
+        text, "flex_aspect_ratio_tests.rs: inherit-em's Windows expectation",
+        "inherit-em's Windows expectation",
+        '''    let wrong = mismatches(CHROME_EXTRA, "", extra_page);
+''',
+        '''    // Windows: inherit-em's Windows expectation, Chrome for Testing 148 win64 (the default font's
+    // line is 11 tall there, 13 on macOS): docs/diagnostics/2026-11-18/flex_inherit_em_cft148_win64.txt.
+    #[cfg(windows)]
+    let table = CHROME_EXTRA.replace(
+        "inherit-em c=0,0,200,0 it=0,0,200,0 im=- txt=0,0,800,13",
+        "inherit-em c=0,0,200,0 it=0,0,200,0 im=- txt=0,0,800,11",
+    );
+    #[cfg(not(windows))]
+    let table = CHROME_EXTRA.to_string();
+    let wrong = mismatches(&table, "", extra_page);
+''', state)
+
+
 PATCH_DIR = REPO / "scripts" / "windows-patches"
 
 
@@ -308,7 +332,7 @@ def main() -> int:
     check = "--check" in sys.argv[1:]
     state: list = []
     changed = False
-    for path, fn in ((TEXT, patch_text), (LIB, patch_lib), (MATRIX, patch_matrix)):
+    for path, fn in ((TEXT, patch_text), (LIB, patch_lib), (MATRIX, patch_matrix), (FLEX_AR, patch_flex_ar)):
         text, nl = read(path)
         new = fn(text, state)
         if new != text:
