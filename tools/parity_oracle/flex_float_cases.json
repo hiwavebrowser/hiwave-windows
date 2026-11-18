@@ -1,0 +1,55 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "chrome": "143.0.7499.4 (grid_flexible_row_log.mjs); Chrome for Testing 148.0.7778.216 checked separately",
+ "cases": [
+  {
+   "name": "a-left-float-flex-row-puts-its-items-side-by-side",
+   "html": "<!doctype html><html><head><style>body{margin:0}.b{height:10px}</style></head><body><div id=f style=\"float:left;display:flex\"><div id=a class=b style=\"width:100px\"></div><div id=c class=b style=\"width:300px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "f:0:0:400:10 a:0:0:100:10 c:100:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-right-float-flex-row-sits-at-the-right-edge",
+   "html": "<!doctype html><html><head><style>body{margin:0}.b{height:10px}</style></head><body><div id=f style=\"float:right;display:flex\"><div id=a class=b style=\"width:100px\"></div><div id=c class=b style=\"width:300px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "f:880:0:400:10 a:880:0:100:10 c:980:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-float-flex-shrinks-to-an-auto-items-content",
+   "html": "<!doctype html><html><head><style>body{margin:0}.b{height:10px}</style></head><body><div id=f style=\"float:left;display:flex;gap:10px\"><div id=a><div class=b style=\"width:150px\"></div></div><div id=c class=b style=\"width:50px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "f:0:0:210:10 a:0:0:150:10 c:160:0:50:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-float-flex-with-wrap-wraps-at-its-max-width",
+   "html": "<!doctype html><html><head><style>body{margin:0}.b{height:10px}</style></head><body><div id=f style=\"float:left;display:flex;flex-wrap:wrap;max-width:300px\"><div id=a class=b style=\"width:120px\"></div><div id=c class=b style=\"width:120px\"></div><div id=d class=b style=\"width:120px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "f:0:0:300:20 a:0:0:120:10 c:120:0:120:10 d:0:10:120:10 after:0:20:1280:18"
+  },
+  {
+   "name": "a-float-flex-column-stacks-its-items",
+   "html": "<!doctype html><html><head><style>body{margin:0}.b{height:10px}</style></head><body><div id=f style=\"float:left;display:flex;flex-direction:column\"><div id=a class=b style=\"width:100px\"></div><div id=c class=b style=\"width:300px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "f:0:0:300:20 a:0:0:100:10 c:0:10:300:10 after:0:20:1280:18"
+  },
+  {
+   "name": "a-float-flex-with-a-width-justifies-its-items",
+   "html": "<!doctype html><html><head><style>body{margin:0}.b{height:10px}</style></head><body><div id=f style=\"float:left;display:flex;width:500px;justify-content:space-between\"><div id=a class=b style=\"width:100px\"></div><div id=c class=b style=\"width:200px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "f:0:0:500:10 a:0:0:100:10 c:300:0:200:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-float-flex-aligns-its-items-on-the-cross-axis",
+   "html": "<!doctype html><html><head><style>body{margin:0}.b{height:10px}</style></head><body><div id=f style=\"float:left;display:flex;align-items:center\"><div id=a style=\"width:100px;height:10px\"></div><div id=c style=\"width:100px;height:30px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "f:0:0:200:30 a:0:10:100:10 c:100:0:100:30 after:0:30:1280:18"
+  },
+  {
+   "name": "a-float-flex-inside-a-flex-item",
+   "html": "<!doctype html><html><head><style>body{margin:0}.b{height:10px}</style></head><body><div id=o style=\"display:flex;width:800px\"><div id=i><div id=f style=\"float:left;display:flex\"><div id=a class=b style=\"width:100px\"></div><div id=c class=b style=\"width:200px\"></div></div></div><div id=s class=b style=\"width:50px\"></div></div></body></html>",
+   "chrome_boxes": "o:0:0:800:10 i:0:0:300:10 f:0:0:300:10 a:0:0:100:10 c:100:0:200:10 s:300:0:50:10"
+  },
+  {
+   "name": "text-flows-beside-a-float-flex",
+   "html": "<!doctype html><html><head><style>body{margin:0}.b{height:10px}</style></head><body><div style=\"width:600px\"><div id=f style=\"float:left;display:flex\"><div id=a class=b style=\"width:100px\"></div><div id=c class=b style=\"width:200px\"></div></div><span id=t>text</span></div></body></html>",
+   "chrome_boxes": "f:0:0:300:10 a:0:0:100:10 c:100:0:200:10 t:300:0:24:18"
+  }
+ ]
+}

@@ -1,0 +1,39 @@
+<!doctype html><title>transform paint probe</title><style>body{margin:0}
+#sc{position:absolute;left:0;top:0;width:200px;height:100px;overflow:auto}#sc i{display:block;width:50px;height:50px;background:#08f}
+#out{position:absolute;left:100px;top:300px;width:60px;height:60px;background:#ccc}#fx{position:fixed;left:0;top:0;width:10px;height:10px;background:red}
+#rot{position:absolute;left:400px;top:300px;width:100px;height:100px;background:#0a0}
+#clip{position:absolute;left:0;top:500px;width:200px;height:100px;overflow:hidden}#clip i{display:block;width:50px;height:50px;background:#f80}
+#op{position:absolute;left:600px;top:300px;width:50px;height:50px;background:#00f}
+</style>
+<div id=sc><i id=sci></i></div>
+<div id=out><div id=fx></div></div>
+<div id=rot></div>
+<div id=clip><i id=cli></i></div>
+<div id=op></div>
+<script>
+// LPF2: what a transform or opacity change does besides paint, in Chrome. Records:
+//   overflow  a 50 px box in a 200x100 overflow:auto scroller: scrollWidth with no transform, with
+//             translateX(400px), then translateX(10px), then rotate(45deg)
+//   fixed     a position:fixed child of a box at (100,300): its rect with the parent untransformed,
+//             with transform translateX(0px), translateX(20px), then none again
+//   rect      a 100x100 box: getBoundingClientRect width/left with rotate(45deg), then rotate(0deg)
+//   clip      the same as overflow in an overflow:hidden box: scrollWidth (it is a scroll container)
+//   opacity   a box's rect and offsetLeft with opacity 1, 0.5, 0
+// Pinned on Chrome for Testing 148.0.7778.216, headless (transform_paint_probe_chrome.mjs).
+function r(el) { var b = el.getBoundingClientRect(); return [Math.round(b.left*10)/10, Math.round(b.top*10)/10, Math.round(b.width*10)/10]; }
+var rec = { overflow: [], fixed: [], rect: [], clip: [], opacity: [] };
+var sci = document.getElementById('sci'), sc = document.getElementById('sc');
+rec.overflow.push(sc.scrollWidth);
+['translateX(400px)', 'translateX(10px)', 'rotate(45deg)'].forEach(function (t) { sci.style.transform = t; rec.overflow.push(sc.scrollWidth); });
+var out = document.getElementById('out'), fx = document.getElementById('fx');
+rec.fixed.push(r(fx));
+['translateX(0px)', 'translateX(20px)', 'none'].forEach(function (t) { out.style.transform = t; rec.fixed.push(r(fx)); });
+var rot = document.getElementById('rot');
+['rotate(45deg)', 'rotate(0deg)'].forEach(function (t) { rot.style.transform = t; rec.rect.push(r(rot)); });
+var cli = document.getElementById('cli'), clip = document.getElementById('clip');
+rec.clip.push(clip.scrollWidth);
+['translateX(400px)', 'translateX(10px)'].forEach(function (t) { cli.style.transform = t; rec.clip.push(clip.scrollWidth); });
+var op = document.getElementById('op');
+['1', '0.5', '0'].forEach(function (o) { op.style.opacity = o; rec.opacity.push(r(op).concat([op.offsetLeft])); });
+window.rec = rec; rec.done = true;
+</script>

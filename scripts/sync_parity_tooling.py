@@ -121,7 +121,13 @@ def _needs_encoding(call: ast.Call):
 
 
 def add_encoding(text: str, path: str, report: list[str]) -> str:
-    tree = ast.parse(text)
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as err:
+        # A script written for a newer Python than this one (e.g. 3.12 f-strings): copied as it is;
+        # it does not run on this machine's Python either, so there is nothing to make safe.
+        report.append(f"{path}: not parsed by this Python ({err.msg}, line {err.lineno}); copied unchanged")
+        return text
     raw = text.encode("utf-8")
     offs = [0]
     for ln in text.splitlines(keepends=True):

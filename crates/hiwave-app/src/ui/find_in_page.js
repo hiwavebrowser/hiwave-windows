@@ -32,17 +32,35 @@
         return value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
     }
 
-    function clearHighlights() {
-        const highlighted = Array.from(document.querySelectorAll(`.${matchClass}`));
-        highlighted.forEach((elem) => {
-            const parent = elem.parentNode;
-            if (!parent) {
-                return;
+    // Take a mark out and put its text back where it came from. highlightRange splits the
+    // matched text node into <node>, <mark>, <tail>, so the mark's neighbours are text nodes
+    // the find created: fold the mark and the tail back into the first, and the page's own
+    // text nodes (and their identity) are left as they were. Nothing is normalized.
+    function unwrap(mark) {
+        const parent = mark.parentNode;
+        if (!parent) {
+            return;
+        }
+        const text = mark.textContent || '';
+        const prev = mark.previousSibling;
+        const next = mark.nextSibling;
+        if (prev && prev.nodeType === 3) {
+            prev.data += text;
+            parent.removeChild(mark);
+            if (next && next.nodeType === 3) {
+                prev.data += next.data;
+                parent.removeChild(next);
             }
-            const text = document.createTextNode(elem.textContent || '');
-            parent.replaceChild(text, elem);
-            parent.normalize();
-        });
+        } else if (next && next.nodeType === 3) {
+            next.data = text + next.data;
+            parent.removeChild(mark);
+        } else {
+            parent.replaceChild(document.createTextNode(text), mark);
+        }
+    }
+
+    function clearHighlights() {
+        Array.from(document.querySelectorAll(`.${matchClass}`)).forEach(unwrap);
     }
 
     // Replace one text node with its pieces: the text between matches as plain
@@ -112,7 +130,6 @@
             window.__hiwaveFind.matches.push(...highlightNode(textNode, ranges));
         });
 
-        document.body.normalize();
     }
 
     function scrollToMatch(element) {

@@ -1,0 +1,30 @@
+<!doctype html><html><body><div id="d"></div><script>
+window.report = function () {
+  var out = [], d = document.getElementById('d');
+  function run(label, fn, opts) {
+    var e = new Event('x', { cancelable: true, bubbles: true });
+    var seen = [];
+    var l = function (ev) { try { fn(ev); } catch (err) { seen.push('threw ' + err.name); } seen.push('inside=' + ev.defaultPrevented); };
+    d.addEventListener('x', l, opts);
+    var r = d.dispatchEvent(e);
+    d.removeEventListener('x', l, opts);
+    out.push(label + ': returned ' + r + ' after=' + e.defaultPrevented + ' ' + seen.join(' ') + ' returnValue=' + e.returnValue);
+  }
+  run('assign true', function (e) { e.defaultPrevented = true; });
+  run('assign true, strict', function (e) { 'use strict'; e.defaultPrevented = true; });
+  run('defineProperty value true', function (e) { Object.defineProperty(e, 'defaultPrevented', { value: true }); });
+  run('preventDefault', function (e) { e.preventDefault(); });
+  run('returnValue = false', function (e) { e.returnValue = false; });
+  run('passive: preventDefault', function (e) { e.preventDefault(); }, { passive: true });
+  run('passive: returnValue = false', function (e) { e.returnValue = false; }, { passive: true });
+  run('passive: assign true', function (e) { e.defaultPrevented = true; }, { passive: true });
+  run('passive: defineProperty', function (e) { Object.defineProperty(e, 'defaultPrevented', { value: true }); }, { passive: true });
+  var e2 = new Event('y', { cancelable: true }); e2.preventDefault(); out.push('not dispatched, preventDefault: ' + e2.defaultPrevented);
+  var e3 = new Event('y', { cancelable: false }); e3.preventDefault(); out.push('not cancelable, preventDefault: ' + e3.defaultPrevented);
+  var desc = Object.getOwnPropertyDescriptor(Event.prototype, 'defaultPrevented');
+  out.push('descriptor: get=' + typeof desc.get + ' set=' + typeof desc.set + ' own=' + Object.prototype.hasOwnProperty.call(new Event('z'), 'defaultPrevented'));
+  var rv = Object.getOwnPropertyDescriptor(Event.prototype, 'returnValue');
+  out.push('returnValue descriptor: get=' + typeof rv.get + ' set=' + typeof rv.set);
+  return out.join('\n');
+};
+</script></body></html>

@@ -551,8 +551,35 @@ class ChromiumFonts(unittest.TestCase):
     </script>"""
     REF = '<!doctype html><style>html { background: rgb(0, 128, 0) }</style>'
 
+    # CI2: node_modules is committed, so "node_modules exists" never skipped,
+    # and a machine with no Chromium binary (the ubuntu script-guards runner:
+    # Playwright's browsers are a separate download) failed with
+    # "exit 1: Node.js vNN". Launch the oracle's own browser once and skip
+    # only on Playwright's missing-executable error; any other launch failure
+    # is not excused and the test runs into it.
+    LAUNCH = (
+        "import { chromium } from 'playwright';"
+        "import { getDeterministicLaunchOptions } from './deterministic.mjs';"
+        "const b = await chromium.launch(getDeterministicLaunchOptions()); await b.close();"
+    )
+
+    def no_browser(self):
+        try:
+            proc = subprocess.run(
+                ["node", "--input-type=module", "-e", self.LAUNCH],
+                cwd=wpt_tier1.ORACLE_DIR, capture_output=True, text=True, timeout=120, encoding="utf-8"
+            )
+        except FileNotFoundError:
+            return "node not found"
+        if proc.returncode != 0 and "Executable doesn't exist" in proc.stderr:
+            return "Playwright's Chromium is not installed (npx playwright install chromium-headless-shell)"
+        return None
+
     @unittest.skipUnless((wpt_tier1.ORACLE_DIR / "node_modules").is_dir(), "no tools/parity_oracle/node_modules")
     def test_the_frame_waits_for_fonts_ready(self):
+        why_not = self.no_browser()
+        if why_not:
+            self.skipTest(why_not)
         with tempfile.TemporaryDirectory() as td:
             test, ref = pathlib.Path(td) / "t.html", pathlib.Path(td) / "r.html"
             test.write_text(self.PAGE, encoding="utf-8")

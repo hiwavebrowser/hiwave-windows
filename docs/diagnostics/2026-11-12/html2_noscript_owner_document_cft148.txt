@@ -1,0 +1,27 @@
+# HTML2: a noscript's text is written raw when its document is the page's (scripting on), wherever the node is.
+# Chrome for Testing 148.0.7778.216, headless 800x600: window.report() of html2_noscript_owner_document.html.
+# Made by, adopted by, imported into, cloned from, appended into and removed from the page's document,
+# a DOMParser document, a createHTMLDocument document and template contents.
+page, detached: <noscript></noscript><img src=x onerror=1>&</noscript>
+DOMParser doc, detached: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+createHTMLDocument doc, detached: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+template content doc, detached: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+page, under a detached div: <noscript></noscript><img src=x onerror=1>&</noscript>
+page, in a fragment: <noscript></noscript><img src=x onerror=1>&</noscript>
+DOMParser doc, under a detached div: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+DOMParser node adopted by page, detached: <noscript></noscript><img src=x onerror=1>&</noscript>
+page node adopted by DOMParser doc, detached: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+DOMParser node imported by page: <noscript></noscript><img src=x onerror=1>&</noscript>
+page node imported by DOMParser doc: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+page node cloned: <noscript></noscript><img src=x onerror=1>&</noscript>
+DOMParser node cloned: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+DOMParser node appended into page: <noscript></noscript><img src=x onerror=1>&</noscript>
+page node appended into DOMParser doc: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+page node appended into DOMParser doc then removed: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+DOMParser node appended into page then removed: <noscript></noscript><img src=x onerror=1>&</noscript>
+page detached div innerHTML set: <noscript><b>x</b></noscript>
+DOMParser detached div innerHTML set: <noscript><b>x</b></noscript>
+template content: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+template content cloned: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+template content imported by page: <noscript></noscript><img src=x onerror=1>&</noscript>
+owner: true true true true false

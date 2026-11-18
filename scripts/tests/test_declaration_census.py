@@ -367,7 +367,16 @@ def test_top_three_buckets_with_owners():
         load_ledger(),
     )
     gaps = report["gaps"]
-    check("census measured gaps", len(gaps) == 12, str(len(gaps)))
+    # 12 to 7 as the engine began to parse properties the corpus uses:
+    # outline and outline-offset (#867, C5), scrollbar-color and
+    # scrollbar-width (#900, CH2.E7), cursor (#917, CH2.E4). The list, so
+    # a regression that re-opens one names it rather than a count.
+    check(
+        "census measured gaps",
+        sorted(g["property"] for g in gaps)
+        == ["accent-color", "backdrop-filter", "font-variant", "list-style", "resize", "text-shadow", "user-select"],
+        str(sorted(g["property"] for g in gaps)),
+    )
 
     gap_props = {g["property"] for g in gaps}
     unmapped = [p for p in gap_props if bucket_for_property(p)[0] not in BUCKETS]
@@ -385,16 +394,21 @@ def test_top_three_buckets_with_owners():
         f"{top_decls} vs {total_gap_decls}",
     )
 
-    # 4. Check bucket ranking: interactive (26) > paint (12) > structure (4).
-    # `pointer-events` left the interactive bucket (3 declarations) when the
-    # engine began to parse it: 13 gaps to 12, 29 declarations to 26.
+    # 4. Check bucket ranking: paint (4) > interactive (2) = structure (2),
+    # ties by key. Was interactive (26) > paint (12) > structure (4):
+    # outline and outline-offset (8 declarations) left paint with #867,
+    # scrollbar-color and scrollbar-width (2) left structure with #900, and
+    # `cursor` (24, the chrome pages) left interactive with #917, each when
+    # the engine began to parse it. Earlier, `pointer-events` left
+    # interactive (3 declarations) when the engine began to parse it.
     # `backdrop-filter` stays in paint: its arm only tells a stacking context
     # (`STACKING_ONLY_ARMS`), and the effect is still not painted.
     b_order = [b["key"] for b in top_buckets]
-    check("bucket ranking order is interactive, paint, structure", b_order == ["interactive", "paint", "structure"], str(b_order))
-    check("bucket interactive has 26 declarations", top_buckets[0]["declarations"] == 26)
-    check("bucket paint has 12 declarations", top_buckets[1]["declarations"] == 12, str(top_buckets[1]["declarations"]))
-    check("bucket structure has 4 declarations", top_buckets[2]["declarations"] == 4)
+    check("bucket ranking order is paint, interactive, structure", b_order == ["paint", "interactive", "structure"], str(b_order))
+    by_key = {b["key"]: b["declarations"] for b in top_buckets}
+    check("bucket paint has 4 declarations", by_key.get("paint") == 4, str(by_key))
+    check("bucket interactive has 2 declarations", by_key.get("interactive") == 2, str(by_key))
+    check("bucket structure has 2 declarations", by_key.get("structure") == 2, str(by_key))
 
 
 def main():

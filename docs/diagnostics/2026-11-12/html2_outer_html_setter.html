@@ -1,0 +1,19 @@
+<!doctype html><html><body><div id="host"></div><svg id="svg"><g id="g"><rect id="r"></rect></g></svg>
+<script>
+window.report = function () {
+  var out = [], host = document.getElementById('host');
+  function kids(n) { return Array.prototype.map.call(n.childNodes, function (c) { return c.nodeType === 3 ? '#text' : c.localName + (c.namespaceURI === 'http://www.w3.org/2000/svg' ? '(svg)' : ''); }).join(','); }
+  var a = document.createElement('div'); host.appendChild(a); var s = document.createElement('span'); a.appendChild(s); a.appendChild(document.createTextNode('!'));
+  s.outerHTML = '<b>x</b><i>y</i>'; out.push('page element: ' + kids(a) + ' | ' + a.innerHTML + ' | old parent=' + s.parentNode);
+  var inert = new DOMParser().parseFromString('<body><div id="d"><span id="s"></span></div></body>', 'text/html');
+  var is = inert.getElementById('s'); is.outerHTML = '<b>x</b>'; out.push('element of another document: ' + kids(inert.getElementById('d')) + ' | owner=' + (inert.getElementById('d').firstChild.ownerDocument === inert));
+  var lone = document.createElement('span'); var r1; try { lone.outerHTML = '<b>x</b>'; r1 = 'no throw'; } catch (e) { r1 = e.name; } out.push('detached element: ' + r1 + ' | ' + lone.outerHTML);
+  var r2; try { document.documentElement.outerHTML = '<html><body>z</body></html>'; r2 = 'no throw'; } catch (e) { r2 = e.name; } out.push('child of the document: ' + r2);
+  var frag = document.createDocumentFragment(); var fs = document.createElement('span'); frag.appendChild(fs); var r3; try { fs.outerHTML = '<b>x</b>'; r3 = 'no throw'; } catch (e) { r3 = e.name; } out.push('child of a fragment: ' + r3 + ' | ' + kids(frag));
+  var g = document.getElementById('g'), r = document.getElementById('r'); r.outerHTML = '<circle r="1"></circle><div>d</div>'; out.push('svg child: ' + kids(g) + ' | ' + kids(document.getElementById('svg')));
+  var t = document.createElement('table'); host.appendChild(t); var tb = document.createElement('tbody'); t.appendChild(tb); var tr = document.createElement('tr'); tb.appendChild(tr); tr.outerHTML = '<tr><td>1</td></tr>'; out.push('table row: ' + kids(tb));
+  var e2 = document.createElement('div'); host.appendChild(e2); var c2 = document.createElement('p'); e2.appendChild(c2); c2.outerHTML = ''; out.push('empty string: ' + kids(e2));
+  var e3 = document.createElement('div'); host.appendChild(e3); var c3 = document.createElement('p'); e3.appendChild(c3); c3.outerHTML = null; out.push('null: ' + kids(e3) + ' ' + JSON.stringify(e3.innerHTML));
+  return out.join('\n');
+};
+</script></body></html>

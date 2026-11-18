@@ -1,0 +1,26 @@
+<!doctype html><html><body><div id="host"><p id="p">p</p></div><div id="ed" contenteditable="true">e</div><template id="t"></template>
+<script>
+window.report = function () {
+  var out = [], SRC = '<noscript>&lt;i&gt;x</noscript>';
+  function kids(n) { var ns = n.querySelector ? n.querySelector('noscript') : null; return ns ? Array.prototype.map.call(ns.childNodes, function (c) { return c.nodeType === 3 ? '#text(' + JSON.stringify(c.data) + ')' : c.localName; }).join(',') + ' | ' + ns.outerHTML : 'no noscript'; }
+  var host = document.getElementById('host'), p = document.getElementById('p');
+  ['beforebegin', 'afterbegin', 'beforeend', 'afterend'].forEach(function (w) {
+    var box = document.createElement('div'); host.appendChild(box); var mark = document.createElement('span'); box.appendChild(mark);
+    mark.insertAdjacentHTML(w, SRC); out.push('insertAdjacentHTML ' + w + ': ' + kids(box)); box.remove();
+  });
+  var inert = new DOMParser().parseFromString('<body><div id="d"><span id="s"></span></div></body>', 'text/html');
+  inert.getElementById('s').insertAdjacentHTML('afterend', SRC); out.push('insertAdjacentHTML in another document: ' + kids(inert.getElementById('d')));
+  var d1 = document.createElement('div'); host.appendChild(d1); d1.innerHTML = SRC; out.push('innerHTML set on a page element: ' + kids(d1));
+  var d2 = document.createElement('div'); host.appendChild(d2); var c2 = document.createElement('span'); d2.appendChild(c2); c2.outerHTML = SRC; out.push('outerHTML set on a page element: ' + kids(d2));
+  var d3 = document.createElement('div'); d3.innerHTML = SRC; host.appendChild(d3); out.push('innerHTML set detached, then inserted: ' + kids(d3));
+  var dp = inert.createElement('div'); dp.innerHTML = SRC; var moved = document.importNode(dp, true); host.appendChild(moved); out.push('parsed in another document, imported into the page: ' + kids(moved));
+  var dp2 = inert.createElement('div'); dp2.innerHTML = SRC; host.appendChild(document.adoptNode(dp2)); out.push('parsed in another document, adopted into the page: ' + kids(dp2));
+  var doc = new DOMParser().parseFromString('<body>' + SRC + '</body>', 'text/html'); var ad = document.adoptNode(doc.body.firstChild); var wrap = document.createElement('div'); wrap.appendChild(ad); host.appendChild(wrap); out.push('DOMParser parse, adopted into the page: ' + kids(wrap));
+  var tpl = document.getElementById('t'); tpl.innerHTML = SRC; out.push('template innerHTML: ' + kids(tpl.content));
+  var cl = document.importNode(tpl.content, true); var w2 = document.createElement('div'); w2.appendChild(cl); host.appendChild(w2); out.push('template content imported into the page: ' + kids(w2));
+  var tpl2 = document.createElement('template'); tpl2.innerHTML = SRC; var w3 = document.createElement('div'); w3.appendChild(tpl2.content.cloneNode(true)); host.appendChild(w3); out.push('template content cloned into the page: ' + kids(w3));
+  var sh = document.createElement('div'); host.appendChild(sh); var root = sh.attachShadow({ mode: 'open' }); root.innerHTML = SRC; out.push('shadowRoot innerHTML: ' + kids(root));
+  var r = document.createRange(); r.selectNodeContents(host); var f = r.createContextualFragment(SRC); var w4 = document.createElement('div'); w4.appendChild(f); host.appendChild(w4); out.push('contextual fragment moved into the page: ' + kids(w4));
+  return out.join('\n');
+};
+</script></body></html>

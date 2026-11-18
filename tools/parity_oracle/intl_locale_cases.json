@@ -1,0 +1,272 @@
+{
+ "cases": [
+  {
+   "name": "the methods are own function properties of the prototype; the old getters are gone",
+   "js": "var P = Intl.Locale.prototype; ['maximize', 'minimize', 'getTextInfo', 'getWeekInfo', 'textInfo', 'weekInfo'].map(function (n) { var d = Object.getOwnPropertyDescriptor(P, n); return n + ':' + (d ? (typeof d.value) + '/' + (d.value ? d.value.length + '/' + d.value.name : '') + '/' + [d.enumerable, d.configurable, d.writable].join('') : 'absent'); }).join(' ')",
+   "chrome": "maximize:function/0/maximize/falsetruetrue minimize:function/0/minimize/falsetruetrue getTextInfo:function/0/getTextInfo/falsetruetrue getWeekInfo:function/0/getWeekInfo/falsetruetrue textInfo:absent weekInfo:absent"
+  },
+  {
+   "name": "maximize: English, Chinese, Serbian",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en\",\"en-US\",\"en-GB\",\"en-Latn-US\",\"en-Shaw\",\"en-Dsrt\",\"zh\",\"zh-TW\",\"zh-HK\",\"zh-MO\",\"zh-CN\",\"zh-SG\",\"zh-Hant\",\"zh-Hans\",\"zh-Hant-HK\",\"zh-Hans-TW\",\"zh-Latn\",\"yue\",\"yue-CN\",\"yue-Hans\",\"sr\",\"sr-Latn\",\"sr-ME\",\"sr-RS\",\"sr-Cyrl-BA\",\"sr-Latn-RS\"], function (t) { return L(t).maximize().toString(); })",
+   "chrome": "en-Latn-US en-Latn-US en-Latn-GB en-Latn-US en-Shaw-GB en-Dsrt-US zh-Hans-CN zh-Hant-TW zh-Hant-HK zh-Hant-MO zh-Hans-CN zh-Hans-SG zh-Hant-TW zh-Hans-CN zh-Hant-HK zh-Hans-TW zh-Latn-CN yue-Hant-HK yue-Hans-CN yue-Hans-CN sr-Cyrl-RS sr-Latn-RS sr-Latn-ME sr-Cyrl-RS sr-Cyrl-BA sr-Latn-RS"
+  },
+  {
+   "name": "minimize: English, Chinese, Serbian",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en\",\"en-US\",\"en-GB\",\"en-Latn-US\",\"en-Shaw\",\"en-Dsrt\",\"zh\",\"zh-TW\",\"zh-HK\",\"zh-MO\",\"zh-CN\",\"zh-SG\",\"zh-Hant\",\"zh-Hans\",\"zh-Hant-HK\",\"zh-Hans-TW\",\"zh-Latn\",\"yue\",\"yue-CN\",\"yue-Hans\",\"sr\",\"sr-Latn\",\"sr-ME\",\"sr-RS\",\"sr-Cyrl-BA\",\"sr-Latn-RS\"], function (t) { return L(t).minimize().toString(); })",
+   "chrome": "en en en-GB en en-Shaw en-Dsrt zh zh-TW zh-HK zh-MO zh zh-SG zh-TW zh zh-HK zh-Hans-TW zh-Latn yue yue-CN yue-CN sr sr-Latn sr-ME sr sr-BA sr-Latn"
+  },
+  {
+   "name": "maximize then minimize, and minimize then maximize: English, Chinese, Serbian",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en\",\"en-US\",\"en-GB\",\"en-Latn-US\",\"en-Shaw\",\"en-Dsrt\",\"zh\",\"zh-TW\",\"zh-HK\",\"zh-MO\",\"zh-CN\",\"zh-SG\",\"zh-Hant\",\"zh-Hans\",\"zh-Hant-HK\",\"zh-Hans-TW\",\"zh-Latn\",\"yue\",\"yue-CN\",\"yue-Hans\",\"sr\",\"sr-Latn\",\"sr-ME\",\"sr-RS\",\"sr-Cyrl-BA\",\"sr-Latn-RS\"], function (t) { return L(t).maximize().minimize().toString() + '/' + L(t).minimize().maximize().toString(); })",
+   "chrome": "en/en-Latn-US en/en-Latn-US en-GB/en-Latn-GB en/en-Latn-US en-Shaw/en-Shaw-GB en-Dsrt/en-Dsrt-US zh/zh-Hans-CN zh-TW/zh-Hant-TW zh-HK/zh-Hant-HK zh-MO/zh-Hant-MO zh/zh-Hans-CN zh-SG/zh-Hans-SG zh-TW/zh-Hant-TW zh/zh-Hans-CN zh-HK/zh-Hant-HK zh-Hans-TW/zh-Hans-TW zh-Latn/zh-Latn-CN yue/yue-Hant-HK yue-CN/yue-Hans-CN yue-CN/yue-Hans-CN sr/sr-Cyrl-RS sr-Latn/sr-Latn-RS sr-ME/sr-Latn-ME sr/sr-Cyrl-RS sr-BA/sr-Cyrl-BA sr-Latn/sr-Latn-RS"
+  },
+  {
+   "name": "maximized language, script, region and baseName: English, Chinese, Serbian",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en\",\"en-US\",\"en-GB\",\"en-Latn-US\",\"en-Shaw\",\"en-Dsrt\",\"zh\",\"zh-TW\",\"zh-HK\",\"zh-MO\",\"zh-CN\",\"zh-SG\",\"zh-Hant\",\"zh-Hans\",\"zh-Hant-HK\",\"zh-Hans-TW\",\"zh-Latn\",\"yue\",\"yue-CN\",\"yue-Hans\",\"sr\",\"sr-Latn\",\"sr-ME\",\"sr-RS\",\"sr-Cyrl-BA\",\"sr-Latn-RS\"], function (t) { var m = L(t).maximize(); return [m.language, m.script, m.region, m.baseName].join('.'); })",
+   "chrome": "en.Latn.US.en-Latn-US en.Latn.US.en-Latn-US en.Latn.GB.en-Latn-GB en.Latn.US.en-Latn-US en.Shaw.GB.en-Shaw-GB en.Dsrt.US.en-Dsrt-US zh.Hans.CN.zh-Hans-CN zh.Hant.TW.zh-Hant-TW zh.Hant.HK.zh-Hant-HK zh.Hant.MO.zh-Hant-MO zh.Hans.CN.zh-Hans-CN zh.Hans.SG.zh-Hans-SG zh.Hant.TW.zh-Hant-TW zh.Hans.CN.zh-Hans-CN zh.Hant.HK.zh-Hant-HK zh.Hans.TW.zh-Hans-TW zh.Latn.CN.zh-Latn-CN yue.Hant.HK.yue-Hant-HK yue.Hans.CN.yue-Hans-CN yue.Hans.CN.yue-Hans-CN sr.Cyrl.RS.sr-Cyrl-RS sr.Latn.RS.sr-Latn-RS sr.Latn.ME.sr-Latn-ME sr.Cyrl.RS.sr-Cyrl-RS sr.Cyrl.BA.sr-Cyrl-BA sr.Latn.RS.sr-Latn-RS"
+  },
+  {
+   "name": "getTextInfo().direction: English, Chinese, Serbian",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en\",\"en-US\",\"en-GB\",\"en-Latn-US\",\"en-Shaw\",\"en-Dsrt\",\"zh\",\"zh-TW\",\"zh-HK\",\"zh-MO\",\"zh-CN\",\"zh-SG\",\"zh-Hant\",\"zh-Hans\",\"zh-Hant-HK\",\"zh-Hans-TW\",\"zh-Latn\",\"yue\",\"yue-CN\",\"yue-Hans\",\"sr\",\"sr-Latn\",\"sr-ME\",\"sr-RS\",\"sr-Cyrl-BA\",\"sr-Latn-RS\"], function (t) { return L(t).getTextInfo().direction; })",
+   "chrome": "ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr"
+  },
+  {
+   "name": "getWeekInfo(): English, Chinese, Serbian",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en\",\"en-US\",\"en-GB\",\"en-Latn-US\",\"en-Shaw\",\"en-Dsrt\",\"zh\",\"zh-TW\",\"zh-HK\",\"zh-MO\",\"zh-CN\",\"zh-SG\",\"zh-Hant\",\"zh-Hans\",\"zh-Hant-HK\",\"zh-Hans-TW\",\"zh-Latn\",\"yue\",\"yue-CN\",\"yue-Hans\",\"sr\",\"sr-Latn\",\"sr-ME\",\"sr-RS\",\"sr-Cyrl-BA\",\"sr-Latn-RS\"], function (t) { var w = L(t).getWeekInfo(); return w.firstDay + ':' + w.weekend.join(''); })",
+   "chrome": "7:67 7:67 1:67 7:67 1:67 7:67 1:67 7:67 7:67 7:67 1:67 7:67 7:67 1:67 7:67 7:67 1:67 7:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67"
+  },
+  {
+   "name": "maximize: right-to-left languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ar\",\"ar-EG\",\"ar-SA\",\"ar-Latn\",\"he\",\"he-IL\",\"fa\",\"fa-AF\",\"ur\",\"ur-IN\",\"yi\",\"dv\",\"ku\",\"ku-Arab\",\"ku-IQ\",\"ckb\",\"ckb-IR\",\"ps\",\"ug\",\"sd\",\"sd-IN\",\"sd-Deva\",\"ks\",\"ks-Deva\",\"pa\",\"pa-PK\",\"pa-Arab\",\"pa-Guru-PK\",\"syr\",\"nqo\",\"ff-Adlm\",\"rhg\",\"ha\",\"ha-NE\",\"ha-Arab\",\"ms\",\"ms-Arab\",\"ms-BN\"], function (t) { return L(t).maximize().toString(); })",
+   "chrome": "ar-Arab-EG ar-Arab-EG ar-Arab-SA ar-Latn-EG he-Hebr-IL he-Hebr-IL fa-Arab-IR fa-Arab-AF ur-Arab-PK ur-Arab-IN yi-Hebr-UA dv-Thaa-MV ku-Latn-TR ku-Arab-IQ ku-Arab-IQ ckb-Arab-IQ ckb-Arab-IR ps-Arab-AF ug-Arab-CN sd-Arab-PK sd-Deva-IN sd-Deva-IN ks-Arab-IN ks-Deva-IN pa-Guru-IN pa-Arab-PK pa-Arab-PK pa-Guru-PK syr-Syrc-IQ nqo-Nkoo-GN ff-Adlm-GN rhg-Rohg-MM ha-Latn-NG ha-Latn-NE ha-Arab-NG ms-Latn-MY ms-Arab-MY ms-Latn-BN"
+  },
+  {
+   "name": "minimize: right-to-left languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ar\",\"ar-EG\",\"ar-SA\",\"ar-Latn\",\"he\",\"he-IL\",\"fa\",\"fa-AF\",\"ur\",\"ur-IN\",\"yi\",\"dv\",\"ku\",\"ku-Arab\",\"ku-IQ\",\"ckb\",\"ckb-IR\",\"ps\",\"ug\",\"sd\",\"sd-IN\",\"sd-Deva\",\"ks\",\"ks-Deva\",\"pa\",\"pa-PK\",\"pa-Arab\",\"pa-Guru-PK\",\"syr\",\"nqo\",\"ff-Adlm\",\"rhg\",\"ha\",\"ha-NE\",\"ha-Arab\",\"ms\",\"ms-Arab\",\"ms-BN\"], function (t) { return L(t).minimize().toString(); })",
+   "chrome": "ar ar ar-SA ar-Latn he he fa fa-AF ur ur-IN yi dv ku ku-IQ ku-IQ ckb ckb-IR ps ug sd sd-IN sd-IN ks ks-Deva pa pa-PK pa-PK pa-Guru-PK syr nqo ff-Adlm rhg ha ha-NE ha-Arab ms ms-Arab ms-BN"
+  },
+  {
+   "name": "maximize then minimize, and minimize then maximize: right-to-left languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ar\",\"ar-EG\",\"ar-SA\",\"ar-Latn\",\"he\",\"he-IL\",\"fa\",\"fa-AF\",\"ur\",\"ur-IN\",\"yi\",\"dv\",\"ku\",\"ku-Arab\",\"ku-IQ\",\"ckb\",\"ckb-IR\",\"ps\",\"ug\",\"sd\",\"sd-IN\",\"sd-Deva\",\"ks\",\"ks-Deva\",\"pa\",\"pa-PK\",\"pa-Arab\",\"pa-Guru-PK\",\"syr\",\"nqo\",\"ff-Adlm\",\"rhg\",\"ha\",\"ha-NE\",\"ha-Arab\",\"ms\",\"ms-Arab\",\"ms-BN\"], function (t) { return L(t).maximize().minimize().toString() + '/' + L(t).minimize().maximize().toString(); })",
+   "chrome": "ar/ar-Arab-EG ar/ar-Arab-EG ar-SA/ar-Arab-SA ar-Latn/ar-Latn-EG he/he-Hebr-IL he/he-Hebr-IL fa/fa-Arab-IR fa-AF/fa-Arab-AF ur/ur-Arab-PK ur-IN/ur-Arab-IN yi/yi-Hebr-UA dv/dv-Thaa-MV ku/ku-Latn-TR ku-IQ/ku-Arab-IQ ku-IQ/ku-Arab-IQ ckb/ckb-Arab-IQ ckb-IR/ckb-Arab-IR ps/ps-Arab-AF ug/ug-Arab-CN sd/sd-Arab-PK sd-IN/sd-Deva-IN sd-IN/sd-Deva-IN ks/ks-Arab-IN ks-Deva/ks-Deva-IN pa/pa-Guru-IN pa-PK/pa-Arab-PK pa-PK/pa-Arab-PK pa-Guru-PK/pa-Guru-PK syr/syr-Syrc-IQ nqo/nqo-Nkoo-GN ff-Adlm/ff-Adlm-GN rhg/rhg-Rohg-MM ha/ha-Latn-NG ha-NE/ha-Latn-NE ha-Arab/ha-Arab-NG ms/ms-Latn-MY ms-Arab/ms-Arab-MY ms-BN/ms-Latn-BN"
+  },
+  {
+   "name": "maximized language, script, region and baseName: right-to-left languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ar\",\"ar-EG\",\"ar-SA\",\"ar-Latn\",\"he\",\"he-IL\",\"fa\",\"fa-AF\",\"ur\",\"ur-IN\",\"yi\",\"dv\",\"ku\",\"ku-Arab\",\"ku-IQ\",\"ckb\",\"ckb-IR\",\"ps\",\"ug\",\"sd\",\"sd-IN\",\"sd-Deva\",\"ks\",\"ks-Deva\",\"pa\",\"pa-PK\",\"pa-Arab\",\"pa-Guru-PK\",\"syr\",\"nqo\",\"ff-Adlm\",\"rhg\",\"ha\",\"ha-NE\",\"ha-Arab\",\"ms\",\"ms-Arab\",\"ms-BN\"], function (t) { var m = L(t).maximize(); return [m.language, m.script, m.region, m.baseName].join('.'); })",
+   "chrome": "ar.Arab.EG.ar-Arab-EG ar.Arab.EG.ar-Arab-EG ar.Arab.SA.ar-Arab-SA ar.Latn.EG.ar-Latn-EG he.Hebr.IL.he-Hebr-IL he.Hebr.IL.he-Hebr-IL fa.Arab.IR.fa-Arab-IR fa.Arab.AF.fa-Arab-AF ur.Arab.PK.ur-Arab-PK ur.Arab.IN.ur-Arab-IN yi.Hebr.UA.yi-Hebr-UA dv.Thaa.MV.dv-Thaa-MV ku.Latn.TR.ku-Latn-TR ku.Arab.IQ.ku-Arab-IQ ku.Arab.IQ.ku-Arab-IQ ckb.Arab.IQ.ckb-Arab-IQ ckb.Arab.IR.ckb-Arab-IR ps.Arab.AF.ps-Arab-AF ug.Arab.CN.ug-Arab-CN sd.Arab.PK.sd-Arab-PK sd.Deva.IN.sd-Deva-IN sd.Deva.IN.sd-Deva-IN ks.Arab.IN.ks-Arab-IN ks.Deva.IN.ks-Deva-IN pa.Guru.IN.pa-Guru-IN pa.Arab.PK.pa-Arab-PK pa.Arab.PK.pa-Arab-PK pa.Guru.PK.pa-Guru-PK syr.Syrc.IQ.syr-Syrc-IQ nqo.Nkoo.GN.nqo-Nkoo-GN ff.Adlm.GN.ff-Adlm-GN rhg.Rohg.MM.rhg-Rohg-MM ha.Latn.NG.ha-Latn-NG ha.Latn.NE.ha-Latn-NE ha.Arab.NG.ha-Arab-NG ms.Latn.MY.ms-Latn-MY ms.Arab.MY.ms-Arab-MY ms.Latn.BN.ms-Latn-BN"
+  },
+  {
+   "name": "getTextInfo().direction: right-to-left languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ar\",\"ar-EG\",\"ar-SA\",\"ar-Latn\",\"he\",\"he-IL\",\"fa\",\"fa-AF\",\"ur\",\"ur-IN\",\"yi\",\"dv\",\"ku\",\"ku-Arab\",\"ku-IQ\",\"ckb\",\"ckb-IR\",\"ps\",\"ug\",\"sd\",\"sd-IN\",\"sd-Deva\",\"ks\",\"ks-Deva\",\"pa\",\"pa-PK\",\"pa-Arab\",\"pa-Guru-PK\",\"syr\",\"nqo\",\"ff-Adlm\",\"rhg\",\"ha\",\"ha-NE\",\"ha-Arab\",\"ms\",\"ms-Arab\",\"ms-BN\"], function (t) { return L(t).getTextInfo().direction; })",
+   "chrome": "rtl rtl rtl ltr rtl rtl rtl rtl rtl rtl rtl rtl ltr rtl rtl rtl rtl rtl rtl rtl ltr ltr rtl ltr ltr rtl rtl ltr rtl rtl rtl rtl ltr ltr rtl ltr rtl ltr"
+  },
+  {
+   "name": "getWeekInfo(): right-to-left languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ar\",\"ar-EG\",\"ar-SA\",\"ar-Latn\",\"he\",\"he-IL\",\"fa\",\"fa-AF\",\"ur\",\"ur-IN\",\"yi\",\"dv\",\"ku\",\"ku-Arab\",\"ku-IQ\",\"ckb\",\"ckb-IR\",\"ps\",\"ug\",\"sd\",\"sd-IN\",\"sd-Deva\",\"ks\",\"ks-Deva\",\"pa\",\"pa-PK\",\"pa-Arab\",\"pa-Guru-PK\",\"syr\",\"nqo\",\"ff-Adlm\",\"rhg\",\"ha\",\"ha-NE\",\"ha-Arab\",\"ms\",\"ms-Arab\",\"ms-BN\"], function (t) { var w = L(t).getWeekInfo(); return w.firstDay + ':' + w.weekend.join(''); })",
+   "chrome": "6:56 6:56 7:56 6:56 7:56 7:56 6:5 6:45 7:67 7:7 1:67 5:67 1:67 6:56 6:56 6:56 6:5 6:45 1:67 7:67 7:7 7:7 7:7 7:7 7:7 7:67 7:67 7:67 6:56 1:67 1:67 7:67 1:67 1:67 1:67 1:67 1:67 1:67"
+  },
+  {
+   "name": "maximize: und with a script or a region",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"und\",\"und-US\",\"und-GB\",\"und-Arab\",\"und-Hebr\",\"und-Thaa\",\"und-Latn\",\"und-Cyrl\",\"und-Hant\",\"und-Hans\",\"und-Deva\",\"und-PK\",\"und-IL\",\"und-CN\",\"und-TW\",\"und-EG\",\"und-IN\",\"und-AF\",\"und-Arab-PK\",\"und-Arab-IN\",\"und-Arab-CN\",\"und-Cyrl-US\",\"und-Latn-RU\",\"und-Hant-US\",\"und-419\",\"und-001\",\"und-150\",\"und-Nshu\"], function (t) { return L(t).maximize().toString(); })",
+   "chrome": "en-Latn-US en-Latn-US en-Latn-GB ar-Arab-EG he-Hebr-IL dv-Thaa-MV en-Latn-US ru-Cyrl-RU zh-Hant-TW zh-Hans-CN hi-Deva-IN ur-Arab-PK he-Hebr-IL zh-Hans-CN zh-Hant-TW ar-Arab-EG hi-Deva-IN fa-Arab-AF ur-Arab-PK ur-Arab-IN ug-Arab-CN ru-Cyrl-US krl-Latn-RU zh-Hant-US es-Latn-419 en-Latn-001 en-Latn-150 en-Nshu-US"
+  },
+  {
+   "name": "minimize: und with a script or a region",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"und\",\"und-US\",\"und-GB\",\"und-Arab\",\"und-Hebr\",\"und-Thaa\",\"und-Latn\",\"und-Cyrl\",\"und-Hant\",\"und-Hans\",\"und-Deva\",\"und-PK\",\"und-IL\",\"und-CN\",\"und-TW\",\"und-EG\",\"und-IN\",\"und-AF\",\"und-Arab-PK\",\"und-Arab-IN\",\"und-Arab-CN\",\"und-Cyrl-US\",\"und-Latn-RU\",\"und-Hant-US\",\"und-419\",\"und-001\",\"und-150\",\"und-Nshu\"], function (t) { return L(t).minimize().toString(); })",
+   "chrome": "en en en-GB ar he dv en ru zh-TW zh hi ur he zh zh-TW ar hi fa-AF ur ur-IN ug ru-US krl zh-US es-419 en-001 en-150 en-Nshu"
+  },
+  {
+   "name": "maximize then minimize, and minimize then maximize: und with a script or a region",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"und\",\"und-US\",\"und-GB\",\"und-Arab\",\"und-Hebr\",\"und-Thaa\",\"und-Latn\",\"und-Cyrl\",\"und-Hant\",\"und-Hans\",\"und-Deva\",\"und-PK\",\"und-IL\",\"und-CN\",\"und-TW\",\"und-EG\",\"und-IN\",\"und-AF\",\"und-Arab-PK\",\"und-Arab-IN\",\"und-Arab-CN\",\"und-Cyrl-US\",\"und-Latn-RU\",\"und-Hant-US\",\"und-419\",\"und-001\",\"und-150\",\"und-Nshu\"], function (t) { return L(t).maximize().minimize().toString() + '/' + L(t).minimize().maximize().toString(); })",
+   "chrome": "en/en-Latn-US en/en-Latn-US en-GB/en-Latn-GB ar/ar-Arab-EG he/he-Hebr-IL dv/dv-Thaa-MV en/en-Latn-US ru/ru-Cyrl-RU zh-TW/zh-Hant-TW zh/zh-Hans-CN hi/hi-Deva-IN ur/ur-Arab-PK he/he-Hebr-IL zh/zh-Hans-CN zh-TW/zh-Hant-TW ar/ar-Arab-EG hi/hi-Deva-IN fa-AF/fa-Arab-AF ur/ur-Arab-PK ur-IN/ur-Arab-IN ug/ug-Arab-CN ru-US/ru-Cyrl-US krl/krl-Latn-RU zh-US/zh-Hant-US es-419/es-Latn-419 en-001/en-Latn-001 en-150/en-Latn-150 en-Nshu/en-Nshu-US"
+  },
+  {
+   "name": "maximized language, script, region and baseName: und with a script or a region",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"und\",\"und-US\",\"und-GB\",\"und-Arab\",\"und-Hebr\",\"und-Thaa\",\"und-Latn\",\"und-Cyrl\",\"und-Hant\",\"und-Hans\",\"und-Deva\",\"und-PK\",\"und-IL\",\"und-CN\",\"und-TW\",\"und-EG\",\"und-IN\",\"und-AF\",\"und-Arab-PK\",\"und-Arab-IN\",\"und-Arab-CN\",\"und-Cyrl-US\",\"und-Latn-RU\",\"und-Hant-US\",\"und-419\",\"und-001\",\"und-150\",\"und-Nshu\"], function (t) { var m = L(t).maximize(); return [m.language, m.script, m.region, m.baseName].join('.'); })",
+   "chrome": "en.Latn.US.en-Latn-US en.Latn.US.en-Latn-US en.Latn.GB.en-Latn-GB ar.Arab.EG.ar-Arab-EG he.Hebr.IL.he-Hebr-IL dv.Thaa.MV.dv-Thaa-MV en.Latn.US.en-Latn-US ru.Cyrl.RU.ru-Cyrl-RU zh.Hant.TW.zh-Hant-TW zh.Hans.CN.zh-Hans-CN hi.Deva.IN.hi-Deva-IN ur.Arab.PK.ur-Arab-PK he.Hebr.IL.he-Hebr-IL zh.Hans.CN.zh-Hans-CN zh.Hant.TW.zh-Hant-TW ar.Arab.EG.ar-Arab-EG hi.Deva.IN.hi-Deva-IN fa.Arab.AF.fa-Arab-AF ur.Arab.PK.ur-Arab-PK ur.Arab.IN.ur-Arab-IN ug.Arab.CN.ug-Arab-CN ru.Cyrl.US.ru-Cyrl-US krl.Latn.RU.krl-Latn-RU zh.Hant.US.zh-Hant-US es.Latn.419.es-Latn-419 en.Latn.001.en-Latn-001 en.Latn.150.en-Latn-150 en.Nshu.US.en-Nshu-US"
+  },
+  {
+   "name": "getTextInfo().direction: und with a script or a region",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"und\",\"und-US\",\"und-GB\",\"und-Arab\",\"und-Hebr\",\"und-Thaa\",\"und-Latn\",\"und-Cyrl\",\"und-Hant\",\"und-Hans\",\"und-Deva\",\"und-PK\",\"und-IL\",\"und-CN\",\"und-TW\",\"und-EG\",\"und-IN\",\"und-AF\",\"und-Arab-PK\",\"und-Arab-IN\",\"und-Arab-CN\",\"und-Cyrl-US\",\"und-Latn-RU\",\"und-Hant-US\",\"und-419\",\"und-001\",\"und-150\",\"und-Nshu\"], function (t) { return L(t).getTextInfo().direction; })",
+   "chrome": "ltr ltr ltr rtl rtl rtl ltr ltr ltr ltr ltr rtl rtl ltr ltr rtl ltr rtl rtl rtl rtl ltr ltr ltr ltr ltr ltr ltr"
+  },
+  {
+   "name": "getWeekInfo(): und with a script or a region",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"und\",\"und-US\",\"und-GB\",\"und-Arab\",\"und-Hebr\",\"und-Thaa\",\"und-Latn\",\"und-Cyrl\",\"und-Hant\",\"und-Hans\",\"und-Deva\",\"und-PK\",\"und-IL\",\"und-CN\",\"und-TW\",\"und-EG\",\"und-IN\",\"und-AF\",\"und-Arab-PK\",\"und-Arab-IN\",\"und-Arab-CN\",\"und-Cyrl-US\",\"und-Latn-RU\",\"und-Hant-US\",\"und-419\",\"und-001\",\"und-150\",\"und-Nshu\"], function (t) { var w = L(t).getWeekInfo(); return w.firstDay + ':' + w.weekend.join(''); })",
+   "chrome": "7:67 7:67 1:67 6:56 7:56 5:67 7:67 1:67 7:67 1:67 7:7 7:67 7:56 1:67 7:67 6:56 7:7 6:45 7:67 7:7 1:67 7:67 1:67 7:67 1:67 1:67 1:67 7:67"
+  },
+  {
+   "name": "maximize: European and Asian languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ja\",\"ja-JP\",\"ko\",\"ko-KP\",\"pt\",\"pt-PT\",\"pt-BR\",\"es\",\"es-419\",\"es-MX\",\"es-ES\",\"de\",\"de-CH\",\"de-AT\",\"fr\",\"fr-CA\",\"it\",\"ru\",\"ru-UA\",\"uk\",\"nl\",\"sv\",\"pl\",\"el\",\"tr\",\"hy\",\"ka\",\"am\",\"sw\",\"hi\",\"hi-Latn\",\"bn\",\"ta\",\"th\",\"vi\",\"id\",\"fil\",\"nb\",\"no\"], function (t) { return L(t).maximize().toString(); })",
+   "chrome": "ja-Jpan-JP ja-Jpan-JP ko-Kore-KR ko-Kore-KP pt-Latn-BR pt-Latn-PT pt-Latn-BR es-Latn-ES es-Latn-419 es-Latn-MX es-Latn-ES de-Latn-DE de-Latn-CH de-Latn-AT fr-Latn-FR fr-Latn-CA it-Latn-IT ru-Cyrl-RU ru-Cyrl-UA uk-Cyrl-UA nl-Latn-NL sv-Latn-SE pl-Latn-PL el-Grek-GR tr-Latn-TR hy-Armn-AM ka-Geor-GE am-Ethi-ET sw-Latn-TZ hi-Deva-IN hi-Latn-IN bn-Beng-BD ta-Taml-IN th-Thai-TH vi-Latn-VN id-Latn-ID fil-Latn-PH nb-Latn-NO no-Latn-NO"
+  },
+  {
+   "name": "minimize: European and Asian languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ja\",\"ja-JP\",\"ko\",\"ko-KP\",\"pt\",\"pt-PT\",\"pt-BR\",\"es\",\"es-419\",\"es-MX\",\"es-ES\",\"de\",\"de-CH\",\"de-AT\",\"fr\",\"fr-CA\",\"it\",\"ru\",\"ru-UA\",\"uk\",\"nl\",\"sv\",\"pl\",\"el\",\"tr\",\"hy\",\"ka\",\"am\",\"sw\",\"hi\",\"hi-Latn\",\"bn\",\"ta\",\"th\",\"vi\",\"id\",\"fil\",\"nb\",\"no\"], function (t) { return L(t).minimize().toString(); })",
+   "chrome": "ja ja ko ko-KP pt pt-PT pt es es-419 es-MX es de de-CH de-AT fr fr-CA it ru ru-UA uk nl sv pl el tr hy ka am sw hi hi-Latn bn ta th vi id fil nb no"
+  },
+  {
+   "name": "maximize then minimize, and minimize then maximize: European and Asian languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ja\",\"ja-JP\",\"ko\",\"ko-KP\",\"pt\",\"pt-PT\",\"pt-BR\",\"es\",\"es-419\",\"es-MX\",\"es-ES\",\"de\",\"de-CH\",\"de-AT\",\"fr\",\"fr-CA\",\"it\",\"ru\",\"ru-UA\",\"uk\",\"nl\",\"sv\",\"pl\",\"el\",\"tr\",\"hy\",\"ka\",\"am\",\"sw\",\"hi\",\"hi-Latn\",\"bn\",\"ta\",\"th\",\"vi\",\"id\",\"fil\",\"nb\",\"no\"], function (t) { return L(t).maximize().minimize().toString() + '/' + L(t).minimize().maximize().toString(); })",
+   "chrome": "ja/ja-Jpan-JP ja/ja-Jpan-JP ko/ko-Kore-KR ko-KP/ko-Kore-KP pt/pt-Latn-BR pt-PT/pt-Latn-PT pt/pt-Latn-BR es/es-Latn-ES es-419/es-Latn-419 es-MX/es-Latn-MX es/es-Latn-ES de/de-Latn-DE de-CH/de-Latn-CH de-AT/de-Latn-AT fr/fr-Latn-FR fr-CA/fr-Latn-CA it/it-Latn-IT ru/ru-Cyrl-RU ru-UA/ru-Cyrl-UA uk/uk-Cyrl-UA nl/nl-Latn-NL sv/sv-Latn-SE pl/pl-Latn-PL el/el-Grek-GR tr/tr-Latn-TR hy/hy-Armn-AM ka/ka-Geor-GE am/am-Ethi-ET sw/sw-Latn-TZ hi/hi-Deva-IN hi-Latn/hi-Latn-IN bn/bn-Beng-BD ta/ta-Taml-IN th/th-Thai-TH vi/vi-Latn-VN id/id-Latn-ID fil/fil-Latn-PH nb/nb-Latn-NO no/no-Latn-NO"
+  },
+  {
+   "name": "maximized language, script, region and baseName: European and Asian languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ja\",\"ja-JP\",\"ko\",\"ko-KP\",\"pt\",\"pt-PT\",\"pt-BR\",\"es\",\"es-419\",\"es-MX\",\"es-ES\",\"de\",\"de-CH\",\"de-AT\",\"fr\",\"fr-CA\",\"it\",\"ru\",\"ru-UA\",\"uk\",\"nl\",\"sv\",\"pl\",\"el\",\"tr\",\"hy\",\"ka\",\"am\",\"sw\",\"hi\",\"hi-Latn\",\"bn\",\"ta\",\"th\",\"vi\",\"id\",\"fil\",\"nb\",\"no\"], function (t) { var m = L(t).maximize(); return [m.language, m.script, m.region, m.baseName].join('.'); })",
+   "chrome": "ja.Jpan.JP.ja-Jpan-JP ja.Jpan.JP.ja-Jpan-JP ko.Kore.KR.ko-Kore-KR ko.Kore.KP.ko-Kore-KP pt.Latn.BR.pt-Latn-BR pt.Latn.PT.pt-Latn-PT pt.Latn.BR.pt-Latn-BR es.Latn.ES.es-Latn-ES es.Latn.419.es-Latn-419 es.Latn.MX.es-Latn-MX es.Latn.ES.es-Latn-ES de.Latn.DE.de-Latn-DE de.Latn.CH.de-Latn-CH de.Latn.AT.de-Latn-AT fr.Latn.FR.fr-Latn-FR fr.Latn.CA.fr-Latn-CA it.Latn.IT.it-Latn-IT ru.Cyrl.RU.ru-Cyrl-RU ru.Cyrl.UA.ru-Cyrl-UA uk.Cyrl.UA.uk-Cyrl-UA nl.Latn.NL.nl-Latn-NL sv.Latn.SE.sv-Latn-SE pl.Latn.PL.pl-Latn-PL el.Grek.GR.el-Grek-GR tr.Latn.TR.tr-Latn-TR hy.Armn.AM.hy-Armn-AM ka.Geor.GE.ka-Geor-GE am.Ethi.ET.am-Ethi-ET sw.Latn.TZ.sw-Latn-TZ hi.Deva.IN.hi-Deva-IN hi.Latn.IN.hi-Latn-IN bn.Beng.BD.bn-Beng-BD ta.Taml.IN.ta-Taml-IN th.Thai.TH.th-Thai-TH vi.Latn.VN.vi-Latn-VN id.Latn.ID.id-Latn-ID fil.Latn.PH.fil-Latn-PH nb.Latn.NO.nb-Latn-NO no.Latn.NO.no-Latn-NO"
+  },
+  {
+   "name": "getTextInfo().direction: European and Asian languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ja\",\"ja-JP\",\"ko\",\"ko-KP\",\"pt\",\"pt-PT\",\"pt-BR\",\"es\",\"es-419\",\"es-MX\",\"es-ES\",\"de\",\"de-CH\",\"de-AT\",\"fr\",\"fr-CA\",\"it\",\"ru\",\"ru-UA\",\"uk\",\"nl\",\"sv\",\"pl\",\"el\",\"tr\",\"hy\",\"ka\",\"am\",\"sw\",\"hi\",\"hi-Latn\",\"bn\",\"ta\",\"th\",\"vi\",\"id\",\"fil\",\"nb\",\"no\"], function (t) { return L(t).getTextInfo().direction; })",
+   "chrome": "ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr"
+  },
+  {
+   "name": "getWeekInfo(): European and Asian languages",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"ja\",\"ja-JP\",\"ko\",\"ko-KP\",\"pt\",\"pt-PT\",\"pt-BR\",\"es\",\"es-419\",\"es-MX\",\"es-ES\",\"de\",\"de-CH\",\"de-AT\",\"fr\",\"fr-CA\",\"it\",\"ru\",\"ru-UA\",\"uk\",\"nl\",\"sv\",\"pl\",\"el\",\"tr\",\"hy\",\"ka\",\"am\",\"sw\",\"hi\",\"hi-Latn\",\"bn\",\"ta\",\"th\",\"vi\",\"id\",\"fil\",\"nb\",\"no\"], function (t) { var w = L(t).getWeekInfo(); return w.firstDay + ':' + w.weekend.join(''); })",
+   "chrome": "7:67 7:67 7:67 1:67 7:67 7:67 7:67 1:67 1:67 7:67 1:67 1:67 1:67 1:67 1:67 7:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 7:67 1:67 7:7 7:7 7:67 7:7 7:67 1:67 7:67 7:67 1:67 1:67"
+  },
+  {
+   "name": "maximize: languages with several scripts",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"az\",\"az-IR\",\"az-RU\",\"az-Arab\",\"az-Cyrl\",\"uz\",\"uz-AF\",\"uz-CN\",\"uz-Cyrl\",\"uz-Arab\",\"mn\",\"mn-CN\",\"mn-Mong\",\"kk\",\"kk-CN\",\"kk-Arab\",\"tg\",\"tg-PK\",\"ky\",\"ky-CN\",\"ky-TR\",\"bs\",\"bs-Cyrl\",\"shi\",\"shi-Latn\",\"vai\",\"vai-Latn\",\"tk\",\"tk-AF\",\"ug-KZ\",\"ber\",\"tzm\"], function (t) { return L(t).maximize().toString(); })",
+   "chrome": "az-Latn-AZ az-Arab-IR az-Cyrl-RU az-Arab-IR az-Cyrl-AZ uz-Latn-UZ uz-Arab-AF uz-Cyrl-CN uz-Cyrl-UZ uz-Arab-AF mn-Cyrl-MN mn-Mong-CN mn-Mong-CN kk-Cyrl-KZ kk-Arab-CN kk-Arab-CN tg-Cyrl-TJ tg-Arab-PK ky-Cyrl-KG ky-Arab-CN ky-Latn-TR bs-Latn-BA bs-Cyrl-BA shi-Tfng-MA shi-Latn-MA vai-Vaii-LR vai-Latn-LR tk-Latn-TM tk-Latn-AF ug-Cyrl-KZ ber tzm-Latn-MA"
+  },
+  {
+   "name": "minimize: languages with several scripts",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"az\",\"az-IR\",\"az-RU\",\"az-Arab\",\"az-Cyrl\",\"uz\",\"uz-AF\",\"uz-CN\",\"uz-Cyrl\",\"uz-Arab\",\"mn\",\"mn-CN\",\"mn-Mong\",\"kk\",\"kk-CN\",\"kk-Arab\",\"tg\",\"tg-PK\",\"ky\",\"ky-CN\",\"ky-TR\",\"bs\",\"bs-Cyrl\",\"shi\",\"shi-Latn\",\"vai\",\"vai-Latn\",\"tk\",\"tk-AF\",\"ug-KZ\",\"ber\",\"tzm\"], function (t) { return L(t).minimize().toString(); })",
+   "chrome": "az az-IR az-RU az-IR az-Cyrl uz uz-AF uz-CN uz-Cyrl uz-AF mn mn-CN mn-CN kk kk-CN kk-CN tg tg-PK ky ky-CN ky-TR bs bs-Cyrl shi shi-Latn vai vai-Latn tk tk-AF ug-KZ ber tzm"
+  },
+  {
+   "name": "maximize then minimize, and minimize then maximize: languages with several scripts",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"az\",\"az-IR\",\"az-RU\",\"az-Arab\",\"az-Cyrl\",\"uz\",\"uz-AF\",\"uz-CN\",\"uz-Cyrl\",\"uz-Arab\",\"mn\",\"mn-CN\",\"mn-Mong\",\"kk\",\"kk-CN\",\"kk-Arab\",\"tg\",\"tg-PK\",\"ky\",\"ky-CN\",\"ky-TR\",\"bs\",\"bs-Cyrl\",\"shi\",\"shi-Latn\",\"vai\",\"vai-Latn\",\"tk\",\"tk-AF\",\"ug-KZ\",\"ber\",\"tzm\"], function (t) { return L(t).maximize().minimize().toString() + '/' + L(t).minimize().maximize().toString(); })",
+   "chrome": "az/az-Latn-AZ az-IR/az-Arab-IR az-RU/az-Cyrl-RU az-IR/az-Arab-IR az-Cyrl/az-Cyrl-AZ uz/uz-Latn-UZ uz-AF/uz-Arab-AF uz-CN/uz-Cyrl-CN uz-Cyrl/uz-Cyrl-UZ uz-AF/uz-Arab-AF mn/mn-Cyrl-MN mn-CN/mn-Mong-CN mn-CN/mn-Mong-CN kk/kk-Cyrl-KZ kk-CN/kk-Arab-CN kk-CN/kk-Arab-CN tg/tg-Cyrl-TJ tg-PK/tg-Arab-PK ky/ky-Cyrl-KG ky-CN/ky-Arab-CN ky-TR/ky-Latn-TR bs/bs-Latn-BA bs-Cyrl/bs-Cyrl-BA shi/shi-Tfng-MA shi-Latn/shi-Latn-MA vai/vai-Vaii-LR vai-Latn/vai-Latn-LR tk/tk-Latn-TM tk-AF/tk-Latn-AF ug-KZ/ug-Cyrl-KZ ber/ber tzm/tzm-Latn-MA"
+  },
+  {
+   "name": "maximized language, script, region and baseName: languages with several scripts",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"az\",\"az-IR\",\"az-RU\",\"az-Arab\",\"az-Cyrl\",\"uz\",\"uz-AF\",\"uz-CN\",\"uz-Cyrl\",\"uz-Arab\",\"mn\",\"mn-CN\",\"mn-Mong\",\"kk\",\"kk-CN\",\"kk-Arab\",\"tg\",\"tg-PK\",\"ky\",\"ky-CN\",\"ky-TR\",\"bs\",\"bs-Cyrl\",\"shi\",\"shi-Latn\",\"vai\",\"vai-Latn\",\"tk\",\"tk-AF\",\"ug-KZ\",\"ber\",\"tzm\"], function (t) { var m = L(t).maximize(); return [m.language, m.script, m.region, m.baseName].join('.'); })",
+   "chrome": "az.Latn.AZ.az-Latn-AZ az.Arab.IR.az-Arab-IR az.Cyrl.RU.az-Cyrl-RU az.Arab.IR.az-Arab-IR az.Cyrl.AZ.az-Cyrl-AZ uz.Latn.UZ.uz-Latn-UZ uz.Arab.AF.uz-Arab-AF uz.Cyrl.CN.uz-Cyrl-CN uz.Cyrl.UZ.uz-Cyrl-UZ uz.Arab.AF.uz-Arab-AF mn.Cyrl.MN.mn-Cyrl-MN mn.Mong.CN.mn-Mong-CN mn.Mong.CN.mn-Mong-CN kk.Cyrl.KZ.kk-Cyrl-KZ kk.Arab.CN.kk-Arab-CN kk.Arab.CN.kk-Arab-CN tg.Cyrl.TJ.tg-Cyrl-TJ tg.Arab.PK.tg-Arab-PK ky.Cyrl.KG.ky-Cyrl-KG ky.Arab.CN.ky-Arab-CN ky.Latn.TR.ky-Latn-TR bs.Latn.BA.bs-Latn-BA bs.Cyrl.BA.bs-Cyrl-BA shi.Tfng.MA.shi-Tfng-MA shi.Latn.MA.shi-Latn-MA vai.Vaii.LR.vai-Vaii-LR vai.Latn.LR.vai-Latn-LR tk.Latn.TM.tk-Latn-TM tk.Latn.AF.tk-Latn-AF ug.Cyrl.KZ.ug-Cyrl-KZ ber...ber tzm.Latn.MA.tzm-Latn-MA"
+  },
+  {
+   "name": "getTextInfo().direction: languages with several scripts",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"az\",\"az-IR\",\"az-RU\",\"az-Arab\",\"az-Cyrl\",\"uz\",\"uz-AF\",\"uz-CN\",\"uz-Cyrl\",\"uz-Arab\",\"mn\",\"mn-CN\",\"mn-Mong\",\"kk\",\"kk-CN\",\"kk-Arab\",\"tg\",\"tg-PK\",\"ky\",\"ky-CN\",\"ky-TR\",\"bs\",\"bs-Cyrl\",\"shi\",\"shi-Latn\",\"vai\",\"vai-Latn\",\"tk\",\"tk-AF\",\"ug-KZ\",\"ber\",\"tzm\"], function (t) { return L(t).getTextInfo().direction; })",
+   "chrome": "ltr rtl ltr rtl ltr ltr rtl ltr ltr rtl ltr ltr ltr ltr rtl rtl ltr rtl ltr rtl ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr"
+  },
+  {
+   "name": "getWeekInfo(): languages with several scripts",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"az\",\"az-IR\",\"az-RU\",\"az-Arab\",\"az-Cyrl\",\"uz\",\"uz-AF\",\"uz-CN\",\"uz-Cyrl\",\"uz-Arab\",\"mn\",\"mn-CN\",\"mn-Mong\",\"kk\",\"kk-CN\",\"kk-Arab\",\"tg\",\"tg-PK\",\"ky\",\"ky-CN\",\"ky-TR\",\"bs\",\"bs-Cyrl\",\"shi\",\"shi-Latn\",\"vai\",\"vai-Latn\",\"tk\",\"tk-AF\",\"ug-KZ\",\"ber\",\"tzm\"], function (t) { var w = L(t).getWeekInfo(); return w.firstDay + ':' + w.weekend.join(''); })",
+   "chrome": "1:67 6:5 1:67 6:5 1:67 1:67 6:45 1:67 1:67 6:45 1:67 1:67 1:67 1:67 1:67 1:67 1:67 7:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 1:67 6:45 1:67 1:67 1:67"
+  },
+  {
+   "name": "maximize: unknown subtags, ZZ and Zzzz",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"xx\",\"xx-US\",\"xx-Latn\",\"qaa\",\"abcde\",\"en-ZZ\",\"en-Zzzz\",\"en-Zzzz-ZZ\",\"en-Zzzz-US\",\"en-Latn-ZZ\",\"und-ZZ\",\"und-Zzzz\",\"und-Zzzz-US\",\"und-Latn-ZZ\",\"zh-Zzzz-TW\",\"en-XA\",\"und-XA\",\"en-Arab\",\"ja-Latn\",\"en-RU\",\"ru-US\"], function (t) { return L(t).maximize().toString(); })",
+   "chrome": "xx xx-US xx-Latn qaa abcde en-Latn-US en-Latn-US en-Zzzz-ZZ en-Zzzz-US en-Latn-ZZ en-Latn-US en-Latn-US en-Latn-US en-Latn-US zh-Zzzz-TW en-Latn-XA en-Latn-XA en-Arab-US ja-Latn-JP en-Latn-RU ru-Cyrl-US"
+  },
+  {
+   "name": "minimize: unknown subtags, ZZ and Zzzz",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"xx\",\"xx-US\",\"xx-Latn\",\"qaa\",\"abcde\",\"en-ZZ\",\"en-Zzzz\",\"en-Zzzz-ZZ\",\"en-Zzzz-US\",\"en-Latn-ZZ\",\"und-ZZ\",\"und-Zzzz\",\"und-Zzzz-US\",\"und-Latn-ZZ\",\"zh-Zzzz-TW\",\"en-XA\",\"und-XA\",\"en-Arab\",\"ja-Latn\",\"en-RU\",\"ru-US\"], function (t) { return L(t).minimize().toString(); })",
+   "chrome": "xx xx-US xx-Latn qaa abcde en en en en en en en en en zh-TW en-XA en-XA en-Arab ja-Latn en-RU ru-US"
+  },
+  {
+   "name": "maximize then minimize, and minimize then maximize: unknown subtags, ZZ and Zzzz",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"xx\",\"xx-US\",\"xx-Latn\",\"qaa\",\"abcde\",\"en-ZZ\",\"en-Zzzz\",\"en-Zzzz-ZZ\",\"en-Zzzz-US\",\"en-Latn-ZZ\",\"und-ZZ\",\"und-Zzzz\",\"und-Zzzz-US\",\"und-Latn-ZZ\",\"zh-Zzzz-TW\",\"en-XA\",\"und-XA\",\"en-Arab\",\"ja-Latn\",\"en-RU\",\"ru-US\"], function (t) { return L(t).maximize().minimize().toString() + '/' + L(t).minimize().maximize().toString(); })",
+   "chrome": "xx/xx xx-US/xx-US xx-Latn/xx-Latn qaa/qaa abcde/abcde en/en-Latn-US en/en-Latn-US en/en-Latn-US en/en-Latn-US en/en-Latn-US en/en-Latn-US en/en-Latn-US en/en-Latn-US en/en-Latn-US zh-TW/zh-Hant-TW en-XA/en-Latn-XA en-XA/en-Latn-XA en-Arab/en-Arab-US ja-Latn/ja-Latn-JP en-RU/en-Latn-RU ru-US/ru-Cyrl-US"
+  },
+  {
+   "name": "maximized language, script, region and baseName: unknown subtags, ZZ and Zzzz",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"xx\",\"xx-US\",\"xx-Latn\",\"qaa\",\"abcde\",\"en-ZZ\",\"en-Zzzz\",\"en-Zzzz-ZZ\",\"en-Zzzz-US\",\"en-Latn-ZZ\",\"und-ZZ\",\"und-Zzzz\",\"und-Zzzz-US\",\"und-Latn-ZZ\",\"zh-Zzzz-TW\",\"en-XA\",\"und-XA\",\"en-Arab\",\"ja-Latn\",\"en-RU\",\"ru-US\"], function (t) { var m = L(t).maximize(); return [m.language, m.script, m.region, m.baseName].join('.'); })",
+   "chrome": "xx...xx xx..US.xx-US xx.Latn..xx-Latn qaa...qaa abcde...abcde en.Latn.US.en-Latn-US en.Latn.US.en-Latn-US en.Zzzz.ZZ.en-Zzzz-ZZ en.Zzzz.US.en-Zzzz-US en.Latn.ZZ.en-Latn-ZZ en.Latn.US.en-Latn-US en.Latn.US.en-Latn-US en.Latn.US.en-Latn-US en.Latn.US.en-Latn-US zh.Zzzz.TW.zh-Zzzz-TW en.Latn.XA.en-Latn-XA en.Latn.XA.en-Latn-XA en.Arab.US.en-Arab-US ja.Latn.JP.ja-Latn-JP en.Latn.RU.en-Latn-RU ru.Cyrl.US.ru-Cyrl-US"
+  },
+  {
+   "name": "getTextInfo().direction: unknown subtags, ZZ and Zzzz",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"xx\",\"xx-US\",\"xx-Latn\",\"qaa\",\"abcde\",\"en-ZZ\",\"en-Zzzz\",\"en-Zzzz-ZZ\",\"en-Zzzz-US\",\"en-Latn-ZZ\",\"und-ZZ\",\"und-Zzzz\",\"und-Zzzz-US\",\"und-Latn-ZZ\",\"zh-Zzzz-TW\",\"en-XA\",\"und-XA\",\"en-Arab\",\"ja-Latn\",\"en-RU\",\"ru-US\"], function (t) { return L(t).getTextInfo().direction; })",
+   "chrome": "ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr ltr rtl ltr ltr ltr"
+  },
+  {
+   "name": "getWeekInfo(): unknown subtags, ZZ and Zzzz",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"xx\",\"xx-US\",\"xx-Latn\",\"qaa\",\"abcde\",\"en-ZZ\",\"en-Zzzz\",\"en-Zzzz-ZZ\",\"en-Zzzz-US\",\"en-Latn-ZZ\",\"und-ZZ\",\"und-Zzzz\",\"und-Zzzz-US\",\"und-Latn-ZZ\",\"zh-Zzzz-TW\",\"en-XA\",\"und-XA\",\"en-Arab\",\"ja-Latn\",\"en-RU\",\"ru-US\"], function (t) { var w = L(t).getWeekInfo(); return w.firstDay + ':' + w.weekend.join(''); })",
+   "chrome": "1:67 7:67 1:67 1:67 1:67 1:67 7:67 1:67 7:67 1:67 1:67 7:67 7:67 1:67 7:67 1:67 1:67 7:67 7:67 1:67 7:67"
+  },
+  {
+   "name": "maximize: variants and extensions ride along",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en-fonipa\",\"de-1996\",\"de-CH-1901\",\"sl-rozaj-biske\",\"en-u-ca-gregory\",\"ar-u-nu-latn\",\"en-US-u-hc-h23\",\"zh-Hant-u-co-stroke\",\"en-Latn-US-u-ca-gregory-x-foo\",\"ar-EG-u-nu-arab-x-private\",\"en-t-ja\",\"he-u-ca-hebrew-fw-sun\"], function (t) { return L(t).maximize().toString(); })",
+   "chrome": "en-Latn-US-fonipa de-Latn-DE-1996 de-Latn-CH-1901 sl-Latn-SI-biske-rozaj en-Latn-US-u-ca-gregory ar-Arab-EG-u-nu-latn en-Latn-US-u-hc-h23 zh-Hant-TW-u-co-stroke en-Latn-US-u-ca-gregory-x-foo ar-Arab-EG-u-nu-arab-x-private en-Latn-US-t-ja he-Hebr-IL-u-ca-hebrew-fw-sun"
+  },
+  {
+   "name": "minimize: variants and extensions ride along",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en-fonipa\",\"de-1996\",\"de-CH-1901\",\"sl-rozaj-biske\",\"en-u-ca-gregory\",\"ar-u-nu-latn\",\"en-US-u-hc-h23\",\"zh-Hant-u-co-stroke\",\"en-Latn-US-u-ca-gregory-x-foo\",\"ar-EG-u-nu-arab-x-private\",\"en-t-ja\",\"he-u-ca-hebrew-fw-sun\"], function (t) { return L(t).minimize().toString(); })",
+   "chrome": "en-fonipa de-1996 de-CH-1901 sl-biske-rozaj en-u-ca-gregory ar-u-nu-latn en-u-hc-h23 zh-TW-u-co-stroke en-u-ca-gregory-x-foo ar-u-nu-arab-x-private en-t-ja he-u-ca-hebrew-fw-sun"
+  },
+  {
+   "name": "maximize then minimize, and minimize then maximize: variants and extensions ride along",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en-fonipa\",\"de-1996\",\"de-CH-1901\",\"sl-rozaj-biske\",\"en-u-ca-gregory\",\"ar-u-nu-latn\",\"en-US-u-hc-h23\",\"zh-Hant-u-co-stroke\",\"en-Latn-US-u-ca-gregory-x-foo\",\"ar-EG-u-nu-arab-x-private\",\"en-t-ja\",\"he-u-ca-hebrew-fw-sun\"], function (t) { return L(t).maximize().minimize().toString() + '/' + L(t).minimize().maximize().toString(); })",
+   "chrome": "en-fonipa/en-Latn-US-fonipa de-1996/de-Latn-DE-1996 de-CH-1901/de-Latn-CH-1901 sl-biske-rozaj/sl-Latn-SI-biske-rozaj en-u-ca-gregory/en-Latn-US-u-ca-gregory ar-u-nu-latn/ar-Arab-EG-u-nu-latn en-u-hc-h23/en-Latn-US-u-hc-h23 zh-TW-u-co-stroke/zh-Hant-TW-u-co-stroke en-u-ca-gregory-x-foo/en-Latn-US-u-ca-gregory-x-foo ar-u-nu-arab-x-private/ar-Arab-EG-u-nu-arab-x-private en-t-ja/en-Latn-US-t-ja he-u-ca-hebrew-fw-sun/he-Hebr-IL-u-ca-hebrew-fw-sun"
+  },
+  {
+   "name": "maximized language, script, region and baseName: variants and extensions ride along",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en-fonipa\",\"de-1996\",\"de-CH-1901\",\"sl-rozaj-biske\",\"en-u-ca-gregory\",\"ar-u-nu-latn\",\"en-US-u-hc-h23\",\"zh-Hant-u-co-stroke\",\"en-Latn-US-u-ca-gregory-x-foo\",\"ar-EG-u-nu-arab-x-private\",\"en-t-ja\",\"he-u-ca-hebrew-fw-sun\"], function (t) { var m = L(t).maximize(); return [m.language, m.script, m.region, m.baseName].join('.'); })",
+   "chrome": "en.Latn.US.en-Latn-US-fonipa de.Latn.DE.de-Latn-DE-1996 de.Latn.CH.de-Latn-CH-1901 sl.Latn.SI.sl-Latn-SI-biske-rozaj en.Latn.US.en-Latn-US ar.Arab.EG.ar-Arab-EG en.Latn.US.en-Latn-US zh.Hant.TW.zh-Hant-TW en.Latn.US.en-Latn-US ar.Arab.EG.ar-Arab-EG en.Latn.US.en-Latn-US he.Hebr.IL.he-Hebr-IL"
+  },
+  {
+   "name": "getTextInfo().direction: variants and extensions ride along",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en-fonipa\",\"de-1996\",\"de-CH-1901\",\"sl-rozaj-biske\",\"en-u-ca-gregory\",\"ar-u-nu-latn\",\"en-US-u-hc-h23\",\"zh-Hant-u-co-stroke\",\"en-Latn-US-u-ca-gregory-x-foo\",\"ar-EG-u-nu-arab-x-private\",\"en-t-ja\",\"he-u-ca-hebrew-fw-sun\"], function (t) { return L(t).getTextInfo().direction; })",
+   "chrome": "ltr ltr ltr ltr ltr rtl ltr ltr ltr rtl ltr rtl"
+  },
+  {
+   "name": "getWeekInfo(): variants and extensions ride along",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en-fonipa\",\"de-1996\",\"de-CH-1901\",\"sl-rozaj-biske\",\"en-u-ca-gregory\",\"ar-u-nu-latn\",\"en-US-u-hc-h23\",\"zh-Hant-u-co-stroke\",\"en-Latn-US-u-ca-gregory-x-foo\",\"ar-EG-u-nu-arab-x-private\",\"en-t-ja\",\"he-u-ca-hebrew-fw-sun\"], function (t) { var w = L(t).getWeekInfo(); return w.firstDay + ':' + w.weekend.join(''); })",
+   "chrome": "7:67 1:67 1:67 1:67 7:67 6:56 7:67 7:67 7:67 6:56 7:67 7:56"
+  },
+  {
+   "name": "an invalid tag throws before there is a locale to maximize",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"\",\"x\",\"en_US\",\"en-\",\"-en\",\"e\",\"123\",\"en-US-\",\"toolonglanguage\",\"en--US\",\"en US\",\"und-\",\"i\",\"*\"], function (t) { return L(t).maximize().toString(); })",
+   "chrome": "RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError RangeError"
+  },
+  {
+   "name": "maximize and minimize return new Locale objects and leave the receiver alone",
+   "js": "var a = new Intl.Locale('zh-TW'), m = a.maximize(), n = m.minimize(); [m instanceof Intl.Locale, n instanceof Intl.Locale, m !== a, n !== m, Object.prototype.toString.call(m), String(a), String(m), String(n), new Intl.Locale('en-Latn-US').maximize() !== new Intl.Locale('en-Latn-US').maximize()].join()",
+   "chrome": "true,true,true,true,[object Intl.Locale],zh-TW,zh-Hant-TW,zh-TW,true"
+  },
+  {
+   "name": "the keywords of the receiver survive maximize and minimize",
+   "js": "var m = new Intl.Locale('ar', { calendar: 'islamic', numberingSystem: 'arab', hourCycle: 'h12', numeric: true }).maximize(); var n = m.minimize(); [m.toString(), m.calendar, m.numberingSystem, m.hourCycle, m.numeric, n.toString(), n.calendar].join()",
+   "chrome": "ar-Arab-EG-u-ca-islamic-hc-h12-kn-nu-arab,islamic,arab,h12,true,ar-u-ca-islamic-hc-h12-kn-nu-arab,islamic"
+  },
+  {
+   "name": "getTextInfo() and getWeekInfo() return fresh plain objects",
+   "js": "var a = new Intl.Locale('ar-EG'), t = a.getTextInfo(), w = a.getWeekInfo(); [JSON.stringify(t), JSON.stringify(w), Object.getPrototypeOf(t) === Object.prototype, Object.getPrototypeOf(w) === Object.prototype, Array.isArray(w.weekend), t !== a.getTextInfo(), w !== a.getWeekInfo(), w.weekend !== a.getWeekInfo().weekend, Object.keys(t).join('+'), Object.keys(w).join('+'), Object.isFrozen(t), JSON.stringify(Object.getOwnPropertyDescriptor(t, 'direction'))].join(' ')",
+   "chrome": "{\"direction\":\"rtl\"} {\"firstDay\":6,\"weekend\":[5,6]} true true true true true true direction firstDay+weekend false {\"value\":\"rtl\",\"writable\":true,\"enumerable\":true,\"configurable\":true}"
+  },
+  {
+   "name": "the methods refuse a receiver that is not a Locale",
+   "js": "var P = Intl.Locale.prototype, r = []; ['maximize', 'minimize', 'getTextInfo', 'getWeekInfo'].forEach(function (n) { [{}, 1, 'en', undefined, P].forEach(function (v) { try { P[n].call(v); r.push('no throw'); } catch (e) { r.push(e.name); } }); }); r.join()",
+   "chrome": "TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError"
+  },
+  {
+   "name": "the direction react-aria reads at module evaluation",
+   "js": "function dir(tag) { var l = new Intl.Locale(tag).maximize(); var t = typeof l.getTextInfo === 'function' ? l.getTextInfo() : l.textInfo; return tag + '=' + (t ? t.direction : 'no text info') + '/' + l.script; } ['en-US', 'ar-AE', 'he-IL', 'fa-IR', 'ur-PK', 'ja-JP', 'zh-CN', 'dv-MV', 'ckb-IQ'].map(dir).join(' ')",
+   "chrome": "en-US=ltr/Latn ar-AE=rtl/Arab he-IL=rtl/Hebr fa-IR=rtl/Arab ur-PK=rtl/Arab ja-JP=ltr/Jpan zh-CN=ltr/Hans dv-MV=rtl/Thaa ckb-IQ=rtl/Arab"
+  },
+  {
+   "name": "direction by script: every right-to-left script and a spread of the others",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"Adlm\",\"Arab\",\"Armi\",\"Avst\",\"Chrs\",\"Cprt\",\"Elym\",\"Gara\",\"Hatr\",\"Hebr\",\"Hung\",\"Khar\",\"Lydi\",\"Mand\",\"Mani\",\"Mend\",\"Merc\",\"Mero\",\"Narb\",\"Nbat\",\"Nkoo\",\"Orkh\",\"Ougr\",\"Palm\",\"Phli\",\"Phlp\",\"Phnx\",\"Prti\",\"Rohg\",\"Samr\",\"Sarb\",\"Sidt\",\"Sogd\",\"Sogo\",\"Syrc\",\"Thaa\",\"Yezi\",\"Latn\",\"Cyrl\",\"Grek\",\"Hans\",\"Hant\",\"Jpan\",\"Kore\",\"Deva\",\"Beng\",\"Thai\",\"Mong\",\"Tfng\",\"Ethi\",\"Geor\",\"Armn\",\"Tibt\",\"Khmr\",\"Mymr\",\"Sinh\",\"Zzzz\",\"Zyyy\",\"Qaaa\",\"Brai\",\"Runr\",\"Ogam\",\"Egyp\",\"Xsux\"], function (s) { return s + '=' + L('und-' + s).getTextInfo().direction + '/' + L('en-' + s).getTextInfo().direction + '/' + L('ar-' + s + '-EG').getTextInfo().direction; })",
+   "chrome": "Adlm=rtl/rtl/rtl Arab=rtl/rtl/rtl Armi=rtl/rtl/rtl Avst=rtl/rtl/rtl Chrs=rtl/rtl/rtl Cprt=rtl/rtl/rtl Elym=rtl/rtl/rtl Gara=rtl/rtl/rtl Hatr=rtl/rtl/rtl Hebr=rtl/rtl/rtl Hung=rtl/rtl/rtl Khar=rtl/rtl/rtl Lydi=rtl/rtl/rtl Mand=rtl/rtl/rtl Mani=rtl/rtl/rtl Mend=rtl/rtl/rtl Merc=rtl/rtl/rtl Mero=rtl/rtl/rtl Narb=rtl/rtl/rtl Nbat=rtl/rtl/rtl Nkoo=rtl/rtl/rtl Orkh=rtl/rtl/rtl Ougr=rtl/rtl/rtl Palm=rtl/rtl/rtl Phli=rtl/rtl/rtl Phlp=rtl/rtl/rtl Phnx=rtl/rtl/rtl Prti=rtl/rtl/rtl Rohg=rtl/rtl/rtl Samr=rtl/rtl/rtl Sarb=rtl/rtl/rtl Sidt=rtl/rtl/rtl Sogd=rtl/rtl/rtl Sogo=rtl/rtl/rtl Syrc=rtl/rtl/rtl Thaa=rtl/rtl/rtl Yezi=rtl/rtl/rtl Latn=ltr/ltr/ltr Cyrl=ltr/ltr/ltr Grek=ltr/ltr/ltr Hans=ltr/ltr/ltr Hant=ltr/ltr/ltr Jpan=ltr/ltr/ltr Kore=ltr/ltr/ltr Deva=ltr/ltr/ltr Beng=ltr/ltr/ltr Thai=ltr/ltr/ltr Mong=ltr/ltr/ltr Tfng=ltr/ltr/ltr Ethi=ltr/ltr/ltr Geor=ltr/ltr/ltr Armn=ltr/ltr/ltr Tibt=ltr/ltr/ltr Khmr=ltr/ltr/ltr Mymr=ltr/ltr/ltr Sinh=ltr/ltr/ltr Zzzz=ltr/ltr/ltr Zyyy=ltr/ltr/ltr Qaaa=ltr/ltr/ltr Brai=ltr/ltr/ltr Runr=ltr/ltr/ltr Ogam=ltr/ltr/ltr Egyp=ltr/ltr/ltr Xsux=ltr/ltr/ltr"
+  },
+  {
+   "name": "week by region: first day and weekend",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"US\",\"GB\",\"CA\",\"MX\",\"BR\",\"AR\",\"FR\",\"DE\",\"ES\",\"IT\",\"PT\",\"NL\",\"SE\",\"NO\",\"DK\",\"FI\",\"PL\",\"RU\",\"UA\",\"TR\",\"GR\",\"IL\",\"EG\",\"SA\",\"AE\",\"QA\",\"KW\",\"BH\",\"OM\",\"JO\",\"IQ\",\"IR\",\"SY\",\"LY\",\"DZ\",\"MA\",\"TN\",\"SD\",\"YE\",\"AF\",\"PK\",\"IN\",\"BD\",\"LK\",\"NP\",\"MV\",\"CN\",\"TW\",\"HK\",\"MO\",\"JP\",\"KR\",\"KP\",\"TH\",\"VN\",\"ID\",\"MY\",\"SG\",\"PH\",\"AU\",\"NZ\",\"ZA\",\"NG\",\"KE\",\"ET\",\"UG\",\"DJ\",\"001\",\"419\",\"150\",\"ZZ\"], function (r) { var w = L('und-' + r).getWeekInfo(); return r + '=' + w.firstDay + ':' + w.weekend.join(''); })",
+   "chrome": "US=7:67 GB=1:67 CA=7:67 MX=7:67 BR=7:67 AR=1:67 FR=1:67 DE=1:67 ES=1:67 IT=1:67 PT=7:67 NL=1:67 SE=1:67 NO=1:67 DK=1:67 FI=1:67 PL=1:67 RU=1:67 UA=1:67 TR=1:67 GR=1:67 IL=7:56 EG=6:56 SA=7:56 AE=1:67 QA=6:56 KW=6:56 BH=6:56 OM=6:56 JO=6:56 IQ=6:56 IR=6:5 SY=6:56 LY=6:56 DZ=6:56 MA=1:67 TN=1:67 SD=6:56 YE=7:56 AF=6:45 PK=7:67 IN=7:7 BD=7:67 LK=1:67 NP=7:67 MV=5:67 CN=1:67 TW=7:67 HK=7:67 MO=7:67 JP=7:67 KR=7:67 KP=1:67 TH=7:67 VN=1:67 ID=7:67 MY=1:67 SG=7:67 PH=7:67 AU=1:67 NZ=1:67 ZA=7:67 NG=1:67 KE=7:67 ET=7:67 UG=1:7 DJ=6:67 001=1:67 419=1:67 150=1:67 ZZ=1:67"
+  },
+  {
+   "name": "week: the -u-fw- keyword sets the first day and nothing else",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"en-u-fw-mon\",\"en-u-fw-tue\",\"en-u-fw-wed\",\"en-u-fw-thu\",\"en-u-fw-fri\",\"en-u-fw-sat\",\"en-u-fw-sun\",\"ar-EG-u-fw-mon\",\"de-u-fw-sun\",\"en-u-fw-xyz\",\"en-u-fw\",\"en-u-ca-islamic\",\"en-u-ca-iso8601\",\"en-US-u-rg-gbzzzz\",\"xx\",\"xx-US\",\"ja\",\"he\",\"fa\",\"pt\",\"pt-PT\",\"en-IN\",\"hi\"], function (t) { var w = L(t).getWeekInfo(); return w.firstDay + ':' + w.weekend.join(''); })",
+   "chrome": "1:67 2:67 3:67 4:67 5:67 6:67 7:67 1:56 7:67 7:67 7:67 7:67 1:67 1:67 1:67 7:67 7:67 7:56 6:5 7:67 7:67 7:7 7:7"
+  },
+  {
+   "name": "deprecated language codes are replaced when the Locale is built",
+   "gap": "Intl.Locale does not canonicalise language aliases yet (iw, in, ji, jw, mo, tl): a follow-up row",
+   "js": "function L(t) { return new Intl.Locale(t); } function each(tags, f) { return tags.map(function (t) { try { return f(t); } catch (e) { return e.name; } }).join(' '); } each([\"iw\",\"in\",\"ji\",\"jw\",\"mo\",\"tl\"], function (t) { return L(t).maximize().toString(); })",
+   "chrome": "he-Hebr-IL id-Latn-ID yi-Hebr-UA jv-Latn-ID ro-Latn-RO fil-Latn-PH",
+   "engine": "iw-Hebr-IL in-Latn-ID ji-Hebr-UA jw-Latn-ID mo-Latn-RO tl-Latn-PH"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

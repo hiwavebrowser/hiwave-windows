@@ -1,0 +1,61 @@
+# Chrome for Testing 148.0.7778.216 getBoundingClientRect (width height) of each shrink-to-fit box in cleared_floats_max_content.html
+# id = <wrapper>_<children>; wrappers: ib inline-block, fl float, fx flex item, gr grid item (justify-items:start), abs absolute
+# children (floats are 100x10 unless a width is given): ll two float:left clear:left; rr two right/clear:right; bb two left/clear:both;
+#   none two left, no clear; l_n left then left clear:left; lr left clear:left then right clear:left; lr2 left then right(60) clear:right;
+#   l_r_cl left, right(60), left(30) clear:left; three left clear:left, left(40), left(70) clear:left; txt float clear:left, "text", float clear:left;
+#   blk left, a 40px block with clear:left, left(70)
+ib_ll 100 20
+ib_rr 100 20
+ib_bb 100 20
+ib_none 200 10
+ib_l_n 100 20
+ib_lr 100 20
+ib_lr2 160 10
+ib_l_r_cl 160 20
+ib_three 140 20
+ib_txt 125.8 28
+ib_blk 100 25
+fl_ll 100 20
+fl_rr 100 20
+fl_bb 100 20
+fl_none 200 10
+fl_l_n 100 20
+fl_lr 100 20
+fl_lr2 160 10
+fl_l_r_cl 160 20
+fl_three 140 20
+fl_txt 125.8 28
+fl_blk 100 25
+fx_ll 100 20
+fx_rr 100 20
+fx_bb 100 20
+fx_none 200 10
+fx_l_n 100 20
+fx_lr 100 20
+fx_lr2 160 10
+fx_l_r_cl 160 20
+fx_three 140 20
+fx_txt 125.8 28
+fx_blk 100 25
+gr_ll 100 20
+gr_rr 100 20
+gr_bb 100 20
+gr_none 200 10
+gr_l_n 100 20
+gr_lr 100 20
+gr_lr2 160 10
+gr_l_r_cl 160 20
+gr_three 140 20
+gr_txt 125.8 28
+gr_blk 100 25
+abs_ll 100 20
+abs_rr 100 20
+abs_bb 100 20
+abs_none 200 10
+abs_l_n 100 20
+abs_lr 100 20
+abs_lr2 160 10
+abs_l_r_cl 160 20
+abs_three 140 20
+abs_txt 125.8 28
+abs_blk 100 25

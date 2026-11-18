@@ -1,0 +1,37 @@
+# HTML1 follow-up: how a noscript's text children serialize, by the document the node is in.
+# Chrome for Testing 148.0.7778.216, headless 800x600: window.report() of html1_noscript_serialize.html.
+# Raw where scripting is on for the node (the page's document), escaped where it is off (a DOMParser or
+# createHTMLDocument document, template contents), following the node when it is adopted.
+main, parsed innerHTML: a &lt;b&gt; &amp; c
+main, parsed outerHTML: <noscript id="n">a &lt;b&gt; &amp; c</noscript>
+main, parsed parent innerHTML: <noscript id="n">a &lt;b&gt; &amp; c</noscript>
+main, text set innerHTML: </noscript><img src=x onerror=1> & <b>
+main, text set outerHTML: <noscript id="n"></noscript><img src=x onerror=1> & <b></noscript>
+main, text set parent innerHTML: <noscript id="n"></noscript><img src=x onerror=1> & <b></noscript>
+main, created innerHTML: </noscript><img src=x onerror=1> & <b>
+main, created outerHTML: <noscript></noscript><img src=x onerror=1> & <b></noscript>
+main, created parent innerHTML: <noscript id="n"></noscript><img src=x onerror=1> & <b></noscript><noscript></noscript><img src=x onerror=1> & <b></noscript>
+DOMParser, parsed innerHTML: a &lt;b&gt; &amp; c<p>x</p>
+DOMParser, parsed outerHTML: <noscript>a &lt;b&gt; &amp; c<p>x</p></noscript>
+DOMParser, parsed parent innerHTML: <noscript>a &lt;b&gt; &amp; c<p>x</p></noscript>
+DOMParser, text set innerHTML: &lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;
+DOMParser, text set outerHTML: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript>
+DOMParser, text set parent innerHTML: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript>
+DOMParser, document outerHTML: <html><head></head><body><div><noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript></div></body></html>
+createHTMLDocument, created innerHTML: &lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;
+createHTMLDocument, created outerHTML: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript>
+createHTMLDocument, created parent innerHTML: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript>
+template, parsed innerHTML: a &amp;lt;b&amp;gt; &amp;amp; c
+template, parsed outerHTML: <noscript>a &amp;lt;b&amp;gt; &amp;amp; c</noscript>
+template, parsed parent innerHTML: <noscript>a &amp;lt;b&amp;gt; &amp;amp; c</noscript>
+template, text set innerHTML: &lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;
+template, text set outerHTML: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript>
+template, text set parent innerHTML: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript>
+template innerHTML: <div><noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript></div>
+made in DOMParser doc, not inserted: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript>
+adopted into main: <noscript></noscript><img src=x onerror=1> & <b></noscript>
+main noscript adopted into DOMParser doc: <noscript id="n">&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript>
+main, created, not inserted: <noscript></noscript><img src=x onerror=1> & <b></noscript>
+main, in a fragment: <noscript></noscript><img src=x onerror=1> & <b></noscript>
+DOMParser style: <style>a<b>&</style>
+XMLSerializer, main: <noscript xmlns="http://www.w3.org/1999/xhtml">&lt;/noscript&gt;&lt;img src=x onerror=1&gt; &amp; &lt;b&gt;</noscript>

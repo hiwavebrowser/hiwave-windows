@@ -1,0 +1,50 @@
+<!doctype html><html><head><style>body{margin:0;height:3000px}#box{height:200px;overflow:auto;background:#eee}#box div{height:1000px}</style></head><body>
+<div id="box"><div>inner</div></div>
+<input id="cb" type="checkbox" style="position:absolute;left:10px;top:250px">
+<form id="f" action="javascript:void(window.submitted=(window.submitted||0)+1)" style="position:absolute;left:10px;top:300px"><input id="t" name="t"><button id="go">go</button></form>
+<script>
+var log = [];
+window.report = function () { return log.join('\n'); };
+// Constructed events: canceled flag and init*.
+window.constructed = function () {
+  var e = new Event('x', { cancelable: true }); e.preventDefault(); var before = e.defaultPrevented;
+  e.initEvent('y', true, true); log.push('initEvent after preventDefault: ' + before + ' -> ' + e.defaultPrevented);
+  var c = new CustomEvent('x', { cancelable: true }); c.preventDefault(); c.initCustomEvent('y', true, true, 1); log.push('initCustomEvent after preventDefault: ' + c.defaultPrevented);
+  var d = document.createEvent('Event'); d.initEvent('z', true, true); d.preventDefault(); d.initEvent('z2', true, false); log.push('initEvent to not cancelable after preventDefault: ' + d.defaultPrevented + ' cancelable=' + d.cancelable);
+  var r = new Event('x', { cancelable: false }); r.cancelable = true; log.push('cancelable assigned: ' + r.cancelable);
+  var s = new Event('x', { cancelable: false }); (function () { 'use strict'; try { s.cancelable = true; log.push('strict cancelable assign: no throw'); } catch (err) { log.push('strict cancelable assign: ' + err.name); } })();
+  var desc = Object.getOwnPropertyDescriptor(Event.prototype, 'cancelable'); log.push('cancelable descriptor: get=' + typeof desc.get + ' set=' + typeof desc.set);
+  // init during dispatch does nothing
+  var dd = new Event('w', { cancelable: true }); var seen;
+  document.addEventListener('w', function (ev) { ev.preventDefault(); ev.initEvent('w2', false, false); seen = ev.type + ' ' + ev.defaultPrevented + ' ' + ev.cancelable; }, { once: true });
+  var ret = document.dispatchEvent(dd); log.push('initEvent during dispatch: ' + seen + ' returned ' + ret);
+};
+// Trusted wheel: cancelable per wheel; mousewheel legacy.
+var box = document.getElementById('box');
+window.wheelSetup = function (mode) {
+  log.push('-- ' + mode);
+  window.onwheel = null;
+  box.onwheel = null; box.onmousewheel = null;
+  if (mode === 'wheel cancels the first') {
+    var n = 0;
+    box.addEventListener('wheel', function h(e) { n++; log.push('wheel ' + n + ' cancelable=' + e.cancelable); if (n === 1) e.preventDefault(); }, { passive: false });
+  }
+  if (mode === 'mousewheel only') {
+    box.addEventListener('mousewheel', function h(e) { log.push('mousewheel ' + e.type + ' cancelable=' + e.cancelable + ' wheelDelta=' + e.wheelDelta + ' ctor=' + e.constructor.name + ' trusted=' + e.isTrusted); e.preventDefault(); }, { passive: false });
+  }
+  if (mode === 'mousewheel and wheel') {
+    box.addEventListener('mousewheel', function (e) { log.push('mousewheel heard'); }, { passive: false });
+    box.addEventListener('wheel', function (e) { log.push('wheel heard'); }, { passive: false });
+  }
+  if (mode === 'mousewheel on document, wheel on box') {
+    document.addEventListener('mousewheel', function (e) { log.push('document mousewheel heard'); }, { passive: false });
+    box.addEventListener('wheel', function (e) { log.push('box wheel heard'); }, { passive: false });
+  }
+};
+window.after = function (label) { log.push(label + ': box scrollTop=' + box.scrollTop + ' scrollY=' + scrollY); box.scrollTop = 0; scrollTo(0, 0); };
+// Cancelled click, submit, keydown.
+document.getElementById('cb').addEventListener('click', function (e) { e.preventDefault(); log.push('click cancelled, checked during: ' + this.checked); });
+document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); log.push('submit cancelled'); });
+document.getElementById('t').addEventListener('keydown', function (e) { if (e.key === 'q') { e.preventDefault(); log.push('keydown q cancelled'); } });
+window.formReport = function () { log.push('checkbox checked after: ' + document.getElementById('cb').checked + '; submitted: ' + (window.submitted || 0) + '; input value: ' + JSON.stringify(document.getElementById('t').value)); };
+</script></body></html>

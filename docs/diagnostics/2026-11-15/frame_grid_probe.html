@@ -1,0 +1,43 @@
+<!doctype html><title>frame grid probe</title><div id=box style="width:10px;height:10px;background:#08f"></div><script>
+// PACE2 grid row: whether a late frame moves the frames after it. A requestAnimationFrame loop for
+// 3000 ms of performance.now; every 4th frame's callback busy-waits 4 ms (late, still inside the
+// frame) and every 25th busy-waits 24 ms (past the next frame). Records:
+//   frames      animation frames in the window
+//   gaps        each gap between consecutive callbacks' timestamps (ms, 0.01) after a 4 ms frame
+//   longGaps    the same after a 24 ms frame
+//   otherGaps   the same after an ordinary frame
+//   phases      each timestamp minus the first, modulo 1000/60, (ms, 0.01): 0 or 16.67 when frames
+//               are on a 60 Hz grid
+// When done it sets rec.done and logs REC <json>.
+// Everything starts in go(): at the window's load event, or, with #manual in the URL, when the
+// harness calls it (RustKit runs a load's timers up to 5 s ahead of real time, its load horizon).
+window.rec = { frames: 0, gaps: [], longGaps: [], otherGaps: [], phases: [], done: false };
+var start = 0, first = -1, prev = -1, prevKind = '', box = document.getElementById('box'), SPAN = 3000;
+function r2(x) { return Math.round(x * 100) / 100; }
+function spin(ms) { var t0 = performance.now(); while (performance.now() - t0 < ms) {} }
+function frame(t) {
+  if (performance.now() - start >= SPAN) {
+    rec.done = true;
+    console.log('REC ' + JSON.stringify(rec));
+    return;
+  }
+  if (first < 0) first = t;
+  if (prev >= 0) {
+    var gap = r2(t - prev);
+    (prevKind === 'late' ? rec.gaps : prevKind === 'long' ? rec.longGaps : rec.otherGaps).push(gap);
+  }
+  if (rec.phases.length < 60) rec.phases.push(r2((t - first) % (1000 / 60)));
+  prev = t;
+  rec.frames++;
+  box.style.marginLeft = (rec.frames % 100) + 'px';
+  prevKind = rec.frames % 25 === 0 ? 'long' : rec.frames % 4 === 0 ? 'late' : '';
+  if (prevKind === 'long') spin(24);
+  else if (prevKind === 'late') spin(4);
+  requestAnimationFrame(frame);
+}
+function go() {
+  start = performance.now();
+  requestAnimationFrame(frame);
+}
+if (location.hash !== '#manual') addEventListener('load', go);
+</script>

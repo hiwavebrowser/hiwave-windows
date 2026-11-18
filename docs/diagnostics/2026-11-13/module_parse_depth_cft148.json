@@ -1,0 +1,9 @@
+{
+ "module_nested_array_source": "ERR:RangeError",
+ "module_nested_parens": "ERR:RangeError",
+ "module_nested_blocks": "ERR:RangeError",
+ "module_nested_functions": "ERR:RangeError",
+ "module_nested_template": "ERR:RangeError",
+ "module_shallow_ok": "ok:object",
+ "page_runs_on": "after:1,2"
+}

@@ -1,0 +1,22 @@
+<!doctype html><body><div id=p></div><iframe id=f src="/child.html"></iframe><script>
+document.getElementById('f').onload = function () {
+  var w = this.contentWindow, d = this.contentDocument, p = document.getElementById('p'), c = d.getElementById('c'), out = [];
+  // A: a frame's event, dispatched here, cancelled by an on<type> handler returning false.
+  p.onclick = function () { return false; };
+  var a = new w.Event('click', { cancelable: true });
+  out.push('A ' + p.dispatchEvent(a) + ' ' + a.defaultPrevented);
+  // B: a frame's event, dispatched here, cancelled by preventDefault() in a listener.
+  p.addEventListener('y', function (e) { e.preventDefault(); });
+  var b = new w.Event('y', { cancelable: true });
+  out.push('B ' + p.dispatchEvent(b) + ' ' + b.defaultPrevented);
+  // C: this window's event, dispatched in the frame, cancelled by the frame's on<type> handler.
+  c.onclick = function () { return false; };
+  var e = new Event('click', { cancelable: true });
+  out.push('C ' + c.dispatchEvent(e) + ' ' + e.defaultPrevented);
+  // D: this window's event, dispatched in the frame, cancelled by preventDefault() there.
+  c.addEventListener('z', function (ev) { ev.preventDefault(); });
+  var z = new Event('z', { cancelable: true });
+  out.push('D ' + c.dispatchEvent(z) + ' ' + z.defaultPrevented);
+  window.result = out.join(' | ');
+};
+</script></body>

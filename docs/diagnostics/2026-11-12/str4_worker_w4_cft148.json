@@ -1,0 +1,832 @@
+{
+ "throwers": {
+  "function": "DataCloneError:true",
+  "symbol": "DataCloneError:true",
+  "weak": "DataCloneError:true",
+  "promise": "DataCloneError:true",
+  "object_with_function": "DataCloneError:true",
+  "proxy": "DataCloneError:true",
+  "dom_node": "DataCloneError:true"
+ },
+ "page_buf_after_transfer": 0,
+ "dup_transfer": "DataCloneError",
+ "bad_transfer": "DataCloneError",
+ "view_after_transfer": [
+  0,
+  0
+ ],
+ "prims": {
+  "page": {
+   "Array": [
+    "undefined",
+    "null",
+    "boolean:true",
+    "string:str",
+    "n:1.5",
+    "-0",
+    "NaN",
+    "n:Infinity",
+    "big:10",
+    "string:"
+   ],
+   "extra": []
+  },
+  "worker": {
+   "Array": [
+    "undefined",
+    "null",
+    "boolean:true",
+    "string:str",
+    "n:1.5",
+    "-0",
+    "NaN",
+    "n:Infinity",
+    "big:10",
+    "string:"
+   ],
+   "extra": []
+  }
+ },
+ "object": {
+  "page": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "a": "n:1",
+    "b": {
+     "tag": "Object",
+     "proto": "Object",
+     "keys": {
+      "c": {
+       "Array": [
+        "n:1",
+        "n:2",
+        "n:3"
+       ],
+       "extra": []
+      }
+     }
+    },
+    "u": "undefined",
+    "n": "null"
+   }
+  },
+  "worker": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "a": "n:1",
+    "b": {
+     "tag": "Object",
+     "proto": "Object",
+     "keys": {
+      "c": {
+       "Array": [
+        "n:1",
+        "n:2",
+        "n:3"
+       ],
+       "extra": []
+      }
+     }
+    },
+    "u": "undefined",
+    "n": "null"
+   }
+  }
+ },
+ "sparse_array": {
+  "page": {
+   "Array": [
+    "n:1",
+    "HOLE",
+    "n:3"
+   ],
+   "extra": [
+    [
+     "extra",
+     "string:x"
+    ]
+   ]
+  },
+  "worker": {
+   "Array": [
+    "n:1",
+    "HOLE",
+    "n:3"
+   ],
+   "extra": [
+    [
+     "extra",
+     "string:x"
+    ]
+   ]
+  }
+ },
+ "date": {
+  "page": "Date:1234567890123",
+  "worker": "Date:1234567890123"
+ },
+ "invalid_date": {
+  "page": "Date:NaN",
+  "worker": "Date:NaN"
+ },
+ "regexp": {
+  "page": "RegExp:a(b)*c/gi:0",
+  "worker": "RegExp:a(b)*c/gi:0"
+ },
+ "map_set": {
+  "page": {
+   "Map": [
+    [
+     "n:1",
+     {
+      "tag": "Object",
+      "proto": "Object",
+      "keys": {
+       "a": "n:1"
+      }
+     }
+    ],
+    [
+     "string:k",
+     {
+      "Set": [
+       "n:1",
+       "n:2"
+      ]
+     }
+    ]
+   ]
+  },
+  "worker": {
+   "Map": [
+    [
+     "n:1",
+     {
+      "tag": "Object",
+      "proto": "Object",
+      "keys": {
+       "a": "n:1"
+      }
+     }
+    ],
+    [
+     "string:k",
+     {
+      "Set": [
+       "n:1",
+       "n:2"
+      ]
+     }
+    ]
+   ]
+  }
+ },
+ "typed_arrays": {
+  "page": {
+   "Array": [
+    "Uint8Array:1,2,3:off0:len3:buf3",
+    "Float64Array:1.5,0,NaN:off0:len3:buf24",
+    "Int16Array:0,0:off2:len2:buf8"
+   ],
+   "extra": []
+  },
+  "worker": {
+   "Array": [
+    "Uint8Array:1,2,3:off0:len3:buf3",
+    "Float64Array:1.5,0,NaN:off0:len3:buf24",
+    "Int16Array:0,0:off2:len2:buf8"
+   ],
+   "extra": []
+  }
+ },
+ "arraybuffer": {
+  "page": "AB:3:9,8,7",
+  "worker": "AB:3:9,8,7"
+ },
+ "shared_view_buffer": {
+  "page": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "x": "Uint8Array:0,0,0,0,0,0,0,0:off0:len8:buf8",
+    "y": "Uint16Array:0,0,0,0:off0:len4:buf8"
+   }
+  },
+  "worker": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "x": "Uint8Array:0,0,0,0,0,0,0,0:off0:len8:buf8",
+    "y": "Uint16Array:0,0,0,0:off0:len4:buf8"
+   }
+  }
+ },
+ "dataview": {
+  "page": "DataView::off1:lenundefined:buf4",
+  "worker": "DataView::off1:lenundefined:buf4"
+ },
+ "error": {
+  "page": {
+   "Error": [
+    "RangeError",
+    "boom",
+    true
+   ]
+  },
+  "worker": {
+   "Error": [
+    "RangeError",
+    "boom",
+    true
+   ]
+  }
+ },
+ "error_plain": {
+  "page": {
+   "Error": [
+    "Error",
+    "plain",
+    true
+   ]
+  },
+  "worker": {
+   "Error": [
+    "Error",
+    "plain",
+    true
+   ]
+  }
+ },
+ "wrappers": {
+  "page": {
+   "Array": [
+    "Wrapper:Boolean:false",
+    "Wrapper:Number:5",
+    "Wrapper:String:s"
+   ],
+   "extra": []
+  },
+  "worker": {
+   "Array": [
+    "Wrapper:Boolean:false",
+    "Wrapper:Number:5",
+    "Wrapper:String:s"
+   ],
+   "extra": []
+  }
+ },
+ "cycle": {
+  "page": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "name": "string:o",
+    "self": "ref#0",
+    "list": {
+     "Array": [
+      "ref#0",
+      {
+       "tag": "Object",
+       "proto": "Object",
+       "keys": {
+        "back": "ref#0"
+       }
+      }
+     ],
+     "extra": []
+    }
+   }
+  },
+  "worker": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "name": "string:o",
+    "self": "ref#0",
+    "list": {
+     "Array": [
+      "ref#0",
+      {
+       "tag": "Object",
+       "proto": "Object",
+       "keys": {
+        "back": "ref#0"
+       }
+      }
+     ],
+     "extra": []
+    }
+   }
+  }
+ },
+ "shared_ref": {
+  "page": {
+   "Array": [
+    {
+     "tag": "Object",
+     "proto": "Object",
+     "keys": {
+      "v": "n:1"
+     }
+    },
+    "ref#1"
+   ],
+   "extra": []
+  },
+  "worker": {
+   "Array": [
+    {
+     "tag": "Object",
+     "proto": "Object",
+     "keys": {
+      "v": "n:1"
+     }
+    },
+    "ref#1"
+   ],
+   "extra": []
+  }
+ },
+ "class_instance": {
+  "page": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "x": "n:1"
+   }
+  },
+  "worker": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "x": "n:1"
+   }
+  }
+ },
+ "proto_null": {
+  "page": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "a": "n:1"
+   }
+  },
+  "worker": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "a": "n:1"
+   }
+  }
+ },
+ "symbol_key_ignored": {
+  "page": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "a": "n:1"
+   }
+  },
+  "worker": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "a": "n:1"
+   }
+  }
+ },
+ "getter_invoked": {
+  "page": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "g": "string:got"
+   }
+  },
+  "worker": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "g": "string:got"
+   }
+  }
+ },
+ "non_enumerable_dropped": {
+  "page": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "a": "n:1"
+   }
+  },
+  "worker": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "a": "n:1"
+   }
+  }
+ },
+ "nested_map_cycle": {
+  "page": {
+   "Map": [
+    [
+     "string:me",
+     "ref#0"
+    ]
+   ]
+  },
+  "worker": {
+   "Map": [
+    [
+     "string:me",
+     "ref#0"
+    ]
+   ]
+  }
+ },
+ "deep": {
+  "page": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "n": {
+     "tag": "Object",
+     "proto": "Object",
+     "keys": {
+      "n": {
+       "tag": "Object",
+       "proto": "Object",
+       "keys": {
+        "n": {
+         "tag": "Object",
+         "proto": "Object",
+         "keys": {
+          "n": {
+           "tag": "Object",
+           "proto": "Object",
+           "keys": {
+            "n": {
+             "tag": "Object",
+             "proto": "Object",
+             "keys": {
+              "n": {
+               "tag": "Object",
+               "proto": "Object",
+               "keys": {
+                "n": {
+                 "tag": "Object",
+                 "proto": "Object",
+                 "keys": {
+                  "n": {
+                   "tag": "Object",
+                   "proto": "Object",
+                   "keys": {
+                    "n": {
+                     "tag": "Object",
+                     "proto": "Object",
+                     "keys": {
+                      "n": {
+                       "tag": "Object",
+                       "proto": "Object",
+                       "keys": {
+                        "n": {
+                         "tag": "Object",
+                         "proto": "Object",
+                         "keys": {
+                          "n": {
+                           "tag": "Object",
+                           "proto": "Object",
+                           "keys": {
+                            "n": {
+                             "tag": "Object",
+                             "proto": "Object",
+                             "keys": {
+                              "n": {
+                               "tag": "Object",
+                               "proto": "Object",
+                               "keys": {
+                                "n": {
+                                 "tag": "Object",
+                                 "proto": "Object",
+                                 "keys": {
+                                  "n": {
+                                   "tag": "Object",
+                                   "proto": "Object",
+                                   "keys": {
+                                    "n": {
+                                     "tag": "Object",
+                                     "proto": "Object",
+                                     "keys": {
+                                      "n": {
+                                       "tag": "Object",
+                                       "proto": "Object",
+                                       "keys": {
+                                        "n": {
+                                         "tag": "Object",
+                                         "proto": "Object",
+                                         "keys": {
+                                          "n": {
+                                           "tag": "Object",
+                                           "proto": "Object",
+                                           "keys": {
+                                            "n": {
+                                             "tag": "Object",
+                                             "proto": "Object",
+                                             "keys": {
+                                              "n": {
+                                               "tag": "Object",
+                                               "proto": "Object",
+                                               "keys": {
+                                                "n": {
+                                                 "tag": "Object",
+                                                 "proto": "Object",
+                                                 "keys": {
+                                                  "n": {
+                                                   "tag": "Object",
+                                                   "proto": "Object",
+                                                   "keys": {
+                                                    "n": {
+                                                     "tag": "Object",
+                                                     "proto": "Object",
+                                                     "keys": {
+                                                      "n": {
+                                                       "tag": "Object",
+                                                       "proto": "Object",
+                                                       "keys": {
+                                                        "n": {
+                                                         "tag": "Object",
+                                                         "proto": "Object",
+                                                         "keys": {
+                                                          "n": {
+                                                           "tag": "Object",
+                                                           "proto": "Object",
+                                                           "keys": {
+                                                            "n": {
+                                                             "tag": "Object",
+                                                             "proto": "Object",
+                                                             "keys": {
+                                                              "n": {
+                                                               "tag": "Object",
+                                                               "proto": "Object",
+                                                               "keys": {}
+                                                              }
+                                                             }
+                                                            }
+                                                           }
+                                                          }
+                                                         }
+                                                        }
+                                                       }
+                                                      }
+                                                     }
+                                                    }
+                                                   }
+                                                  }
+                                                 }
+                                                }
+                                               }
+                                              }
+                                             }
+                                            }
+                                           }
+                                          }
+                                         }
+                                        }
+                                       }
+                                      }
+                                     }
+                                    }
+                                   }
+                                  }
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "worker": {
+   "tag": "Object",
+   "proto": "Object",
+   "keys": {
+    "n": {
+     "tag": "Object",
+     "proto": "Object",
+     "keys": {
+      "n": {
+       "tag": "Object",
+       "proto": "Object",
+       "keys": {
+        "n": {
+         "tag": "Object",
+         "proto": "Object",
+         "keys": {
+          "n": {
+           "tag": "Object",
+           "proto": "Object",
+           "keys": {
+            "n": {
+             "tag": "Object",
+             "proto": "Object",
+             "keys": {
+              "n": {
+               "tag": "Object",
+               "proto": "Object",
+               "keys": {
+                "n": {
+                 "tag": "Object",
+                 "proto": "Object",
+                 "keys": {
+                  "n": {
+                   "tag": "Object",
+                   "proto": "Object",
+                   "keys": {
+                    "n": {
+                     "tag": "Object",
+                     "proto": "Object",
+                     "keys": {
+                      "n": {
+                       "tag": "Object",
+                       "proto": "Object",
+                       "keys": {
+                        "n": {
+                         "tag": "Object",
+                         "proto": "Object",
+                         "keys": {
+                          "n": {
+                           "tag": "Object",
+                           "proto": "Object",
+                           "keys": {
+                            "n": {
+                             "tag": "Object",
+                             "proto": "Object",
+                             "keys": {
+                              "n": {
+                               "tag": "Object",
+                               "proto": "Object",
+                               "keys": {
+                                "n": {
+                                 "tag": "Object",
+                                 "proto": "Object",
+                                 "keys": {
+                                  "n": {
+                                   "tag": "Object",
+                                   "proto": "Object",
+                                   "keys": {
+                                    "n": {
+                                     "tag": "Object",
+                                     "proto": "Object",
+                                     "keys": {
+                                      "n": {
+                                       "tag": "Object",
+                                       "proto": "Object",
+                                       "keys": {
+                                        "n": {
+                                         "tag": "Object",
+                                         "proto": "Object",
+                                         "keys": {
+                                          "n": {
+                                           "tag": "Object",
+                                           "proto": "Object",
+                                           "keys": {
+                                            "n": {
+                                             "tag": "Object",
+                                             "proto": "Object",
+                                             "keys": {
+                                              "n": {
+                                               "tag": "Object",
+                                               "proto": "Object",
+                                               "keys": {
+                                                "n": {
+                                                 "tag": "Object",
+                                                 "proto": "Object",
+                                                 "keys": {
+                                                  "n": {
+                                                   "tag": "Object",
+                                                   "proto": "Object",
+                                                   "keys": {
+                                                    "n": {
+                                                     "tag": "Object",
+                                                     "proto": "Object",
+                                                     "keys": {
+                                                      "n": {
+                                                       "tag": "Object",
+                                                       "proto": "Object",
+                                                       "keys": {
+                                                        "n": {
+                                                         "tag": "Object",
+                                                         "proto": "Object",
+                                                         "keys": {
+                                                          "n": {
+                                                           "tag": "Object",
+                                                           "proto": "Object",
+                                                           "keys": {
+                                                            "n": {
+                                                             "tag": "Object",
+                                                             "proto": "Object",
+                                                             "keys": {
+                                                              "n": {
+                                                               "tag": "Object",
+                                                               "proto": "Object",
+                                                               "keys": {}
+                                                              }
+                                                             }
+                                                            }
+                                                           }
+                                                          }
+                                                         }
+                                                        }
+                                                       }
+                                                      }
+                                                     }
+                                                    }
+                                                   }
+                                                  }
+                                                 }
+                                                }
+                                               }
+                                              }
+                                             }
+                                            }
+                                           }
+                                          }
+                                         }
+                                        }
+                                       }
+                                      }
+                                     }
+                                    }
+                                   }
+                                  }
+                                 }
+                                }
+                               }
+                              }
+                             }
+                            }
+                           }
+                          }
+                         }
+                        }
+                       }
+                      }
+                     }
+                    }
+                   }
+                  }
+                 }
+                }
+               }
+              }
+             }
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "transfer_worker_saw": [
+  4,
+  "AB:4:1,2,3,4"
+ ],
+ "transfer_back": "AB:4:1,2,3,4",
+ "worker_len_after_send": 0,
+ "transfer_view": {
+  "page": "Uint8Array:0,0,0:off0:len3:buf3",
+  "worker": "Uint8Array:0,0,0:off0:len3:buf3"
+ }
+}

@@ -1,0 +1,57 @@
+<!doctype html><html><body><script>
+window.report = function () {
+  var fonts = ['Arial', 'Times', 'Times New Roman', 'Helvetica', 'Helvetica Neue', 'Georgia', 'Menlo', 'Courier', 'Courier New', 'Verdana', 'system-ui', 'Lucida Grande', 'sans-serif', 'serif', 'monospace'];
+  var sizes = [10, 11, 12, 13, 13.3333, 14, 15, 16, 17, 18, 20, 24, 32];
+  var out = [];
+  fonts.forEach(function (f) {
+    var row = [];
+    sizes.forEach(function (s) {
+      var i = document.createElement('input');
+      i.style.cssText = 'padding:0;border:none;font:' + s + 'px ' + (/ /.test(f) ? '"' + f + '"' : f);
+      document.body.appendChild(i);
+      row.push(i.getBoundingClientRect().width);
+      i.remove();
+    });
+    out.push(f + ': ' + row.join(' '));
+  });
+  ['Arial', 'Times', 'Menlo'].forEach(function (f) {
+    var row = [];
+    [1, 2, 5, 10, 20, 40].forEach(function (n) {
+      var i = document.createElement('input');
+      i.size = n; i.style.cssText = 'padding:0;border:none;font:16px ' + f;
+      document.body.appendChild(i); row.push(i.getBoundingClientRect().width); i.remove();
+    });
+    out.push('size 1 2 5 10 20 40, 16px ' + f + ': ' + row.join(' '));
+  });
+  ['text', 'search', 'password', 'email', 'number', 'tel', 'url'].forEach(function (t) {
+    var i = document.createElement('input'); i.type = t; i.style.cssText = 'padding:0;border:none;font:16px Arial';
+    document.body.appendChild(i); out.push('type ' + t + ' 16px Arial: ' + i.getBoundingClientRect().width); i.remove();
+  });
+  // Fractional font sizes: the 1/64 px floor of the font size against
+  // rounding each advance to 1/64 px (R1 on #1102).
+  var fractional = [13.1, 13.4, 14.6, 15.9, 17.3];
+  ['Arial', 'Courier New', 'Menlo', 'Times', 'Verdana'].forEach(function (f) {
+    var row = [];
+    fractional.forEach(function (s) {
+      var i = document.createElement('input');
+      i.style.cssText = 'padding:0;border:none;font:' + s + 'px ' + (/ /.test(f) ? '"' + f + '"' : f);
+      document.body.appendChild(i); row.push(i.getBoundingClientRect().width); i.remove();
+    });
+    out.push('fractional ' + fractional.join(' ') + ', ' + f + ': ' + row.join(' '));
+  });
+  // The size attribute as written (HTML: the rules for parsing
+  // non-negative integers; 20 unless 1 to 2147483647), laid out and read.
+  ['10px', ' 7', '+3', '0', '-1', '2147483648', '1e2', '3.9', 'abc', '', '00012'].forEach(function (a) {
+    var i = document.createElement('input'); i.style.cssText = 'padding:0;border:none;font:16px Times';
+    i.setAttribute('size', a);
+    document.body.appendChild(i); out.push('size attribute ' + JSON.stringify(a) + ': width ' + i.getBoundingClientRect().width + ' size ' + i.size); i.remove();
+  });
+  // Setting the property (unsigned long: 0 throws, above 2147483647 writes 20).
+  [5, -1, -5, 2147483647, 2147483648, 4294967295, 4294967296, 3.9, 'x'].forEach(function (v) {
+    var i = document.createElement('input'), r;
+    try { i.size = v; r = 'attribute ' + JSON.stringify(i.getAttribute('size')) + ' size ' + i.size; } catch (e) { r = 'threw ' + e.name; }
+    out.push('size = ' + String(v) + ': ' + r);
+  });
+  return 'sizes ' + sizes.join(' ') + '\n' + out.join('\n');
+};
+</script></body></html>

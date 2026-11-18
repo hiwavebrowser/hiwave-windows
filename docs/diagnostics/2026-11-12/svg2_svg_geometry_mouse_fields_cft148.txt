@@ -1,0 +1,90 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report()
+# after trusted input (Playwright): mouse.move(100,80), move(130,95), move(540,70), down, up, move(150,100)
+rect s: 20 30 400 300
+rect g: 60 40 300 200
+rect r: 60 40 300 200
+rect c: 120 100 80 80
+rect g2: 280 60 40 30
+rect r2: 280 60 40 30
+rect ln: 70 230 100 0
+rect p: 260 160 60 60
+rect nope: 210 50 40 20
+rect empty: 20 30 0 0
+rect v: 20 340 200 100
+rect vr: 40 350 60 40
+rect nested: 128 372 40 20
+rect nr: 128 372 40 20
+getCTM s: 1 0 0 1 0 0
+getCTM g: 1 0 0 1 40 10
+getCTM r: 1 0 0 1 40 10
+getCTM c: 1 0 0 1 40 10
+getCTM g2: 2 0 0 2 40 10
+getCTM r2: 2 0 0 2 40 10
+getCTM ln: 1 0 0 1 40 10
+getCTM p: 1 0 0 1 40 10
+getCTM nope: 1 0 0 1 40 10
+getCTM empty: 1 0 0 1 0 0
+getCTM v: 2 0 0 2 0 0
+getCTM vr: 2 0 0 2 0 0
+getCTM nested: 4 0 0 4 100 20
+getCTM nr: 2 0 0 2 50 10
+getScreenCTM s: 1 0 0 1 20 30
+getScreenCTM g: 1 0 0 1 60 40
+getScreenCTM r: 1 0 0 1 60 40
+getScreenCTM c: 1 0 0 1 60 40
+getScreenCTM g2: 2 0 0 2 60 40
+getScreenCTM r2: 2 0 0 2 60 40
+getScreenCTM ln: 1 0 0 1 60 40
+getScreenCTM p: 1 0 0 1 60 40
+getScreenCTM nope: 1 0 0 1 60 40
+getScreenCTM empty: 1 0 0 1 20 30
+getScreenCTM v: 2 0 0 2 20 340
+getScreenCTM vr: 2 0 0 2 20 340
+getScreenCTM nested: 4 0 0 4 120 360
+getScreenCTM nr: 4 0 0 4 120 360
+owner: s=null/null g=s/s r=s/s c=s/s g2=s/s r2=s/s ln=s/s p=s/s nope=s/s empty=s/s v=null/null vr=v/v nested=v/v nr=nested/nested
+createSVGPoint: [object SVGPoint] 0,0 -> 90,160 [object SVGPoint] undefined
+matrix type: [object SVGMatrix] false 0.5 0 0 0.5 -30 -20 | 2 0 0 2 70 50 | 1 0 0 1 0 0
+client and offset: 0 0 400 300 0 undefined
+elementFromPoint r (80,60): r
+elementFromPoint c (150,140): c
+elementFromPoint c corner (bbox, outside the circle) (105,105): r
+elementFromPoint r2 (310,70): r2
+elementFromPoint ln (100,230): ln
+elementFromPoint p (290,190): p
+elementFromPoint p corner (262,215): r
+elementFromPoint nope lets it through (220,55): r
+elementFromPoint svg background (30,320): s
+elementFromPoint vr (60,365): vr
+elementFromPoint nr (140,380): nr
+elementFromPoint nested background (190,395): v
+elementFromPoint body (450,20): div
+scrolled: 60 -10 300 200 | 1 0 0 1 60 -10 | 1 0 0 1 40 10 | r
+MouseEvent fields: 150 200 150 200 150 200 7 8 3 4 150 200 150 200 0 0 1
+MouseEvent defaults: 0 0 0 0 0 0 0
+WheelEvent fields: 3 -10 1 1 -10 3 -10 0 200 100 200 true
+WheelEvent defaults and constants: 0 0 0 0 0 0 0 0 1 2 2 truetruetrue
+wheelDelta from init: 100 -120 240 -120
+legacy deltas {"deltaX":3,"deltaY":-10}: 3 -10 -10 3 -10
+legacy deltas {"deltaY":100}: 0 100 100 0 100
+legacy deltas {"deltaX":40}: 40 0 40 40 0
+legacy deltas {"deltaX":3,"deltaY":-10,"deltaMode":1}: 3 -10 -10 3 -10
+legacy deltas {"deltaY":100,"wheelDeltaY":55}: 0 100 55 0 55
+legacy deltas {"deltaY":100,"wheelDelta":7}: 0 100 100 0 100
+legacy deltas {"deltaX":5,"wheelDeltaX":-9}: 5 0 -9 -9 0
+legacy deltas {"deltaY":0.5}: 0 0.5 0 0 0
+legacy deltas {"deltaY":100.7}: 0 100.7 100 0 100
+legacy deltas {"deltaY":-100.7}: 0 -100.7 -100 0 -100
+offset in a padded box: 35 35 540 60 40 20 pad pad
+offset in its child, heard on the box: 9 21 540 60 40 20 inner inner
+offset in an svg rect: 130 90 150 100 150 100 r r
+offset in a scaled svg rect: 290 60 310 70 310 70 r2 r2
+offset in the svg: 130 90 150 100 150 100 s s
+wheel offset: 35 35 540 60 40 20 pad pad
+trusted mousemove at r: client=100,80 offset=80,50 page=100,80 layer=100,80 movement=0,0 button=0 buttons=0 detail=0
+trusted mousemove at r: client=130,95 offset=110,65 page=130,95 layer=130,95 movement=30,15 button=0 buttons=0 detail=0
+trusted mousemove at inner: client=540,70 offset=9,11 page=540,70 layer=40,30 movement=410,-25 button=0 buttons=0 detail=0
+trusted mousedown at inner: client=540,70 offset=9,11 page=540,70 layer=40,30 movement=0,0 button=0 buttons=1 detail=1
+trusted mouseup at inner: client=540,70 offset=9,11 page=540,70 layer=40,30 movement=0,0 button=0 buttons=0 detail=1
+trusted click at inner: client=540,70 offset=9,11 page=540,70 layer=40,30 movement=0,0 button=0 buttons=0 detail=1
+trusted mousemove at r: client=150,100 offset=130,70 page=150,100 layer=150,100 movement=-390,30 button=0 buttons=0 detail=0

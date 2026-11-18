@@ -535,14 +535,14 @@
    "no_text": true,
    "html": "<!doctype html><html><head><style>body{margin:0;font-size:0;line-height:0}i{display:inline-block;height:10px}#c{width:100px}#f{float:left}#m{display:grid;grid-template-columns:fit-content(80px) fit-content(80px)}#i0,#i1{min-width:20px}</style></head><body><div id=c><div id=f><div id=m><div id=i0><i style=\"width:150px\"></i></div><div id=i1><i style=\"width:150px\"></i></div></div></div></div></body></html>",
    "chrome_boxes": "c:0:0:100:0 f:0:0:100:10 m:0:0:100:10 i0:0:0:50:10 i1:50:0:50:10",
-   "engine_boxes": "c:0:0:100:0 f:0:0:150:10 m:0:0:150:10 i0:0:0:150:10 i1:150:0:150:10"
+   "engine_boxes": "c:0:0:100:0 f:0:0:100:10 m:0:0:100:10 i0:0:0:150:10 i1:150:0:150:10"
   },
   {
    "name": "fit-content-tracks-min-width-20px-items-in-a-wide-float",
    "no_text": true,
    "html": "<!doctype html><html><head><style>body{margin:0;font-size:0;line-height:0}i{display:inline-block;height:10px}#c{width:1000px}#f{float:left}#m{display:grid;grid-template-columns:fit-content(80px) fit-content(80px)}#i0,#i1{min-width:20px}</style></head><body><div id=c><div id=f><div id=m><div id=i0><i style=\"width:150px\"></i></div><div id=i1><i style=\"width:150px\"></i></div></div></div></div></body></html>",
    "chrome_boxes": "c:0:0:1000:0 f:0:0:160:10 m:0:0:160:10 i0:0:0:80:10 i1:80:0:80:10",
-   "engine_boxes": "c:0:0:1000:0 f:0:0:150:10 m:0:0:150:10 i0:0:0:150:10 i1:150:0:150:10"
+   "engine_boxes": "c:0:0:1000:0 f:0:0:160:10 m:0:0:160:10 i0:0:0:150:10 i1:150:0:150:10"
   },
   {
    "name": "fit-content-tracks-overflow-hidden-items-with-a-gap-in-a-narrow-row",

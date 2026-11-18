@@ -1,0 +1,70 @@
+{
+ "viewport": [
+  800,
+  600
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "center-after-inline-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}#c{text-align:center}</style></head><body><div id=c><span id=b class=b></span><span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 b:180:0:40:20 a:220:0:30:10"
+  },
+  {
+   "name": "right-after-inline-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}#c{text-align:right}</style></head><body><div id=c><span id=b class=b></span><span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 b:360:0:40:20 a:400:0:30:10"
+  },
+  {
+   "name": "center-before-inline-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}#c{text-align:center}</style></head><body><div id=c><span id=a></span><span id=b class=b></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 a:180:0:30:10 b:180:0:40:20"
+  },
+  {
+   "name": "center-alone",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}#c{text-align:center}</style></head><body><div id=c><span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:0 a:200:0:30:10"
+  },
+  {
+   "name": "left-float-before-line",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}#l{float:left}</style></head><body><div id=c><div id=l class=f></div><span id=b class=b></span><span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 l:0:0:50:30 b:50:0:40:20 a:90:0:30:10"
+  },
+  {
+   "name": "right-float-text-align-right",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}#r{float:right}#c{text-align:right}</style></head><body><div id=c><div id=r class=f></div><span id=b class=b></span><span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 r:350:0:50:30 b:310:0:40:20 a:350:0:30:10"
+  },
+  {
+   "name": "left-float-center",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}#l{float:left}#c{text-align:center}</style></head><body><div id=c><div id=l class=f></div><span id=b class=b></span><span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 l:0:0:50:30 b:205:0:40:20 a:245:0:30:10"
+  },
+  {
+   "name": "block-level-abspos-center-control",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}#c{text-align:center}#a{display:block}</style></head><body><div id=c><span id=b class=b></span><div id=a></div></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 b:180:0:40:20 a:0:25:30:10"
+  },
+  {
+   "name": "inside-link-after-inline-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}</style></head><body><div id=c><a id=l href=#><span id=b class=b></span><span id=a></span></a></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 l:0:6:40:18 b:0:0:40:20 a:40:0:30:10"
+  },
+  {
+   "name": "inside-link-only",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}</style></head><body><div id=c><a id=l href=#><span id=a></span></a></div></body></html>",
+   "chrome_boxes": "c:0:0:400:0 l:0:0:0:0 a:0:0:30:10"
+  },
+  {
+   "name": "inside-span-after-inline-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}</style></head><body><div id=c><span id=s><span id=b class=b></span><span id=a></span></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 s:0:6:40:18 b:0:0:40:20 a:40:0:30:10"
+  },
+  {
+   "name": "inside-link-center",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;width:400px;line-height:20px}.b{display:inline-block;width:40px;height:20px}#a{position:absolute;width:30px;height:10px}.f{width:50px;height:30px}#c{text-align:center}</style></head><body><div id=c><a id=l href=#><span id=b class=b></span><span id=a></span></a></div></body></html>",
+   "chrome_boxes": "c:0:0:400:25 l:180:6:40:18 b:180:0:40:20 a:220:0:30:10"
+  }
+ ],
+ "chrome": "148.0.7778.216"
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>submit and toggle</title>
+<style>body{margin:0}.row{height:40px;overflow:hidden}button,input,summary{display:block;height:30px;width:200px}</style>
+</head><body>
+<form id="f" action="javascript:void 0"><div class="row"><input id="t" name="q"></div><div class="row"><button id="b">Go</button></div></form>
+<details id="d"><summary id="s">more</summary><p>inside</p></details>
+<script>
+// Whether the engine's submit and toggle events are trusted, and whether
+// a page that replaces dispatchEvent sees or stops them. The form never
+// navigates: every submit is cancelled by the capture listener.
+var lines = [], heard = [];
+var $ = function (id) { return document.getElementById(id); };
+document.addEventListener('submit', function (e) { heard.push('submit:' + e.isTrusted + ':' + (e.submitter ? e.submitter.id : 'none')); e.preventDefault(); }, true);
+$('d').addEventListener('toggle', function (e) { heard.push('toggle:' + e.isTrusted + ':' + e.newState); });
+window.center = function (id) { var r = $(id).getBoundingClientRect(); return (r.x + r.width / 2) + ',' + (r.y + r.height / 2); };
+window.step = function (label) { lines.push(label + ': ' + heard.join(' ')); heard = []; };
+window.later = function (label) { return new Promise(function (ok) { setTimeout(function () { step(label); ok(); }, 50); }); };
+window.scripted = function () {
+  $('b').click(); step('b.click()');
+  $('f').requestSubmit(); step('form.requestSubmit()');
+  $('f').requestSubmit($('b')); step('form.requestSubmit(b)');
+  $('d').open = false; $('d').open = true;
+};
+// A page that replaces dispatchEvent everywhere it can reach.
+window.hostile = function () {
+  window.hits = 0;
+  var hit = function () { window.hits++; return false; };
+  HTMLFormElement.prototype.dispatchEvent = hit; $('f').dispatchEvent = hit;
+  HTMLElement.prototype.dispatchEvent = hit; $('d').dispatchEvent = hit;
+  EventTarget.prototype.dispatchEvent = hit; Node.prototype.dispatchEvent = hit;
+};
+window.report = function () { return lines.join('\n') + '\nhits=' + window.hits; };
+</script></body></html>

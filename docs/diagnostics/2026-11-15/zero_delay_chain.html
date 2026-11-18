@@ -1,0 +1,48 @@
+<!doctype html><title>zero-delay timer chain</title><script>
+// CLOCK3 item 1. A setTimeout(f, 0) chain runs for 500 ms (performance.now) beside a
+// requestAnimationFrame loop, with one 0 ms link set from each frame callback too. Records:
+//   links            chain links in the 500 ms
+//   firstGapsMs      the gaps between the first 8 links (Chrome clamps a nested timeout to 4 ms
+//                    from the fifth level on)
+//   medianGapMs      the median gap between links over the 500 ms
+//   frames           animation frames in the 500 ms
+//   linksPerFrameMax the most links between two frames
+//   fromFrameMs      median delay from a 0 ms timeout set in a frame callback to its run
+// When done it sets rec.done and logs REC <json>.
+// Everything starts in go(): at the window's load event, or, with #manual in the URL, when the
+// harness calls it. RustKit runs a load's timers up to 5 s ahead of real time (its load horizon),
+// so its tests load with #manual and call go() in a live turn, after the load.
+window.rec = { links: 0, firstGapsMs: [], medianGapMs: 0, frames: 0, linksPerFrameMax: 0, fromFrameMs: 0, done: false };
+var start = 0, last = -1, gaps = [], sinceFrame = 0, fromFrame = [];
+function median(a) { var s = a.slice().sort(function (x, y) { return x - y; }); return s.length ? s[s.length >> 1] : -1; }
+function r1(x) { return Math.round(x * 10) / 10; }
+function link() {
+  var t = performance.now();
+  if (t - start >= 500) return;
+  rec.links++; sinceFrame++;
+  if (last >= 0) { gaps.push(t - last); if (rec.firstGapsMs.length < 8) rec.firstGapsMs.push(r1(t - last)); }
+  last = t;
+  setTimeout(link, 0);
+}
+function frame() {
+  var t = performance.now();
+  if (t - start >= 500) { finish(); return; }
+  rec.frames++;
+  if (sinceFrame > rec.linksPerFrameMax) rec.linksPerFrameMax = sinceFrame;
+  sinceFrame = 0;
+  setTimeout(function () { fromFrame.push(performance.now() - t); }, 0);
+  requestAnimationFrame(frame);
+}
+function finish() {
+  rec.medianGapMs = r1(median(gaps));
+  rec.fromFrameMs = r1(median(fromFrame));
+  rec.done = true;
+  console.log('REC ' + JSON.stringify(rec));
+}
+function go() {
+  start = performance.now();
+  setTimeout(link, 0);
+  requestAnimationFrame(frame);
+}
+if (location.hash !== '#manual') addEventListener('load', go);
+</script>

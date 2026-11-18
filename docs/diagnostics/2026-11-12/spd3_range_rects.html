@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SPD3: Range rects per character; InputEvent.getTargetRanges</title>
+<style>
+html, body { margin: 0; }
+body { font: 16px/20px Menlo, monospace; height: 2000px; }
+p, div { margin: 0; }
+#one { margin: 10px 0 0 20px; }
+#wrap { margin: 10px 0 0 20px; width: 100px; }
+#mixed { margin: 10px 0 0 20px; }
+#mixed b { padding: 0 3px; }
+#blocks { margin: 10px 0 0 20px; }
+#tall { margin: 10px 0 0 20px; line-height: 40px; }
+#big { font-size: 24px; }
+#spaces { margin: 10px 0 0 20px; }
+#pre { margin: 10px 0 0 20px; white-space: pre; }
+#none { display: none; }
+#prop { margin: 10px 0 0 20px; font: 16px/20px Times; }
+</style></head><body>
+<p id="one">abcdefghij</p>
+<p id="wrap">aaaa bbbb cccc dddd eeee</p>
+<p id="mixed">start <b id="bold">bold</b> end<img id="img" width="10" height="10" style="vertical-align:top"></p>
+<div id="blocks"><p id="b1">first</p><p id="b2">second</p></div>
+<p id="tall">tall <span id="big">big</span> line</p>
+<p id="spaces">   two   spaces   here   </p>
+<p id="pre">  pre  text </p>
+<p id="none">hidden</p>
+<p id="prop">A proportional line of text</p>
+<p id="empty"></p>
+<script>
+function attempt(f) { try { return f(); } catch (e) { return 'THROWS ' + e.name; } }
+function r2(n) { return Math.round(n * 100) / 100; }
+function show(r) { return [r2(r.x), r2(r.y), r2(r.width), r2(r.height)].join(' '); }
+function text(id) { return document.getElementById(id).firstChild; }
+function range(sn, so, en, eo) { var r = document.createRange(); r.setStart(sn, so); r.setEnd(en, eo); return r; }
+function both(label, make) {
+    return [label + ' bounding: ' + attempt(function () { return show(make().getBoundingClientRect()); }),
+            label + ' rects: ' + attempt(function () { var l = make().getClientRects(); return l.length + ' [' + Array.prototype.map.call(l, show).join('] [') + ']'; })];
+}
+window.report = function () {
+    var out = [];
+    function add(label, make) { out = out.concat(both(label, make)); }
+    var one = text('one'), wrap = text('wrap'), mixed = document.getElementById('mixed');
+    add('chars 2..5', function () { return range(one, 2, one, 5); });
+    add('first char', function () { return range(one, 0, one, 1); });
+    add('whole node', function () { return range(one, 0, one, 10); });
+    add('caret at 3', function () { return range(one, 3, one, 3); });
+    add('caret at 0', function () { return range(one, 0, one, 0); });
+    add('caret at end', function () { return range(one, 10, one, 10); });
+    add('selectNodeContents p', function () { var r = document.createRange(); r.selectNodeContents(document.getElementById('one')); return r; });
+    add('selectNode p', function () { var r = document.createRange(); r.selectNode(document.getElementById('one')); return r; });
+    add('wrapped 2..12', function () { return range(wrap, 2, wrap, 12); });
+    add('wrapped all', function () { return range(wrap, 0, wrap, wrap.length); });
+    add('wrapped caret at a line start', function () { return range(wrap, 10, wrap, 10); });
+    add('wrapped across the break', function () { return range(wrap, 8, wrap, 11); });
+    add('mixed all', function () { var r = document.createRange(); r.selectNodeContents(mixed); return r; });
+    add('mixed text into bold', function () { return range(mixed.firstChild, 2, text('bold'), 2); });
+    add('mixed bold element', function () { var r = document.createRange(); r.selectNode(document.getElementById('bold')); return r; });
+    add('mixed image', function () { var r = document.createRange(); r.selectNode(document.getElementById('img')); return r; });
+    add('mixed element offsets', function () { return range(mixed, 1, mixed, 3); });
+    add('across blocks', function () { return range(text('b1'), 2, text('b2'), 3); });
+    add('blocks container', function () { var r = document.createRange(); r.selectNodeContents(document.getElementById('blocks')); return r; });
+    add('tall line', function () { return range(text('tall'), 0, text('tall'), 4); });
+    add('big span text', function () { return range(text('big'), 0, text('big'), 3); });
+    add('tall across sizes', function () { return range(text('tall'), 2, document.getElementById('tall').lastChild, 3); });
+    add('collapsed spaces 0..3', function () { return range(text('spaces'), 0, text('spaces'), 3); });
+    add('collapsed spaces 3..9', function () { return range(text('spaces'), 3, text('spaces'), 9); });
+    add('collapsed spaces all', function () { return range(text('spaces'), 0, text('spaces'), text('spaces').length); });
+    add('pre 0..4', function () { return range(text('pre'), 0, text('pre'), 4); });
+    add('hidden', function () { return range(text('none'), 0, text('none'), 3); });
+    add('empty element', function () { var r = document.createRange(); r.selectNodeContents(document.getElementById('empty')); return r; });
+    add('detached', function () { var t = document.createTextNode('xyz'); return range(t, 0, t, 2); });
+    add('proportional 2..14', function () { return range(text('prop'), 2, text('prop'), 14); });
+    window.scrollTo(0, 30);
+    add('scrolled chars 2..5', function () { return range(one, 2, one, 5); });
+    window.scrollTo(0, 0);
+    out.push('list type: ' + attempt(function () { var l = range(one, 2, one, 5).getClientRects(); return Object.prototype.toString.call(l) + ' ' + Object.prototype.toString.call(l[0]) + ' ' + typeof l.item + ' ' + (l.item(0) === l[0]) + ' ' + String(l.item(9)); }));
+
+    // ---- InputEvent.getTargetRanges
+    out.push('getTargetRanges: ' + attempt(function () {
+        var e = new InputEvent('beforeinput', { inputType: 'insertText', data: 'x' });
+        var r = e.getTargetRanges();
+        return [typeof e.getTargetRanges, Array.isArray(r), r.length, Object.prototype.hasOwnProperty.call(InputEvent.prototype, 'getTargetRanges')].join(' ');
+    }));
+    out.push('StaticRange: ' + attempt(function () {
+        var s = new StaticRange({ startContainer: one, startOffset: 1, endContainer: one, endOffset: 4 });
+        return [typeof StaticRange, Object.prototype.toString.call(s), s.startContainer === one, s.startOffset, s.endOffset, s.collapsed, s instanceof AbstractRange, document.createRange() instanceof AbstractRange].join(' ');
+    }));
+    out.push('targetRanges init: ' + attempt(function () {
+        var s = new StaticRange({ startContainer: one, startOffset: 1, endContainer: one, endOffset: 4 });
+        var e = new InputEvent('beforeinput', { targetRanges: [s] });
+        var r = e.getTargetRanges();
+        return [r.length, r[0] === s, e.getTargetRanges() === r, e.getTargetRanges()[0] === s].join(' ');
+    }));
+    out.push('StaticRange errors: ' + attempt(function () { new StaticRange({ startContainer: one, startOffset: 0 }); return 'ok'; }) + ' | ' +
+        attempt(function () { new StaticRange({ startContainer: document.doctype, startOffset: 0, endContainer: one, endOffset: 0 }); return 'ok'; }));
+    return out.join('\n');
+};
+</script>
+</body></html>

@@ -1,0 +1,50 @@
+<!doctype html><title>links lateness probe</title><div id=box style="width:10px;height:10px;background:#08f"></div><script>
+// LINKS-SLOW: how late each link of a setTimeout(link, 10) chain runs, beside a requestAnimationFrame
+// loop that moves a box, for 3000 ms of performance.now (frame_rate_probe.html's page, with each
+// link's lateness: the time it ran less the time it was set plus 10). Records:
+//   frames, timers, wallMs   as frame_rate_probe
+//   late     every link's lateness, ms (0.01)
+//   summary  [count, mean, p10, median, p90, max] of late
+// With window.NO_FRAMES set before go(), the chain runs alone (no animation frames).
+// Pinned on Chrome for Testing 148.0.7778.216, headless (links_lateness_probe_chrome.mjs).
+// Everything starts in go(): at the window's load event, or, with #manual in the URL, when the
+// harness calls it (RustKit runs a load's timers up to 5 s ahead of real time, its load horizon).
+window.rec = { frames: 0, timers: 0, wallMs: 0, late: [], summary: null, done: false };
+var start = 0, box = document.getElementById('box'), SPAN = 3000, setAt = 0;
+function link() {
+  var now = performance.now();
+  if (now - start >= SPAN) {
+    if (window.NO_FRAMES) { rec.wallMs = Math.round(now - start); summarize(); rec.done = true; }
+    return;
+  }
+  rec.timers++;
+  rec.late.push(Math.round((now - setAt - 10) * 100) / 100);
+  setAt = performance.now();
+  setTimeout(link, 10);
+}
+function summarize() {
+  var l = rec.late.slice().sort(function (a, b) { return a - b; }), n = l.length, s = 0;
+  for (var i = 0; i < n; i++) s += l[i];
+  var q = function (p) { return l[Math.min(n - 1, Math.floor(p * n))]; };
+  rec.summary = [n, Math.round(s / n * 100) / 100, q(0.1), q(0.5), q(0.9), l[n - 1]];
+}
+function frame(t) {
+  var now = performance.now();
+  if (now - start >= SPAN) {
+    rec.wallMs = Math.round(now - start);
+    summarize();
+    rec.done = true;
+    return;
+  }
+  rec.frames++;
+  box.style.marginLeft = (rec.frames % 100) + 'px';
+  requestAnimationFrame(frame);
+}
+function go() {
+  start = performance.now();
+  setAt = start;
+  setTimeout(link, 10);
+  if (!window.NO_FRAMES) requestAnimationFrame(frame);
+}
+if (location.hash !== '#manual') addEventListener('load', go);
+</script>

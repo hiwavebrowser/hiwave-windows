@@ -1,0 +1,40 @@
+{
+ "cases": [
+  {
+   "name": "x_literal_is_a_new_object_each_time",
+   "js": "(function(){function f(){return /a+b/g}var a=f(),b=f();a.lastIndex=3;return [a===b,b.lastIndex,a.source,a.flags,f().lastIndex].join()})()",
+   "chrome": "false,0,a+b,g,0"
+  },
+  {
+   "name": "x_literal_state_is_per_object",
+   "js": "(function(){function f(){return /a/g}var r=f();r.exec('aaa');r.exec('aaa');var s=f();return [r.lastIndex,s.lastIndex,s.exec('aaa').index,s.lastIndex].join()})()",
+   "chrome": "2,0,0,1"
+  },
+  {
+   "name": "x_literal_in_a_loop_tests",
+   "js": "(function(){var n=0;for(var i=0;i<50;i++){if(/(\\d+)-(\\w+)/.test(i+'-x'))n++}return String(n)})()",
+   "chrome": "50"
+  },
+  {
+   "name": "x_two_flags_same_pattern",
+   "js": "(function(){function f(){return [/ab/i,/ab/g,/ab/]}var a=f(),b=f();return [a[0].flags,a[1].flags,a[2].flags,a[0]===b[0],a[0].test('AB'),a[2].test('AB')].join()})()",
+   "chrome": "i,g,,false,true,false"
+  },
+  {
+   "name": "x_sticky_and_unicode",
+   "js": "(function(){function f(){return /\\u{1F600}/u}var r=f();return [r.unicode,r.test('\\u{1F600}'),f().lastIndex,/a/y.sticky].join()})()",
+   "chrome": "true,true,0,true"
+  },
+  {
+   "name": "x_same_literal_text_two_sites",
+   "js": "(function(){function a(){return /x/g}function b(){return /x/g}var p=a(),q=b();p.lastIndex=2;return [p===q,q.lastIndex,p.source===q.source].join()})()",
+   "chrome": "false,0,true"
+  },
+  {
+   "name": "x_literal_after_exec_has_fresh_state",
+   "js": "(function(){function f(){return /(?<y>\\d{4})/g}var r=f();var m=r.exec('in 2026');var s=f();return [m.groups.y,r.lastIndex,s.lastIndex,s.exec('1999').groups.y].join()})()",
+   "chrome": "2026,7,0,1999"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

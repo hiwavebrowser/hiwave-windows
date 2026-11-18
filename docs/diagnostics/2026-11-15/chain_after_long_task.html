@@ -1,0 +1,53 @@
+<!doctype html><title>timer chain after a long task</title><script>
+// CLOCK3. A 10 ms setTimeout chain and a 10 ms setInterval run throughout. 200 ms in, a 10 ms timeout
+// runs a 500 ms long task. Then, from the end of the long task (performance.now):
+//   longMs                      how long the long task ran
+//   chainBurst, intervalBurst   chain links / interval runs in the first 5 ms after it (the overdue one)
+//   chainMinGapMs               the smallest gap between consecutive chain links after it: each link is
+//                               set from the one before, so it counts its 10 ms from when it was set
+//   chainAfter, intervalAfter   chain links / interval runs in the 300 ms after it
+// When done (500 ms after the long task) it sets rec.done and logs REC <json>.
+// Everything starts in go(): at the window's load event, or, with #manual in the URL, when the
+// harness calls it. RustKit runs a load's timers up to 5 s ahead of real time (its load horizon),
+// so its tests load with #manual and call go() in a live turn, after the load.
+window.rec = { longMs: 0, chainBurst: 0, intervalBurst: 0, chainMinGapMs: -1, chainAfter: 0,
+  intervalAfter: 0, done: false };
+var start = performance.now(), longEnd = -1, lastLink = -1, iv;
+function chain() {
+  var t = performance.now();
+  if (longEnd >= 0) {
+    var after = t - longEnd;
+    if (after < 5) rec.chainBurst++;
+    if (after < 300) rec.chainAfter++;
+    if (lastLink >= longEnd) {
+      var gap = Math.round((t - lastLink) * 10) / 10;
+      if (rec.chainMinGapMs < 0 || gap < rec.chainMinGapMs) rec.chainMinGapMs = gap;
+    }
+    lastLink = t;
+    if (after >= 500) { finish(); return; }
+  }
+  setTimeout(chain, 10);
+}
+function interval() {
+  if (longEnd < 0) return;
+  var after = performance.now() - longEnd;
+  if (after < 5) rec.intervalBurst++;
+  if (after < 300) rec.intervalAfter++;
+}
+function finish() {
+  clearInterval(iv);
+  rec.done = true;
+  console.log('REC ' + JSON.stringify(rec));
+}
+function go() {
+  setTimeout(chain, 10);
+  iv = setInterval(interval, 10);
+  setTimeout(function () {
+    var t0 = performance.now();
+    while (performance.now() - t0 < 500) JSON.stringify({ a: [1, 2, 3] });
+    longEnd = performance.now();
+    rec.longMs = Math.round(longEnd - t0);
+  }, 200);
+}
+if (location.hash !== '#manual') addEventListener('load', go);
+</script>

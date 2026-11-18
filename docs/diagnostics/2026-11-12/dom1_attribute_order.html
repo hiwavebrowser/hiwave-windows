@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>DOM1: attributes keep their order</title></head><body>
+<div id="host"><div id="p" z="1" a="2" class="c" data-b="3" m></div><span id="dup" b="1" a="2" b="3" c="4"></span><svg id="s" viewBox="0 0 1 1" height="1" preserveAspectRatio="none" width="1"><path id="sp" stroke="red" d="M0 0" fill="none"/></svg><input id="i" value="v" type="text" name="n" disabled></div>
+<script>
+function attempt(f) { try { return f(); } catch (e) { return 'THROWS ' + e.name; } }
+function names(el) { return el.getAttributeNames().join(','); }
+function indexed(el) { var out = []; for (var i = 0; i < el.attributes.length; i++) out.push(el.attributes[i].name + '=' + el.attributes[i].value); return out.join(','); }
+function iterated(el) { return Array.from(el.attributes, function (a) { return a.name; }).join(','); }
+window.report = function () {
+    var out = [];
+    function line(label, f) { out.push(label + ': ' + attempt(f)); }
+    var p = document.getElementById('p');
+    line('parsed names', function () { return names(p); });
+    line('parsed attributes[i]', function () { return indexed(p); });
+    line('parsed iterated', function () { return iterated(p); });
+    line('parsed outerHTML', function () { return p.outerHTML; });
+    line('duplicate names', function () { return indexed(document.getElementById('dup')); });
+    line('svg names', function () { return names(document.getElementById('s')) + ' | ' + names(document.getElementById('sp')); });
+    line('svg outerHTML', function () { return document.getElementById('sp').outerHTML; });
+    line('input outerHTML', function () { return document.getElementById('i').outerHTML; });
+    line('host innerHTML', function () { return document.getElementById('host').innerHTML; });
+
+    var e = document.createElement('div');
+    e.setAttribute('z', '1'); e.setAttribute('a', '2'); e.setAttribute('m', '3');
+    line('script set', function () { return indexed(e); });
+    e.setAttribute('z', 'again');
+    line('set existing keeps its place', function () { return indexed(e); });
+    e.removeAttribute('a'); e.setAttribute('a', 'back');
+    line('remove then add goes last', function () { return indexed(e); });
+    e.id = 'made'; e.className = 'k';
+    line('id and className append', function () { return indexed(e); });
+    e.id = 'made2';
+    line('id again keeps its place', function () { return indexed(e); });
+    e.toggleAttribute('hidden'); e.dataset.fooBar = 'd'; e.classList.add('k2'); e.title = 't'; e.style.color = 'red';
+    line('toggle, dataset, classList, title, style', function () { return indexed(e); });
+    e.toggleAttribute('hidden'); e.removeAttribute('z');
+    line('removals', function () { return names(e); });
+    line('script outerHTML', function () { return e.outerHTML; });
+    line('removeNamedItem / setNamedItem', function () {
+        var a = e.attributes.removeNamedItem('m'); e.attributes.setNamedItem(a);
+        var b = document.createAttribute('first'); b.value = 'f'; e.attributes.setNamedItem(b);
+        return names(e);
+    });
+    line('setAttributeNS', function () { e.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', '#x'); e.setAttributeNS(null, 'plain', 'p'); return names(e); });
+
+    var c = p.cloneNode(true);
+    line('clone names', function () { return indexed(c); });
+    line('clone outerHTML', function () { return c.outerHTML; });
+    var c2 = e.cloneNode(false);
+    line('clone of script element', function () { return names(c2); });
+    line('importNode', function () { return names(document.importNode(p, false)); });
+
+    var f = document.createElement('div');
+    f.innerHTML = '<a y="1" href="#" x="2" class="q" id="in">t</a><img src="" alt="a" width="1" height="2">';
+    line('innerHTML parsed', function () { return indexed(f.firstChild) + ' | ' + names(f.lastChild); });
+    line('innerHTML round trip', function () { return f.innerHTML; });
+    line('DOMParser', function () { var d = new DOMParser().parseFromString('<p t="1" s="2" r="3">x</p>', 'text/html'); return names(d.body.firstChild) + ' | ' + d.body.innerHTML; });
+    line('template', function () { var t = document.createElement('template'); t.innerHTML = '<b q="1" p="2" o="3"></b>'; return names(t.content.firstChild); });
+    line('insertAdjacentHTML', function () { f.insertAdjacentHTML('beforeend', '<i n="1" m="2" l="3"></i>'); return names(f.lastChild); });
+    line('XMLSerializer', function () { return typeof XMLSerializer === 'function' ? new XMLSerializer().serializeToString(p) : 'no XMLSerializer'; });
+    line('many', function () {
+        var g = document.createElement('div'), order = ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
+        order.forEach(function (n, i) { g.setAttribute('data-' + n, i); });
+        g.removeAttribute('data-e'); g.setAttribute('data-q', 'x'); g.setAttribute('data-e', 'y');
+        return names(g).replace(/data-/g, '');
+    });
+    // Chrome writes the style attribute when something next reads the
+    // attributes, so one set before `x` comes out after it.
+    line('style set before another attribute', function () { var l = document.createElement('div'); l.style.color = 'red'; l.setAttribute('x', '1'); return names(l); });
+    line('html and body', function () { return names(document.documentElement) + ' | ' + names(document.body); });
+    return out.join('\n');
+};
+</script>
+</body></html>

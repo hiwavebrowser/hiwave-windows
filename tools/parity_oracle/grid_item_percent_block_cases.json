@@ -1,0 +1,40 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "chrome": "143.0.7499.4 (grid_flexible_row_log.mjs); Chrome for Testing 148.0.7778.216 checked separately",
+ "cases": [
+  {
+   "name": "a-percent-image-in-a-percent-block-of-a-stretched-grid-item",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr\"><div id=a><div id=b style=\"height:100%\"><img id=i src=\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22800%22%20height%3D%221000%22%3E%3Crect%20width%3D%22800%22%20height%3D%221000%22%20fill%3D%22%2338a%22/%3E%3C/svg%3E\" style=\"width:100%;height:100%;object-fit:cover\"></div></div><div id=tall style=\"height:900px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:900 a:0:0:640:900 b:0:0:640:900 i:0:0:640:900 tall:640:0:640:900 after:0:900:1280:18"
+  },
+  {
+   "name": "a-percent-block-with-short-content-in-a-stretched-grid-item",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr\"><div id=a><div id=b style=\"height:100%\"><div style=\"height:40px\"></div></div></div><div id=tall style=\"height:900px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:900 a:0:0:640:900 b:0:0:640:900 tall:640:0:640:900 after:0:900:1280:18"
+  },
+  {
+   "name": "a-percent-image-directly-in-a-stretched-grid-item",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr\"><div id=a><img id=i src=\"data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22800%22%20height%3D%221000%22%3E%3Crect%20width%3D%22800%22%20height%3D%221000%22%20fill%3D%22%2338a%22/%3E%3C/svg%3E\" style=\"width:100%;height:100%;object-fit:cover\"></div><div id=tall style=\"height:900px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:900 a:0:0:640:900 i:0:0:640:900 tall:640:0:640:900 after:0:900:1280:18"
+  },
+  {
+   "name": "a-percent-block-in-a-start-aligned-grid-item",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr\"><div id=a style=\"align-self:start\"><div id=b style=\"height:100%\"><div style=\"height:40px\"></div></div></div><div id=tall style=\"height:900px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:900 a:0:0:640:40 b:0:0:640:40 tall:640:0:640:900 after:0:900:1280:18"
+  },
+  {
+   "name": "a-percent-block-in-a-stretched-item-of-a-fixed-row",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr;grid-template-rows:600px\"><div id=a><div id=b style=\"height:100%\"><div style=\"height:40px\"></div></div></div><div id=tall></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:600 a:0:0:640:600 b:0:0:640:600 tall:640:0:640:600 after:0:600:1280:18"
+  },
+  {
+   "name": "a-calc-percent-block-in-a-stretched-grid-item",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr\"><div id=a><div id=b style=\"height:calc(100% - 100px)\"><div style=\"height:40px\"></div></div></div><div id=tall style=\"height:900px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:900 a:0:0:640:900 b:0:0:640:800 tall:640:0:640:900 after:0:900:1280:18"
+  }
+ ]
+}

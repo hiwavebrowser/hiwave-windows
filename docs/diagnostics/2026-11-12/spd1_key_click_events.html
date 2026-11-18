@@ -1,0 +1,162 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SPD1: key codes, click(), hasFocus, cancelBubble, TextEvent</title>
+<style>body { margin: 0; font: 16px/20px Times; } #field { display: block; margin: 150px 0 0 10px; width: 200px; }</style>
+</head><body>
+<div id="outer"><div id="plain">plain</div><button id="btn">b</button><button id="off" disabled>d</button>
+<input id="box" type="checkbox"><input id="box_pd" type="checkbox"><label id="lab" for="box2">l</label><input id="box2" type="checkbox">
+<a id="link" href="#frag">a</a><a id="link2" href="#frag2">a2</a><input id="radio" type="radio" name="r"></div>
+<input id="field" type="text">
+<script>
+function attempt(f) { try { return f(); } catch (e) { return 'THROWS ' + e.name; } }
+function ctor(e) { return Object.prototype.toString.call(e).slice(8, -1); }
+
+// ---- constructed key events (what a test runner dispatches)
+function constructed() {
+    var out = [];
+    var inits = [
+        ['runner', { bubbles: true, cancelable: true, keyCode: 13, which: 13, key: 'Enter' }],
+        ['keyCode', { keyCode: 13 }], ['which', { which: 13 }], ['charCode', { charCode: 97 }],
+        ['keyCode+charCode', { keyCode: 65, charCode: 97 }], ['key', { key: 'a' }], ['none', {}],
+        ['all three', { keyCode: 1, charCode: 2, which: 3 }]
+    ];
+    ['keydown', 'keypress', 'keyup'].forEach(function (type) {
+        inits.forEach(function (pair) {
+            var e = new KeyboardEvent(type, pair[1]);
+            out.push('new ' + type + ' ' + pair[0] + ': keyCode=' + e.keyCode + ' charCode=' + e.charCode + ' which=' + e.which + ' key=' + e.key);
+        });
+    });
+    out.push('no init: ' + attempt(function () { var e = new KeyboardEvent('keydown'); return e.keyCode + ' ' + e.charCode + ' ' + e.which; }));
+    out.push('createEvent: ' + attempt(function () { var e = document.createEvent('KeyboardEvent'); return ctor(e) + ' ' + e.keyCode + ' ' + e.charCode + ' ' + e.which; }));
+    out.push('which lives on: ' + ['Event', 'UIEvent', 'KeyboardEvent', 'MouseEvent'].filter(function (n) { return Object.prototype.hasOwnProperty.call(window[n].prototype, 'which'); }).join(','));
+    out.push('UIEvent which: ' + attempt(function () { return new UIEvent('x').which + ' ' + new UIEvent('x', { which: 5 }).which; }));
+    out.push('MouseEvent which: ' + attempt(function () { return [new MouseEvent('click').which, new MouseEvent('click', { button: 2 }).which, new MouseEvent('mousemove').which, new MouseEvent('click', { which: 7 }).which].join(' '); }));
+    out.push('heard: ' + attempt(function () {
+        var got = '';
+        var f = document.getElementById('field');
+        function h(e) { got = e.which + ' ' + e.keyCode + ' ' + (e.which === 13) + ' ' + e.isTrusted; }
+        f.addEventListener('keyup', h);
+        f.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, keyCode: 13, which: 13, key: 'Enter' }));
+        f.removeEventListener('keyup', h);
+        return got;
+    }));
+    // What jQuery's event object does (TodoMVC-jQuery tests `e.which`): a
+    // wrapper whose `which` reads the native event's.
+    out.push('through a wrapper: ' + attempt(function () {
+        var got = '', f = document.getElementById('field');
+        function Wrapper(src) { this.originalEvent = src; this.type = src.type; this.target = src.target; }
+        Object.defineProperty(Wrapper.prototype, 'which', { get: function () { return this.originalEvent.which; }, enumerable: true, configurable: true });
+        function h(n) { var e = new Wrapper(n); got = e.which + ' ' + (e.which === 13) + ' ' + (e.target === f) + ' ' + JSON.stringify(f.value); }
+        f.addEventListener('keyup', h);
+        f.value = 'Buy milk';
+        f.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, keyCode: 13, which: 13, key: 'Enter' }));
+        f.removeEventListener('keyup', h);
+        f.value = '';
+        return got;
+    }));
+    // The Speedometer runner makes the event with ITS window's constructor
+    // and dispatches it at a node of the workload's frame.
+    out.push('from another window: ' + attempt(function () {
+        var got = '', f = document.getElementById('field'), frame = document.createElement('iframe');
+        document.body.appendChild(frame);
+        var Other = frame.contentWindow.KeyboardEvent;
+        function h(e) { got = e.which + ' ' + e.keyCode + ' ' + (e instanceof KeyboardEvent) + ' ' + (e instanceof Other) + ' ' + (e.target === f); }
+        f.addEventListener('keyup', h);
+        var r = f.dispatchEvent(new Other('keyup', { bubbles: true, cancelable: true, keyCode: 13, which: 13, key: 'Enter' }));
+        f.removeEventListener('keyup', h);
+        frame.remove();
+        return got + ' ' + r;
+    }));
+    return out;
+}
+
+// ---- click()
+function clicks() {
+    var out = [];
+    var outer = document.getElementById('outer');
+    function describe(e) {
+        return ctor(e) + ' type=' + e.type + ' target=' + e.target.id + ' bubbles=' + e.bubbles + ' cancelable=' + e.cancelable +
+            ' composed=' + e.composed + ' detail=' + e.detail + ' button=' + e.button + ' buttons=' + e.buttons + ' which=' + e.which +
+            ' view=' + (e.view === window) + ' isTrusted=' + e.isTrusted + ' client=' + e.clientX + ',' + e.clientY +
+            ' screen=' + e.screenX + ',' + e.screenY + ' pointerId=' + e.pointerId + ' pointerType=' + JSON.stringify(e.pointerType) +
+            ' mouse=' + (e instanceof MouseEvent) + ' mods=' + e.ctrlKey + e.shiftKey + e.altKey + e.metaKey +
+            ' related=' + e.relatedTarget + ' checked=' + e.target.checked;
+    }
+    var log = [];
+    outer.addEventListener('click', function (e) {
+        log.push(describe(e));
+        if (e.target.id === 'box_pd' || e.target.id === 'link') e.preventDefault();
+    });
+    ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'focus', 'change', 'input'].forEach(function (t) {
+        outer.addEventListener(t, function (e) { log.push('also ' + t + ' at ' + e.target.id); }, true);
+    });
+    ['plain', 'btn', 'off', 'box', 'box_pd', 'lab', 'radio', 'link', 'link2'].forEach(function (id) {
+        var el = document.getElementById(id);
+        log = [];
+        var r = attempt(function () { return String(el.click()); });
+        out.push('click ' + id + ': returns ' + r + ', ' + log.length + ' events');
+        log.forEach(function (l) { out.push('  ' + l); });
+    });
+    out.push('after: box=' + document.getElementById('box').checked + ' box_pd=' + document.getElementById('box_pd').checked +
+        ' box2=' + document.getElementById('box2').checked + ' radio=' + document.getElementById('radio').checked + ' hash=' + JSON.stringify(location.hash) +
+        ' active=' + (document.activeElement === document.body ? 'body' : document.activeElement.id));
+    out.push('detached: ' + attempt(function () {
+        var d = document.createElement('div'), n = 0, what = '';
+        d.addEventListener('click', function (e) { n++; what = ctor(e) + ' ' + e.isTrusted + ' ' + e.composed; });
+        d.click();
+        return n + ' ' + what;
+    }));
+    return out;
+}
+
+// ---- hasFocus, cancelBubble, TextEvent
+function misc() {
+    var out = [];
+    out.push('hasFocus: ' + attempt(function () { return typeof document.hasFocus + ' ' + document.hasFocus(); }));
+    out.push('cancelBubble: ' + attempt(function () {
+        var e = new Event('x', { bubbles: true });
+        var r = [Object.prototype.hasOwnProperty.call(Event.prototype, 'cancelBubble'), e.cancelBubble];
+        e.stopPropagation(); r.push(e.cancelBubble);
+        e.cancelBubble = false; r.push(e.cancelBubble);
+        var f = new Event('x', { bubbles: true }); f.cancelBubble = true; r.push(f.cancelBubble);
+        return r.join(' ');
+    }));
+    out.push('cancelBubble stops: ' + attempt(function () {
+        var heard = [], plain = document.getElementById('plain'), outer = document.getElementById('outer');
+        function a(e) { heard.push('target'); e.cancelBubble = true; }
+        function a2() { heard.push('target2'); }
+        function b() { heard.push('parent'); }
+        plain.addEventListener('zz', a); plain.addEventListener('zz', a2); outer.addEventListener('zz', b);
+        var e = new Event('zz', { bubbles: true });
+        var r = plain.dispatchEvent(e);
+        plain.removeEventListener('zz', a); plain.removeEventListener('zz', a2); outer.removeEventListener('zz', b);
+        return heard.join(',') + ' ' + r + ' ' + e.cancelBubble;
+    }));
+    out.push('TextEvent: ' + attempt(function () {
+        return [typeof window.TextEvent, 'TextEvent' in window, attempt(function () { new TextEvent('textInput'); return 'constructs'; }),
+            attempt(function () { var e = document.createEvent('TextEvent'); return ctor(e) + ' ' + typeof e.initTextEvent + ' ' + JSON.stringify(e.data) + ' ' + (e instanceof UIEvent); }),
+            attempt(function () { var e = document.createEvent('TextEvent'); e.initTextEvent('textInput', true, true, window, 'hi'); return e.type + ' ' + e.bubbles + ' ' + e.cancelable + ' ' + e.data + ' ' + (e.view === window); })].join(' | ');
+    }));
+    return out;
+}
+
+var staticReport = constructed().concat(clicks(), misc());
+// The label's click left a checkbox focused: the keys below start at the body.
+if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+
+// ---- trusted keys: the test (and the Chrome probe) presses keys, first
+// with nothing focused, then in #field; every key event is logged here.
+var keys = [];
+['keydown', 'keypress', 'textInput', 'input', 'keyup'].forEach(function (t) {
+    document.addEventListener(t, function (e) {
+        var where = e.target === document.body ? 'body' : e.target.id;
+        if (t === 'textInput' || t === 'input') {
+            keys.push(t + ' at ' + where + ' ' + ctor(e) + ' data=' + JSON.stringify(e.data) + ' isTrusted=' + e.isTrusted);
+        } else {
+            keys.push(t + ' at ' + where + ' key=' + JSON.stringify(e.key) + ' keyCode=' + e.keyCode + ' charCode=' + e.charCode + ' which=' + e.which + ' isTrusted=' + e.isTrusted);
+        }
+    }, true);
+});
+
+window.report = function () { return staticReport.concat(keys, ['field value=' + JSON.stringify(document.getElementById('field').value)]).join('\n'); };
+</script>
+</body></html>

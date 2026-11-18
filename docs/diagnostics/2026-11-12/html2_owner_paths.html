@@ -1,0 +1,38 @@
+<!doctype html><html><body><template id="t"><noscript>T</noscript></template><svg id="s"><style>a{}</style></svg>
+<script>
+window.report = function () {
+  var out = [], TEXT = '</noscript><img src=x onerror=1>&';
+  var inert = new DOMParser().parseFromString('<body><div id="d"><noscript>z</noscript></div></body>', 'text/html');
+  // 1. an attribute or text write on a node of another document
+  var n1 = inert.querySelector('noscript'); n1.textContent = TEXT; n1.setAttribute('title', 't');
+  out.push('attribute set on another document\'s noscript: ' + n1.outerHTML);
+  var n1b = inert.createElement('noscript'); n1b.setAttribute('a', '1'); n1b.textContent = TEXT; n1b.setAttribute('b', '2');
+  out.push('attribute set on a detached noscript of another document: ' + n1b.outerHTML);
+  var t1 = inert.createElement('noscript'); var tx = inert.createTextNode('x'); t1.appendChild(tx); tx.data = TEXT;
+  out.push('text data set under another document\'s noscript: ' + t1.outerHTML);
+  // 2. createElementNS on another document
+  var n2 = inert.createElementNS('http://www.w3.org/1999/xhtml', 'noscript'); n2.textContent = TEXT;
+  out.push('createElementNS on another document: ' + n2.outerHTML);
+  var n2p = document.createElementNS('http://www.w3.org/1999/xhtml', 'noscript'); n2p.textContent = TEXT;
+  out.push('createElementNS on the page: ' + n2p.outerHTML);
+  // 3. createContextualFragment in a range of another document
+  var r = inert.createRange(); r.selectNodeContents(inert.getElementById('d'));
+  var f = r.createContextualFragment('<noscript><b>x</b></noscript>');
+  out.push('contextual fragment in another document: ' + f.firstChild.outerHTML + ' children=' + f.firstChild.childNodes.length + ' owner=' + (f.ownerDocument === inert));
+  var f2 = f.firstChild; f2.textContent = TEXT; out.push('  then text set: ' + f2.outerHTML);
+  var rp = document.createRange(); rp.selectNodeContents(document.body);
+  var fp = rp.createContextualFragment('<noscript><b>x</b></noscript>');
+  out.push('contextual fragment in the page: ' + fp.firstChild.outerHTML + ' children=' + fp.firstChild.childNodes.length);
+  // 4. a clone of a template
+  var tpl = document.getElementById('t'), copy = tpl.cloneNode(true);
+  var cn = copy.content.querySelector('noscript'); cn.textContent = TEXT;
+  out.push('clone of a template, its content: ' + cn.outerHTML + ' owner page=' + (copy.content.ownerDocument === document) + ' same as original=' + (copy.content.ownerDocument === tpl.content.ownerDocument));
+  // raw text by namespace: an svg style
+  var st = document.querySelector('#s style'); st.textContent = 'a<b>&';
+  out.push('svg style: ' + document.getElementById('s').innerHTML);
+  var hs = document.createElement('style'); hs.textContent = 'a<b>&'; out.push('html style: ' + hs.outerHTML);
+  var sx = document.createElementNS('http://www.w3.org/2000/svg', 'script'); sx.textContent = 'a<b>&'; out.push('svg script: ' + sx.outerHTML);
+  var mn = document.createElementNS('http://www.w3.org/1998/Math/MathML', 'noscript'); mn.textContent = 'a<b>&'; out.push('mathml noscript: ' + mn.outerHTML);
+  return out.join('\n');
+};
+</script></body></html>

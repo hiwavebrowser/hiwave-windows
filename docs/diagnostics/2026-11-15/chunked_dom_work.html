@@ -1,0 +1,37 @@
+<!doctype html><title>chunked DOM work</title><div id=out></div><script>
+// CLOCK3 item 1, the cost side. A chunked-work loop as pages write it: setTimeout(work, 0), each link
+// appends 20 rows to #out and does about 0.3 ms of script, beside a requestAnimationFrame loop. Runs
+// for 1000 ms (performance.now), then records:
+//   links    chain links in the second
+//   rows     rows appended (20 per link)
+//   frames   animation frames in the second
+// When done it sets rec.done and logs REC <json>.
+// Everything starts in go(): at the window's load event, or, with #manual in the URL, when the
+// harness calls it. RustKit runs a load's timers up to 5 s ahead of real time (its load horizon),
+// so its tests load with #manual and call go() in a live turn, after the load.
+window.rec = { links: 0, rows: 0, frames: 0, done: false };
+var start = 0, out = document.getElementById('out');
+function work() {
+  if (performance.now() - start >= 1000) return;
+  rec.links++;
+  for (var i = 0; i < 20; i++) {
+    var d = document.createElement('div');
+    d.textContent = 'row ' + rec.rows++;
+    out.appendChild(d);
+  }
+  var t0 = performance.now();
+  while (performance.now() - t0 < 0.3) JSON.stringify({ a: [1, 2, 3] });
+  setTimeout(work, 0);
+}
+function frame() {
+  if (performance.now() - start >= 1000) { rec.done = true; console.log('REC ' + JSON.stringify(rec)); return; }
+  rec.frames++;
+  requestAnimationFrame(frame);
+}
+function go() {
+  start = performance.now();
+  setTimeout(work, 0);
+  requestAnimationFrame(frame);
+}
+if (location.hash !== '#manual') addEventListener('load', go);
+</script>

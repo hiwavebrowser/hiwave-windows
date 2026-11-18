@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>template in head</title></head><body>
+<script>
+// Where a <template> in <head>, and what follows it, end up in the parsed
+// tree (HTML 13.2.6.4.4 "in head": a template start tag pushes "in
+// template"; the head stays the current insertion point). Each case is
+// parsed with DOMParser; the line is the head's and the body's children and
+// each template's content.
+var cases = {
+  'scripts then script': '<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title><script>var i = 1;<\/script><template id="u"><script src="a.js"><\/script><script src="b.js"><\/script></template><script src="c.js"><\/script></head><body><p>x</p></body></html>',
+  'then style link meta': '<head><template id="u"><p>in</p></template><style>p{}</style><link rel="x" href="y"><meta name="m" content="c"></head><body></body>',
+  'nested': '<head><template id="u"><template id="v"><b>deep</b></template><i>outer</i></template><script>1<\/script></head><body></body>',
+  'after head': '<head><title>t</title></head><template id="u"><p>after</p></template><body><p>b</p></body>',
+  'div inside': '<head><template id="u"><div>d</div><span>s</span></template><meta name="after"></head><body></body>',
+  'no end tag': '<head><template id="u"><p>unclosed</p></head><body><p>b</p></body>',
+  'formatting stays inside': '<head><template id="u"><b>x</template></head><body>y</body>',
+  'template in body in template': '<head><template id="o"><div><template id="u">i</template><p>after</p></div><s>s</s></template></head><body><p>b</p></body>',
+  'td in body in template': '<head><template id="o"><p>a<template id="u">b</template><td>c</td></template></head><body></body>',
+  'style after head': '<head><title>t</title></head><style>p{color:red}</style><body><p>x</p><div>d</div></body>',
+  'script link meta after head': '<head></head><script>var a = 1;<\/script><link rel="x" href="y"><meta name="m"><body><p>x</p><div>d</div></body>',
+  'style after head, no body tag': '<head></head><style>p{}</style><p>x</p><div>d</div>',
+  'title after head': '<head></head><title>late</title><body><p>x</p></body>',
+  'noframes after head': '<head></head><noframes>n</noframes><body><p>x</p></body>',
+  // A raw text element opened by the "in head" rules from another mode
+  // keeps its text and its end tag (the whole tree is listed for these).
+  'noframes in frameset': '<frameset cols="50%,50%"><noframes>Your browser does not support frames.</noframes><frame src="a.html"><frame src="b.html"></frameset>',
+  'noframes after frameset': '<frameset><frame src="a.html"></frameset><noframes>after <b>x</b></noframes>',
+  'noframes after after frameset': '<frameset><frame src="a.html"></frameset></html><noframes>late</noframes>',
+  'noframes in template': '<head><template id="u"><noframes>n <i>x</i></noframes><p>after</p></template></head><body></body>',
+  'style in table in template': '<body><template id="u"><table><style>td{color:red}</style><tr><td>c</td></tr></table><p>after</p></template></body>'
+};
+var whole = /^(noframes in|noframes after (after )?frameset|style in table)/;
+function deep(node) {
+  if (node.nodeType === 3) return '"' + node.data.replace(/\s+/g, ' ') + '"';
+  if (node.nodeType !== 1) return '?';
+  var kids = Array.prototype.map.call((node.localName === 'template' ? node.content : node).childNodes, deep);
+  return node.localName + (kids.length ? '(' + kids.join(' ') + ')' : '');
+}
+function names(list) { return Array.prototype.map.call(list, function (e) { return e.nodeType === 1 ? e.localName + (e.id ? '#' + e.id : '') : e.nodeType === 3 ? '"' + e.data.replace(/\s+/g, ' ') + '"' : '?'; }).join(','); }
+function tree(node) { return names(node.childNodes); }
+var lines = [];
+Object.keys(cases).forEach(function (k) {
+  var d = new DOMParser().parseFromString(cases[k], 'text/html');
+  if (whole.test(k)) { lines.push(k + ': ' + deep(d.documentElement)); return; }
+  var out = k + ': head=[' + tree(d.head) + '] body=[' + tree(d.body) + ']';
+  Array.prototype.forEach.call(d.querySelectorAll('template'), function (t) { out += ' ' + (t.id || '?') + '.content=[' + tree(t.content) + '] in ' + t.parentNode.localName; });
+  // A template inside another's content is not in the document: list those too.
+  Array.prototype.forEach.call(d.querySelectorAll('template'), function (t) {
+    Array.prototype.forEach.call(t.content.querySelectorAll('template'), function (inner) { out += ' ' + inner.id + '.content=[' + tree(inner.content) + ']'; });
+  });
+  // Table cells anywhere in a template's content (none in Chrome's: a
+  // <td> outside a table is ignored), listed only when there are some.
+  var cells = 0;
+  (function count(root) {
+    Array.prototype.forEach.call(root.querySelectorAll('td'), function () { cells++; });
+    Array.prototype.forEach.call(root.querySelectorAll('template'), function (t) { count(t.content); });
+  })(d);
+  if (cells) out += ' cells=' + cells;
+  lines.push(out);
+});
+window.report = function () { return lines.join('\n'); };
+</script></body></html>

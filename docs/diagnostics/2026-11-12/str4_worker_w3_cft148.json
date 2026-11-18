@@ -1,0 +1,44 @@
+{
+ "urlShape": [
+  true,
+  "function"
+ ],
+ "blob": [
+  "up",
+  {
+   "echo": "blob",
+   "proto": "blob:",
+   "nm": "bn"
+  }
+ ],
+ "revokedAfterNew": [
+  "up",
+  {
+   "echo": "revokedAfterNew",
+   "proto": "blob:",
+   "nm": ""
+  }
+ ],
+ "data": [
+  "up",
+  {
+   "echo": "data",
+   "proto": "data:",
+   "nm": ""
+  }
+ ],
+ "dataB64": [
+  "up",
+  {
+   "echo": "dataB64",
+   "proto": "data:",
+   "nm": ""
+  }
+ ],
+ "typedBlobHtml": [
+  1
+ ],
+ "revokedBefore": [
+  "error:Event"
+ ]
+}

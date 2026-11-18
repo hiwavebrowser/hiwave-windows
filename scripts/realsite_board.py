@@ -561,6 +561,14 @@ def fmt_row(r):
         r["id"], mark(r["loads"]), mark(rd), ratio, mark(lk), diff, noise, r["points"], why[:60])
 
 
+def settle_cut_short(rows):
+    """Sites whose RustKit capture stopped its settle at the real-time budget (parity-capture's
+    `settle_stats.cut_short`): how far the page's virtual time got depends on the machine's speed, so
+    these captures are not comparable run to run. Named in the summary; scores are unchanged."""
+    return [r["id"] for r in rows
+            if ((r.get("rustkit") or {}).get("settle_stats") or {}).get("cut_short")]
+
+
 def summarize(rows, ts, width, height, all_ids, oracle=None):
     caps = [c for r in rows for c in r["chrome"] if "oracle_headless" in c]
     headless = (all(c["oracle_headless"] for c in caps) if caps
@@ -588,6 +596,7 @@ def summarize(rows, ts, width, height, all_ids, oracle=None):
         "blocked": {r["id"]: "%s/%s" % (r["access"]["vendor"], r["access"]["status"])
                     for r in rows if r["access"]["blocked"]},
         "per_site": {r["id"]: r["points"] for r in rows},
+        "settle_cut_short": settle_cut_short(rows),
     }
     # n/scorable (A2): points on the sites the board can score at all, i.e.
     # neither RustKit's access probe nor Chrome's oracle was blocked.
@@ -679,6 +688,8 @@ def main():
         summary["looks_right"], ", ".join(summary["looks_right_unstable"]) or "none",
         ", ".join(summary["oracle_failed"]) or "none"))
     print("BLOCKED %s" % (", ".join("%s (%s)" % kv for kv in summary["blocked"].items()) or "none"))
+    print("SETTLE CUT SHORT %s" % (", ".join(summary["settle_cut_short"]) or "none")
+          + ("   (timing-bound: not comparable run to run)" if summary["settle_cut_short"] else ""))
     print("ORACLE BLOCKED %s" % (
         ", ".join("%s (%s)" % kv for kv in summary["oracle_blocked"].items()) or "none"))
     print("SCORABLE %d/%d on %d sites (%s)   oracle: %s" % (

@@ -245,6 +245,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayref"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -644,8 +650,6 @@ dependencies = [
 [[package]]
 name = "boa_ast"
 version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9221b0a090572b4a118b46c5874c0781fe4bc9546b85f0a615b8bfb609ca4ed7"
 dependencies = [
  "bitflags 2.13.2",
  "boa_interner",
@@ -757,8 +761,6 @@ dependencies = [
 [[package]]
 name = "boa_parser"
 version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "641e81b3c8cbb7a2140547fb3ea534e9edf210b4e8c920b5fa864a919e11fbcf"
 dependencies = [
  "bitflags 2.13.2",
  "boa_ast",
@@ -2652,6 +2654,7 @@ dependencies = [
  "http",
  "log",
  "muda",
+ "rand 0.8.5",
  "rfd",
  "rustkit-bindings",
  "rustkit-core",
@@ -5336,6 +5339,7 @@ version = "0.1.0"
 dependencies = [
  "num_cpus",
  "rustkit-canvas",
+ "rustkit-common",
  "rustkit-core",
  "rustkit-css",
  "rustkit-dom",
@@ -5355,6 +5359,7 @@ dependencies = [
  "rustkit-css",
  "rustkit-dom",
  "thiserror 1.0.69",
+ "tiny-skia",
  "tracing",
  "tracing-subscriber",
 ]
@@ -5454,6 +5459,7 @@ dependencies = [
  "cocoa 0.25.0",
  "futures",
  "http",
+ "libc",
  "objc",
  "raw-window-handle",
  "rustkit-bindings",
@@ -5551,6 +5557,7 @@ dependencies = [
 name = "rustkit-js"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "boa_engine",
  "boa_gc",
  "serde_json",
@@ -5621,10 +5628,15 @@ dependencies = [
  "hashbrown 0.14.5",
  "png",
  "pollster",
+ "rustkit-bindings",
+ "rustkit-canvas",
  "rustkit-common",
  "rustkit-css",
+ "rustkit-dom",
+ "rustkit-js",
  "rustkit-layout",
  "rustkit-text",
+ "serde_json",
  "thiserror 1.0.69",
  "tracing",
  "tracing-subscriber",
@@ -6119,6 +6131,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "strict-num"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
+
+[[package]]
 name = "string_cache"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6544,6 +6562,31 @@ dependencies = [
  "zerofrom",
  "zerotrie",
  "zerovec",
+]
+
+[[package]]
+name = "tiny-skia"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83d13394d44dae3207b52a326c0c85a8bf87f1541f23b0d143811088497b09ab"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "bytemuck",
+ "cfg-if",
+ "log",
+ "tiny-skia-path",
+]
+
+[[package]]
+name = "tiny-skia-path"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c9e7fc0c2e86a30b117d0462aa261b72b7a99b7ebd7deb3a14ceda95c5bdc93"
+dependencies = [
+ "arrayref",
+ "bytemuck",
+ "strict-num",
 ]
 
 [[package]]

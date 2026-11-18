@@ -1,0 +1,93 @@
+{
+ "chrome": "148.0.7778.216",
+ "cases": [
+  {
+   "name": "same-origin-img",
+   "script": "img('/img.png', null, function (i) { x.drawImage(i, 0, 0); read(); })",
+   "chrome": {
+    "name": "ok",
+    "message": ""
+   }
+  },
+  {
+   "name": "cross-origin-img",
+   "script": "img(B + '/img.png', null, function (i) { x.drawImage(i, 0, 0); read(); })",
+   "chrome": {
+    "name": "SecurityError",
+    "message": "Failed to execute 'getImageData' on 'CanvasRenderingContext2D': The canvas has been tainted by cross-origin data."
+   }
+  },
+  {
+   "name": "data-url-img",
+   "script": "img('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8AAQv8ZYAwAQ84H+VjtZqAAAAAASUVORK5CYII=', null, function (i) { x.drawImage(i, 0, 0); read(); })",
+   "chrome": {
+    "name": "ok",
+    "message": ""
+   }
+  },
+  {
+   "name": "cors-anonymous-img",
+   "script": "img(B + '/img.png?cors=1', 'anonymous', function (i) { x.drawImage(i, 0, 0); read(); })",
+   "chrome": {
+    "name": "ok",
+    "message": ""
+   }
+  },
+  {
+   "name": "cross-origin-pattern",
+   "script": "img(B + '/img.png', null, function (i) { x.fillStyle = x.createPattern(i, 'repeat'); x.fillRect(0, 0, 4, 4); read(); })",
+   "chrome": {
+    "name": "SecurityError",
+    "message": "Failed to execute 'getImageData' on 'CanvasRenderingContext2D': The canvas has been tainted by cross-origin data."
+   }
+  },
+  {
+   "name": "tainted-canvas-drawn",
+   "script": "img(B + '/img.png', null, function (i) { var o = document.createElement('canvas'); o.width = o.height = 4; o.getContext('2d').drawImage(i, 0, 0); x.drawImage(o, 0, 0); read(); })",
+   "chrome": {
+    "name": "SecurityError",
+    "message": "Failed to execute 'getImageData' on 'CanvasRenderingContext2D': The canvas has been tainted by cross-origin data."
+   }
+  },
+  {
+   "name": "tainted-canvas-pattern",
+   "script": "img(B + '/img.png', null, function (i) { var o = document.createElement('canvas'); o.width = o.height = 4; o.getContext('2d').drawImage(i, 0, 0); x.fillStyle = x.createPattern(o, 'repeat'); x.fillRect(0, 0, 4, 4); read(); })",
+   "chrome": {
+    "name": "SecurityError",
+    "message": "Failed to execute 'getImageData' on 'CanvasRenderingContext2D': The canvas has been tainted by cross-origin data."
+   }
+  },
+  {
+   "name": "cross-origin-pattern-unused",
+   "script": "img(B + '/img.png', null, function (i) { x.createPattern(i, 'repeat'); read(); })",
+   "chrome": {
+    "name": "ok",
+    "message": ""
+   }
+  },
+  {
+   "name": "redirect-same-to-other-origin",
+   "script": "img('/to-other', null, function (i) { x.drawImage(i, 0, 0); read(); })",
+   "chrome": {
+    "name": "SecurityError",
+    "message": "Failed to execute 'getImageData' on 'CanvasRenderingContext2D': The canvas has been tainted by cross-origin data."
+   }
+  },
+  {
+   "name": "redirect-same-to-same-origin",
+   "script": "img('/to-same', null, function (i) { x.drawImage(i, 0, 0); read(); })",
+   "chrome": {
+    "name": "ok",
+    "message": ""
+   }
+  },
+  {
+   "name": "huge-get-image-data",
+   "script": "try { x.getImageData(0, 0, 100000, 100000); done('ok', ''); } catch (e) { done(e.name, e.message); }",
+   "chrome": {
+    "name": "RangeError",
+    "message": "Failed to execute 'getImageData' on 'CanvasRenderingContext2D': Out of memory at ImageData creation"
+   }
+  }
+ ]
+}

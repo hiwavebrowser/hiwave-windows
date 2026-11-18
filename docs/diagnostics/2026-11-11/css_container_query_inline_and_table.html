@@ -1,0 +1,21 @@
+<!DOCTYPE html><html><head><style>
+body { margin: 0; font-size: 0 }
+.b { display: inline-block; width: 100px; height: 10px }
+.s { container-type: inline-size }
+.k { display: inline-block; width: 10px; height: 10px }
+@container (min-width: 1px) { .k { width: 30px } }
+</style></head><body>
+<div><div id="w1" style="display:inline-block"><span class="s"><i class="b"></i></span></div></div>
+<div style="overflow:hidden"><div id="w2" style="float:left"><span class="s"><i class="b"></i></span></div></div>
+<div style="display:flex;width:800px"><div id="w3" style="flex:0 0 auto"><span class="s"><i class="b"></i></span></div></div>
+<div style="display:grid;grid-template-columns:auto 1fr;width:800px"><div id="w4"><span class="s"><i class="b"></i></span></div></div>
+<div style="display:flex;width:800px"><span id="w5" class="s"><i class="b"></i></span></div>
+<div style="display:grid;grid-template-columns:auto 1fr;width:800px"><span id="w6" class="s"><i class="b"></i></span></div>
+<div style="width:600px"><span class="s"><i class="k" id="k1"></i></span></div>
+<div style="width:600px"><div class="s" style="display:table"><i class="k" id="k2"></i></div></div>
+<div style="width:600px"><div class="s" style="display:table;width:300px"><i class="k" id="k3"></i></div></div>
+<div style="width:600px"><span class="s" style="display:inline-block;width:300px"><i class="k" id="k4"></i></span></div>
+<div style="width:600px"><div class="s"><i class="k" id="k5"></i></div></div>
+<div style="width:600px"><div class="s" style="display:inline-table"><i class="k" id="k6"></i></div></div>
+<div style="width:600px"><div style="display:table"><div style="display:table-cell;width:300px" class="s"><i class="k" id="k7"></i></div></div></div>
+</body></html>

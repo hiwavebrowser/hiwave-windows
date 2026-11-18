@@ -101,9 +101,7 @@
   {
    "name": "dispatchEvent wants an Event",
    "js": "var t = new EventTarget(), r; try { t.dispatchEvent({ type: 'x' }); r = 'no throw'; } catch (e) { r = e.name; } r",
-   "chrome": "TypeError",
-   "engine": "no throw",
-   "gap": "dispatchEvent takes any object with a type, for every target, as it did before; not changed here"
+   "chrome": "TypeError"
   }
  ]
 }

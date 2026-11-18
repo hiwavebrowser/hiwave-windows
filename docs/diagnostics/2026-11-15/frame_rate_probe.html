@@ -1,0 +1,36 @@
+<!doctype html><title>frame rate probe</title><div id=box style="width:10px;height:10px;background:#08f"></div><script>
+// PACE2: how many animation frames and 10 ms timer links a page gets per wall second. A
+// requestAnimationFrame loop that moves a box, beside a setTimeout(link, 10) chain, for 3000 ms of
+// performance.now. Records:
+//   frames   animation frames in the window
+//   timers   timer links in the window
+//   wallMs   performance.now span of the window
+// When done it sets rec.done and logs REC <json>.
+// Everything starts in go(): at the window's load event, or, with #manual in the URL, when the
+// harness calls it (RustKit runs a load's timers up to 5 s ahead of real time, its load horizon).
+window.rec = { frames: 0, timers: 0, wallMs: 0, done: false };
+var start = 0, box = document.getElementById('box'), SPAN = 3000;
+function link() {
+  if (performance.now() - start >= SPAN) return;
+  rec.timers++;
+  setTimeout(link, 10);
+}
+function frame(t) {
+  var now = performance.now();
+  if (now - start >= SPAN) {
+    rec.wallMs = Math.round(now - start);
+    rec.done = true;
+    console.log('REC ' + JSON.stringify(rec));
+    return;
+  }
+  rec.frames++;
+  box.style.marginLeft = (rec.frames % 100) + 'px';
+  requestAnimationFrame(frame);
+}
+function go() {
+  start = performance.now();
+  setTimeout(link, 10);
+  requestAnimationFrame(frame);
+}
+if (location.hash !== '#manual') addEventListener('load', go);
+</script>

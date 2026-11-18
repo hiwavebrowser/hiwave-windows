@@ -1,0 +1,33 @@
+<!DOCTYPE html><html><head><style>
+body { margin: 0 }
+.shell { display: flex; align-items: flex-start }
+.side { width: 200px; flex: none }
+main { flex: 1 1 auto; min-width: 0; padding-left: 32px }
+.outer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 300px); gap: 24px; padding: 16px }
+.col { min-width: 0; display: flex; flex-direction: column; gap: 48px }
+.cq { container-type: inline-size; container-name: gridrow }
+.row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px }
+.inner { container-type: inline-size; container-name: other; width: 100px }
+.named-only { container-name: gridrow }
+.flexrow { display: flex; width: 800px }
+.flexrow > .pad { width: 100px; flex: none }
+.flexrow > .cq { flex: 1 }
+@container gridrow (width >= 42rem) {
+  .row { grid-template-columns: repeat(12, minmax(0, 1fr)) }
+  .a { grid-column: span 7 } .b { grid-column: span 5 }
+  #k1 { height: 11px } #k4 { height: 14px } #k6 { height: 16px } #k7 { height: 17px }
+}
+@container gridrow (width >= 56rem) { #k2 { height: 12px } }
+@container (width >= 30rem) { #k3 { height: 13px } }
+@container other (width >= 42rem) { #k5 { height: 15px } }
+</style></head><body>
+<div class="shell"><div class="side"></div><main><div class="outer">
+  <div class="col"><div><div class="cq" id="c1">
+    <div class="row"><div class="a" id="a"><div id="k1"></div><div id="k2"></div><div id="k3"></div></div>
+    <div class="b" id="b"><div class="inner"><div id="k4"></div><div id="k5"></div></div>
+    <div class="named-only"><div id="k6"></div></div></div></div>
+  </div></div></div>
+  <div class="sidebar"><div style="width: 300px"></div></div>
+</div></main></div>
+<div class="flexrow"><div class="pad"></div><div class="cq" id="c2"><div id="k7"></div></div></div>
+</body></html>

@@ -1,0 +1,30 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() of form_setter_calls.html
+# after the user steps (Playwright mouse.click at window.center(id), keyboard.type / keyboard.press),
+# window.scripted(), window.hostile(), and four more user clicks. The driver is the list of steps in
+# form_setter_calls_tests.rs.
+user clicks box: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@box input@box change@box] box=true box2=false r1=true r2=false field="" area="" ft="default" fc=true fr=false nft="named"
+user clicks lab: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@lab click@box2 input@box2 change@box2] box=true box2=true r1=true r2=false field="" area="" ft="default" fc=true fr=false nft="named"
+user clicks r2: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@r2 input@r2 change@r2] box=true box2=true r1=false r2=true field="" area="" ft="default" fc=true fr=false nft="named"
+user clicks r1: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@r1 input@r1 change@r1] box=true box2=true r1=true r2=false field="" area="" ft="default" fc=true fr=false nft="named"
+user clicks box again: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@box input@box change@box] box=false box2=true r1=true r2=false field="" area="" ft="default" fc=true fr=false nft="named"
+Space on focused box: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@box input@box change@box] box=true box2=true r1=true r2=false field="" area="" ft="default" fc=true fr=false nft="named"
+user types ab, Backspace in field: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@field input@field input@field input@field] box=true box2=true r1=true r2=false field="a" area="" ft="default" fc=true fr=false nft="named"
+user types x in area: checked-sets=0 value-sets=0 textarea-sets=0 events=[change@field click@area input@area] box=true box2=true r1=true r2=false field="a" area="x" ft="default" fc=true fr=false nft="named"
+user types ! in ft: checked-sets=0 value-sets=0 textarea-sets=0 events=[change@area click@ft input@ft] box=true box2=true r1=true r2=false field="a" area="x" ft="default!" fc=true fr=false nft="named"
+user clicks fc, fr: checked-sets=0 value-sets=0 textarea-sets=0 events=[change@ft click@fc input@fc change@fc click@fr input@fr change@fr] box=true box2=true r1=true r2=false field="a" area="x" ft="default!" fc=false fr=true nft="named"
+user clicks the reset button: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@rst reset@form] box=true box2=true r1=true r2=false field="a" area="x" ft="default" fc=true fr=false nft="named"
+box.click(): checked-sets=0 value-sets=0 textarea-sets=0 events=[click@box(untrusted) input@box change@box] box=false box2=true r1=true r2=false field="a" area="x" ft="default" fc=true fr=false nft="named"
+lab.click(): checked-sets=0 value-sets=0 textarea-sets=0 events=[click@lab(untrusted) click@box2(untrusted) input@box2 change@box2] box=false box2=false r1=true r2=false field="a" area="x" ft="default" fc=true fr=false nft="named"
+r2.click(): checked-sets=0 value-sets=0 textarea-sets=0 events=[click@r2(untrusted) input@r2 change@r2] box=false box2=false r1=false r2=true field="a" area="x" ft="default" fc=true fr=false nft="named"
+dispatch click at r1: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@r1(untrusted) input@r1 change@r1] box=false box2=false r1=true r2=false field="a" area="x" ft="default" fc=true fr=false nft="named"
+fc.click() cancelled: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@fc(untrusted)] box=false box2=false r1=true r2=false field="a" area="x" ft="default" fc=true fr=false nft="named"
+script sets ft, fc, fr: checked-sets=2 value-sets=1 textarea-sets=0 events=[] box=false box2=false r1=true r2=false field="a" area="x" ft="edited" fc=false fr=true nft="named"
+form.reset(): checked-sets=0 value-sets=0 textarea-sets=0 events=[reset@form] box=false box2=false r1=true r2=false field="a" area="x" ft="default" fc=true fr=false nft="named"
+script sets field, area, box: checked-sets=1 value-sets=1 textarea-sets=1 events=[] box=false box2=false r1=true r2=false field="by script" area="by script" ft="default" fc=true fr=false nft="named"
+r2.click() cancelled: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@r2(untrusted) inside:true/false] box=false box2=false r1=true r2=false field="by script" area="by script" ft="default" fc=true fr=false nft="named"
+radios in a detached tree: checked-sets=1 value-sets=0 textarea-sets=0 events=[detached:false/true] box=false box2=false r1=true r2=false field="by script" area="by script" ft="default" fc=true fr=false nft="named"
+the page replaces click, reset, dispatchEvent and Event: checked-sets=0 value-sets=2 textarea-sets=0 events=[] box=false box2=false r1=true r2=false field="by script" area="by script" ft="edited again" fc=true fr=false nft="typed" hits=0
+user clicks lab: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@lab click@box2 input@box2 change@box2] box=false box2=true r1=true r2=false field="by script" area="by script" ft="edited again" fc=true fr=false nft="typed" hits=0
+user clicks the reset button of the form whose reset is an input: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@nfb reset@nf] box=false box2=true r1=true r2=false field="by script" area="by script" ft="edited again" fc=true fr=false nft="named" hits=0
+user clicks the reset button: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@rst reset@form] box=false box2=true r1=true r2=false field="by script" area="by script" ft="default" fc=true fr=false nft="named" hits=0
+user clicks box: checked-sets=0 value-sets=0 textarea-sets=0 events=[click@box input@box change@box] box=true box2=true r1=true r2=false field="by script" area="by script" ft="default" fc=true fr=false nft="named" hits=0

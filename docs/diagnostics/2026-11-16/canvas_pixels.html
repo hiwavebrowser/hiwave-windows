@@ -1,0 +1,158 @@
+<!doctype html><html><head><meta charset="utf-8"><title>canvas pixels probe</title></head><body>
+<script>
+// What getImageData, putImageData, createImageData and ImageData do, case by case: each case returns
+// a short string, an exception its name. Our own probe; the record is window.__out.
+var out = {};
+function canvas(w, h) { var c = document.createElement("canvas"); c.width = w || 8; c.height = h || 8; return c; }
+function ctx(w, h) { return canvas(w, h).getContext("2d"); }
+function px(d, i) { i = (i || 0) * 4; return [d[i], d[i + 1], d[i + 2], d[i + 3]].join(","); }
+function t(name, f) { try { out[name] = String(f()); } catch (e) { out[name] = "threw " + e.name; } }
+function filled(w, h) { var x = ctx(w, h); x.fillStyle = "rgb(10, 20, 30)"; x.fillRect(0, 0, w || 8, h || 8); return x; }
+
+// Before any canvas is used: nothing of the engine's own is on the window.
+t("no host names on the window", function () { return Object.getOwnPropertyNames(window).filter(function (n) { return /^__/.test(n); }).length; });
+
+// The object.
+t("data is a Uint8ClampedArray", function () { var d = ctx().getImageData(0, 0, 2, 3).data; return (d instanceof Uint8ClampedArray) + " " + Object.prototype.toString.call(d) + " " + (Object.getPrototypeOf(d) === Uint8ClampedArray.prototype); });
+t("data is the same object each read", function () { var i = ctx().getImageData(0, 0, 2, 3); return i.data === i.data; });
+t("length is w*h*4", function () { var i = ctx().getImageData(0, 0, 2, 3); return [i.width, i.height, i.data.length, i.data.byteLength, i.data.byteOffset, i.data.buffer.byteLength].join(); });
+t("order is RGBA", function () { return px(filled().getImageData(0, 0, 1, 1).data); });
+t("a fresh canvas is transparent black", function () { return px(ctx().getImageData(0, 0, 1, 1).data); });
+t("ImageData members", function () { var i = ctx().getImageData(0, 0, 1, 1); return Object.prototype.toString.call(i) + " " + Object.keys(Object.getOwnPropertyDescriptors(ImageData.prototype)).sort().join(); });
+t("data cannot be assigned", function () { "use strict"; var i = ctx().getImageData(0, 0, 1, 1), d = i.data; try { i.data = 1; } catch (e) { return "threw " + e.name; } return i.data === d; });
+t("colorSpace", function () { var x = ctx(); return x.getImageData(0, 0, 1, 1).colorSpace + " " + x.createImageData(1, 1).colorSpace + " " + new ImageData(1, 1).colorSpace; });
+t("colorSpace asked for", function () { var x = ctx(); return x.getImageData(0, 0, 1, 1, { colorSpace: "display-p3" }).colorSpace + " " + new ImageData(1, 1, { colorSpace: "display-p3" }).colorSpace; });
+t("colorSpace unknown", function () { return ctx().getImageData(0, 0, 1, 1, { colorSpace: "nope" }).colorSpace; });
+t("each read is a new copy", function () { var x = filled(), a = x.getImageData(0, 0, 1, 1), b = x.getImageData(0, 0, 1, 1); a.data[0] = 99; return (a !== b) + " " + (a.data !== b.data) + " " + b.data[0]; });
+
+// Writes are not live.
+t("a write to data does not change the canvas", function () { var x = filled(), a = x.getImageData(0, 0, 1, 1); a.data[0] = 200; return px(x.getImageData(0, 0, 1, 1).data); });
+t("putImageData changes it", function () { var x = filled(), a = x.getImageData(0, 0, 1, 1); a.data[0] = 200; x.putImageData(a, 0, 0); return px(x.getImageData(0, 0, 1, 1).data) + " | " + px(x.getImageData(1, 0, 1, 1).data); });
+t("a later write to data after put is not seen", function () { var x = filled(), a = x.getImageData(0, 0, 1, 1); x.putImageData(a, 0, 0); a.data[1] = 77; return px(x.getImageData(0, 0, 1, 1).data); });
+t("values are clamped and rounded", function () { var d = new ImageData(1, 1).data; d[0] = 300; d[1] = -5; d[2] = 1.5; d[3] = 2.5; return px(d); });
+
+// Alpha: the canvas keeps premultiplied pixels.
+[0, 1, 2, 16, 127, 128, 254, 255].forEach(function (a) {
+  t("round trip of 200,100,50 at alpha " + a, function () { var x = ctx(), i = x.createImageData(1, 1); i.data.set([200, 100, 50, a]); x.putImageData(i, 0, 0); return px(x.getImageData(0, 0, 1, 1).data); });
+});
+t("round trip of 255,255,255 at alpha 1", function () { var x = ctx(), i = x.createImageData(1, 1); i.data.set([255, 255, 255, 1]); x.putImageData(i, 0, 0); return px(x.getImageData(0, 0, 1, 1).data); });
+t("round trip of 3,2,1 at alpha 128", function () { var x = ctx(), i = x.createImageData(1, 1); i.data.set([3, 2, 1, 128]); x.putImageData(i, 0, 0); return px(x.getImageData(0, 0, 1, 1).data); });
+t("a half transparent fill read back", function () { var x = ctx(); x.fillStyle = "rgba(200, 100, 50, 0.5)"; x.fillRect(0, 0, 8, 8); return px(x.getImageData(0, 0, 1, 1).data); });
+t("put replaces, it does not blend", function () { var x = filled(), i = x.createImageData(1, 1); i.data.set([200, 100, 50, 128]); x.putImageData(i, 0, 0); return px(x.getImageData(0, 0, 1, 1).data); });
+t("put ignores transform, alpha, clip and composite", function () { var x = filled(), i = x.createImageData(2, 2); for (var k = 0; k < 16; k += 4) i.data.set([1, 2, 3, 255], k); x.translate(4, 4); x.scale(2, 2); x.globalAlpha = 0.5; x.beginPath(); x.rect(0, 0, 0.1, 0.1); x.clip(); x.putImageData(i, 1, 1); x.setTransform(1, 0, 0, 1, 0, 0); var d = x.getImageData(0, 0, 8, 8).data, n = 0; for (var q = 0; q < d.length; q += 4) if (d[q] === 1) n++; return n + " at " + px(d, 9) + " and " + px(d, 0); });
+
+// Rects.
+function grid() { var x = ctx(4, 4), i = x.createImageData(4, 4); for (var k = 0; k < 16; k++) i.data.set([k + 1, 0, 0, 255], k * 4); x.putImageData(i, 0, 0); return x; }
+function reds(i) { var s = []; for (var k = 0; k < i.data.length; k += 4) s.push(i.data[k] + (i.data[k + 3] ? "" : "t")); return i.width + "x" + i.height + ":" + s.join(" "); }
+t("read inside", function () { return reds(grid().getImageData(1, 1, 2, 2)); });
+t("read past the right and bottom", function () { return reds(grid().getImageData(3, 3, 2, 2)); });
+t("read before the left and top", function () { return reds(grid().getImageData(-1, -1, 2, 2)); });
+t("read wholly outside", function () { return reds(grid().getImageData(10, 10, 2, 1)); });
+t("read with a negative width and height", function () { return reds(grid().getImageData(2, 2, -2, -1)); });
+t("read with fractions", function () { return reds(grid().getImageData(1.7, 1.2, 1.9, 1.5)); });
+t("read with strings and missing options", function () { return reds(grid().getImageData("1", "1", "1", "1", undefined)); });
+t("read with a zero width", function () { return grid().getImageData(0, 0, 0, 1); });
+t("read with a zero height", function () { return grid().getImageData(0, 0, 1, 0); });
+t("read with a width under one", function () { return grid().getImageData(0, 0, 0.5, 1); });
+t("read with NaN", function () { return grid().getImageData(0, 0, NaN, 1); });
+t("read with Infinity", function () { return grid().getImageData(Infinity, 0, 1, 1); });
+t("read with three arguments", function () { return grid().getImageData(0, 0, 1); });
+t("read message for zero", function () { try { grid().getImageData(0, 0, 0, 1); } catch (e) { return e.name + " " + e.code + " " + (e instanceof DOMException); } });
+function target() { var x = ctx(4, 4); x.fillStyle = "rgb(9, 0, 0)"; x.fillRect(0, 0, 4, 4); return x; }
+function two() { var i = new ImageData(2, 2); for (var k = 0; k < 4; k++) i.data.set([100 + k, 0, 0, 255], k * 4); return i; }
+t("put at 1,1", function () { var x = target(); x.putImageData(two(), 1, 1); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put partly past the edge", function () { var x = target(); x.putImageData(two(), 3, 3); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put at negative", function () { var x = target(); x.putImageData(two(), -1, -1); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with a dirty rect", function () { var x = target(); x.putImageData(two(), 1, 1, 1, 0, 1, 2); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with a negative dirty size", function () { var x = target(); x.putImageData(two(), 1, 1, 2, 2, -1, -2); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with a dirty rect past the image", function () { var x = target(); x.putImageData(two(), 1, 1, 1, 1, 5, 5); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with a negative dirty origin", function () { var x = target(); x.putImageData(two(), 1, 1, -1, -1, 2, 2); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with an empty dirty rect", function () { var x = target(); x.putImageData(two(), 1, 1, 0, 0, 0, 2); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with fractions", function () { var x = target(); x.putImageData(two(), 1.9, 0.5); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with NaN", function () { var x = target(); x.putImageData(two(), NaN, 0); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with Infinity", function () { var x = target(); x.putImageData(two(), Infinity, 0); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with a NaN dirty width", function () { var x = target(); x.putImageData(two(), 0, 0, 0, 0, NaN, 2); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with an Infinity dirty origin", function () { var x = target(); x.putImageData(two(), 0, 0, Infinity, 0, 2, 2); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with six arguments", function () { var x = target(); x.putImageData(two(), 0, 0, 0, 0, 1); return "ok"; });
+t("put with eight arguments", function () { var x = target(); x.putImageData(two(), 1, 1, 0, 0, 2, 2, 9); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with five arguments", function () { var x = target(); x.putImageData(two(), 0, 0, 0, 0); return reds(x.getImageData(0, 0, 4, 4)); });
+t("put with two arguments", function () { target().putImageData(two(), 0); return "ok"; });
+t("put of a plain object", function () { target().putImageData({ width: 1, height: 1, data: new Uint8ClampedArray(4) }, 0, 0); return "ok"; });
+t("put of null", function () { target().putImageData(null, 0, 0); return "ok"; });
+t("put returns", function () { return target().putImageData(two(), 0, 0); });
+
+// Making one.
+t("createImageData(w, h)", function () { var i = ctx().createImageData(2, 3); return reds(i) + " " + (i.data instanceof Uint8ClampedArray); });
+t("createImageData negative", function () { return reds(ctx().createImageData(-2, -1)); });
+t("createImageData fractions", function () { var i = ctx().createImageData(1.9, 2.1); return i.width + "x" + i.height; });
+t("createImageData under one", function () { var i = ctx().createImageData(0.5, 1); return i.width + "x" + i.height; });
+t("createImageData zero", function () { return ctx().createImageData(0, 1); });
+t("createImageData of an ImageData", function () { var a = two(), i = ctx().createImageData(a); return reds(i) + " " + (i.data !== a.data); });
+t("createImageData one number", function () { return ctx().createImageData(1); });
+t("new ImageData(w, h)", function () { return reds(new ImageData(2, 1)); });
+t("new ImageData zero width", function () { return new ImageData(0, 1); });
+t("new ImageData zero height", function () { return new ImageData(1, 0); });
+t("new ImageData no arguments", function () { return new ImageData(); });
+t("new ImageData one argument", function () { return new ImageData(1); });
+t("ImageData called without new", function () { return ImageData(1, 1); });
+t("new ImageData(array, w)", function () { var a = new Uint8ClampedArray(16), i = new ImageData(a, 2); return i.width + "x" + i.height + " " + (i.data === a); });
+t("new ImageData(array, w, h)", function () { var a = new Uint8ClampedArray(16), i = new ImageData(a, 4, 1); return i.width + "x" + i.height + " " + (i.data === a); });
+t("new ImageData(array, w) of a wrong length", function () { return new ImageData(new Uint8ClampedArray(15), 2); });
+t("new ImageData(array, w) not a multiple of the row", function () { return new ImageData(new Uint8ClampedArray(16), 3); });
+t("new ImageData(array, w, h) that disagree", function () { return new ImageData(new Uint8ClampedArray(16), 2, 3); });
+t("new ImageData(empty array, w)", function () { return new ImageData(new Uint8ClampedArray(0), 1); });
+t("new ImageData(array, 0)", function () { return new ImageData(new Uint8ClampedArray(4), 0); });
+t("new ImageData(Uint8Array, w)", function () { return new ImageData(new Uint8Array(4), 1); });
+t("new ImageData(plain array, w)", function () { return new ImageData([0, 0, 0, 0], 1); });
+t("new ImageData of a view on part of a buffer", function () { var b = new ArrayBuffer(16), a = new Uint8ClampedArray(b, 4, 8), i = new ImageData(a, 2); a[0] = 7; a[3] = 255; var x = ctx(); x.putImageData(i, 0, 0); return i.data.byteOffset + " " + px(x.getImageData(0, 0, 1, 1).data); });
+t("the array given is shared", function () { var a = new Uint8ClampedArray(4), i = new ImageData(a, 1); a[0] = 5; a[3] = 255; var x = ctx(); x.putImageData(i, 0, 0); return px(x.getImageData(0, 0, 1, 1).data); });
+
+// A buffer that can change its length, and sizes past what a canvas holds.
+t("new ImageData of an array on a resizable buffer", function () { return new ImageData(new Uint8ClampedArray(new ArrayBuffer(4, { maxByteLength: 8 })), 1).data.length; });
+t("new ImageData of a fixed-length array on a resizable buffer", function () { return new ImageData(new Uint8ClampedArray(new ArrayBuffer(8, { maxByteLength: 16 }), 0, 4), 1).data.length; });
+t("read of 32768 x 32768", function () { return ctx().getImageData(0, 0, 32768, 32768).data.length; });
+t("read of 23171 x 23171", function () { return ctx().getImageData(0, 0, 23171, 23171).data.length; });
+t("read of 65536 x 1", function () { return ctx().getImageData(0, 0, 65536, 1).data.length; });
+t("new ImageData(32768, 32768)", function () { return new ImageData(32768, 32768).data.length; });
+t("createImageData(32768, 32768)", function () { return ctx().createImageData(32768, 32768).data.length; });
+
+// A buffer that has gone.
+function gone(i) { if (typeof i.data.buffer.transfer === "function") i.data.buffer.transfer(); else structuredClone(i.data.buffer, { transfer: [i.data.buffer] }); return i; }
+t("a detached buffer: length", function () { var i = gone(new ImageData(1, 1)); return i.data.length + " " + i.width + "x" + i.height; });
+t("a detached buffer: put", function () { var x = target(); x.putImageData(gone(two()), 0, 0); return reds(x.getImageData(0, 0, 4, 4)); });
+t("a detached buffer: createImageData of it", function () { return reds(ctx().createImageData(gone(two()))); });
+t("a detached array given to new ImageData", function () { var a = new Uint8ClampedArray(4); a.buffer.transfer ? a.buffer.transfer() : structuredClone(a.buffer, { transfer: [a.buffer] }); return new ImageData(a, 1); });
+
+// A page that replaced the built-ins the pixels are made of.
+t("with Uint8ClampedArray replaced", function () {
+  var real = window.Uint8ClampedArray, set = real.prototype.set, tag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(real.prototype), "length"), calls = 0;
+  window.Uint8ClampedArray = function () { calls++; throw new Error("the page's"); };
+  real.prototype.set = function () { calls++; throw new Error("the page's"); };
+  Object.defineProperty(Object.getPrototypeOf(real.prototype), "length", { get: function () { calls++; return 0; }, configurable: true });
+  try {
+    var x = filled(), i = x.getImageData(0, 0, 1, 1), ok = i.data instanceof real, first = [i.data[0], i.data[1], i.data[2], i.data[3]].join();
+    i.data[0] = 50; x.putImageData(i, 0, 0);
+    var j = x.createImageData(1, 1), k = new ImageData(1, 1);
+    var back = x.getImageData(0, 0, 1, 1).data;
+    return ok + " " + first + " " + back[0] + " " + (j.data instanceof real) + " " + (k.data instanceof real) + " page code ran " + calls;
+  } finally { window.Uint8ClampedArray = real; real.prototype.set = set; Object.defineProperty(Object.getPrototypeOf(real.prototype), "length", tag); }
+});
+t("with WeakMap's methods replaced", function () {
+  var get = WeakMap.prototype.get, set = WeakMap.prototype.set, has = WeakMap.prototype.has, calls = 0;
+  WeakMap.prototype.get = function () { calls++; return { width: 9, height: 9, data: [] }; }; WeakMap.prototype.set = function () { calls++; return this; }; WeakMap.prototype.has = function () { calls++; return true; };
+  try { var x = filled(), i = x.getImageData(0, 0, 2, 1); i.data[0] = 50; x.putImageData(i, 0, 0); var n = new ImageData(1, 1); return [i.width, i.height, i.data.length, n.data.length, x.getImageData(0, 0, 1, 1).data[0], "page code ran " + calls].join(" "); }
+  finally { WeakMap.prototype.get = get; WeakMap.prototype.set = set; WeakMap.prototype.has = has; }
+});
+t("the getters on something that is not an ImageData", function () { var g = Object.getOwnPropertyDescriptor(ImageData.prototype, "data").get, r = []; [{}, Object.create(new ImageData(1, 1)), 1, null, undefined].forEach(function (v) { try { g.call(v); r.push("ok"); } catch (e) { r.push(e.name); } }); return r.join(); });
+function own(i) { var d = Object.getOwnPropertyDescriptor(i, "data"); return Reflect.ownKeys(i).join() + " " + (d ? [Object.prototype.toString.call(d.value), d.writable, d.enumerable, d.configurable, typeof d.get, d.value === i.data].join() : "none"); }
+t("own properties of an ImageData", function () { var x = ctx(); return [own(new ImageData(1, 1)), own(x.getImageData(0, 0, 1, 1)), own(x.createImageData(1, 1)), own(new ImageData(new Uint8ClampedArray(4), 1))].join(" | "); });
+t("the prototype's data", function () { var d = Object.getOwnPropertyDescriptor(ImageData.prototype, "data"); return [typeof d.get, typeof d.set, d.enumerable, d.configurable].join(); });
+t("data deleted from an ImageData", function () { var i = new ImageData(1, 1), d = i.data; return (delete i.data) + " " + Reflect.ownKeys(i).length + " " + (i.data === d); });
+t("data redefined on an ImageData", function () { var x = target(), i = two(); Object.defineProperty(i, "data", { value: 5 }); x.putImageData(i, 0, 0); return i.data + " " + reds(x.getImageData(0, 0, 4, 4)); });
+t("an ImageData as JSON", function () { return Object.keys(JSON.parse(JSON.stringify(new ImageData(1, 1)))).join(); });
+t("with ImageData replaced", function () { var real = window.ImageData; window.ImageData = function () { throw new Error("the page's"); }; try { var i = ctx().getImageData(0, 0, 1, 1); return (i instanceof real) + " " + i.data.length; } finally { window.ImageData = real; } });
+t("put of an object that inherits from an ImageData", function () { var x = target(); x.putImageData(Object.create(two()), 0, 0); return "ok"; });
+t("put with getters on the arguments", function () { var x = target(), order = []; x.putImageData(two(), { valueOf: function () { order.push("dx"); return 1; } }, { valueOf: function () { order.push("dy"); return 1; } }); return order.join() + " " + reds(x.getImageData(0, 0, 4, 4)); });
+window.__out = JSON.stringify(out);
+console.log("PROBE cases " + Object.keys(out).length);
+</script></body></html>

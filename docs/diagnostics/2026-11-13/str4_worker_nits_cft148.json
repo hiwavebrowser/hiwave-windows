@@ -1,0 +1,49 @@
+{
+ "sandboxedIframe": {
+  "origin": "null",
+  "http": {
+   "threw": true,
+   "name": "SecurityError",
+   "code": 18,
+   "message": "Failed to construct 'Worker': Script at 'http://127.0.0.1:PORT/w.js' cannot be accessed from origin 'null'."
+  },
+  "data": {
+   "threw": false
+  },
+  "blob": {
+   "threw": false
+  },
+  "blobShape": "blob:null/"
+ },
+ "protoKey": {
+  "objKeys": [
+   "__proto__",
+   "y"
+  ],
+  "objOwnProto": true,
+  "objX": "undefined",
+  "objProtoIsObjectProto": true,
+  "objOwnProtoX": 1,
+  "inArrayKeys": [
+   "__proto__"
+  ],
+  "inArrayOwnProto": true,
+  "inArrayX": "undefined"
+ },
+ "dataUrlPage": {
+  "origin": "null",
+  "http": {
+   "threw": true,
+   "name": "SecurityError",
+   "code": 18,
+   "message": "Failed to construct 'Worker': Script at 'http://127.0.0.1:PORT/w.js' cannot be accessed from origin 'null'."
+  },
+  "data": {
+   "threw": false
+  },
+  "blob": {
+   "threw": false
+  },
+  "blobShape": "blob:null/"
+ }
+}

@@ -1,0 +1,55 @@
+{
+ "cases": [
+  {
+   "name": "let-plain-assign-before-decl",
+   "js": "function f() { var r; try { z = 1 } catch (e) { r = e.name } let z; return r } f()",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-plain-assign-before-decl-value-kept",
+   "js": "function f() { var r = 'none'; try { z = 1 } catch (e) { r = e.name } let z = 7; return r + ',' + z } f()",
+   "chrome": "ReferenceError,7"
+  },
+  {
+   "name": "let-plain-assign-in-block",
+   "js": "function f() { var r; { try { z = 1 } catch (e) { r = e.name } let z = 2; } return r } f()",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-plain-assign-each-iteration",
+   "js": "function f() { var out = []; for (var i = 0; i < 2; i++) { try { z = i } catch (e) { out.push(e.name) } let z = i; out.push(z) } return out.join() } f()",
+   "chrome": "ReferenceError,0,ReferenceError,1"
+  },
+  {
+   "name": "const-plain-assign-before-decl",
+   "js": "function f() { var r; try { k = 1 } catch (e) { r = e.name } const k = 2; return r } f()",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-rhs-evaluated-before-tdz-error",
+   "js": "function f() { var log = []; try { z = (log.push('rhs'), 1) } catch (e) { log.push(e.name) } let z; return log.join() } f()",
+   "chrome": "rhs,ReferenceError"
+  },
+  {
+   "name": "let-compound-before-decl",
+   "js": "function f() { var r; try { z += 1 } catch (e) { r = e.name } let z = 0; return r } f()",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-update-before-decl",
+   "js": "function f() { var r; try { z++ } catch (e) { r = e.name } let z = 0; return r } f()",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-assign-after-decl",
+   "js": "function f() { let z = 1; z = 5; return String(z) } f()",
+   "chrome": "5"
+  },
+  {
+   "name": "let-assign-in-closure-before-decl",
+   "js": "function f() { var g = function () { z = 3 }; var r; try { g() } catch (e) { r = e.name } let z = 0; return r } f()",
+   "chrome": "ReferenceError"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

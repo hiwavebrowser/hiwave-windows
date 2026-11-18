@@ -1,0 +1,126 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() after the key presses
+# Keys (Playwright keyboard.press), nothing focused: Enter Escape a A 1 ! Space ; / Backspace ArrowLeft ArrowDown Delete Home
+# then a click on #field and: a B 2 Backspace Enter Escape
+new keydown runner: keyCode=13 charCode=0 which=13 key=Enter
+new keydown keyCode: keyCode=13 charCode=0 which=13 key=
+new keydown which: keyCode=0 charCode=0 which=0 key=
+new keydown charCode: keyCode=0 charCode=97 which=0 key=
+new keydown keyCode+charCode: keyCode=65 charCode=97 which=65 key=
+new keydown key: keyCode=0 charCode=0 which=0 key=a
+new keydown none: keyCode=0 charCode=0 which=0 key=
+new keydown all three: keyCode=1 charCode=2 which=1 key=
+new keypress runner: keyCode=13 charCode=0 which=13 key=Enter
+new keypress keyCode: keyCode=13 charCode=0 which=13 key=
+new keypress which: keyCode=0 charCode=0 which=0 key=
+new keypress charCode: keyCode=0 charCode=97 which=0 key=
+new keypress keyCode+charCode: keyCode=65 charCode=97 which=65 key=
+new keypress key: keyCode=0 charCode=0 which=0 key=a
+new keypress none: keyCode=0 charCode=0 which=0 key=
+new keypress all three: keyCode=1 charCode=2 which=1 key=
+new keyup runner: keyCode=13 charCode=0 which=13 key=Enter
+new keyup keyCode: keyCode=13 charCode=0 which=13 key=
+new keyup which: keyCode=0 charCode=0 which=0 key=
+new keyup charCode: keyCode=0 charCode=97 which=0 key=
+new keyup keyCode+charCode: keyCode=65 charCode=97 which=65 key=
+new keyup key: keyCode=0 charCode=0 which=0 key=a
+new keyup none: keyCode=0 charCode=0 which=0 key=
+new keyup all three: keyCode=1 charCode=2 which=1 key=
+no init: 0 0 0
+createEvent: KeyboardEvent 0 0 0
+which lives on: UIEvent
+UIEvent which: 0 0
+MouseEvent which: 1 3 1 1
+heard: 13 13 true false
+through a wrapper: 13 true true "Buy milk"
+from another window: 13 13 false true true true
+click plain: returns undefined, 1 events
+  PointerEvent type=click target=plain bubbles=true cancelable=true composed=true detail=0 button=0 buttons=0 which=1 view=true isTrusted=false client=0,0 screen=0,0 pointerId=-1 pointerType="" mouse=true mods=falsefalsefalsefalse related=null checked=undefined
+click btn: returns undefined, 1 events
+  PointerEvent type=click target=btn bubbles=true cancelable=true composed=true detail=0 button=0 buttons=0 which=1 view=true isTrusted=false client=0,0 screen=0,0 pointerId=-1 pointerType="" mouse=true mods=falsefalsefalsefalse related=null checked=undefined
+click off: returns undefined, 0 events
+click box: returns undefined, 3 events
+  PointerEvent type=click target=box bubbles=true cancelable=true composed=true detail=0 button=0 buttons=0 which=1 view=true isTrusted=false client=0,0 screen=0,0 pointerId=-1 pointerType="" mouse=true mods=falsefalsefalsefalse related=null checked=true
+  also input at box
+  also change at box
+click box_pd: returns undefined, 1 events
+  PointerEvent type=click target=box_pd bubbles=true cancelable=true composed=true detail=0 button=0 buttons=0 which=1 view=true isTrusted=false client=0,0 screen=0,0 pointerId=-1 pointerType="" mouse=true mods=falsefalsefalsefalse related=null checked=true
+click lab: returns undefined, 5 events
+  PointerEvent type=click target=lab bubbles=true cancelable=true composed=true detail=0 button=0 buttons=0 which=1 view=true isTrusted=false client=0,0 screen=0,0 pointerId=-1 pointerType="" mouse=true mods=falsefalsefalsefalse related=null checked=undefined
+  also focus at box2
+  PointerEvent type=click target=box2 bubbles=true cancelable=true composed=true detail=0 button=0 buttons=0 which=1 view=true isTrusted=false client=0,0 screen=0,0 pointerId=-1 pointerType="" mouse=true mods=falsefalsefalsefalse related=null checked=true
+  also input at box2
+  also change at box2
+click radio: returns undefined, 3 events
+  PointerEvent type=click target=radio bubbles=true cancelable=true composed=true detail=0 button=0 buttons=0 which=1 view=true isTrusted=false client=0,0 screen=0,0 pointerId=-1 pointerType="" mouse=true mods=falsefalsefalsefalse related=null checked=true
+  also input at radio
+  also change at radio
+click link: returns undefined, 1 events
+  PointerEvent type=click target=link bubbles=true cancelable=true composed=true detail=0 button=0 buttons=0 which=1 view=true isTrusted=false client=0,0 screen=0,0 pointerId=-1 pointerType="" mouse=true mods=falsefalsefalsefalse related=null checked=undefined
+click link2: returns undefined, 1 events
+  PointerEvent type=click target=link2 bubbles=true cancelable=true composed=true detail=0 button=0 buttons=0 which=1 view=true isTrusted=false client=0,0 screen=0,0 pointerId=-1 pointerType="" mouse=true mods=falsefalsefalsefalse related=null checked=undefined
+after: box=true box_pd=false box2=true radio=true hash="#frag2" active=box2
+detached: 1 PointerEvent false true
+hasFocus: function true
+cancelBubble: true false true true true
+cancelBubble stops: target,target2 true false
+TextEvent: function | true | THROWS TypeError | TextEvent function "" true | textInput true true hi true
+keydown at body key="Enter" keyCode=13 charCode=0 which=13 isTrusted=true
+keypress at body key="Enter" keyCode=13 charCode=13 which=13 isTrusted=true
+keyup at body key="Enter" keyCode=13 charCode=0 which=13 isTrusted=true
+keydown at body key="Escape" keyCode=27 charCode=0 which=27 isTrusted=true
+keyup at body key="Escape" keyCode=27 charCode=0 which=27 isTrusted=true
+keydown at body key="a" keyCode=65 charCode=0 which=65 isTrusted=true
+keypress at body key="a" keyCode=97 charCode=97 which=97 isTrusted=true
+keyup at body key="a" keyCode=65 charCode=0 which=65 isTrusted=true
+keydown at body key="A" keyCode=65 charCode=0 which=65 isTrusted=true
+keypress at body key="A" keyCode=65 charCode=65 which=65 isTrusted=true
+keyup at body key="A" keyCode=65 charCode=0 which=65 isTrusted=true
+keydown at body key="1" keyCode=49 charCode=0 which=49 isTrusted=true
+keypress at body key="1" keyCode=49 charCode=49 which=49 isTrusted=true
+keyup at body key="1" keyCode=49 charCode=0 which=49 isTrusted=true
+keydown at body key="!" keyCode=49 charCode=0 which=49 isTrusted=true
+keypress at body key="!" keyCode=33 charCode=33 which=33 isTrusted=true
+keyup at body key="!" keyCode=49 charCode=0 which=49 isTrusted=true
+keydown at body key=" " keyCode=32 charCode=0 which=32 isTrusted=true
+keypress at body key=" " keyCode=32 charCode=32 which=32 isTrusted=true
+keyup at body key=" " keyCode=32 charCode=0 which=32 isTrusted=true
+keydown at body key=";" keyCode=186 charCode=0 which=186 isTrusted=true
+keypress at body key=";" keyCode=59 charCode=59 which=59 isTrusted=true
+keyup at body key=";" keyCode=186 charCode=0 which=186 isTrusted=true
+keydown at body key="/" keyCode=191 charCode=0 which=191 isTrusted=true
+keypress at body key="/" keyCode=47 charCode=47 which=47 isTrusted=true
+keyup at body key="/" keyCode=191 charCode=0 which=191 isTrusted=true
+keydown at body key="Backspace" keyCode=8 charCode=0 which=8 isTrusted=true
+keyup at body key="Backspace" keyCode=8 charCode=0 which=8 isTrusted=true
+keydown at body key="ArrowLeft" keyCode=37 charCode=0 which=37 isTrusted=true
+keyup at body key="ArrowLeft" keyCode=37 charCode=0 which=37 isTrusted=true
+keydown at body key="ArrowDown" keyCode=40 charCode=0 which=40 isTrusted=true
+keyup at body key="ArrowDown" keyCode=40 charCode=0 which=40 isTrusted=true
+keydown at body key="Delete" keyCode=46 charCode=0 which=46 isTrusted=true
+keyup at body key="Delete" keyCode=46 charCode=0 which=46 isTrusted=true
+keydown at body key="Home" keyCode=36 charCode=0 which=36 isTrusted=true
+keyup at body key="Home" keyCode=36 charCode=0 which=36 isTrusted=true
+keydown at field key="a" keyCode=65 charCode=0 which=65 isTrusted=true
+keypress at field key="a" keyCode=97 charCode=97 which=97 isTrusted=true
+textInput at field TextEvent data="a" isTrusted=true
+input at field InputEvent data="a" isTrusted=true
+keyup at field key="a" keyCode=65 charCode=0 which=65 isTrusted=true
+keydown at field key="B" keyCode=66 charCode=0 which=66 isTrusted=true
+keypress at field key="B" keyCode=66 charCode=66 which=66 isTrusted=true
+textInput at field TextEvent data="B" isTrusted=true
+input at field InputEvent data="B" isTrusted=true
+keyup at field key="B" keyCode=66 charCode=0 which=66 isTrusted=true
+keydown at field key="2" keyCode=50 charCode=0 which=50 isTrusted=true
+keypress at field key="2" keyCode=50 charCode=50 which=50 isTrusted=true
+textInput at field TextEvent data="2" isTrusted=true
+input at field InputEvent data="2" isTrusted=true
+keyup at field key="2" keyCode=50 charCode=0 which=50 isTrusted=true
+keydown at field key="Backspace" keyCode=8 charCode=0 which=8 isTrusted=true
+input at field InputEvent data=null isTrusted=true
+keyup at field key="Backspace" keyCode=8 charCode=0 which=8 isTrusted=true
+keydown at field key="Enter" keyCode=13 charCode=0 which=13 isTrusted=true
+keypress at field key="Enter" keyCode=13 charCode=13 which=13 isTrusted=true
+keyup at field key="Enter" keyCode=13 charCode=0 which=13 isTrusted=true
+keydown at field key="Escape" keyCode=27 charCode=0 which=27 isTrusted=true
+keyup at field key="Escape" keyCode=27 charCode=0 which=27 isTrusted=true
+field value="aB"

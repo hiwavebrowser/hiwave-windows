@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><title>script scope probe</title>
+<script>
+// Classic scripts share one global scope: a top-level let/const is a global lexical binding (visible to
+// later scripts, not a property of window, a redeclaration is a SyntaxError); a top-level var is a
+// property of window. For scripts in the markup, inline scripts a script inserts, and string timers.
+var out = { errors: [] };
+window.addEventListener("error", function (ev) { out.errors.push(String(ev.message).split(":")[0].replace("Uncaught ", "")); });
+function inline(text) { var s = document.createElement("script"); s.textContent = text; document.body.appendChild(s); }
+</script></head><body>
+<script src="script_scope_a.js"></script>
+<script src="script_scope_b.js"></script>
+<script>
+out.external = [typeof fromFile, "fromFile" in window, fromFile, "fromFileVar" in window].join();
+inline("let shared = 1; const fixed = 2; var viaVar = 3;");
+inline("let shared = 4;");
+inline("out.inline = [typeof shared, shared, 'shared' in window, typeof fixed, 'fixed' in window, 'viaVar' in window].join();");
+setTimeout("var fromTimer = 5; let timerLet = 6;", 0);
+setTimeout("let timerLet = 7;", 10);
+setTimeout(function () {
+  out.timer = ["fromTimer" in window, typeof timerLet, "timerLet" in window].join();
+  window.__out = JSON.stringify(out);
+  console.log("PROBE " + window.__out);
+}, 100);
+</script>
+</body></html>
