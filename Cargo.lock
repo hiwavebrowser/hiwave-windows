@@ -2712,6 +2712,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hiwave-shield-intercept"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "hiwave-shield",
+ "http",
+ "rustkit-net",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "hiwave-smoke"
 version = "0.1.0"
 dependencies = [
@@ -4217,8 +4230,11 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "clap",
+ "hiwave-shield-intercept",
+ "png",
  "rustkit-engine",
  "rustkit-layout",
+ "rustkit-net",
  "rustkit-viewhost",
  "serde",
  "serde_json",

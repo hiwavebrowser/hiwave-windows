@@ -1,0 +1,19 @@
+[package]
+name = "hiwave-shield-intercept"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "hiwave-shield as a rustkit-net request interceptor (the app and parity-capture --shield)"
+
+[dependencies]
+hiwave-shield = { workspace = true }
+rustkit-net = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+http = "1.0"
+dirs = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }

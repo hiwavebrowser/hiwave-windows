@@ -5,6 +5,7 @@ exclude = ["third_party/boa_engine"]
 members = [
     "crates/hiwave-core",
     "crates/hiwave-shield",
+    "crates/hiwave-shield-intercept",
     "crates/hiwave-vault",
     "crates/hiwave-shell",
     "crates/hiwave-analytics",
