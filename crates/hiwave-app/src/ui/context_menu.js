@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MPL-2.0
-// Contains code contributed under MPL-2.0 by an outside contributor; see NOTICE.
 (function() {
     if (window.__hiwaveContextMenu) {
         return;
