@@ -158,6 +158,7 @@ impl CallEvalSpread {
         }
 
         let argument_count = arguments.len();
+        crate::vm::check_argument_count(arguments.len())?; // HIWAVE PATCH (array-like-length)
         context
             .vm
             .stack
@@ -231,6 +232,7 @@ impl CallSpread {
             .js_expect("arguments array in call spread function must be dense")?;
 
         let argument_count = arguments.len();
+        crate::vm::check_argument_count(arguments.len())?; // HIWAVE PATCH (array-like-length)
         context
             .vm
             .stack

@@ -212,6 +212,11 @@ pub struct ArrayBuffer {
 }
 
 impl ArrayBuffer {
+    // HIWAVE PATCH (arraybuffer-detach-key)
+    pub(crate) fn set_detach_key(&mut self, detach_key: JsValue) {
+        self.detach_key = detach_key;
+    }
+
     pub(crate) fn from_data(data: AlignedVec<u8>, detach_key: JsValue) -> Self {
         Self {
             data: Some(data),
@@ -346,7 +351,7 @@ impl IntrinsicObject for ArrayBuffer {
             .name(js_string!("get maxByteLength"))
             .build();
 
-        #[cfg(feature = "experimental")]
+        // HIWAVE PATCH (arraybuffer transfer): on without `experimental`; Chrome has them.
         let get_detached = BuiltInBuilder::callable(realm, Self::get_detached)
             .name(js_string!("get detached"))
             .build();
@@ -385,7 +390,7 @@ impl IntrinsicObject for ArrayBuffer {
                 Attribute::READONLY | Attribute::NON_ENUMERABLE | Attribute::CONFIGURABLE,
             );
 
-        #[cfg(feature = "experimental")]
+        // HIWAVE PATCH (arraybuffer transfer): on without `experimental`; Chrome has them.
         let builder = builder
             .accessor(
                 js_string!("detached"),
@@ -572,7 +577,7 @@ impl ArrayBuffer {
     /// [`get ArrayBuffer.prototype.detached`][spec].
     ///
     /// [spec]: https://tc39.es/proposal-arraybuffer-transfer/#sec-get-arraybuffer.prototype.detached
-    #[cfg(feature = "experimental")]
+    // HIWAVE PATCH (arraybuffer transfer): on without `experimental`; Chrome has them.
     fn get_detached(
         this: &JsValue,
         _args: &[JsValue],
@@ -750,7 +755,7 @@ impl ArrayBuffer {
     ///
     /// [transfer]: https://tc39.es/proposal-arraybuffer-transfer/#sec-arraybuffer.prototype.transfer
     /// [transferFL]: https://tc39.es/proposal-arraybuffer-transfer/#sec-arraybuffer.prototype.transfertofixedlength
-    #[cfg(feature = "experimental")]
+    // HIWAVE PATCH (arraybuffer transfer): on without `experimental`; Chrome has them.
     fn transfer<const TO_FIXED_LENGTH: bool>(
         this: &JsValue,
         args: &[JsValue],

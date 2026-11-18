@@ -176,6 +176,33 @@ impl Default for Context {
 }
 
 // ==== Public API ====
+// HIWAVE PATCH (error-detail): what a host asks about the running code.
+impl Context {
+    /// Whether errors of the page script that is running are reported
+    /// without detail: the innermost frame that is not the embedder's own
+    /// code, `depth` such frames further out (0: the page code on whose
+    /// behalf the native now running was called). `None` when no page
+    /// script is running.
+    #[must_use]
+    pub fn running_error_detail_withheld(&self, depth: usize) -> Option<bool> {
+        self.vm.page_error_detail(depth)
+    }
+
+    /// If `value` is the last raised error that became a value (it was
+    /// caught, or a promise was rejected with it), the error-detail flag of
+    /// the code that threw it; the note is spent.
+    pub fn take_error_detail_note(&mut self, value: &JsValue) -> Option<bool> {
+        let (noted, withheld) = self.vm.error_detail_note.take()?;
+        if JsValue::same_value(&noted, value) {
+            Some(withheld)
+        } else {
+            self.vm.error_detail_note = Some((noted, withheld));
+            None
+        }
+    }
+}
+// END HIWAVE PATCH
+
 impl Context {
     /// Create a new [`ContextBuilder`] to specify the [`Interner`] and/or
     /// the icu data provider.

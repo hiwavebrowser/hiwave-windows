@@ -1210,7 +1210,9 @@ impl BuiltinTypedArray {
         };
 
         // 6. Let R be the empty String.
-        let mut r = Vec::with_capacity(len as usize);
+        // HIWAVE PATCH (string-length): shared pieces, refused once R passes the maximum string length
+        // (as Chrome 148 does), and not reserved from the array's length.
+        let mut r = crate::builtins::string::Pieces::immediate();
 
         // 7. Let k be 0.
         // 8. Repeat, while k < len,
@@ -1218,7 +1220,7 @@ impl BuiltinTypedArray {
         for k in 0..len {
             // a. If k > 0, set R to the string-concatenation of R and sep.
             if k > 0 {
-                r.extend(sep.iter());
+                r.string(sep.clone())?;
             }
 
             // b. Let element be ! Get(O, ! ToString(𝔽(k))).
@@ -1227,12 +1229,12 @@ impl BuiltinTypedArray {
             // c. If element is undefined, let next be the empty String; otherwise, let next be ! ToString(element).
             // d. Set R to the string-concatenation of R and next.
             if !element.is_undefined() {
-                r.extend(element.to_string(context)?.iter());
+                r.string(element.to_string(context)?)?;
             }
         }
 
         // 9. Return R.
-        Ok(js_string!(&r[..]).into())
+        Ok(r.finish().js_expect("an immediate builder has thrown before passing the limit")?.into())
     }
 
     /// `%TypedArray%.prototype.keys ( )`
@@ -2293,7 +2295,7 @@ impl BuiltinTypedArray {
 
         let ta = ta.upcast();
         // 7. Let sortedList be ? SortIndexedProperties(obj, len, SortCompare, read-through-holes).
-        let sorted = Array::sort_indexed_properties(&ta, len, sort_compare, false, context)?;
+        let sorted = Array::sort_indexed_properties(&ta, len, sort_compare, false, super::super::array::SortAlgorithm::TypedArray, context)?;
 
         // 8. Let j be 0.
         // 9. Repeat, while j < len,
@@ -2349,7 +2351,7 @@ impl BuiltinTypedArray {
         let ta = ta.upcast();
 
         // 8. Let sortedList be ? SortIndexedProperties(O, len, SortCompare, read-through-holes).
-        let sorted = Array::sort_indexed_properties(&ta, len, sort_compare, false, context)?;
+        let sorted = Array::sort_indexed_properties(&ta, len, sort_compare, false, super::super::array::SortAlgorithm::TypedArray, context)?;
 
         //  9. Let j be 0.
         //  10. Repeat, while j < len;
@@ -2505,41 +2507,18 @@ impl BuiltinTypedArray {
         let locales = args.get_or_undefined(0);
         let options = args.get_or_undefined(1);
 
-        let separator = {
-            #[cfg(feature = "intl")]
-            {
-                use crate::builtins::intl::locale::default_locale;
-                use icu_list::{
-                    ListFormatter, ListFormatterPreferences, options::ListFormatterOptions,
-                };
+        // HIWAVE PATCH (cyclic to-primitive, as `Array.prototype.toLocaleString`): V8 joins with ","
+        // in every locale (Chrome 148: `new Uint8Array([1, 2, 3]).toLocaleString()` is "1,2,3"); the
+        // ICU unit list pattern gave ", ".
+        let separator = js_string!(",");
 
-                let locale = default_locale(context.intl_provider().locale_canonicalizer()?);
-                let preferences = ListFormatterPreferences::from(&locale);
-                let formatter = ListFormatter::try_new_unit_with_buffer_provider(
-                    context.intl_provider().erased_provider(),
-                    preferences,
-                    ListFormatterOptions::default(),
-                )
-                .map_err(|e| JsNativeError::typ().with_message(e.to_string()))?;
-
-                // Ask ICU for the list pattern literal by formatting two empty elements.
-                // For many locales this yields ", ", but it may differ.
-                js_string!(
-                    formatter.format_to_string(std::iter::once("").chain(std::iter::once("")))
-                )
-            }
-
-            #[cfg(not(feature = "intl"))]
-            {
-                js_string!(", ")
-            }
-        };
-
-        let mut r = Vec::with_capacity((len + len.saturating_sub(1)) as usize);
+        // HIWAVE PATCH (string-length): shared pieces, refused once R passes the maximum string length,
+        // and not reserved from the array's length.
+        let mut r = crate::builtins::string::Pieces::immediate();
 
         for k in 0..len {
             if k > 0 {
-                r.extend(separator.iter());
+                r.string(separator.clone())?;
             }
 
             let next_element = array.get(k, context)?;
@@ -2555,11 +2534,11 @@ impl BuiltinTypedArray {
                     )?
                     .to_string(context)?;
 
-                r.extend(s.iter());
+                r.string(s)?;
             }
         }
 
-        Ok(js_string!(&r[..]).into())
+        Ok(r.finish().js_expect("an immediate builder has thrown before passing the limit")?.into())
     }
 
     /// `%TypedArray%.prototype.values ( )`
@@ -3202,10 +3181,10 @@ fn compare_typed_array_elements(
         }
 
         // c. Return v.
-        if v.is_sign_positive() {
-            return Ok(cmp::Ordering::Greater);
-        }
-        return Ok(cmp::Ordering::Less);
+        // HIWAVE PATCH (sort-v8): a result of 0 (or -0, or `false`) is "equal", not "greater":
+        // `is_sign_positive` took +0 for positive, so a comparator answering 0 for a tie, or a
+        // boolean `a > b`, sorted wrongly.
+        return Ok(v.partial_cmp(&0.0).unwrap_or(cmp::Ordering::Equal));
     }
 
     match (x.variant(), y.variant()) {

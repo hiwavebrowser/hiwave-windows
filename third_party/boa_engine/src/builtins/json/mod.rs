@@ -749,14 +749,17 @@ impl Json {
             indent,
             gap,
             property_list,
+            emitted: 0,
         };
 
         // 12. Return ? SerializeJSONProperty(state, the empty String, wrapper).
-        Ok(
-            Self::serialize_json_property(&mut state, js_string!(), &wrapper, context)?
-                .map(Into::into)
-                .unwrap_or_default(),
-        )
+        let result = Self::serialize_json_property(&mut state, js_string!(), &wrapper, context)?;
+        // HIWAVE PATCH (string-length): a text past the maximum length is refused once every
+        // value has been serialized (Chrome 148 calls every toJSON first); it was not built.
+        if state.too_long() {
+            return Err(crate::builtins::string::String::invalid_length());
+        }
+        Ok(result.map(Into::into).unwrap_or_default())
     }
 
     /// `25.5.2.1 SerializeJSONProperty ( state, key, holder )`
@@ -771,6 +774,7 @@ impl Json {
         holder: &JsObject,
         context: &mut Context,
     ) -> JsResult<Option<JsString>> {
+        crate::native_stack::check(context.vm.runtime_limits.native_stack_budget())?; // HIWAVE PATCH (native recursion)
         // 1. Let value be ? Get(holder, key).
         let mut value = holder.get(key.clone(), context)?;
 
@@ -818,28 +822,35 @@ impl Json {
             else if obj.is::<RawJson>() {
                 // i. Return the value of the "rawJSON" property of value.
                 let raw = obj.get(js_string!("rawJSON"), context)?;
-                return Ok(raw.as_string());
+                return Ok(raw.as_string().map(|s| state.emit(s)));
             }
         }
 
         // 5. If value is null, return "null".
         if value.is_null() {
-            return Ok(Some(js_string!("null")));
+            return Ok(Some(state.emit(js_string!("null"))));
         }
 
         // 6. If value is true, return "true".
         // 7. If value is false, return "false".
         if value.is_boolean() {
-            return Ok(Some(js_string!(if value.to_boolean() {
+            return Ok(Some(state.emit(js_string!(if value.to_boolean() {
                 "true"
             } else {
                 "false"
-            })));
+            }))));
         }
 
         // 8. If Type(value) is String, return QuoteJSONString(value).
         if let Some(s) = value.as_string() {
-            return Ok(Some(Self::quote_json_string(&s)));
+            // HIWAVE PATCH (string-length): the quoted length is counted before the quote is built
+            // (a control character quotes as six units).
+            state.count(Self::quoted_len(&s));
+            return Ok(Some(if state.too_long() {
+                js_string!()
+            } else {
+                Self::quote_json_string(&s)
+            }));
         }
 
         // 9. If Type(value) is Number, then
@@ -847,14 +858,16 @@ impl Json {
             // a. If value is finite, return ! ToString(value).
             if n.is_finite() {
                 return Ok(Some(
-                    value
-                        .to_string(context)
-                        .js_expect("ToString should never fail here")?,
+                    state.emit(
+                        value
+                            .to_string(context)
+                            .js_expect("ToString should never fail here")?,
+                    ),
                 ));
             }
 
             // b. Return "null".
-            return Ok(Some(js_string!("null")));
+            return Ok(Some(state.emit(js_string!("null"))));
         }
 
         // 10. If Type(value) is BigInt, throw a TypeError exception.
@@ -888,6 +901,34 @@ impl Json {
     ///  - [ECMAScript reference][spec]
     ///
     /// [spec]: https://tc39.es/ecma262/#sec-quotejsonstring
+    /// HIWAVE PATCH (string-length): the length an object's or array's text adds around its
+    /// `n` members: the brackets, the separators and, with a gap, the line feeds and indentation.
+    fn punctuation_len(n: usize, indent: &JsString, stepback: &JsString, gap: &JsString) -> usize {
+        if n == 0 {
+            2
+        } else if gap.is_empty() {
+            2 + (n - 1)
+        } else {
+            // "[\n" indent, (n - 1) x (",\n" indent), "\n" stepback "]"
+            2 + indent.len() + (n - 1) * (2 + indent.len()) + 1 + stepback.len() + 1
+        }
+    }
+
+    /// HIWAVE PATCH (string-length): the length of `QuoteJSONString(value)`, counted without
+    /// building it: the two quotes, two units for `"`, `\\` and the short escapes, six for any other
+    /// control character and for an unpaired surrogate, one for the rest.
+    fn quoted_len(value: &JsString) -> usize {
+        2 + value
+            .code_points()
+            .map(|cp| match cp {
+                CodePoint::Unicode('"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t') => 2,
+                CodePoint::Unicode(c) if (c as u32) < 0x20 => 6,
+                CodePoint::Unicode(c) => c.len_utf16(),
+                CodePoint::UnpairedSurrogate(_) => 6,
+            })
+            .sum::<usize>()
+    }
+
     fn quote_json_string(value: &JsString) -> JsString {
         let mut buf = [0; 2];
         // 1. Let product be the String value consisting solely of the code unit 0x0022 (QUOTATION MARK).
@@ -1028,8 +1069,15 @@ impl Json {
 
             // b. If strP is not undefined, then
             if let Some(str_p) = str_p {
+                // HIWAVE PATCH (string-length): the key, colon and space are counted; past the
+                // limit the member is not kept.
+                state.count(Self::quoted_len(p) + 1 + usize::from(!state.gap.is_empty()));
+                if state.too_long() {
+                    continue;
+                }
+                let quoted = Self::quote_json_string(p);
                 // i. Let member be QuoteJSONString(P).
-                let mut member = Self::quote_json_string(p).iter().collect::<Vec<_>>();
+                let mut member = quoted.iter().collect::<Vec<_>>();
 
                 // ii. Set member to the string-concatenation of member and ":".
                 member.push(':' as u16);
@@ -1048,8 +1096,13 @@ impl Json {
             }
         }
 
+        // HIWAVE PATCH (string-length): the braces, separators and indentation are counted; past
+        // the limit nothing is built.
+        state.count(Self::punctuation_len(partial.len(), &state.indent, &stepback, &state.gap));
         // 9. If partial is empty, then
-        let r#final = if partial.is_empty() {
+        let r#final = if state.too_long() {
+            js_string!()
+        } else if partial.is_empty() {
             // a. Let final be "{}".
             js_string!("{}")
         // 10. Else,
@@ -1145,13 +1198,28 @@ impl Json {
         };
 
         // 5. Let partial be a new empty List.
-        let mut partial = Vec::with_capacity(len as usize);
+        // HIWAVE PATCH (string-length): every element prints as at least one character, with a
+        // comma between two and the brackets around them. When even that shortest text passes the
+        // maximum string length, refuse before reading any element (Chrome 148 does); and the list
+        // is not reserved from `length`, which the page sets (a Proxy can report 2^53 - 1).
+        if len.saturating_mul(2).saturating_add(1) > crate::builtins::string::String::MAX_STRING_LENGTH as u64 {
+            let removed = state.stack_set.remove(value);
+            debug_assert!(removed);
+            return Err(crate::builtins::string::String::invalid_length());
+        }
+        let mut partial = Vec::with_capacity((len as usize).min(1 << 12));
 
         // 7. Let index be 0.
         let mut index = 0;
 
         // 8. Repeat, while index < len,
         while index < len {
+            // HIWAVE PATCH (string-length): a long array is a long loop; the turn budget can stop it.
+            if let Err(e) = context.check_interrupt() {
+                let removed = state.stack_set.remove(value);
+                debug_assert!(removed);
+                return Err(e);
+            }
             // a. Let strP be ? SerializeJSONProperty(state, ! ToString(𝔽(index)), value).
             let str_p = Self::serialize_json_property(state, index.into(), value, context);
             let str_p = match str_p {
@@ -1166,19 +1234,29 @@ impl Json {
             // b. If strP is undefined, then
             if let Some(str_p) = str_p {
                 // i. Append strP to partial.
-                partial.push(Cow::Owned(str_p.iter().collect::<_>()));
+                // HIWAVE PATCH (string-length): past the limit, nothing more is kept.
+                if !state.too_long() {
+                    partial.push(Cow::Owned(str_p.iter().collect::<_>()));
+                }
             // c. Else,
             } else {
                 // i. Append "null" to partial.
-                partial.push(Cow::Borrowed(utf16!("null")));
+                state.count(4); // HIWAVE PATCH (string-length)
+                if !state.too_long() {
+                    partial.push(Cow::Borrowed(utf16!("null")));
+                }
             }
 
             // d. Set index to index + 1.
             index += 1;
         }
 
+        // HIWAVE PATCH (string-length): as for objects.
+        state.count(Self::punctuation_len(partial.len(), &state.indent, &stepback, &state.gap));
         // 9. If partial is empty, then
-        let r#final = if partial.is_empty() {
+        let r#final = if state.too_long() {
+            js_string!()
+        } else if partial.is_empty() {
             // a. Let final be "[]".
             js_string!("[]")
         // 10. Else,
@@ -1244,4 +1322,24 @@ struct StateRecord {
     indent: JsString,
     gap: JsString,
     property_list: Option<Vec<JsString>>,
+    /// HIWAVE PATCH (string-length): the length of the text serialized so far.
+    emitted: u64,
+}
+
+impl StateRecord {
+    /// HIWAVE PATCH (string-length): counts `n` more code units of the text.
+    fn count(&mut self, n: usize) {
+        self.emitted = self.emitted.saturating_add(n as u64);
+    }
+
+    /// Whether the text has passed the maximum string length.
+    fn too_long(&self) -> bool {
+        self.emitted > crate::builtins::string::String::MAX_STRING_LENGTH as u64
+    }
+
+    /// Counts a value's text, and keeps it only while the text is under the limit.
+    fn emit(&mut self, text: JsString) -> JsString {
+        self.count(text.len());
+        if self.too_long() { js_string!() } else { text }
+    }
 }

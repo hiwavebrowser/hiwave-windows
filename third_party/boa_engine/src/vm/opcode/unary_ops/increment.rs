@@ -23,7 +23,15 @@ impl Inc {
             JsVariant::Integer32(number) if number < i32::MAX => {
                 (JsValue::from(number), JsValue::from(number + 1))
             }
-            _ => match value.to_numeric(context)? {
+            _ => match match value.to_numeric(context) {
+                Ok(numeric) => numeric,
+                Err(err) => {
+                    // HIWAVE PATCH (update-conversion): a conversion that throws (a valueOf that
+                    // throws, a Symbol) leaves the operand as it was; the register was taken.
+                    context.vm.set_register(src.into(), value);
+                    return Err(err);
+                }
+            } {
                 Numeric::Number(number) => (JsValue::from(number), JsValue::from(number + 1f64)),
                 Numeric::BigInt(bigint) => (
                     JsValue::from(bigint.clone()),

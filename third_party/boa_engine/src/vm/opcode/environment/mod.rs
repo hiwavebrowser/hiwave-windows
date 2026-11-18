@@ -196,6 +196,7 @@ impl SuperCallSpread {
 
         context.vm.stack.push(super_constructor.clone());
 
+        crate::vm::check_argument_count(arguments.len())?; // HIWAVE PATCH (array-like-length)
         context
             .vm
             .stack

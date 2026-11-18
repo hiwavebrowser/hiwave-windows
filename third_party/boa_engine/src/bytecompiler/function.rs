@@ -6,6 +6,8 @@ use crate::{
     vm::{CodeBlock, CodeBlockFlags, source_info::SourcePath},
 };
 use boa_ast::{
+    Expression, Statement, StatementListItem,
+    expression::operator::binary::{ArithmeticOp, BinaryOp},
     function::{FormalParameterList, FunctionBody},
     scope::{FunctionScopes, Scope},
 };
@@ -27,6 +29,52 @@ pub(crate) struct FunctionCompiler {
     name_scope: Option<Scope>,
     spanned_source_text: SpannedSourceText,
     source_path: SourcePath,
+}
+
+/// HIWAVE PATCH (sort-diff): `Some(false)` for exactly `return a - b`, `Some(true)` for `return b - a`,
+/// over the function's two plain parameters (`function (a, b) { return a - b; }`, `(a, b) => a - b`).
+/// Nothing else is recognised: no defaults, rest, patterns, other statements or other operands.
+fn numeric_difference_shape(parameters: &FormalParameterList, body: &FunctionBody) -> Option<bool> {
+    use boa_ast::declaration::Binding;
+    let params: &[boa_ast::function::FormalParameter] = parameters.as_ref();
+    if params.len() != 2 || !parameters.is_simple() || parameters.has_rest_parameter() {
+        return None;
+    }
+    let name = |i: usize| match params[i].variable().binding() {
+        Binding::Identifier(id) if params[i].init().is_none() && !params[i].is_rest_param() => Some(id.sym()),
+        _ => None,
+    };
+    let (a, b) = (name(0)?, name(1)?);
+    if a == b {
+        return None;
+    }
+    let [StatementListItem::Statement(stmt)] = body.statements() else { return None };
+    let Statement::Return(ret) = &**stmt else { return None };
+    let mut expr = ret.target()?;
+    while let Expression::Parenthesized(p) = expr {
+        expr = p.expression();
+    }
+    let Expression::Binary(bin) = expr else { return None };
+    if !matches!(bin.op(), BinaryOp::Arithmetic(ArithmeticOp::Sub)) {
+        return None;
+    }
+    let ident = |mut e: &Expression| {
+        while let Expression::Parenthesized(p) = e {
+            e = p.expression();
+        }
+        match e {
+            Expression::Identifier(id) => Some(id.sym()),
+            _ => None,
+        }
+    };
+    let (l, r) = (ident(bin.lhs())?, ident(bin.rhs())?);
+    if (l, r) == (a, b) {
+        Some(false)
+    } else if (l, r) == (b, a) {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 impl FunctionCompiler {
@@ -149,6 +197,13 @@ impl FunctionCompiler {
 
         if self.arrow {
             compiler.this_mode = ThisMode::Lexical;
+        }
+
+        if !self.r#async && !self.generator && !self.method
+            && let Some(swapped) = numeric_difference_shape(parameters, body)
+        {
+            compiler.code_block_flags |= CodeBlockFlags::NUMERIC_DIFF;
+            compiler.code_block_flags.set(CodeBlockFlags::NUMERIC_DIFF_SWAPPED, swapped);
         }
 
         if let Some(scope) = self.name_scope

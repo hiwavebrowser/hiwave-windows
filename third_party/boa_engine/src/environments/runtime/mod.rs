@@ -468,6 +468,7 @@ impl Context {
             && !env.poisoned()
             && !deleted_binding
         {
+            self.resolve_late_global_lexical(locator);
             return Ok(());
         }
 
@@ -493,6 +494,7 @@ impl Context {
                             return Ok(());
                         }
                     } else if !env.with() {
+                        self.resolve_late_global_lexical(locator);
                         return Ok(());
                     }
                 }
@@ -538,9 +540,28 @@ impl Context {
         {
             locator.set_scope(b.scope());
             locator.set_binding_index(b.binding_index());
+        } else if global {
+            self.resolve_late_global_lexical(locator);
         }
 
         Ok(())
+    }
+
+    // HIWAVE PATCH (global-lexical-scope): all classic scripts of a realm share one global
+    // declarative environment (ES2024 GlobalDeclarationInstantiation). A function compiled in an
+    // earlier script resolved a name no enclosing scope declares to the global OBJECT; a later
+    // script's top-level `const`/`let`/`class` of that name lives in the realm's declarative scope,
+    // which the earlier code never saw. Re-point such a locator at the realm binding at run time.
+    // Lexical bindings cannot be removed or shadowed by a later script (redeclaring is a
+    // SyntaxError), so a name found here is the binding the name denotes.
+    fn resolve_late_global_lexical(&self, locator: &mut BindingLocator) {
+        if !matches!(locator.scope(), BindingLocatorScope::GlobalObject) {
+            return;
+        }
+        if let Some(b) = self.realm().late_global_lexical(locator.name()) {
+            locator.set_scope(b.scope());
+            locator.set_binding_index(b.binding_index());
+        }
     }
 
     /// Finds the object environment that contains the binding and returns the `this` value of the object environment.

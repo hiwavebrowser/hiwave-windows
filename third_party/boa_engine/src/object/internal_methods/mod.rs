@@ -233,6 +233,7 @@ impl JsObject {
         key: &PropertyKey,
         context: &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<bool> {
+        crate::native_stack::check(context.vm.runtime_limits.native_stack_budget())?; // HIWAVE PATCH (native recursion)
         (self.vtable().__has_property__)(self, key, context)
     }
 
@@ -252,6 +253,7 @@ impl JsObject {
         receiver: JsValue,
         context: &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<Option<JsValue>> {
+        crate::native_stack::check(context.vm.runtime_limits.native_stack_budget())?; // HIWAVE PATCH (native recursion)
         (self.vtable().__try_get__)(self, key, receiver, context)
     }
 
@@ -269,6 +271,7 @@ impl JsObject {
         receiver: JsValue,
         context: &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<JsValue> {
+        crate::native_stack::check(context.vm.runtime_limits.native_stack_budget())?; // HIWAVE PATCH (native recursion)
         (self.vtable().__get__)(self, key, receiver, context)
     }
 
@@ -287,6 +290,7 @@ impl JsObject {
         receiver: JsValue,
         context: &mut InternalMethodPropertyContext<'_>,
     ) -> JsResult<bool> {
+        crate::native_stack::check(context.vm.runtime_limits.native_stack_budget())?; // HIWAVE PATCH (native recursion)
         (self.vtable().__set__)(self, key, value, receiver, context)
     }
 
@@ -483,6 +487,7 @@ impl CallValue {
     /// Resolves the [`CallValue`], and return if the value is complete.
     #[cfg_attr(feature = "native-backtrace", track_caller)]
     pub(crate) fn resolve(mut self, context: &mut Context) -> JsResult<bool> {
+        crate::native_stack::check(context.vm.runtime_limits.native_stack_budget())?; // HIWAVE PATCH (native recursion)
         loop {
             match self {
                 CallValue::Ready => return Ok(false),

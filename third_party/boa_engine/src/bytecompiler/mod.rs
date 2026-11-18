@@ -541,6 +541,12 @@ pub struct ByteCompiler<'ctx> {
     /// Avoids repeated `GetName` environment lookups for immutable bindings.
     const_binding_cache: FxHashMap<BindingLocator, u32>,
 
+    /// HIWAVE PATCH (switch-tdz): the unique ids of the switch scopes being compiled. A `const`
+    /// declared directly in one is not cached in a register: a later case can be reached without
+    /// the declaration having run, and the cached register would hold a stale value instead of
+    /// raising the dead-zone ReferenceError the environment raises.
+    pub(crate) switch_scope_ids: Vec<u32>,
+
     jump_info: Vec<JumpControlInfo>,
 
     /// Used to handle exception throws that escape the async function types.
@@ -668,6 +674,7 @@ impl<'ctx> ByteCompiler<'ctx> {
             names_map: FxHashMap::default(),
             bindings_map: FxHashMap::default(),
             const_binding_cache: FxHashMap::default(),
+            switch_scope_ids: Vec::new(),
             jump_info: Vec::new(),
             async_handler: None,
             json_parse,
@@ -1036,6 +1043,132 @@ impl<'ctx> ByteCompiler<'ctx> {
         }
     }
 
+    /// HIWAVE PATCH (js-perf2 item 6): `dst = value.ident` with `value` given as an operand, so a
+    /// local variable's own register can be the object without a `Move` into a temporary.
+    fn emit_get_property_by_name_from(&mut self, dst: &Register, value: RegisterOperand, ident: Sym) {
+        let ic_index = self.ic.len() as u32;
+
+        let name_index = self.get_or_insert_name(ident);
+        let Constant::String(ref name) = self.constants[name_index as usize].clone() else {
+            unreachable!("there should be a string at index")
+        };
+        self.ic.push(InlineCache::new(name.clone()));
+
+        if name == &StaticJsStrings::LENGTH {
+            self.bytecode
+                .emit_get_length_property(dst.variable(), value, ic_index.into());
+        } else {
+            self.bytecode
+                .emit_get_property_by_name(dst.variable(), value, ic_index.into());
+        }
+    }
+
+
+    /// HIWAVE PATCH (js-perf2 item 6): whether compiling `expr` into a destination register writes
+    /// that register only with its LAST instruction (every operand goes to its own temporary or is
+    /// read from its own register first). Then a local variable's own register can be the
+    /// destination: a read of the variable inside `expr` still sees its old value, and if `expr`
+    /// throws the variable keeps it. Only the top-level kind matters, since every sub-expression is
+    /// compiled into a temporary of its own. Logical operators, conditionals, sequences, literals of
+    /// arrays and objects, templates and unary operators write the destination early and are left
+    /// out.
+    fn writes_dst_last(expr: &Expression) -> bool {
+        use boa_ast::expression::operator::binary::BinaryOp;
+        match expr {
+            Expression::Literal(_) | Expression::Identifier(_) => true,
+            Expression::Parenthesized(p) => Self::writes_dst_last(p.expression()),
+            Expression::Binary(b) => matches!(
+                b.op(),
+                BinaryOp::Arithmetic(_) | BinaryOp::Bitwise(_) | BinaryOp::Relational(_)
+            ),
+            Expression::PropertyAccess(PropertyAccess::Simple(_)) => true,
+            Expression::Call(_) | Expression::New(_) => true,
+            _ => false,
+        }
+    }
+
+    /// HIWAVE PATCH (js-perf2 item 6): the register of `name` when it is a local that may be
+    /// written (a `var`, a parameter, a mutable `let`; not a `const` or a named function
+    /// expression's own name), the same rule as the in-place `x++`.
+    fn writable_local_register(&mut self, name: &JsString) -> Option<u32> {
+        let binding = self.lexical_scope.get_identifier_reference(name.clone());
+        let is_lexical = binding.is_lexical();
+        let BindingKind::Local(Some(local_reg)) = self.get_binding(&binding) else {
+            return None;
+        };
+        let writable = if is_lexical {
+            self.lexical_scope.set_mutable_binding(name.clone()).is_ok()
+        } else {
+            self.lexical_scope.is_binding_mutable(name) == Some(true)
+        };
+        writable.then_some(local_reg)
+    }
+
+    /// HIWAVE PATCH (js-perf2 item 6): a statement `x = rhs` on a writable local: `rhs` is compiled
+    /// straight into `x`'s register when it writes its destination last. Returns false (nothing
+    /// emitted) for any other shape.
+    fn compile_local_simple_assign(&mut self, assign: &boa_ast::expression::operator::Assign) -> bool {
+        use boa_ast::expression::operator::assign::{AssignOp, AssignTarget};
+        if assign.op() != AssignOp::Assign || !Self::writes_dst_last(assign.rhs()) {
+            return false;
+        }
+        let AssignTarget::Identifier(ident) = assign.lhs() else {
+            return false;
+        };
+        let name = ident.to_js_string(self.interner());
+        let Some(local_reg) = self.writable_local_register(&name) else {
+            return false;
+        };
+        self.compile_expr(assign.rhs(), &Register::persistent(local_reg));
+        true
+    }
+
+    /// HIWAVE PATCH (js-perf2 item 6): a statement `obj.name = rhs` or `obj[key] = rhs` whose key
+    /// and right side cannot assign: the object, the key and the value are each read from a local's
+    /// own register when they are one (no copies). Returns false (nothing emitted) otherwise.
+    fn compile_member_assign_direct(&mut self, assign: &boa_ast::expression::operator::Assign) -> bool {
+        use boa_ast::expression::operator::assign::{AssignOp, AssignTarget};
+        if assign.op() != AssignOp::Assign || Self::may_assign(assign.rhs()) {
+            return false;
+        }
+        let AssignTarget::Access(PropertyAccess::Simple(access)) = assign.lhs() else {
+            return false;
+        };
+        if let PropertyAccessField::Expr(key) = access.field()
+            && Self::may_assign(key)
+        {
+            return false;
+        }
+        let rhs = assign.rhs();
+        self.compile_expr_operand(access.target(), |this, object| match access.field() {
+            PropertyAccessField::Const(ident) => {
+                this.compile_expr_operand(rhs, |this, value| {
+                    this.emit_set_property_by_name_from(value, object, ident.sym());
+                });
+            }
+            PropertyAccessField::Expr(key) => {
+                this.compile_expr_operand(key, |this, key| {
+                    this.compile_expr_operand(rhs, |this, value| {
+                        this.bytecode.emit_set_property_by_value(value, key, object, object);
+                    });
+                });
+            }
+        });
+        true
+    }
+
+    /// HIWAVE PATCH (js-perf2 item 6): `object.ident = value` with both given as operands.
+    fn emit_set_property_by_name_from(&mut self, value: RegisterOperand, object: RegisterOperand, ident: Sym) {
+        let ic_index = self.ic.len() as u32;
+        let name_index = self.get_or_insert_name(ident);
+        let Constant::String(ref name) = self.constants[name_index as usize].clone() else {
+            unreachable!("there should be a string at index")
+        };
+        self.ic.push(InlineCache::new(name.clone()));
+        self.bytecode
+            .emit_set_property_by_name(value, object, ic_index.into());
+    }
+
     fn emit_set_property_by_name(
         &mut self,
         value: &Register,
@@ -1351,7 +1484,7 @@ impl<'ctx> ByteCompiler<'ctx> {
                 });
             }
             None => {
-                self.compile_expr_operand(binary.lhs(), |compiler, lhs| {
+                self.compile_expr_operand_before(binary.lhs(), binary.rhs(), |compiler, lhs| {
                     compiler.compile_expr_operand(binary.rhs(), |compiler, rhs| {
                         label_index = compiler.next_opcode_location();
                         emit_fn(&mut compiler.bytecode, Self::DUMMY_ADDRESS, lhs, rhs);
@@ -1476,6 +1609,34 @@ impl<'ctx> ByteCompiler<'ctx> {
                 PropertyAccess::Simple(access) => {
                     let mut compiler = self.position_guard(access.field());
 
+                    // HIWAVE PATCH (js-perf2 item 6): when nothing evaluated between reading the
+                    // object and using it can assign, a local variable's register is the operand
+                    // itself (no `Move` into a temporary), and likewise a local key.
+                    let direct = match access.field() {
+                        PropertyAccessField::Const(_) => true,
+                        PropertyAccessField::Expr(expr) => !Self::may_assign(expr),
+                    };
+                    if direct {
+                        compiler.compile_expr_operand(access.target(), |compiler, object| {
+                            match access.field() {
+                                PropertyAccessField::Const(ident) => {
+                                    compiler.emit_get_property_by_name_from(dst, object, ident.sym());
+                                }
+                                PropertyAccessField::Expr(expr) => {
+                                    compiler.compile_expr_operand(expr, |compiler, key| {
+                                        compiler.bytecode.emit_get_property_by_value(
+                                            dst.variable(),
+                                            key,
+                                            object,
+                                            object,
+                                        );
+                                    });
+                                }
+                            }
+                        });
+                        return;
+                    }
+
                     let object = compiler.register_allocator.alloc();
                     compiler.compile_expr(access.target(), &object);
 
@@ -1566,6 +1727,17 @@ impl<'ctx> ByteCompiler<'ctx> {
                 self.register_allocator.dealloc(value);
 
                 let value = expr_fn(self);
+
+                // HIWAVE PATCH (tdz-assign): a lexical local whose declaration has not been
+                // compiled yet is in its temporal dead zone at this point (compilation follows the
+                // source order the declaration runs in). Assigning it is a ReferenceError, raised
+                // after the right side has run, for a `const` too (the dead zone is checked before
+                // the constness). Before, `insert_binding` below handed the assignment a fresh
+                // register of its own and it silently succeeded.
+                if is_lexical && binding.local() && !self.local_binding_registers.contains_key(&binding) {
+                    self.emit_binding_access(BindingAccessOpcode::SetName, &BindingKind::Local(None), value);
+                    return;
+                }
 
                 if is_lexical {
                     match self.lexical_scope.set_mutable_binding(name.clone()) {
@@ -1755,6 +1927,12 @@ impl<'ctx> ByteCompiler<'ctx> {
                 self.compile_update(update, &tmp, true);
                 self.register_allocator.dealloc(tmp);
             }
+            // HIWAVE PATCH (js-perf2 item 6): `local op= rhs` whose value is not used, on a
+            // mutable local: one instruction on the local's own register after the right side,
+            // instead of a copy in, the operation, and a copy out.
+            Expression::Assign(assign) if self.compile_local_compound_assign(assign) => {}
+            Expression::Assign(assign) if self.compile_local_simple_assign(assign) => {}
+            Expression::Assign(assign) if self.compile_member_assign_direct(assign) => {}
             Expression::Parenthesized(parenthesized) => {
                 self.compile_expr_for_side_effects(parenthesized.expression());
             }
@@ -1764,6 +1942,77 @@ impl<'ctx> ByteCompiler<'ctx> {
                 self.register_allocator.dealloc(tmp);
             }
         }
+    }
+
+    /// HIWAVE PATCH (js-perf2 item 6): compiles `x op= rhs` for its side effects only, in place on
+    /// the register of a mutable local `x`, and returns true; or returns false and emits nothing
+    /// when the statement is not that shape (the general path then compiles it). Requires that
+    /// `rhs` cannot assign any variable (`x += (x = 5)` reads the OLD `x` first) and that `x` is a
+    /// register local that may be written (not a `const`, not the name of a named function
+    /// expression), exactly as the in-place `x++` does.
+    fn compile_local_compound_assign(&mut self, assign: &boa_ast::expression::operator::Assign) -> bool {
+        use boa_ast::expression::operator::assign::AssignOp;
+        use boa_ast::expression::Identifier;
+        use boa_ast::expression::operator::assign::AssignTarget;
+
+        let op = assign.op();
+        if !matches!(
+            op,
+            AssignOp::Add
+                | AssignOp::Sub
+                | AssignOp::Mul
+                | AssignOp::Div
+                | AssignOp::Mod
+                | AssignOp::Exp
+                | AssignOp::And
+                | AssignOp::Or
+                | AssignOp::Xor
+                | AssignOp::Shl
+                | AssignOp::Shr
+                | AssignOp::Ushr
+        ) || Self::may_assign(assign.rhs())
+        {
+            return false;
+        }
+        let AssignTarget::Identifier(ident) = assign.lhs() else {
+            return false;
+        };
+        let ident: &Identifier = ident;
+        let name = ident.to_js_string(self.interner());
+        let binding = self.lexical_scope.get_identifier_reference(name.clone());
+        let is_lexical = binding.is_lexical();
+        let index = self.get_binding(&binding);
+        let BindingKind::Local(Some(local_reg)) = &index else {
+            return false;
+        };
+        let writable = if is_lexical {
+            self.lexical_scope.set_mutable_binding(name.clone()).is_ok()
+        } else {
+            self.lexical_scope.is_binding_mutable(&name) == Some(true)
+        };
+        if !writable {
+            return false;
+        }
+        let local: RegisterOperand = (*local_reg).into();
+        self.compile_expr_operand(assign.rhs(), |this, rhs| {
+            let bytecode = &mut this.bytecode;
+            match op {
+                AssignOp::Add => bytecode.emit_add(local, local, rhs),
+                AssignOp::Sub => bytecode.emit_sub(local, local, rhs),
+                AssignOp::Mul => bytecode.emit_mul(local, local, rhs),
+                AssignOp::Div => bytecode.emit_div(local, local, rhs),
+                AssignOp::Mod => bytecode.emit_mod(local, local, rhs),
+                AssignOp::Exp => bytecode.emit_pow(local, local, rhs),
+                AssignOp::And => bytecode.emit_bit_and(local, local, rhs),
+                AssignOp::Or => bytecode.emit_bit_or(local, local, rhs),
+                AssignOp::Xor => bytecode.emit_bit_xor(local, local, rhs),
+                AssignOp::Shl => bytecode.emit_shift_left(local, local, rhs),
+                AssignOp::Shr => bytecode.emit_shift_right(local, local, rhs),
+                AssignOp::Ushr => bytecode.emit_unsigned_shift_right(local, local, rhs),
+                _ => unreachable!("checked above"),
+            }
+        });
+        true
     }
 
     /// Compile an expression and leave the result on the stack.
@@ -1798,6 +2047,48 @@ impl<'ctx> ByteCompiler<'ctx> {
     /// it allocates a temporary register and compiles into it.
     ///
     /// The `inner_fn` passed in will be called before the register get deallocated.
+    /// HIWAVE PATCH (eval-order): whether evaluating `expr` could assign to or update a variable
+    /// of this function. Conservative: any assignment or update expression anywhere in it
+    /// (function bodies inside it included) answers true. A local variable held in a register can
+    /// only change through such an expression in the function's own code.
+    pub(crate) fn may_assign(expr: &Expression) -> bool {
+        use boa_ast::expression::operator::{Assign, Update};
+        use boa_ast::visitor::{VisitWith, Visitor};
+        use std::ops::ControlFlow;
+
+        struct Finder;
+        impl<'ast> Visitor<'ast> for Finder {
+            type BreakTy = ();
+            fn visit_assign(&mut self, _: &'ast Assign) -> ControlFlow<()> {
+                ControlFlow::Break(())
+            }
+            fn visit_update(&mut self, _: &'ast Update) -> ControlFlow<()> {
+                ControlFlow::Break(())
+            }
+        }
+        expr.visit_with(&mut Finder).is_break()
+    }
+
+    /// HIWAVE PATCH (eval-order): `compile_expr_operand` for an operand that is read BEFORE
+    /// another one (`later`) is evaluated and used after it, as the left side of `lhs op rhs`. A
+    /// local's register is used directly only when `later` cannot assign: `a + --a` and
+    /// `a < (a = 5)` read `a` first, so its old value has to be copied before `later` runs.
+    pub(crate) fn compile_expr_operand_before(
+        &mut self,
+        expr: &Expression,
+        later: &Expression,
+        inner_fn: impl FnOnce(&mut Self, RegisterOperand),
+    ) {
+        if Self::may_assign(later) {
+            let reg = self.register_allocator.alloc();
+            self.compile_expr(expr, &reg);
+            inner_fn(self, reg.variable());
+            self.register_allocator.dealloc(reg);
+        } else {
+            self.compile_expr_operand(expr, inner_fn);
+        }
+    }
+
     pub(crate) fn compile_expr_operand(
         &mut self,
         expr: &Expression,
@@ -2163,6 +2454,14 @@ impl<'ctx> ByteCompiler<'ctx> {
                     if let Some(expr) = variable.init() {
                         let binding = self.lexical_scope.get_identifier_reference(ident.clone());
                         let index = self.insert_binding(binding);
+                        // HIWAVE PATCH (js-perf2 item 6): a local `var` whose initializer writes its
+                        // destination last is initialised in its own register, with no copy.
+                        if let BindingKind::Local(Some(local_reg)) = index
+                            && Self::writes_dst_last(expr)
+                        {
+                            self.compile_expr(expr, &Register::persistent(local_reg));
+                            continue;
+                        }
                         let value = self.register_allocator.alloc();
                         self.emit_binding_access(BindingAccessOpcode::GetLocator, &index, &value);
                         self.compile_expr(expr, &value);
@@ -2270,11 +2569,17 @@ impl<'ctx> ByteCompiler<'ctx> {
                                 );
                                 // Cache non-local const bindings in a persistent register
                                 // so subsequent reads avoid GetName environment lookups.
-                                let cache_reg = self.register_allocator.alloc_persistent();
-                                self.bytecode
-                                    .emit_move(cache_reg.variable(), value.variable());
-                                self.const_binding_cache
-                                    .insert(binding.locator(), cache_reg.index());
+                                // HIWAVE PATCH (switch-tdz): not for a const of a switch scope.
+                                if !self
+                                    .switch_scope_ids
+                                    .contains(&binding.locator().unique_scope_id())
+                                {
+                                    let cache_reg = self.register_allocator.alloc_persistent();
+                                    self.bytecode
+                                        .emit_move(cache_reg.variable(), value.variable());
+                                    self.const_binding_cache
+                                        .insert(binding.locator(), cache_reg.index());
+                                }
                                 self.register_allocator.dealloc(value);
                             }
                         }
@@ -2780,7 +3085,13 @@ impl<'ctx> ByteCompiler<'ctx> {
             constants: self.constants,
             bindings: self.bindings.into_boxed_slice(),
             handlers: self.handlers,
-            flags: Cell::new(self.code_block_flags),
+            // HIWAVE PATCH (error-detail): the flag of the compilation.
+            flags: Cell::new(match crate::vm::ErrorDetailScope::current() {
+                crate::vm::ErrorDetail::Full => self.code_block_flags,
+                crate::vm::ErrorDetail::Withheld => self.code_block_flags | CodeBlockFlags::ERROR_DETAIL_WITHHELD,
+                crate::vm::ErrorDetail::Embedder => self.code_block_flags | CodeBlockFlags::ERROR_DETAIL_EMBEDDER,
+            }),
+            // END HIWAVE PATCH
             ic: self.ic.into_boxed_slice(),
             source_info: SourceInfo::new(
                 SourceMap::new(source_map_entries, self.source_path),
@@ -2791,6 +3102,7 @@ impl<'ctx> ByteCompiler<'ctx> {
             global_fns: self.global_fns.into_boxed_slice(),
             global_vars: self.global_vars.into_boxed_slice(),
             debug_id: CodeBlock::get_next_codeblock_id(),
+            regexp_literals: Default::default(),
             #[cfg(feature = "trace")]
             traced: Cell::new(false),
         }

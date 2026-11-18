@@ -21,6 +21,8 @@ impl ConcatToString {
             let val = context.vm.get_register(value.into()).clone();
             strings.push(val.to_string(context)?);
         }
+        // HIWAVE PATCH (string-length): a template result over the limit is refused, as in Chrome.
+        crate::builtins::string::String::check_length(strings.iter().map(|s| s.len() as u64).sum())?;
         let s = JsString::concat_array(&strings.iter().map(JsString::as_str).collect::<Vec<_>>());
         context.vm.set_register(string.into(), s.into());
         Ok(())

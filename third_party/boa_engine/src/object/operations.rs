@@ -437,6 +437,8 @@ impl JsObject {
         // NOTE(HalidOdat): For object's that are not callable we implement a special __call__ internal method
         //                  that throws on call.
 
+        let _native_entry = crate::native_stack::Entry::new(context.vm.runtime_limits.native_stack_budget()); // HIWAVE PATCH (native recursion)
+        crate::native_stack::check(context.vm.runtime_limits.native_stack_budget())?;
         let stack_len = context.vm.stack.len(); // HIWAVE PATCH (interrupt)
         context.vm.stack.push(this.clone()); // this
         context.vm.stack.push(self.clone()); // func
@@ -690,12 +692,12 @@ impl JsObject {
         // NOTE: This is an optimization, most of the cases that `LengthOfArrayLike` will be called
         //       is for arrays. The "length" property of an array is stored in the first index.
         if self.is_array() {
-            let borrowed_object = self.borrow();
+            // HIWAVE PATCH (array-length-ic): the length is read and the borrow released before it
+            // is converted; a conversion runs script, which may write to this array.
+            let length = self.borrow().properties().storage[0].clone();
             // NOTE: using `to_u32` instead of `to_length` is an optimization,
             //       since arrays are limited to [0, 2^32 - 1] range.
-            return borrowed_object.properties().storage[0]
-                .to_u32(context)
-                .map(u64::from);
+            return length.to_u32(context).map(u64::from);
         }
 
         // 2. Return ℝ(? ToLength(? Get(obj, "length"))).
@@ -1451,12 +1453,21 @@ impl JsValue {
         // 3. Let len be ? LengthOfArrayLike(obj).
         let len = obj.length_of_array_like(context)?;
 
+        // HIWAVE PATCH (array-like-length): more than 2^27 elements is refused before any is read, with
+        // Chrome 148's error (its limit for an argument list), and the list is not reserved from
+        // `length`, which the page sets.
+        if len > 1 << 27 {
+            return Err(JsNativeError::range().with_message("Invalid array length").into());
+        }
+
         // 4. Let list be a new empty List.
-        let mut list = Vec::with_capacity(len as usize);
+        let mut list = Vec::with_capacity((len as usize).min(1 << 12));
 
         // 5. Let index be 0.
         // 6. Repeat, while index < len,
         for index in 0..len {
+            // HIWAVE PATCH (array-like-length): up to 2^27 reads; the turn budget can stop them.
+            context.check_interrupt()?;
             // a. Let indexName be ! ToString(𝔽(index)).
             // b. Let next be ? Get(obj, indexName).
             let next = obj.get(index, context)?;
@@ -1470,6 +1481,37 @@ impl JsValue {
         }
 
         // 7. Return list.
+        Ok(list)
+    }
+
+    /// HIWAVE PATCH (array-like-length): `CreateListFromArrayLike` for an argument list
+    /// (`Function.prototype.apply`, `Reflect.apply`, `Reflect.construct`). Every element is read,
+    /// as the spec says and Chrome does, but no more than [`crate::vm::MAX_ARGUMENTS`] are kept: a
+    /// longer list is refused once it has been read, with the error Chrome 148 gives when the
+    /// arguments do not fit its stack (`RangeError: Maximum call stack size exceeded`; Chrome takes
+    /// about 120,000, depending on the stack's depth). More than 2^27 is refused before reading, as in
+    /// [`Self::create_list_from_array_like`].
+    pub(crate) fn create_argument_list_from_array_like(
+        &self,
+        context: &mut Context,
+    ) -> JsResult<Vec<Self>> {
+        let obj = self.as_object().ok_or_else(|| {
+            JsNativeError::typ().with_message("cannot create list from a primitive")
+        })?;
+        let len = obj.length_of_array_like(context)?;
+        if len > 1 << 27 {
+            return Err(JsNativeError::range().with_message("Invalid array length").into());
+        }
+        let mut list = Vec::with_capacity((len as usize).min(1 << 12));
+        for index in 0..len {
+            // A long list is a long loop of reads; the turn budget can stop it.
+            context.check_interrupt()?;
+            let next = obj.get(index, context)?;
+            if list.len() < crate::vm::MAX_ARGUMENTS {
+                list.push(next);
+            }
+        }
+        crate::vm::check_argument_count(len as usize)?;
         Ok(list)
     }
 

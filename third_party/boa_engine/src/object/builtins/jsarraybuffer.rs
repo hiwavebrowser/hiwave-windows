@@ -34,7 +34,6 @@ impl From<JsObject<ArrayBuffer>> for JsArrayBuffer {
     }
 }
 
-// TODO: Add constructors that also take the `detach_key` as argument.
 impl JsArrayBuffer {
     /// Create a new array buffer with byte length.
     ///
@@ -130,6 +129,24 @@ impl JsArrayBuffer {
         );
 
         Ok(Self { inner: obj })
+    }
+
+    /// Create a new array buffer over `byte_block`, with `detach_key` as its
+    /// `[[ArrayBufferDetachKey]]`.
+    ///
+    /// Script cannot detach such a buffer (`transfer()` and `transferToFixedLength()` throw a
+    /// `TypeError`); the host can, with [`JsArrayBuffer::detach`] and the same key. This is what a
+    /// `WebAssembly.Memory`'s buffer needs, since the memory's storage must stay put while the
+    /// instance runs.
+    // HIWAVE PATCH (arraybuffer-detach-key).
+    pub fn from_byte_block_with_detach_key(
+        byte_block: AlignedVec<u8>,
+        detach_key: JsValue,
+        context: &mut Context,
+    ) -> JsResult<Self> {
+        let buffer = Self::from_byte_block(byte_block, context)?;
+        buffer.inner.borrow_mut().data_mut().set_detach_key(detach_key);
+        Ok(buffer)
     }
 
     /// Set a maximum length for the underlying array buffer.

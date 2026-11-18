@@ -51,11 +51,77 @@ bitflags! {
         /// If the function requires a function scope.
         const HAS_FUNCTION_SCOPE = 0b1_0000_0000;
 
+        /// HIWAVE PATCH (sort-diff): the whole body is `return a - b` over the two plain
+        /// parameters. `Array.prototype.sort` compares two Numbers natively for such a function.
+        const NUMERIC_DIFF = 0b10_0000_0000;
+
+        /// With `NUMERIC_DIFF`: the body is `return b - a`.
+        const NUMERIC_DIFF_SWAPPED = 0b100_0000_0000;
+
+        // HIWAVE PATCH (error-detail): the code is of a script whose errors
+        // the host reports without detail. See PATCHES.md.
+        const ERROR_DETAIL_WITHHELD = 0b1000_0000_0000;
+        // The code is the embedder's own, not a script of the page: an
+        // error is never placed in it.
+        const ERROR_DETAIL_EMBEDDER = 0b1_0000_0000_0000;
+        // END HIWAVE PATCH
+
         /// Trace instruction execution to `stdout`.
         #[cfg(feature = "trace")]
         const TRACEABLE = 0b1000_0000_0000_0000;
     }
 }
+
+// HIWAVE PATCH (error-detail): every code block compiled while a scope is
+// entered carries the scope's answer: a script's top-level code and every
+// function compiled from its source. Code compiled under no scope is the
+// embedder's. Code made at run time (`eval`, the `Function` constructors)
+// carries the answer of the code that made it, always: nothing is kept
+// between one compile and the next. A host that compiles text for the page
+// itself says what it is in the call (`Script::parse` under a scope,
+// `BuiltInFunctionObject::compile_function_as`). See PATCHES.md.
+
+/// What a host reports of an error thrown by some code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorDetail {
+    /// A script of the page whose errors are reported in full.
+    Full,
+    /// A script of the page whose errors are reported without detail.
+    Withheld,
+    /// The embedder's own code: it answers for nothing. An error raised
+    /// while it runs is placed in the nearest page script below it.
+    Embedder,
+}
+
+thread_local! {
+    static ERROR_DETAIL: Cell<ErrorDetail> = const { Cell::new(ErrorDetail::Embedder) };
+}
+
+/// While it lives, code blocks are compiled with the answer it was entered
+/// with; the answer before it is put back when it is dropped.
+#[derive(Debug)]
+pub struct ErrorDetailScope(ErrorDetail);
+
+impl ErrorDetailScope {
+    /// Compile with `detail` from here on.
+    #[must_use]
+    pub fn enter(detail: ErrorDetail) -> Self {
+        Self(ERROR_DETAIL.with(|cell| cell.replace(detail)))
+    }
+
+    /// The answer code blocks are compiled with now.
+    #[must_use]
+    pub fn current() -> ErrorDetail {
+        ERROR_DETAIL.with(Cell::get)
+    }
+}
+
+impl Drop for ErrorDetailScope {
+    fn drop(&mut self) {
+        ERROR_DETAIL.with(|cell| cell.set(self.0));
+    }
+}
+// END HIWAVE PATCH
 
 impl CodeBlockFlags {
     /// Check if the [`CodeBlock`] has a function scope.
@@ -186,6 +252,11 @@ pub struct CodeBlock {
     // Used for identifying anonymous functions in compiled output and call frames.
     pub(crate) debug_id: u64,
 
+    /// HIWAVE PATCH (regex-literal-cache): the compiled record of each regex literal evaluated in
+    /// this code block (see `RegExp::from_literal`).
+    #[unsafe_ignore_trace]
+    pub(crate) regexp_literals: crate::builtins::regexp::LiteralCache,
+
     #[cfg(feature = "trace")]
     #[unsafe_ignore_trace]
     pub(crate) traced: Cell<bool>,
@@ -193,6 +264,21 @@ pub struct CodeBlock {
 
 /// ---- `CodeBlock` public API ----
 impl CodeBlock {
+    // HIWAVE PATCH (error-detail)
+    /// What the host reports of an error thrown by this code.
+    #[must_use]
+    pub fn error_detail(&self) -> ErrorDetail {
+        let flags = self.flags.get();
+        if flags.contains(CodeBlockFlags::ERROR_DETAIL_EMBEDDER) {
+            ErrorDetail::Embedder
+        } else if flags.contains(CodeBlockFlags::ERROR_DETAIL_WITHHELD) {
+            ErrorDetail::Withheld
+        } else {
+            ErrorDetail::Full
+        }
+    }
+    // END HIWAVE PATCH
+
     /// Creates a new `CodeBlock`.
     #[must_use]
     pub fn new(name: JsString, length: u32, strict: bool) -> Self {
@@ -219,6 +305,7 @@ impl CodeBlock {
             global_fns: Box::default(),
             global_vars: Box::default(),
             debug_id: CodeBlock::get_next_codeblock_id(),
+            regexp_literals: Default::default(),
             #[cfg(feature = "trace")]
             traced: Cell::new(false),
         }
@@ -1243,3 +1330,28 @@ pub(crate) fn create_function_object_fast(code: Gc<CodeBlock>, context: &mut Con
         constructor
     }
 }
+
+// HIWAVE PATCH (error-detail, sort-diff): the patches' flags are bits of
+// their own. `boa_engine`'s own tests do not run in this workspace, so the
+// check is a function a test of the embedder calls
+// (`crates/rustkit-js/tests/code_block_flags.rs`).
+
+/// The names of `CodeBlockFlags` constants that are not one bit or share a
+/// bit with an earlier one, and how many constants there are.
+#[doc(hidden)]
+#[must_use]
+pub fn code_block_flag_clashes() -> (Vec<&'static str>, usize) {
+    let mut seen = 0u16;
+    let mut clashes = Vec::new();
+    let mut count = 0;
+    for (name, flag) in CodeBlockFlags::all().iter_names() {
+        let bits = flag.bits();
+        if bits.count_ones() != 1 || seen & bits != 0 {
+            clashes.push(name);
+        }
+        seen |= bits;
+        count += 1;
+    }
+    (clashes, count)
+}
+// END HIWAVE PATCH

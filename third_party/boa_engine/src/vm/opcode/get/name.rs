@@ -61,26 +61,36 @@ impl GetNameGlobal {
 
             let object_borrowed = object.borrow();
             if let Some((shape, slot)) = ic.get(object_borrowed.shape()) {
-                let mut result = if slot.attributes.contains(SlotAttributes::PROTOTYPE) {
+                // HIWAVE PATCH (ic-holder): the cached index is read with `get`; a slot that is not
+                // there falls through to the full [[Get]] instead of indexing out of bounds.
+                let cached = if slot.attributes.contains(SlotAttributes::PROTOTYPE) {
                     let prototype = shape.prototype().expect("prototype should have value");
                     let prototype = prototype.borrow();
-                    prototype.properties().storage[slot.index as usize].clone()
+                    prototype
+                        .properties()
+                        .storage
+                        .get(slot.index as usize)
+                        .cloned()
                 } else {
-                    object_borrowed.properties().storage[slot.index as usize].clone()
+                    object_borrowed
+                        .properties()
+                        .storage
+                        .get(slot.index as usize)
+                        .cloned()
                 };
-
-                drop(object_borrowed);
-                if slot.attributes.has_get() && result.is_object() {
-                    result = result.as_object().expect("should contain getter").call(
-                        &object.clone().into(),
-                        &[],
-                        context,
-                    )?;
+                if let Some(mut result) = cached {
+                    drop(object_borrowed);
+                    if slot.attributes.has_get() && result.is_object() {
+                        result = result.as_object().expect("should contain getter").call(
+                            &object.clone().into(),
+                            &[],
+                            context,
+                        )?;
+                    }
+                    context.vm.set_register(dst.into(), result);
+                    return Ok(());
                 }
-                context.vm.set_register(dst.into(), result);
-                return Ok(());
             }
-
             drop(object_borrowed);
 
             let key: PropertyKey = ic.name.clone().into();
@@ -95,6 +105,15 @@ impl GetNameGlobal {
 
             // Cache the property.
             let slot = *context.slot();
+            // HIWAVE PATCH (vm-stats): an inline-cache miss on a global read, by name.
+            if crate::vm::stats::enabled() {
+                crate::vm::stats::miss(
+                    crate::vm::stats::Site::GetGlobal,
+                    &binding_locator.name().to_std_string_escaped(),
+                    "global",
+                    slot.is_cacheable(),
+                );
+            }
             if slot.is_cacheable() {
                 let ic = &context.vm.frame().code_block.ic[usize::from(ic_index)];
                 let object_borrowed = object.borrow();
@@ -201,6 +220,11 @@ impl GetNameOrUndefined {
         let is_global = binding_locator.is_global();
 
         context.find_runtime_binding(&mut binding_locator)?;
+
+        // HIWAVE PATCH (global-lexical-scope): a global name that resolved, at run time, to a later
+        // script's lexical binding is no longer "an undeclared global": while that binding is
+        // uninitialised, `typeof x` is a ReferenceError (the temporal dead zone), not "undefined".
+        let is_global = is_global && binding_locator.is_global();
 
         let result = if let Some(value) = context.get_binding(&binding_locator)? {
             value

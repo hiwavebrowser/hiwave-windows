@@ -334,7 +334,7 @@ pub(crate) fn typed_array_exotic_prevent_extensions(
 ///  - [ECMAScript reference][spec]
 ///
 /// [spec]: https://tc39.es/ecma262/#sec-canonicalnumericindexstring
-fn canonical_numeric_index_string(argument: &JsString) -> Option<f64> {
+pub(crate) fn canonical_numeric_index_string(argument: &JsString) -> Option<f64> {
     // 1. If argument is "-0", return -0𝔽.
     if argument == &js_str!("-0") {
         return Some(-0.0);
@@ -524,6 +524,10 @@ pub(crate) fn typed_array_exotic_try_get(
 
 /// Internal method `[[Get]]` for `TypedArray` exotic objects.
 ///
+/// HIWAVE PATCH (ic-exotic-get): `InlineCache::hit_is_get` recognises this function by address to
+/// let a name-read cache hit on a typed array for a non-numeric name. If this function is wrapped
+/// or replaced, update `hit_is_get`, or those hits silently become misses (slower, not wrong).
+///
 /// More information:
 ///  - [ECMAScript reference][spec]
 ///
@@ -680,7 +684,7 @@ pub(crate) fn typed_array_exotic_own_property_keys(
 ///  - [ECMAScript reference][spec]
 ///
 /// [spec]: https://tc39.es/ecma262/sec-typedarraygetelement
-fn typed_array_get_element(obj: &JsObject, index: f64) -> JsResult<Option<JsValue>> {
+pub(crate) fn typed_array_get_element(obj: &JsObject, index: f64) -> JsResult<Option<JsValue>> {
     let inner = obj
         .downcast_ref::<TypedArray>()
         .js_expect("typed_array_get_element should only be called on TypedArray objects")?;

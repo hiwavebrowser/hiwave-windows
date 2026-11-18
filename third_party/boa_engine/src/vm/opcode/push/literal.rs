@@ -1,6 +1,6 @@
 use crate::{
     Context, JsResult, JsValue,
-    object::JsRegExp,
+    builtins::regexp::RegExp,
     vm::{
         Constant,
         opcode::{IndexOperand, Operation, RegisterOperand},
@@ -46,11 +46,14 @@ impl StoreRegexp {
         (dst, pattern_index, flags_index): (RegisterOperand, IndexOperand, IndexOperand),
         context: &mut Context,
     ) -> JsResult<()> {
-        let code_block = context.vm.frame().code_block();
+        // HIWAVE PATCH (regex-literal-cache): the pattern is compiled once per code block; each
+        // evaluation is a new RegExp object made from the compiled record.
+        let code_block = context.vm.frame().code_block().clone();
         let pattern = code_block.constant_string(pattern_index.into());
         let flags = code_block.constant_string(flags_index.into());
-        let regexp = JsRegExp::new(pattern, flags, context)?;
-        context.vm.set_register(dst.into(), regexp.into());
+        let key = (u32::from(pattern_index), u32::from(flags_index));
+        let regexp = RegExp::from_literal(&code_block.regexp_literals, key, &pattern, &flags, context)?;
+        context.vm.set_register(dst.into(), regexp);
         Ok(())
     }
 }

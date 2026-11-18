@@ -807,6 +807,21 @@ impl From<i32> for PropertyKey {
     }
 }
 
+impl PropertyKey {
+    /// `ToPropertyKey` of a Number (HIWAVE PATCH js-perf1): a whole number from 0 to 2^32 - 2
+    /// (`-0` included, whose string is "0") is that array index, and any other Number keeps its
+    /// canonical string (`NaN`, `1.5`, `-1`, `4294967295`, `1e+21`, ...), exactly as converting
+    /// through `Number::toString` and parsing back gave.
+    pub(crate) fn from_f64_key(value: f64) -> Self {
+        // `value >= 0.0` holds for -0.0 too; the comparison is false for NaN.
+        if value >= 0.0 && value < 4_294_967_295.0 && value.fract() == 0.0 {
+            // Safety: below u32::MAX, so never the NonMaxU32 niche.
+            return Self::Index(unsafe { NonMaxU32::new_unchecked(value as u32) });
+        }
+        Self::String(JsString::from(value))
+    }
+}
+
 impl From<f64> for PropertyKey {
     fn from(value: f64) -> Self {
         use num_traits::cast::FromPrimitive;

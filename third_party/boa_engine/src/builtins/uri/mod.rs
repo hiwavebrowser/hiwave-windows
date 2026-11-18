@@ -296,8 +296,26 @@ where
     // 1. Let strLen be the length of string.
     let str_len = string.len();
 
+    // HIWAVE PATCH (string-length): the encoded length is counted before it is built (to the
+    // first unpaired surrogate, where the encoding below throws its URIError).
+    let mut encoded_len: u64 = 0;
+    let mut i = 0;
+    while i < str_len {
+        let c = string.code_unit_at(i).js_expect("Bounds were verified")?;
+        if unescaped_set(c) {
+            encoded_len += 1;
+            i += 1;
+            continue;
+        }
+        let cp = string.code_point_at(i);
+        let CodePoint::Unicode(ch) = cp else { break };
+        encoded_len += 3 * ch.len_utf8() as u64;
+        i += cp.code_unit_count();
+    }
+    crate::builtins::string::String::check_length(encoded_len)?;
+
     // 2. Let R be the empty String.
-    let mut r = Vec::with_capacity(str_len);
+    let mut r = Vec::with_capacity(encoded_len as usize);
 
     // 3. Let k be 0.
     let mut k = 0;

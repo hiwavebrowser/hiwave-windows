@@ -43,13 +43,19 @@ impl ByteCompiler<'_> {
                 // so when dst==src the new value wins.
                 //
                 // Skip for const bindings — they must fall through to emit ThrowMutateImmutable.
-                if is_lexical
-                    && compiler
+                // HIWAVE PATCH (js-perf2 item 6): the same for a mutable non-lexical local (a
+                // `var` or a parameter), which was left on the slow path of three copies.
+                let local_in_place = match &index {
+                    BindingKind::Local(Some(_)) if is_lexical => compiler
                         .lexical_scope
                         .set_mutable_binding(name.clone())
-                        .is_ok()
-                    && let BindingKind::Local(Some(local_reg)) = &index
-                {
+                        .is_ok(),
+                    BindingKind::Local(Some(_)) => {
+                        compiler.lexical_scope.is_binding_mutable(&name) == Some(true)
+                    }
+                    _ => false,
+                };
+                if local_in_place && let BindingKind::Local(Some(local_reg)) = &index {
                     let local_op = (*local_reg).into();
 
                     if discard {
@@ -63,13 +69,17 @@ impl ByteCompiler<'_> {
                     }
 
                     if post {
-                        // Save old value to dst (post-increment returns old value).
+                        // HIWAVE PATCH (update-conversion): the value of `x++` is the old value
+                        // CONVERTED (ToNumeric: '5' -> 5, undefined -> NaN). Copy the old value to
+                        // dst, then increment FROM dst: `Inc` writes the converted old value back to
+                        // its source (dst) and the new value to its destination (the local). The
+                        // local is untouched if the conversion throws. (`Inc(local, local)` here left
+                        // dst holding the unconverted value.)
                         compiler.bytecode.emit_move(dst.variable(), local_op);
-                        // Increment in-place.
                         if increment {
-                            compiler.bytecode.emit_inc(local_op, local_op);
+                            compiler.bytecode.emit_inc(local_op, dst.variable());
                         } else {
-                            compiler.bytecode.emit_dec(local_op, local_op);
+                            compiler.bytecode.emit_dec(local_op, dst.variable());
                         }
                     } else {
                         if increment {

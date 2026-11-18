@@ -64,6 +64,7 @@ impl NewSpread {
 
         let argument_count = arguments.len();
         context.vm.stack.push(func);
+        crate::vm::check_argument_count(arguments.len())?; // HIWAVE PATCH (array-like-length)
         context
             .vm
             .stack

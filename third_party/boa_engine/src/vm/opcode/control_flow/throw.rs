@@ -29,7 +29,11 @@ impl Throw {
         }
         // END HIWAVE PATCH
         let value = context.vm.get_register(value.into());
-        let error = JsError::from_opaque(value.clone());
+        let mut error = JsError::from_opaque(value.clone());
+        // HIWAVE PATCH (error-detail): thrown by this frame's code, also
+        // when a handler in this frame takes it.
+        error.detail_withheld = context.vm.page_error_detail(0);
+        // END HIWAVE PATCH
         context.vm.pending_exception = Some(error);
 
         // Note: -1 because we increment after fetching the opcode.
