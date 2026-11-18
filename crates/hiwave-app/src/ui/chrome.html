@@ -4331,16 +4331,18 @@
                         return '<div class="context-menu-divider"></div>';
                     }
                     const disabled = item.disabled ? ' disabled' : '';
-                    const dataAction = item.action ? ` data-action="${item.action}"` : '';
-                    const tabAttr = item.tabId ? ` data-tab-id="${item.tabId}"` : '';
+                    // Labels carry workspace names; every value is escaped.
+                    const dataAction = item.action ? ` data-action="${escapeHtml(item.action)}"` : '';
+                    const tabAttr = item.tabId ? ` data-tab-id="${escapeHtml(item.tabId)}"` : '';
                     const workspaceAttr = item.workspaceId
-                        ? ` data-workspace-id="${item.workspaceId}"`
+                        ? ` data-workspace-id="${escapeHtml(item.workspaceId)}"`
                         : '';
                     const urlAttr = item.url ? ` data-url="${encodeURIComponent(item.url)}"` : '';
                     const textAttr = item.text ? ` data-text="${encodeURIComponent(item.text)}"` : '';
-                    const icon = item.icon ? `<span class="icon">${item.icon}</span>` : '';
-                    const tooltip = item.label ? ` title="${item.label}"` : '';
-                    return `<button type="button" class="context-menu-item${disabled}"${dataAction}${tabAttr}${workspaceAttr}${urlAttr}${textAttr}${tooltip}>${icon}<span>${item.label}</span></button>`;
+                    const icon = item.icon ? `<span class="icon">${escapeHtml(item.icon)}</span>` : '';
+                    const label = escapeHtml(item.label || '');
+                    const tooltip = item.label ? ` title="${label}"` : '';
+                    return `<button type="button" class="context-menu-item${disabled}"${dataAction}${tabAttr}${workspaceAttr}${urlAttr}${textAttr}${tooltip}>${icon}<span>${label}</span></button>`;
                 })
                 .join('');
 
@@ -5453,10 +5455,6 @@
             }
         }
 
-        function escapeAttr(value = '') {
-            return value.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-        }
-
         function handleDownloadAction(event) {
             event.stopPropagation();
             const button = event.currentTarget;
@@ -5489,7 +5487,7 @@
                     const fileName = download.file_name || 'Download';
                     const url = download.url || '';
                     const path = download.path || '';
-                    const safePath = escapeAttr(path);
+                    const safePath = escapeHtml(path);
                     const hasPath = Boolean(path);
                     const statusText = formatDownloadStatus(download.status);
                     return `
@@ -6065,8 +6063,13 @@
                 // person is typing in the bar (edited since it was focused
                 // or since Enter). After Enter the committed URL shows, as
                 // before (a redirect's final URL).
+                // An internal page shows an empty bar (its placeholder),
+                // as the tab sync (`renderTabs`) shows it, so the two agree
+                // and Escape's revert puts back what the bar showed.
+                const shown = (url && !url.startsWith('hiwave://')) ? url : '';
+                urlBarPageUrl = shown;
                 if (document.activeElement === input && urlInputEdited) return;
-                if (input.value !== url) input.value = url;
+                if (input.value !== shown) input.value = shown;
             },
 
             // Update active tab title
@@ -6086,6 +6089,7 @@
 
             // Set loading state
             setLoading: function(loading) {
+                pageLoading = !!loading;
                 setClass(document.getElementById('loadingIndicator'), 'active', loading);
             },
 
@@ -6520,6 +6524,20 @@
         // Whether the person has typed in the bar since it was focused or
         // since Enter: the app's URL waits until then (`updateUrl`).
         var urlInputEdited = false;
+        // The page's URL as the bar shows it when nothing is typed (M1f:
+        // Escape puts it back). `var`: the app's early state can arrive
+        // before this line runs.
+        var urlBarPageUrl = '';
+        // Whether the active page is loading, as the app last said
+        // (`setLoading`). `var` for the same reason.
+        var pageLoading = false;
+        // Escape's stop (M1f nit): only a page that is loading is stopped.
+        // State the app sent and the chrome has not applied yet is applied
+        // first, so a load that just started is seen.
+        function stopIfLoading() {
+            if (typeof window.__hiwaveFlushState === 'function') window.__hiwaveFlushState();
+            if (pageLoading) sendIpc('stop');
+        }
         urlInput.addEventListener('input', () => { urlInputEdited = true; });
         urlInput.addEventListener('blur', () => { urlInputEdited = false; });
         urlInput.addEventListener('keydown', (e) => {
@@ -6655,6 +6673,31 @@
                     }
                     return;
                 }
+                // M1f: Escape in the address bar is the address bar's, as
+                // Chrome 148's omnibox takes it. OmniboxViewViews::
+                // SkipDefaultKeyEventProcessing returns true for Escape, so
+                // no browser accelerator (IDC_CLOSE_FIND_OR_STOP) sees it:
+                // the sidebar and the find bar stay. OmniboxEditModel::
+                // OnEscapeKeyPressed then reverts the text to the page's URL
+                // and selects it, whatever was selected; if the user was
+                // editing it stops there, focus kept and the load left alone
+                // ("If the user was in the midst of editing, don't cancel
+                // any underlying page load"); otherwise it blurs the omnibox
+                // and focuses the page, and returns true. Chrome stops the
+                // load on the NEXT Escape, in the page. DIVERGENCE: a RustKit
+                // page has no Escape-stops, so here the not-editing Escape
+                // also stops a loading page: one press, not two.
+                if (document.activeElement === urlInput) {
+                    e.preventDefault();
+                    const wasEditing = urlInputEdited;
+                    urlInputEdited = false;
+                    urlInput.value = urlBarPageUrl;
+                    urlInput.select();
+                    if (wasEditing) return;
+                    stopIfLoading();
+                    urlInput.blur();
+                    return;
+                }
                 if (findModalOpen) {
                     e.preventDefault();
                     closeFindModal(true);
@@ -6784,12 +6827,17 @@
                 performFind(e.shiftKey ? 'prev' : 'next');
             }
 
-            // Ctrl+1-9 - Switch tabs
+            // Ctrl+1-8 - the Nth tab; Ctrl+9 - the last tab (Chrome, Safari).
+            // On macOS the Tab menu has the same items (Cmd+1..9) for when a
+            // page has the keyboard; cancelling here is what keeps the menu
+            // from switching a second time while the chrome has it (M1d).
             if (isCtrl && e.key >= '1' && e.key <= '9') {
                 e.preventDefault();
-                const tabIndex = parseInt(e.key) - 1;
-                if (currentTabs[tabIndex]) {
-                    sendIpc('activate_tab', { id: String(currentTabs[tabIndex].id) });
+                const tab = e.key === '9'
+                    ? currentTabs[currentTabs.length - 1]
+                    : currentTabs[parseInt(e.key) - 1];
+                if (tab) {
+                    sendIpc('activate_tab', { id: String(tab.id) });
                 }
             }
 
@@ -6994,7 +7042,7 @@
                 const fileName = dl.file_name || dl.filename || 'Download';
                 const statusText = dl.status === 'completed' ? 'Complete' : (dl.status || 'Pending');
                 return `
-                    <div class="right-panel-item" title="${escapeAttr(dl.path || dl.url || '')}">
+                    <div class="right-panel-item" title="${escapeHtml(dl.path || dl.url || '')}">
                         <div class="right-panel-item-title">${escapeHtml(fileName)}</div>
                         <div class="right-panel-item-meta">${escapeHtml(statusText)}</div>
                     </div>
@@ -7015,15 +7063,30 @@
                 rightHistoryList.innerHTML = '<div class="right-panel-empty">No history yet</div>';
                 return;
             }
+            // The URL is page data: it goes in as an escaped attribute and
+            // text only. The click is handled once on the list (below),
+            // never by an inline handler built from the URL.
             rightHistoryList.innerHTML = filtered.map(h => {
-                const safeUrl = escapeAttr(h.url || '');
                 return `
-                    <div class="right-panel-item" data-url="${safeUrl}" onclick="sendIpc('navigate', {url:'${safeUrl}'})">
+                    <div class="right-panel-item" data-url="${escapeHtml(h.url || '')}">
                         <div class="right-panel-item-title">${escapeHtml(h.title || 'Untitled')}</div>
                         <div class="right-panel-item-url">${escapeHtml(h.url || '')}</div>
                     </div>
                 `;
             }).join('');
+        }
+
+        if (rightHistoryList) {
+            rightHistoryList.addEventListener('click', (event) => {
+                const item = event.target && event.target.closest
+                    ? event.target.closest('.right-panel-item')
+                    : null;
+                if (!item) return;
+                const url = item.dataset.url;
+                if (url) {
+                    sendIpc('navigate', { url });
+                }
+            });
         }
 
         if (rightSidebarDownloadsBtn) {
