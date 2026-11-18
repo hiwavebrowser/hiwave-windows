@@ -21,7 +21,7 @@
   <a href="https://github.com/hiwavebrowser/hiwave-windows/actions/workflows/metrics.yml"><img src="https://github.com/hiwavebrowser/hiwave-windows/actions/workflows/metrics.yml/badge.svg?branch=master" alt="Windows CI" /></a>
   <img src="https://img.shields.io/badge/engine-RustKit_(original)-orange" alt="Engine: RustKit" />
   <img src="https://img.shields.io/badge/status-alpha-blueviolet" alt="Status: Alpha" />
-  <img src="https://img.shields.io/badge/license-MPL--2.0-blue" alt="License: MPL-2.0" />
+  <img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="License: AGPL-3.0-or-later" />
   <img src="https://img.shields.io/badge/platforms-Win%20%7C%20Mac%20%7C%20Linux-lightgrey" alt="Platforms" />
 </p>
 
@@ -408,18 +408,25 @@ See [docs/RUSTKIT-ROADMAP.md](docs/RUSTKIT-ROADMAP.md) for the complete engine r
 
 ## License
 
-HiWave is **dual-licensed**:
+HiWave is **dual-licensed**. The source code is owned by Aleph Null LLC; HiWave is a subsidiary of Aleph Null LLC. See [NOTICE](NOTICE).
 
 | License | Best For |
 |---------|----------|
-| [MPL-2.0](LICENSE) (free) | Most users, open source projects |
+| [AGPL-3.0-or-later](LICENSE) (free) | Most users, open source projects |
 | [Commercial](COMMERCIAL-LICENSE.md) (paid) | Keeping modifications private, dedicated support |
 
-**Under MPL-2.0:**
+**Under AGPL-3.0-or-later:**
 - ✅ Free to use, modify, and distribute
-- ✅ Build commercial products
-- ✅ Keep your own code proprietary
-- ⚠️ Changes to HiWave's files must be shared under MPL-2.0
+- ⚠️ If you distribute HiWave, or a modified version, you must make the complete corresponding source available under AGPL-3.0-or-later
+- ⚠️ If you run a modified version for users over a network, you must offer them its source (AGPL section 13)
+
+This covers the RustKit engine (`crates/rustkit-*`) as well as the app.
+
+**Earlier versions:** versions of HiWave published before the move to AGPL-3.0-or-later were released under the Mozilla Public License 2.0 and remain available under it; in those versions the RustKit engine crates declared the MIT licence and remain available under MIT.
+
+**Files under MPL-2.0:** `crates/hiwave-app/src/platform/linux.rs` contains code contributed under MPL-2.0 by an outside contributor and stays under MPL-2.0 (text in [LICENSES/MPL-2.0.txt](LICENSES/MPL-2.0.txt); marked `SPDX-License-Identifier: MPL-2.0`; MPL-2.0 section 3.3 allows it in this larger work).
+
+**Kept on their upstream licence:** the CLDR `en` patterns in `crates/rustkit-bindings/src/web_intl.js` (Unicode License v3) and the Ahem test font in `crates/rustkit-text/tests/fixtures/` (web-platform-tests, tests only). See NOTICE.
 
 **Need more flexibility?** See [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) for commercial licensing options.
 
