@@ -354,6 +354,58 @@ fn verify_mode_shows_no_mismatch_on_the_layout_corpus() {
     }
     pages.sort();
     assert!(pages.len() >= 15, "corpus found: {}", pages.len());
+    // On a software adapter (WARP, a GPU-less Windows machine; the device type 649 checks), one
+    // process that builds an engine for one corpus page after another ends partway through (tracked
+    // separately, row WARP-ACCUMULATION). There each page runs in its own child process, so every page
+    // still runs and still has to match.
+    const PAGE: &str = "HIWAVE_LAYOUT_CORPUS_PAGE";
+    let one_page = std::env::var_os(PAGE).is_some();
+    match std::env::var(PAGE).ok().and_then(|i| i.parse::<usize>().ok()) {
+        Some(i) => pages = vec![pages[i].clone()],
+        None if crate::test_compositor()
+            .is_ok_and(|c| c.adapter_info().device_type == wgpu::DeviceType::Cpu) =>
+        {
+            eprintln!(
+                "software adapter: the {} layout corpus pages each run in a child process",
+                pages.len()
+            );
+            let mut relaid = 0;
+            for (i, page) in pages.iter().enumerate() {
+                let out = std::process::Command::new(std::env::current_exe().expect("test exe"))
+                    .args([
+                        "incremental_layout_tests::verify_mode_shows_no_mismatch_on_the_layout_corpus",
+                        "--exact",
+                        "--test-threads=1",
+                        "--nocapture",
+                    ])
+                    .env(PAGE, i.to_string())
+                    .output()
+                    .expect("child");
+                // The child's own "test result" line stays out of this process's output, so a
+                // runner counting results counts this test once.
+                let said = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    out.status.success() && said.contains("1 passed"),
+                    "layout corpus page {i} ({}) on a software adapter: {}\n{said}\n{}",
+                    page.display(),
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let told = String::from_utf8_lossy(&out.stderr);
+                relaid += told
+                    .lines()
+                    .find_map(|line| line.strip_prefix("layout corpus page relaid "))
+                    .and_then(|n| n.trim().parse::<u32>().ok())
+                    .expect("the child reports how many it relaid");
+            }
+            assert!(
+                relaid > 20,
+                "the corpus exercised the incremental path: relaid {relaid}"
+            );
+            return;
+        }
+        None => {}
+    }
     let _mode = ModeGuard::set(Mode::Verify);
     set_count_only_for_test(true);
     let (mut relaid, mut unchanged, mut mismatches, mut mutations) = (0, 0, 0, 0);
@@ -454,6 +506,11 @@ fn verify_mode_shows_no_mismatch_on_the_layout_corpus() {
     let _ = skip_ok;
     assert_eq!(skip_bad, 0, "a skip hint was wrong: {bad:?}");
     assert_eq!(mismatches, 0, "pages with mismatches: {bad:?}");
+    if one_page {
+        // The parent sums these over the corpus and checks the total.
+        eprintln!("layout corpus page relaid {relaid}");
+        return;
+    }
     assert!(
         relaid > 20,
         "the corpus exercised the incremental path: relaid {relaid}"

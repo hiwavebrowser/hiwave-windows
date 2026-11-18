@@ -130,6 +130,97 @@ def reachability() -> dict:
         ),
     }
 
+# The engine's lib tests run in chunks of whole modules, one process per chunk. On a hosted
+# runner the GPU is the software adapter (WARP), and one process that runs the whole engine suite
+# ends partway through (exit 2173, a RaiseException in the D3D12 runtime after state builds up on
+# its device; tracked separately). The same tests run, serially as before; the listed count is
+# checked against the count that ran, so a chunk that dies or a test that is dropped shows.
+ENGINE = "rustkit-engine"
+ENGINE_DIR = Path(__file__).resolve().parent.parent / "crates" / ENGINE
+CHUNK_TESTS = 150
+# Windows caps a command line at 32767 characters; test names go on it.
+CHUNK_CHARS = 24000
+
+
+def engine_executables() -> tuple[int, list[tuple[str, str]]]:
+    """Build the engine's test targets as the workspace run builds them; return (exit, [(kind, exe)])."""
+    proc = subprocess.run(
+        ["cargo", "test", "-p", ENGINE, "--features", "headless", "--no-run",
+         "--message-format=json"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+        errors="replace")
+    exes = []
+    for line in (proc.stdout or "").splitlines():
+        if not line.startswith("{"):
+            continue
+        msg = json.loads(line)
+        if msg.get("reason") != "compiler-artifact" or not msg.get("executable"):
+            continue
+        # Only the engine's own test targets ("path+file:///.../crates/rustkit-engine#0.1.0").
+        if not msg.get("profile", {}).get("test") or f"/{ENGINE}#" not in msg.get("package_id", ""):
+            continue
+        kind = "lib" if "lib" in msg["target"]["kind"] else msg["target"]["name"]
+        exes.append((kind, msg["executable"]))
+    return proc.returncode, exes
+
+
+def chunks(names: list[str]) -> list[list[str]]:
+    """Whole top-level modules per chunk, up to CHUNK_TESTS tests (a bigger module goes alone)."""
+    modules: dict[str, list[str]] = {}
+    for name in names:
+        modules.setdefault(name.split("::", 1)[0] if "::" in name else "(crate root)", []).append(name)
+    out: list[list[str]] = []
+    for group in modules.values():
+        if out and len(out[-1]) + len(group) <= CHUNK_TESTS \
+                and sum(len(n) + 1 for n in out[-1] + group) <= CHUNK_CHARS:
+            out[-1].extend(group)
+        else:
+            out.append(list(group))
+    return out
+
+
+def run_tests() -> tuple[int, str, dict]:
+    code, out = run(["cargo", "test", "--workspace", "--exclude", ENGINE, "--",
+                     "--test-threads=1"])
+    worst = code
+    texts = [out]
+    build_code, exes = engine_executables()
+    info = {"listed": 0, "ran": 0, "processes": 0, "build_exit": build_code}
+    if build_code != 0 or not exes:
+        return worst or build_code or 1, "\n".join(texts), info
+    for kind, exe in exes:
+        listing = subprocess.run([exe, "--list", "--format", "terse"], cwd=ENGINE_DIR,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                 encoding="utf-8", errors="replace")
+        names = [line[: -len(": test")] for line in listing.stdout.splitlines()
+                 if line.endswith(": test")]
+        info["listed"] += len(names)
+        groups = chunks(names) if kind == "lib" else [[]]
+        for group in groups:
+            cmd = [exe, "--test-threads=1"] + (["--exact", *group] if group else [])
+            proc = subprocess.run(cmd, cwd=ENGINE_DIR, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                  errors="replace")
+            info["processes"] += 1
+            body = proc.stdout or ""
+            # The line cargo would print, so the parser below attributes the block to the engine.
+            texts.append(f"     Running {kind} ({exe})\n{body}")
+            for m in RESULT_RE.finditer(body):
+                info["ran"] += int(m.group(2)) + int(m.group(3)) + int(m.group(4))
+            if proc.returncode != 0:
+                print(f"engine chunk failed (exit {proc.returncode}): {kind}, "
+                      f"{len(group) or 'all'} tests from {group[0] if group else exe}",
+                      file=sys.stderr)
+                worst = worst or proc.returncode
+    doc_code, doc_out = run(["cargo", "test", "-p", ENGINE, "--features", "headless", "--doc"])
+    texts.append(doc_out)
+    worst = worst or doc_code
+    if info["ran"] != info["listed"]:
+        print(f"engine tests listed {info['listed']}, ran {info['ran']}", file=sys.stderr)
+        worst = worst or 1
+    return worst, "\n".join(texts), info
+
+
 def collect(commit: str, branch: str) -> dict:
     build_code, build_out = run(["cargo", "build", "--workspace"])
     build_warnings = len(re.findall(r"^warning:", build_out, re.M))
@@ -137,7 +228,7 @@ def collect(commit: str, branch: str) -> dict:
     # Engine tests share a GPU guard. Hundreds of parallel tests can spend
     # its entire 120-second timeout waiting behind other valid tests; the
     # sync gate therefore runs serially on Windows, including hosted runners.
-    test_code, test_out = run(["cargo", "test", "--workspace", "--", "--test-threads=1"])
+    test_code, test_out, engine_chunks = run_tests()
 
     # Attribute each "test result:" block to the binary that produced it.
     current = None
@@ -186,6 +277,7 @@ def collect(commit: str, branch: str) -> dict:
             "failed": totals["failed"],
             "ignored": totals["ignored"],
             "total": totals["passed"] + totals["failed"],
+            "engine_chunks": engine_chunks,
         },
         "per_crate": dict(sorted(per_crate.items())),
         "crates_with_no_tests": empty,

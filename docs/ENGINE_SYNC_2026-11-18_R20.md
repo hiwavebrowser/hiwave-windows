@@ -39,6 +39,19 @@ rustkit-engine (38%) and rustkit-bindings (21%); `third_party/` +57k.
   (`C:\logs\c.jsonl`) named no file; `console_file_tests::the_variable_alone_names_the_file` and
   `the_process_reads_the_variable_and_set_path_wins` failed here as they do on a clean `295ce9f4` on
   this machine. On Windows a backslash makes it a path too; the rule tests follow. Upstream row filed.
+- **653 (new):** the tests share one wgpu device per process (upstream T41b), and nothing maintained it
+  between tests. On the hosted runner's software adapter (WARP) a dropped engine's GPU resources are
+  process memory: 9.2 GB by ~800 tests here, against 862 MB before the sync, and CI's test run ended.
+  The device is polled when the next test takes it. Upstream: hiwave-macos #1321.
+- **654 (new):** on a software adapter, a process that builds an engine for one layout-corpus page
+  after another still ends partway through (tracked separately). Every page passes in a process of
+  its own, and the whole corpus passes in one process on a hardware GPU. On a software adapter,
+  `verify_mode_shows_no_mismatch_on_the_layout_corpus` runs each page in its own child process and
+  sums the counts for its final check. No page is skipped.
+- **CI (`scripts/collect_metrics.py`):** for the same reason, the engine's lib tests run in chunks of
+  whole modules (up to 150 tests a process) instead of one process for the whole suite. The same tests
+  run, serially as before. The count listed is checked against the count that ran, and the job fails
+  if they differ.
 - **nested_layout_matrix_tests (inline edit):** its Chromium pins and expected-failure list are
   macOS's; 21 listed cases match on Windows. The stale-list check is off on Windows; a case that newly
   differs still fails.
