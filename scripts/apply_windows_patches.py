@@ -47,6 +47,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 TEXT = REPO / "crates" / "rustkit-layout" / "src" / "text.rs"
 LIB = REPO / "crates" / "rustkit-layout" / "src" / "lib.rs"
+MATRIX = REPO / "crates" / "rustkit-engine" / "src" / "nested_layout_matrix_tests.rs"
 BS = chr(92)  # a backslash, built here so no literal backslash sits in this source
 
 
@@ -180,6 +181,20 @@ def patch_text(text: str, state: list) -> str:
         #[cfg(windows)]
         assert_eq!(then_blink.primary, serif.primary, "on Windows both are unknown: the default serif");
 ''', state)
+    # 4. CB7b's stack test: on Windows Segoe UI is both a family the stack names and the system
+    #    font, so `no system font ahead of Helvetica` cannot hold there; Chrome for Testing 148 win64
+    #    resolves `-apple-system, "Segoe UI", Helvetica` to Segoe UI (70.906 px, as system-ui), which
+    #    the test's own later assertion expects. On Windows the walk checks only that -apple-system
+    #    was skipped.
+    text = edit(
+        text, "text.rs CB7b walk: Segoe UI is the system font on Windows",
+        "(f == system.primary && !cfg!(windows))",
+        '''            !walk.any(|f| f == system.primary || f.eq_ignore_ascii_case("-apple-system")),
+''',
+        '''            // Windows: Segoe UI is the system font and a family this stack names (Chrome for
+            // Testing 148 win64 resolves the stack to it), so only -apple-system is checked there.
+            !walk.any(|f| (f == system.primary && !cfg!(windows)) || f.eq_ignore_ascii_case("-apple-system")),
+''', state)
     del quote
     return text
 
@@ -215,6 +230,25 @@ def patch_lib(text: str, state: list) -> str:
             (second_row.content.y - expected_y).abs() < 1.0,
 ''', state)
     return text
+
+
+def patch_matrix(text: str, state: list) -> str:
+    # The nested layout matrix compares the engine with Chromium on macOS, and its expected-failure
+    # list is macOS's. On Windows (other fonts) 21 of the listed cases match, so the check that a
+    # listed case still fails does not apply there; a case that newly differs still fails the test.
+    return edit(
+        text, "nested_layout_matrix_tests.rs: the expected-failure list is macOS's",
+        "the expected-failure list is macOS's",
+        '''    assert!(
+        listed_but_match.is_empty(),
+''',
+        '''    // Windows: the pins and the expected-failure list are macOS's (other fonts), and some listed
+    // cases match here; the check above (no case newly differs) still holds.
+    // (apply_windows_patches.py: the expected-failure list is macOS's)
+    #[cfg(not(windows))]
+    assert!(
+        listed_but_match.is_empty(),
+''', state)
 
 
 PATCH_DIR = REPO / "scripts" / "windows-patches"
@@ -274,7 +308,7 @@ def main() -> int:
     check = "--check" in sys.argv[1:]
     state: list = []
     changed = False
-    for path, fn in ((TEXT, patch_text), (LIB, patch_lib)):
+    for path, fn in ((TEXT, patch_text), (LIB, patch_lib), (MATRIX, patch_matrix)):
         text, nl = read(path)
         new = fn(text, state)
         if new != text:

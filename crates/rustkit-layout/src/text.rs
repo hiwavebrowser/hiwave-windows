@@ -3263,7 +3263,9 @@ mod tests {
         let mut walk = std::iter::once(stack.primary.as_str())
             .chain(stack.fallbacks.iter().map(String::as_str));
         assert!(
-            !walk.any(|f| f == system.primary || f.eq_ignore_ascii_case("-apple-system")),
+            // Windows: Segoe UI is the system font and a family this stack names (Chrome for
+            // Testing 148 win64 resolves the stack to it), so only -apple-system is checked there.
+            !walk.any(|f| (f == system.primary && !cfg!(windows)) || f.eq_ignore_ascii_case("-apple-system")),
             "no system font ahead of Helvetica: {} {:?}",
             stack.primary,
             stack.fallbacks
