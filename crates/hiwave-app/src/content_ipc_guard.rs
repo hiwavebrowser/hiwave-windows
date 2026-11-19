@@ -59,6 +59,16 @@ pub(crate) fn url_for_log(url: &str) -> String {
     url.to_string()
 }
 
+/// Whether a page's `create_tab` is served: no URL (Ctrl+T, the new-tab page) or an http(s) URL
+/// (the context menu's links, images and search). Any other scheme (`javascript:`, `file:`,
+/// `data:`, the app's own `hiwave:` pages) is not opened from a page.
+pub(crate) fn new_tab_url_allowed(url: Option<&str>) -> bool {
+    match url {
+        None => true,
+        Some(url) => url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")),
+    }
+}
+
 /// The report HTML with this load's nonce embedded.
 pub(crate) fn with_nonce(html: &str, nonce: &str) -> String {
     html.replace(NONCE_PLACEHOLDER, nonce)
@@ -66,6 +76,17 @@ pub(crate) fn with_nonce(html: &str, nonce: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_page_opens_a_new_tab_only_at_a_web_url_or_none() {
+        assert!(new_tab_url_allowed(None));
+        for ok in ["https://example.com/a?b", "http://example.com", "HTTPS://Example.com"] {
+            assert!(new_tab_url_allowed(Some(ok)), "{ok}");
+        }
+        for no in ["javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x", "hiwave://report", "about:blank", "ms-settings:", "", "not a url"] {
+            assert!(!new_tab_url_allowed(Some(no)), "{no}");
+        }
+    }
+
     use super::*;
 
     #[test]
