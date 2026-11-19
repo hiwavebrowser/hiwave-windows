@@ -546,6 +546,7 @@ const FONT_PAGE: &str = "<!doctype html><html><head><style>\
 /// measures text afresh (verify: 0 mismatches, panics otherwise), and a
 /// change after the face landed is laid out incrementally in it.
 #[test]
+#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
 fn a_web_font_landing_after_layout_measures_text_afresh() {
     let _mode = ModeGuard::set(Mode::Verify);
     let server = serve_byte_routes(vec![

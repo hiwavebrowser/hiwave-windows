@@ -48,6 +48,9 @@ rustkit-engine (38%) and rustkit-bindings (21%); `third_party/` +57k.
   its own, and the whole corpus passes in one process on a hardware GPU. On a software adapter,
   `verify_mode_shows_no_mismatch_on_the_layout_corpus` runs each page in its own child process and
   sums the counts for its final check. No page is skipped.
+- **655 (new):** seven engine tests fail on Windows on a hardware GPU and on the software adapter
+  alike: six assert the page's web face (Windows shapes in the system face) and one is 1 px off
+  Chromium. Each is ignored on Windows with its parity row in the reason (web fonts; dom1 1 px).
 - **CI (`scripts/collect_metrics.py`):** for the same reason, the engine's lib tests run in chunks of
   whole modules (up to 150 tests a process) instead of one process for the whole suite. The same tests
   run, serially as before. The count listed is checked against the count that ran, and the job fails

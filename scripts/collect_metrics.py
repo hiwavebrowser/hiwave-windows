@@ -232,6 +232,12 @@ def run_tests() -> tuple[int, str, dict]:
                 print(f"engine chunk failed (exit {proc.returncode}): {kind}, "
                       f"{len(group) or 'all'} tests from {group[0] if group else exe}",
                       file=sys.stderr)
+                # Name what failed: the chunk's own output is not otherwise in the job log.
+                for name in re.findall(r"^test (\S+) \.\.\. FAILED", body, re.M):
+                    print(f"  FAILED {name}", file=sys.stderr)
+                if "has overflowed its stack" in body:
+                    print("  " + body[body.rfind("thread '", 0, body.index("has overflowed")):].splitlines()[0],
+                          file=sys.stderr)
                 worst = worst or proc.returncode
     doc_code, doc_out = run(["cargo", "test", "-p", ENGINE, "--features", "headless", "--doc"])
     texts.append(doc_out)
