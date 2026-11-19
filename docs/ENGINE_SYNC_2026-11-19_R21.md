@@ -35,6 +35,12 @@ then batch 111 folded in before review). Windows base: develop `f5a5039b`
 - **Inline edits** (`text.rs`: `sans-serif` leads with Arial, `BlinkMacSystemFont` unknown, the strut
   tolerances; the nested-layout and flex expectation edits): unchanged; upstream #1351 takes the generic
   families as these edits have them.
+- **662 (new):** rustkit-renderer `scroll_cost_tests::culling_never_changes_coverage_or_order_of_decorations_negative_sizes_or_wide_borders`
+  compares a culled frame with the unculled one pixel for pixel. Since #1348 the per-character glyph path
+  resolves `sans-serif` to Arial (Chrome's on Windows; before, a Segoe UI fallback), and on the hosted
+  runner's WARP the two frames then differ (CI on 997dd1ee: 4 glyph pixels, one by 14; locally on forced
+  WARP 1 pixel, 1 LSB). It passes on the RTX 4090 and passed on WARP at the batch-110 head; it skips on a
+  software adapter, as 649 skips a GPU timing.
 - 641, 645, 646, 648, 649, 650, 654, 656, 658, 660 apply unchanged; 642-643 and 644 are already
   upstream.
 
