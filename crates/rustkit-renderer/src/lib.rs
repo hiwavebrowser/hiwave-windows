@@ -46,10 +46,9 @@ use rustkit_css::Color;
 use rustkit_layout::{BackgroundRepeat, BackgroundSize, DisplayCommand, ObjectFit, Rect};
 use std::sync::Arc;
 
-/// On a software adapter (WARP), each submission is waited for before the submitting call returns,
-/// so nothing a submission used (wgpu's internal staging buffers included) is released while the
-/// D3D12 runtime still counts it in flight. Set by the compositor when it picks a CPU adapter; off
-/// on a hardware GPU, where `settle_submission` does nothing.
+/// On a software adapter (WARP), each submission is waited for before the submitting call returns
+/// (Windows row WARP-ACCUMULATION). Set by the compositor when it picks a CPU adapter; off on a
+/// hardware GPU, where `settle_submission` does nothing.
 static SETTLE_SUBMISSIONS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Turn the software-adapter wait on or off (the compositor, from its adapter's device type).

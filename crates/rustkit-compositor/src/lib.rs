@@ -1104,8 +1104,7 @@ mod tests {
     }
 
     /// On a software adapter every submission is waited for before the call returns (see
-    /// `rustkit_renderer::settle_submission`); a queue submit that skips it brings back WARP's
-    /// early release of in-flight staging buffers. Each queue submit in the compositor, the
+    /// `rustkit_renderer::settle_submission`, Windows row WARP-ACCUMULATION). Each queue submit in the compositor, the
     /// renderer and the canvas keeps its index and settles it in the next statement.
     #[test]
     fn every_submit_settles_on_a_software_adapter() {
