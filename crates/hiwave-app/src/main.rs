@@ -671,6 +671,17 @@ fn log_ipc(what: &str, body: &str) {
 }
 
 #[cfg(not(feature = "native-win32"))]
+/// A page URL for an info line (upstream CH3.A6): whole only when IPC bodies are logged whole
+/// (`HIWAVE_DEBUG=1` or `HIWAVE_TEST_HOOKS=1`); scheme, host and path otherwise.
+fn page_url_for_log(url: &str) -> String {
+    if ipc_bodies_logged() {
+        url.to_string()
+    } else {
+        content_ipc_guard::url_for_log(url)
+    }
+}
+
+#[cfg(not(feature = "native-win32"))]
 /// What the log says about a chrome IPC command and its answer: the command name, only when it
 /// looks like one (a short snake_case word; anything else is "unknown"), and the answer's kind and
 /// size. Never the answer itself: it can carry what the vault or the history holds.
@@ -898,7 +909,7 @@ fn main() {
                         if let Ok(s) = chrome_state.lock() {
                             if let Some(active_tab) = s.shell.get_active_tab() {
                                 let url = active_tab.url.to_string();
-                                info!("Navigating to new active tab after close: {}", url);
+                                info!("Navigating to new active tab after close: {}", page_url_for_log(&url));
                                 let _ = chrome_proxy.send_event(UserEvent::Navigate(url));
                             }
                         }
@@ -917,7 +928,7 @@ fn main() {
                         if !already_active {
                             if let ipc::IpcResponse::Success { data } = response {
                                 if let Some(url) = data.get("url").and_then(|v| v.as_str()) {
-                                    info!("Navigating to tab URL: {}", url);
+                                    info!("Navigating to tab URL: {}", page_url_for_log(&url));
                                     let _ = chrome_proxy
                                         .send_event(UserEvent::Navigate(url.to_string()));
                                 }
@@ -1424,13 +1435,13 @@ fn main() {
         .with_new_window_req_handler(move |url| {
             // Allow Cloudflare challenges to stay as iframes (required for verification)
             if url.contains("challenges.cloudflare.com") || url.contains("turnstile") {
-                info!("Allowing Cloudflare challenge iframe: {}", url);
+                info!("Allowing Cloudflare challenge iframe: {}", page_url_for_log(&url));
                 return true; // Allow the iframe/popup to render in-place
             }
 
             // Allow Proton authentication popups/iframes
             if url.contains("proton.me") || url.contains("protonmail.com") {
-                info!("Allowing Proton auth iframe: {}", url);
+                info!("Allowing Proton auth iframe: {}", page_url_for_log(&url));
                 return true; // Allow the iframe/popup to render in-place
             }
 
@@ -1442,7 +1453,7 @@ fn main() {
 
             // Filter out unwanted popup/iframe requests using platform layer
             if platform::is_definitely_popup(&url) {
-                info!("New window request blocked (filtered): {}", url);
+                info!("New window request blocked (filtered): {}", page_url_for_log(&url));
                 return false;
             }
 
@@ -1450,7 +1461,7 @@ fn main() {
             if let Ok(mut s) = content_state2.lock() {
                 // Check user blocklist first (hot-editable)
                 if s.user_blocklist.should_block(&url) {
-                    info!("New window request blocked (user blocklist): {}", url);
+                    info!("New window request blocked (user blocklist): {}", page_url_for_log(&url));
                     // Increment Shield counters so all blocks show in UI
                     s.shield.increment_block_count();
                     // Track user blocklist blocks in analytics as popup, tracker, and ad
@@ -1530,7 +1541,7 @@ fn main() {
                                     workspace_id.as_deref()
                                 );
                             }
-                            info!("New window request blocked (Shield): {}", url);
+                            info!("New window request blocked (Shield): {}", page_url_for_log(&url));
                             drop(s);
                             let _ = content_proxy_new_window.send_event(UserEvent::SyncShieldStats);
                             return false;
@@ -1539,7 +1550,7 @@ fn main() {
                 }
             }
 
-            info!("New window request -> new tab: {}", url);
+            info!("New window request -> new tab: {}", page_url_for_log(&url));
             let response = ipc::commands::handle_message(
                 &content_state2,
                 IpcMessage::CreateTab {
@@ -1941,7 +1952,7 @@ fn main() {
             Event::UserEvent(user_event) => {
                 match user_event {
                     UserEvent::Navigate(url) => {
-                        info!("Navigating content to: {}", url);
+                        info!("Navigating content to: {}", page_url_for_log(&url));
                         if is_new_tab_url(&url) {
                             load_new_tab(&content_for_events);
                             chrome_for_events.evaluate_script(
@@ -2619,7 +2630,7 @@ fn main() {
                                                 let _ = settings_proxy.send_event(UserEvent::ExportAnalyticsData { format });
                                             }
                                             _ => {
-                                                info!("Settings window received unhandled IPC: {:?}", ipc_msg);
+                                                info!("Settings window received unhandled IPC: {}", ipc_cmd(body));
                                             }
                                         }
                                     }
