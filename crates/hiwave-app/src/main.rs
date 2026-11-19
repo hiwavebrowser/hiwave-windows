@@ -634,6 +634,7 @@ fn should_record_history_url(url: &str) -> bool {
 // Popup filtering is now handled by platform::is_definitely_popup()
 // which provides comprehensive cross-platform URL blocking
 
+#[cfg(not(feature = "native-win32"))]
 /// The `cmd` of an IPC message, for the log: `?` when it has none, or when it is not a command
 /// name (letters, digits, `_`; a page can post anything to a handler). Ported from upstream.
 fn ipc_cmd(body: &str) -> String {
@@ -644,6 +645,7 @@ fn ipc_cmd(body: &str) -> String {
         .unwrap_or_else(|| "?".to_string())
 }
 
+#[cfg(not(feature = "native-win32"))]
 /// Whether IPC messages are logged whole: only with `HIWAVE_DEBUG=1` (the app's verbose switch)
 /// or `HIWAVE_TEST_HOOKS=1`. By default a line says the message's `cmd` and size: a body carries
 /// URLs with their queries, find-in-page text, and what the vault commands are given.
@@ -656,6 +658,7 @@ fn ipc_bodies_logged() -> bool {
     })
 }
 
+#[cfg(not(feature = "native-win32"))]
 /// One IPC message in the log, as `ipc_bodies_logged` allows.
 fn log_ipc(what: &str, body: &str) {
     if ipc_bodies_logged() {
@@ -665,6 +668,7 @@ fn log_ipc(what: &str, body: &str) {
     }
 }
 
+#[cfg(not(feature = "native-win32"))]
 /// What the log says about a chrome IPC command and its answer: the command name, only when it
 /// looks like one (a short snake_case word; anything else is "unknown"), and the answer's kind and
 /// size. Never the answer itself: it can carry what the vault or the history holds.
@@ -3759,7 +3763,7 @@ fn main() {
     } // end cfg(not(feature = "native-win32"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "native-win32")))]
 mod chrome_ipc_log_tests {
     use super::*;
 
@@ -3799,7 +3803,7 @@ mod chrome_ipc_log_tests {
     fn source_pins_for_the_ipc_response_and_body_logs() {
         let source = include_str!("main.rs").replace("\r\n", "\n");
         // Everything above this module (the last thing in the file), whose strings name what it looks for.
-        let production = &source[..source.find("#[cfg(test)]\nmod chrome_ipc_log_tests").unwrap()];
+        let production = &source[..source.find("mod chrome_ipc_log_tests {").unwrap()];
         let mut whole_response_logs: Vec<String> = Vec::new();
         let mut whole_body_logs: Vec<String> = Vec::new();
         for mac in ["info!(", "warn!(", "debug!(", "trace!(", "error!("] {
