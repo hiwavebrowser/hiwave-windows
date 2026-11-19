@@ -62,3 +62,21 @@ def test_a_failure_is_printed_with_its_panic_message(capsys):
     err = capsys.readouterr().err
     assert "workspace: FAILED a::fails" in err
     assert "expected 400, got 270" in err
+
+
+def test_the_adapter_probe_is_read_from_its_line(monkeypatch):
+    class Done:
+        def __init__(self, out):
+            self.stdout = out
+    outputs = iter(["running 1 test\nTEST ADAPTER: Cpu\ntest test_adapter_report ... ok\n",
+                    "TEST ADAPTER: DiscreteGpu\n", "no line here\n"])
+    monkeypatch.setattr(collect_metrics.subprocess, "run", lambda *a, **k: Done(next(outputs)))
+    assert collect_metrics.test_adapter("exe", {}) == "Cpu"
+    assert collect_metrics.test_adapter("exe", {}) == "DiscreteGpu"
+    assert collect_metrics.test_adapter("exe", {}) == "unknown"
+
+
+def test_skipped_tests_count_against_the_listed_total():
+    source = Path(collect_metrics.__file__).read_text(encoding="utf-8")
+    assert 'info["ran"] + info["skipped"] != info["listed"]' in source
+    assert "full suite runs on a hardware GPU" in collect_metrics.SOFTWARE_ADAPTER_SKIP

@@ -65,6 +65,18 @@ pub(crate) fn test_compositor() -> Result<Compositor, rustkit_compositor::Compos
     Ok(shared.share_device())
 }
 
+/// The adapter the engine's tests draw with, as one line for the CI runner: on a software adapter
+/// `scripts/collect_metrics.py` does not run the engine's lib tests (see `SOFTWARE_ADAPTER_SKIP`
+/// there); the full suite runs on a hardware GPU with every sync.
+#[cfg(test)]
+#[test]
+fn test_adapter_report() {
+    match test_compositor() {
+        Ok(compositor) => println!("TEST ADAPTER: {:?}", compositor.adapter_info().device_type),
+        Err(e) => println!("TEST ADAPTER: none ({e})"),
+    }
+}
+
 /// Test-only GPU guard: at most one unit test at a time owns GPU devices.
 ///
 /// The first device a test thread creates takes the guard; a thread-local

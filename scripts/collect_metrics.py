@@ -142,6 +142,15 @@ ENGINE_DIR = Path(__file__).resolve().parent.parent / "crates" / ENGINE
 CHUNK_TESTS = 150
 # Windows caps a command line at 32767 characters; test names go on it.
 CHUNK_CHARS = 24000
+# On a software adapter (WARP: the hosted runner has no GPU) the engine's lib tests are not run: a
+# process that builds engine after engine on WARP can end partway through (row WARP-ACCUMULATION),
+# and nearly every lib test builds an engine, which draws with the GPU. The full engine suite runs
+# on a hardware GPU with every sync and its receipt goes in the sync PR. The engine's other test
+# targets and its doc tests still run here.
+SOFTWARE_ADAPTER_SKIP = (
+    "engine lib tests not run on a software adapter (WARP-ACCUMULATION); "
+    "the full suite runs on a hardware GPU with every sync"
+)
 
 
 def chunk_env(base: dict[str, str] | None = None) -> dict[str, str]:
@@ -160,6 +169,15 @@ def chunk_env(base: dict[str, str] | None = None) -> dict[str, str]:
         else:
             env.setdefault(name, str(value))
     return env
+
+
+def test_adapter(exe: str, env: dict[str, str]) -> str:
+    """The adapter the engine's tests draw with ("Cpu" for WARP), from `test_adapter_report`."""
+    proc = subprocess.run([exe, "test_adapter_report", "--exact", "--nocapture"], cwd=ENGINE_DIR,
+                          env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                          encoding="utf-8", errors="replace")
+    found = re.search(r"TEST ADAPTER: (\S+)", proc.stdout or "")
+    return found.group(1) if found else "unknown"
 
 
 def engine_executables() -> tuple[int, list[tuple[str, str]]]:
@@ -225,7 +243,7 @@ def run_tests() -> tuple[int, str, dict]:
     if code != 0:
         name_failures("workspace", out)
     build_code, exes = engine_executables()
-    info = {"listed": 0, "ran": 0, "processes": 0, "build_exit": build_code}
+    info = {"listed": 0, "ran": 0, "processes": 0, "build_exit": build_code, "skipped": 0}
     env = chunk_env()
     if build_code != 0 or not exes:
         return worst or build_code or 1, "\n".join(texts), info
@@ -237,6 +255,13 @@ def run_tests() -> tuple[int, str, dict]:
                  if line.endswith(": test")]
         info["listed"] += len(names)
         groups = chunks(names) if kind == "lib" else [[]]
+        if kind == "lib":
+            info["adapter"] = test_adapter(exe, env)
+            if info["adapter"] == "Cpu":
+                print(f"{SOFTWARE_ADAPTER_SKIP}: {len(names)} tests", file=sys.stderr)
+                info["skipped"] = len(names)
+                info["skip_reason"] = SOFTWARE_ADAPTER_SKIP
+                groups = []
         for group in groups:
             cmd = [exe, "--test-threads=1"] + (["--exact", *group] if group else [])
             proc = subprocess.run(cmd, cwd=ENGINE_DIR, env=env, stdout=subprocess.PIPE,
@@ -259,8 +284,9 @@ def run_tests() -> tuple[int, str, dict]:
     if doc_code != 0:
         name_failures("doc", doc_out)
     worst = worst or doc_code
-    if info["ran"] != info["listed"]:
-        print(f"engine tests listed {info['listed']}, ran {info['ran']}", file=sys.stderr)
+    if info["ran"] + info["skipped"] != info["listed"]:
+        print(f"engine tests listed {info['listed']}, ran {info['ran']}, skipped {info['skipped']}",
+              file=sys.stderr)
         worst = worst or 1
     return worst, "\n".join(texts), info
 

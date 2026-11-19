@@ -58,6 +58,13 @@ rustkit-engine (38%) and rustkit-bindings (21%); `third_party/` +57k.
 - **657 (new):** `retained_style_tests::tiles_written_then_read_keep_a_full_builds_boxes` is flaky on a
   loaded runner. Upstream's fix (hiwave-macos #1339) needs #1304, which is after this sync's base, so the
   test is ignored on Windows until the sync brings both.
+- **658 (new):** on a software adapter (the hosted runner), CI does not run the engine's lib tests: a process
+  that builds engine after engine can still end partway through on WARP (row WARP-ACCUMULATION). A probe
+  test reports the adapter; `collect_metrics.py` skips the lib chunks on `Cpu`, with the reason in the job
+  log and `metrics.json`. The full engine suite runs on a hardware GPU with every sync (receipt in the PR).
+- **659 (new):** rustkit-js `a_deep_setter_chain_and_call_fit_the_default_recursion_limit` sets its
+  thread's native stack budget (half its 8 MB stack, as a script thread does); Boa's 1 MiB default is too
+  small for 400 setter links in CI's non-incremental debug build.
 - **CI (`scripts/collect_metrics.py`):** for the same reason, the engine's lib tests run in chunks of
   whole modules (up to 150 tests a process) instead of one process for the whole suite. The same tests
   run, serially as before. The count listed is checked against the count that ran, and the job fails

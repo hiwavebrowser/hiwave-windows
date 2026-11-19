@@ -3592,6 +3592,10 @@ mod tests {
             .name("setter-depth".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(|| {
+                // The budget a script thread gives itself (half its stack, as
+                // `spawn_script_thread`): without it the turn gets Boa's 1 MiB, which 400
+                // links overflow in a non-incremental debug build (CI).
+                set_thread_native_stack_budget(Some(4 * 1024 * 1024));
                 let mut runtime = JsRuntime::new().unwrap();
                 let setters = runtime
                     .evaluate_script(
