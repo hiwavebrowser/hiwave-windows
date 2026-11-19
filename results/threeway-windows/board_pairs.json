@@ -1,0 +1,212 @@
+[
+ {
+  "case": "chrome/default/1280x800",
+  "rustkit": "rustkit\\board\\chrome__default__1280x800.png",
+  "chrome": "chrome\\board\\chrome__default__1280x800.png"
+ },
+ {
+  "case": "chrome/default/1024x700",
+  "rustkit": "rustkit\\board\\chrome__default__1024x700.png",
+  "chrome": "chrome\\board\\chrome__default__1024x700.png"
+ },
+ {
+  "case": "chrome/default/1600x1000",
+  "rustkit": "rustkit\\board\\chrome__default__1600x1000.png",
+  "chrome": "chrome\\board\\chrome__default__1600x1000.png"
+ },
+ {
+  "case": "chrome/hover_tab2/1280x800",
+  "rustkit": "rustkit\\board\\chrome__hover_tab2__1280x800.png",
+  "chrome": "chrome\\board\\chrome__hover_tab2__1280x800.png"
+ },
+ {
+  "case": "chrome/hover_tab2/1024x700",
+  "rustkit": "rustkit\\board\\chrome__hover_tab2__1024x700.png",
+  "chrome": "chrome\\board\\chrome__hover_tab2__1024x700.png"
+ },
+ {
+  "case": "chrome/hover_tab2/1600x1000",
+  "rustkit": "rustkit\\board\\chrome__hover_tab2__1600x1000.png",
+  "chrome": "chrome\\board\\chrome__hover_tab2__1600x1000.png"
+ },
+ {
+  "case": "chrome/address_focused/1280x800",
+  "rustkit": "rustkit\\board\\chrome__address_focused__1280x800.png",
+  "chrome": "chrome\\board\\chrome__address_focused__1280x800.png"
+ },
+ {
+  "case": "chrome/address_focused/1024x700",
+  "rustkit": "rustkit\\board\\chrome__address_focused__1024x700.png",
+  "chrome": "chrome\\board\\chrome__address_focused__1024x700.png"
+ },
+ {
+  "case": "chrome/address_focused/1600x1000",
+  "rustkit": "rustkit\\board\\chrome__address_focused__1600x1000.png",
+  "chrome": "chrome\\board\\chrome__address_focused__1600x1000.png"
+ },
+ {
+  "case": "chrome/sidebar_collapsed/1280x800",
+  "rustkit": "rustkit\\board\\chrome__sidebar_collapsed__1280x800.png",
+  "chrome": "chrome\\board\\chrome__sidebar_collapsed__1280x800.png"
+ },
+ {
+  "case": "chrome/sidebar_collapsed/1024x700",
+  "rustkit": "rustkit\\board\\chrome__sidebar_collapsed__1024x700.png",
+  "chrome": "chrome\\board\\chrome__sidebar_collapsed__1024x700.png"
+ },
+ {
+  "case": "chrome/sidebar_collapsed/1600x1000",
+  "rustkit": "rustkit\\board\\chrome__sidebar_collapsed__1600x1000.png",
+  "chrome": "chrome\\board\\chrome__sidebar_collapsed__1600x1000.png"
+ },
+ {
+  "case": "chrome/find_open/1280x800",
+  "rustkit": "rustkit\\board\\chrome__find_open__1280x800.png",
+  "chrome": "chrome\\board\\chrome__find_open__1280x800.png"
+ },
+ {
+  "case": "chrome/find_open/1024x700",
+  "rustkit": "rustkit\\board\\chrome__find_open__1024x700.png",
+  "chrome": "chrome\\board\\chrome__find_open__1024x700.png"
+ },
+ {
+  "case": "chrome/find_open/1600x1000",
+  "rustkit": "rustkit\\board\\chrome__find_open__1600x1000.png",
+  "chrome": "chrome\\board\\chrome__find_open__1600x1000.png"
+ },
+ {
+  "case": "chrome/downloads_open/1280x800",
+  "rustkit": "rustkit\\board\\chrome__downloads_open__1280x800.png",
+  "chrome": "chrome\\board\\chrome__downloads_open__1280x800.png"
+ },
+ {
+  "case": "chrome/downloads_open/1024x700",
+  "rustkit": "rustkit\\board\\chrome__downloads_open__1024x700.png",
+  "chrome": "chrome\\board\\chrome__downloads_open__1024x700.png"
+ },
+ {
+  "case": "chrome/downloads_open/1600x1000",
+  "rustkit": "rustkit\\board\\chrome__downloads_open__1600x1000.png",
+  "chrome": "chrome\\board\\chrome__downloads_open__1600x1000.png"
+ },
+ {
+  "case": "chrome/focus_mode/1280x800",
+  "rustkit": "rustkit\\board\\chrome__focus_mode__1280x800.png",
+  "chrome": "chrome\\board\\chrome__focus_mode__1280x800.png"
+ },
+ {
+  "case": "chrome/focus_mode/1024x700",
+  "rustkit": "rustkit\\board\\chrome__focus_mode__1024x700.png",
+  "chrome": "chrome\\board\\chrome__focus_mode__1024x700.png"
+ },
+ {
+  "case": "chrome/focus_mode/1600x1000",
+  "rustkit": "rustkit\\board\\chrome__focus_mode__1600x1000.png",
+  "chrome": "chrome\\board\\chrome__focus_mode__1600x1000.png"
+ },
+ {
+  "case": "shelf/default/1280x800",
+  "rustkit": "rustkit\\board\\shelf__default__1280x800.png",
+  "chrome": "chrome\\board\\shelf__default__1280x800.png"
+ },
+ {
+  "case": "shelf/default/1024x700",
+  "rustkit": "rustkit\\board\\shelf__default__1024x700.png",
+  "chrome": "chrome\\board\\shelf__default__1024x700.png"
+ },
+ {
+  "case": "shelf/default/1600x1000",
+  "rustkit": "rustkit\\board\\shelf__default__1600x1000.png",
+  "chrome": "chrome\\board\\shelf__default__1600x1000.png"
+ },
+ {
+  "case": "shelf/shelf_search/1280x800",
+  "rustkit": "rustkit\\board\\shelf__shelf_search__1280x800.png",
+  "chrome": "chrome\\board\\shelf__shelf_search__1280x800.png"
+ },
+ {
+  "case": "shelf/shelf_search/1024x700",
+  "rustkit": "rustkit\\board\\shelf__shelf_search__1024x700.png",
+  "chrome": "chrome\\board\\shelf__shelf_search__1024x700.png"
+ },
+ {
+  "case": "shelf/shelf_search/1600x1000",
+  "rustkit": "rustkit\\board\\shelf__shelf_search__1600x1000.png",
+  "chrome": "chrome\\board\\shelf__shelf_search__1600x1000.png"
+ },
+ {
+  "case": "inspector/default/1280x800",
+  "rustkit": "rustkit\\board\\inspector__default__1280x800.png",
+  "chrome": "chrome\\board\\inspector__default__1280x800.png"
+ },
+ {
+  "case": "inspector/default/1024x700",
+  "rustkit": "rustkit\\board\\inspector__default__1024x700.png",
+  "chrome": "chrome\\board\\inspector__default__1024x700.png"
+ },
+ {
+  "case": "inspector/default/1600x1000",
+  "rustkit": "rustkit\\board\\inspector__default__1600x1000.png",
+  "chrome": "chrome\\board\\inspector__default__1600x1000.png"
+ },
+ {
+  "case": "inspector/console_tab/1280x800",
+  "rustkit": "rustkit\\board\\inspector__console_tab__1280x800.png",
+  "chrome": "chrome\\board\\inspector__console_tab__1280x800.png"
+ },
+ {
+  "case": "inspector/console_tab/1024x700",
+  "rustkit": "rustkit\\board\\inspector__console_tab__1024x700.png",
+  "chrome": "chrome\\board\\inspector__console_tab__1024x700.png"
+ },
+ {
+  "case": "inspector/console_tab/1600x1000",
+  "rustkit": "rustkit\\board\\inspector__console_tab__1600x1000.png",
+  "chrome": "chrome\\board\\inspector__console_tab__1600x1000.png"
+ },
+ {
+  "case": "settings/default/1280x800",
+  "rustkit": "rustkit\\board\\settings__default__1280x800.png",
+  "chrome": "chrome\\board\\settings__default__1280x800.png"
+ },
+ {
+  "case": "settings/default/1024x700",
+  "rustkit": "rustkit\\board\\settings__default__1024x700.png",
+  "chrome": "chrome\\board\\settings__default__1024x700.png"
+ },
+ {
+  "case": "settings/default/1600x1000",
+  "rustkit": "rustkit\\board\\settings__default__1600x1000.png",
+  "chrome": "chrome\\board\\settings__default__1600x1000.png"
+ },
+ {
+  "case": "report/default/1280x800",
+  "rustkit": "rustkit\\board\\report__default__1280x800.png",
+  "chrome": "chrome\\board\\report__default__1280x800.png"
+ },
+ {
+  "case": "report/default/1024x700",
+  "rustkit": "rustkit\\board\\report__default__1024x700.png",
+  "chrome": "chrome\\board\\report__default__1024x700.png"
+ },
+ {
+  "case": "report/default/1600x1000",
+  "rustkit": "rustkit\\board\\report__default__1600x1000.png",
+  "chrome": "chrome\\board\\report__default__1600x1000.png"
+ },
+ {
+  "case": "report/weekly/1280x800",
+  "rustkit": "rustkit\\board\\report__weekly__1280x800.png",
+  "chrome": "chrome\\board\\report__weekly__1280x800.png"
+ },
+ {
+  "case": "report/weekly/1024x700",
+  "rustkit": "rustkit\\board\\report__weekly__1024x700.png",
+  "chrome": "chrome\\board\\report__weekly__1024x700.png"
+ },
+ {
+  "case": "report/weekly/1600x1000",
+  "rustkit": "rustkit\\board\\report__weekly__1600x1000.png",
+  "chrome": "chrome\\board\\report__weekly__1600x1000.png"
+ }
+]

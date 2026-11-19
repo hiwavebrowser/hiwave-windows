@@ -1,0 +1,2406 @@
+{
+  "run": {
+    "at": "2026-11-19 23:33 UTC",
+    "sha": "2f70f02f",
+    "base": "2f70f02f",
+    "chromium": "148.0.7778.216",
+    "chromium_path": "P:\\repos\\hiwave-wt\\_cft148_win64\\chrome-win64\\chrome.exe",
+    "chromium_pinned": "148.0.7778.216",
+    "parity_capture": "P:\\repos\\hiwave-wt\\win-3way\\target\\release\\parity-capture.exe",
+    "gate_pct": 0.5,
+    "gate_geometry_pixel_pct": 1.5
+  },
+  "sizes": [
+    [
+      1280,
+      800
+    ],
+    [
+      1024,
+      700
+    ],
+    [
+      1600,
+      1000
+    ]
+  ],
+  "states": {
+    "address_focused": [
+      {
+        "type": "click",
+        "selector": "#urlInput"
+      },
+      {
+        "type": "key",
+        "selector": "#urlInput",
+        "text": "hiwave.dev/docs"
+      }
+    ],
+    "console_tab": [
+      {
+        "type": "click",
+        "selector": ".toolbar-tab[data-tab=\"console\"]"
+      }
+    ],
+    "default": [],
+    "downloads_open": [
+      {
+        "type": "click",
+        "selector": "#toolbarMenuBtn"
+      }
+    ],
+    "find_open": [
+      {
+        "type": "key",
+        "key": "F3"
+      }
+    ],
+    "focus_mode": [
+      {
+        "type": "key",
+        "key": "F",
+        "modifiers": [
+          "Control",
+          "Shift"
+        ]
+      }
+    ],
+    "hover_tab2": [
+      {
+        "type": "hover",
+        "selector": "#tabs .tab:nth-child(2)"
+      }
+    ],
+    "shelf_search": [
+      {
+        "type": "click",
+        "selector": "#commandInput"
+      },
+      {
+        "type": "key",
+        "selector": "#commandInput",
+        "text": "sh"
+      }
+    ],
+    "sidebar_collapsed": [
+      {
+        "type": "click",
+        "selector": "#sidebarLogoToggle"
+      }
+    ],
+    "weekly": [
+      {
+        "type": "click",
+        "selector": ".period-btn[data-period=\"weekly\"]"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "page": "chrome",
+      "state": "default",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.99,
+      "geometry_diffs": 165,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 72.0
+        },
+        {
+          "selector": "#tabs",
+          "pct": 1.8
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section workspace-section:nth-of-type(3)",
+          "pct": 1.6
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 81.78554687500001,
+        "form_control": 1.24345703125
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "default",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 1.302,
+      "geometry_diffs": 163,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 66.4
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section workspace-section:nth-of-type(3)",
+          "pct": 1.8
+        },
+        {
+          "selector": "body > div.chrome-main:nth-of-type(5) > div.toolbar:nth-of-type(2)",
+          "pct": 1.7
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 76.3681640625,
+        "form_control": 2.012555803571429
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "default",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.711,
+      "geometry_diffs": 164,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 77.5
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section shelf-section:nth-of-type(4)",
+          "pct": 2.1
+        },
+        {
+          "selector": "#tabs",
+          "pct": 1.9
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 86.95275000000002,
+        "form_control": 1.1358125000000001
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "hover_tab2",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.991,
+      "geometry_diffs": 165,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 72.0
+        },
+        {
+          "selector": "#tabs",
+          "pct": 1.8
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section workspace-section:nth-of-type(3)",
+          "pct": 1.6
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 81.78554687500001,
+        "form_control": 1.24345703125
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "hover_tab2",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 1.303,
+      "geometry_diffs": 163,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 66.4
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section workspace-section:nth-of-type(3)",
+          "pct": 1.8
+        },
+        {
+          "selector": "body > div.chrome-main:nth-of-type(5) > div.toolbar:nth-of-type(2)",
+          "pct": 1.7
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 76.3681640625,
+        "form_control": 2.012555803571429
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "hover_tab2",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.712,
+      "geometry_diffs": 164,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 77.5
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section shelf-section:nth-of-type(4)",
+          "pct": 2.1
+        },
+        {
+          "selector": "#tabs",
+          "pct": 1.9
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 86.95275000000002,
+        "form_control": 1.1358125000000001
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "address_focused",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 1.202,
+      "geometry_diffs": 165,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 72.0
+        },
+        {
+          "selector": "#tabs",
+          "pct": 1.8
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section workspace-section:nth-of-type(3)",
+          "pct": 1.6
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 81.78554687500001,
+        "form_control": 1.24345703125
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "address_focused",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 1.461,
+      "geometry_diffs": 163,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 66.4
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section workspace-section:nth-of-type(3)",
+          "pct": 1.8
+        },
+        {
+          "selector": "body > div.chrome-main:nth-of-type(5) > div.toolbar:nth-of-type(2)",
+          "pct": 1.7
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 76.3681640625,
+        "form_control": 2.012555803571429
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "address_focused",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.927,
+      "geometry_diffs": 164,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 77.5
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section shelf-section:nth-of-type(4)",
+          "pct": 2.1
+        },
+        {
+          "selector": "#tabs",
+          "pct": 1.9
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 86.95275000000002,
+        "form_control": 1.1358125000000001
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "sidebar_collapsed",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.335,
+      "geometry_diffs": 154,
+      "top": [
+        {
+          "selector": "html > body",
+          "pct": 83.8
+        },
+        {
+          "selector": "#tabs",
+          "pct": 2.6
+        },
+        {
+          "selector": "body > div.chrome-main:nth-of-type(5) > div.toolbar:nth-of-type(2) > div.address-bar:nth-of-type(3)",
+          "pct": 1.9
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 92.94140625,
+        "form_control": 1.60869140625
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#modeSelector",
+          "max_delta_px": 81.0
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "sidebar_collapsed",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 0.478,
+      "geometry_diffs": 129,
+      "top": [
+        {
+          "selector": "html > body",
+          "pct": 80.8
+        },
+        {
+          "selector": "#tabs",
+          "pct": 2.3
+        },
+        {
+          "selector": "body > div.chrome-main:nth-of-type(5) > div.toolbar:nth-of-type(2) > div.address-bar:nth-of-type(3)",
+          "pct": 2.0
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 91.06612723214286,
+        "form_control": 1.6909877232142858
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#modeSelector",
+          "max_delta_px": 81.0
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "sidebar_collapsed",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.214,
+      "geometry_diffs": 158,
+      "top": [
+        {
+          "selector": "html > body",
+          "pct": 87.3
+        },
+        {
+          "selector": "#tabs",
+          "pct": 2.4
+        },
+        {
+          "selector": "body > div.chrome-main:nth-of-type(5) > div.toolbar:nth-of-type(2) > div.address-bar:nth-of-type(3)",
+          "pct": 1.6
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 94.70593750000002,
+        "form_control": 1.3695625
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#modeSelector",
+          "max_delta_px": 81.0
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "find_open",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.837,
+      "geometry_diffs": 165,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 72.0
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section workspace-section:nth-of-type(3)",
+          "pct": 1.6
+        },
+        {
+          "selector": "#tabs",
+          "pct": 1.4
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 80.7537109375,
+        "form_control": 1.24345703125
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "find_open",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 1.085,
+      "geometry_diffs": 163,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 66.4
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section workspace-section:nth-of-type(3)",
+          "pct": 1.8
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section:nth-of-type(1)",
+          "pct": 1.4
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 75.28390066964288,
+        "form_control": 2.012555803571429
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "find_open",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.619,
+      "geometry_diffs": 164,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 77.5
+        },
+        {
+          "selector": "body > aside.sidebar:nth-of-type(1) > section.sidebar-section shelf-section:nth-of-type(4)",
+          "pct": 2.1
+        },
+        {
+          "selector": "#tabs",
+          "pct": 1.3
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 86.02250000000001,
+        "form_control": 1.1358125000000001
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "#rightSidebarDownloads",
+          "max_delta_px": 11.56
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "downloads_open",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.823,
+      "geometry_diffs": 149,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 68.6
+        },
+        {
+          "selector": "#rightDownloadsList",
+          "pct": 9.7
+        },
+        {
+          "selector": "body > aside.right-sidebar:nth-of-type(2) > div.right-sidebar-content:nth-of-type(4)",
+          "pct": 2.0
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 87.62499999999999,
+        "form_control": 1.24345703125
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#modeSelector",
+          "max_delta_px": 81.0
+        },
+        {
+          "selector": "body > aside.right-sidebar:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.sidebar collapsed:nth-of-type(1) > section.sidebar-section actions-section:nth-of-type(2) > div.action-item:nth-of-type(4) > span.action-icon:nth-of-type(1)",
+          "max_delta_px": 7.41
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "downloads_open",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 1.176,
+      "geometry_diffs": 124,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 62.1
+        },
+        {
+          "selector": "#rightDownloadsList",
+          "pct": 11.1
+        },
+        {
+          "selector": "body > aside.right-sidebar:nth-of-type(2) > div.right-sidebar-content:nth-of-type(4)",
+          "pct": 2.5
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 83.61969866071428,
+        "form_control": 1.1692243303571428
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#modeSelector",
+          "max_delta_px": 81.0
+        },
+        {
+          "selector": "body > aside.right-sidebar:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.sidebar collapsed:nth-of-type(1) > section.sidebar-section actions-section:nth-of-type(2) > div.action-item:nth-of-type(4) > span.action-icon:nth-of-type(1)",
+          "max_delta_px": 7.41
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "downloads_open",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.527,
+      "geometry_diffs": 153,
+      "top": [
+        {
+          "selector": "#chromeMain",
+          "pct": 74.8
+        },
+        {
+          "selector": "#rightDownloadsList",
+          "pct": 8.6
+        },
+        {
+          "selector": "#tabs",
+          "pct": 1.9
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 91.26993750000001,
+        "form_control": 1.1358125000000001
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#modeSelector",
+          "max_delta_px": 81.0
+        },
+        {
+          "selector": "body > aside.right-sidebar:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.sidebar collapsed:nth-of-type(1) > section.sidebar-section actions-section:nth-of-type(2) > div.action-item:nth-of-type(4) > span.action-icon:nth-of-type(1)",
+          "max_delta_px": 7.41
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "focus_mode",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.144,
+      "geometry_diffs": 154,
+      "top": [
+        {
+          "selector": "html > body.focus-mode",
+          "pct": 83.8
+        },
+        {
+          "selector": "#tabs",
+          "pct": 2.3
+        },
+        {
+          "selector": "body > div.chrome-main:nth-of-type(5) > div.toolbar:nth-of-type(2) > div.address-bar:nth-of-type(3)",
+          "pct": 1.9
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 92.37216796874999,
+        "form_control": 1.60869140625
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#modeSelector",
+          "max_delta_px": 81.0
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "focus_mode",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 0.206,
+      "geometry_diffs": 129,
+      "top": [
+        {
+          "selector": "html > body.focus-mode",
+          "pct": 80.8
+        },
+        {
+          "selector": "#tabs",
+          "pct": 2.1
+        },
+        {
+          "selector": "body > div.chrome-main:nth-of-type(5) > div.toolbar:nth-of-type(2) > div.address-bar:nth-of-type(3)",
+          "pct": 2.0
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 90.42257254464285,
+        "form_control": 1.6909877232142858
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#modeSelector",
+          "max_delta_px": 81.0
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        }
+      ]
+    },
+    {
+      "page": "chrome",
+      "state": "focus_mode",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.092,
+      "geometry_diffs": 158,
+      "top": [
+        {
+          "selector": "html > body.focus-mode",
+          "pct": 87.3
+        },
+        {
+          "selector": "#tabs",
+          "pct": 2.1
+        },
+        {
+          "selector": "body > div.chrome-main:nth-of-type(5) > div.toolbar:nth-of-type(2) > div.address-bar:nth-of-type(3)",
+          "pct": 1.6
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 94.30843750000001,
+        "form_control": 1.3695625
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#modeSelector",
+          "max_delta_px": 81.0
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span.icon:nth-of-type(1)",
+          "max_delta_px": 11.57
+        },
+        {
+          "selector": "body > aside.right-sidebar collapsed:nth-of-type(2) > div.right-sidebar-tabs:nth-of-type(3) > button.right-sidebar-tab active:nth-of-type(1) > span:nth-of-type(2)",
+          "max_delta_px": 11.57
+        }
+      ]
+    },
+    {
+      "page": "shelf",
+      "state": "default",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.297,
+      "geometry_diffs": 18,
+      "top": [
+        {
+          "selector": "#commandResults",
+          "pct": 78.9
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2)",
+          "pct": 6.8
+        },
+        {
+          "selector": "#commandInput",
+          "pct": 5.0
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 93.21474609375001,
+        "form_control": 5.0306640625000005
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item:nth-of-type(2) > div.command-item-left",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item:nth-of-type(2) > div.command-item-left > span.command-item-name:nth-of-type(1)",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item:nth-of-type(2) > div.command-item-left > span.command-item-category:nth-of-type(2)",
+          "max_delta_px": 4.33
+        }
+      ]
+    },
+    {
+      "page": "shelf",
+      "state": "default",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 0.426,
+      "geometry_diffs": 18,
+      "top": [
+        {
+          "selector": "#commandResults",
+          "pct": 73.6
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2)",
+          "pct": 7.9
+        },
+        {
+          "selector": "#commandInput",
+          "pct": 5.7
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 91.28041294642858,
+        "form_control": 5.650948660714286
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item:nth-of-type(2) > div.command-item-left",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item:nth-of-type(2) > div.command-item-left > span.command-item-name:nth-of-type(1)",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item:nth-of-type(2) > div.command-item-left > span.command-item-category:nth-of-type(2)",
+          "max_delta_px": 4.33
+        }
+      ]
+    },
+    {
+      "page": "shelf",
+      "state": "default",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.193,
+      "geometry_diffs": 18,
+      "top": [
+        {
+          "selector": "#commandResults",
+          "pct": 83.5
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2)",
+          "pct": 5.4
+        },
+        {
+          "selector": "#commandInput",
+          "pct": 4.1
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 94.69924999999998,
+        "form_control": 4.079625
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item:nth-of-type(2) > div.command-item-left",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item:nth-of-type(2) > div.command-item-left > span.command-item-name:nth-of-type(1)",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item:nth-of-type(2) > div.command-item-left > span.command-item-category:nth-of-type(2)",
+          "max_delta_px": 4.33
+        }
+      ]
+    },
+    {
+      "page": "shelf",
+      "state": "shelf_search",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.155,
+      "geometry_diffs": 6,
+      "top": [
+        {
+          "selector": "#commandResults",
+          "pct": 80.8
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2)",
+          "pct": 6.8
+        },
+        {
+          "selector": "#commandInput",
+          "pct": 5.0
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 94.47763671875,
+        "form_control": 5.0306640625000005
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item selected:nth-of-type(1) > span.command-item-shortcut",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item selected:nth-of-type(1) > div.command-item-left",
+          "max_delta_px": 4.32
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item selected:nth-of-type(1) > div.command-item-left > span.command-item-name:nth-of-type(1)",
+          "max_delta_px": 4.32
+        }
+      ]
+    },
+    {
+      "page": "shelf",
+      "state": "shelf_search",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 0.223,
+      "geometry_diffs": 6,
+      "top": [
+        {
+          "selector": "#commandResults",
+          "pct": 76.8
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2)",
+          "pct": 7.9
+        },
+        {
+          "selector": "#commandInput",
+          "pct": 5.7
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 93.568359375,
+        "form_control": 5.650948660714286
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item selected:nth-of-type(1) > div.command-item-left",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item selected:nth-of-type(1) > div.command-item-left > span.command-item-name:nth-of-type(1)",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item selected:nth-of-type(1) > div.command-item-left > span.command-item-category:nth-of-type(2)",
+          "max_delta_px": 4.33
+        }
+      ]
+    },
+    {
+      "page": "shelf",
+      "state": "shelf_search",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.098,
+      "geometry_diffs": 6,
+      "top": [
+        {
+          "selector": "#commandResults",
+          "pct": 84.7
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2)",
+          "pct": 5.4
+        },
+        {
+          "selector": "#commandInput",
+          "pct": 4.1
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 95.59168749999999,
+        "form_control": 4.079625
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item selected:nth-of-type(1) > span.command-item-shortcut",
+          "max_delta_px": 4.33
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item selected:nth-of-type(1) > div.command-item-left",
+          "max_delta_px": 4.32
+        },
+        {
+          "selector": "body > div.command-palette:nth-of-type(2) > div.command-results:nth-of-type(2) > div.command-item selected:nth-of-type(1) > div.command-item-left > span.command-item-name:nth-of-type(1)",
+          "max_delta_px": 4.32
+        }
+      ]
+    },
+    {
+      "page": "inspector",
+      "state": "default",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 2.597,
+      "geometry_diffs": 254,
+      "top": [
+        {
+          "selector": "#dom-tree-container",
+          "pct": 23.4
+        },
+        {
+          "selector": "#styles-container",
+          "pct": 7.4
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-toolbar:nth-of-type(1)",
+          "pct": 3.1
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 47.5302734375
+      },
+      "join_failures": 7,
+      "worst_geometry": [
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(1) > div.box-model:nth-of-type(2) > div.box-model-diagram > div.box-margin > div > div.box-border > div > div.box-padding > span.box-label:nth-of-type(1)",
+          "max_delta_px": 49.0
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(1) > div.box-model:nth-of-type(2) > div.box-model-diagram > div.box-margin > div > div.box-border > span.box-label:nth-of-type(1)",
+          "max_delta_px": 25.0
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(2) > div.computed-styles:nth-of-type(2) > div.style-property:nth-of-type(8) > span.style-property-value:nth-of-type(2) > span.number:nth-of-type(6)",
+          "max_delta_px": 12.24
+        }
+      ]
+    },
+    {
+      "page": "inspector",
+      "state": "default",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 3.71,
+      "geometry_diffs": 254,
+      "top": [
+        {
+          "selector": "#dom-tree-container",
+          "pct": 14.8
+        },
+        {
+          "selector": "#styles-container",
+          "pct": 5.7
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(1) > div.box-model:nth-of-type(2)",
+          "pct": 4.0
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 39.10742187499999
+      },
+      "join_failures": 7,
+      "worst_geometry": [
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(1) > div.box-model:nth-of-type(2) > div.box-model-diagram > div.box-margin > div > div.box-border > div > div.box-padding > span.box-label:nth-of-type(1)",
+          "max_delta_px": 49.0
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(1) > div.box-model:nth-of-type(2) > div.box-model-diagram > div.box-margin > div > div.box-border > span.box-label:nth-of-type(1)",
+          "max_delta_px": 25.0
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(2) > div.computed-styles:nth-of-type(2) > div.style-property:nth-of-type(8) > span.style-property-value:nth-of-type(2) > span.number:nth-of-type(6)",
+          "max_delta_px": 12.24
+        }
+      ]
+    },
+    {
+      "page": "inspector",
+      "state": "default",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 1.662,
+      "geometry_diffs": 254,
+      "top": [
+        {
+          "selector": "#dom-tree-container",
+          "pct": 35.7
+        },
+        {
+          "selector": "#styles-container",
+          "pct": 9.1
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-toolbar:nth-of-type(1)",
+          "pct": 2.7
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 58.736875
+      },
+      "join_failures": 7,
+      "worst_geometry": [
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(1) > div.box-model:nth-of-type(2) > div.box-model-diagram > div.box-margin > div > div.box-border > div > div.box-padding > span.box-label:nth-of-type(1)",
+          "max_delta_px": 49.0
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(1) > div.box-model:nth-of-type(2) > div.box-model-diagram > div.box-margin > div > div.box-border > span.box-label:nth-of-type(1)",
+          "max_delta_px": 25.0
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.panel styles-panel:nth-of-type(3) > div.panel-content:nth-of-type(2) > div:nth-of-type(2) > div.styles-section:nth-of-type(2) > div.computed-styles:nth-of-type(2) > div.style-property:nth-of-type(8) > span.style-property-value:nth-of-type(2) > span.number:nth-of-type(6)",
+          "max_delta_px": 12.24
+        }
+      ]
+    },
+    {
+      "page": "inspector",
+      "state": "console_tab",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.275,
+      "geometry_diffs": 0,
+      "top": [
+        {
+          "selector": "#console-output",
+          "pct": 74.4
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.console-panel active:nth-of-type(4) > div.console-toolbar:nth-of-type(1)",
+          "pct": 3.6
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-toolbar:nth-of-type(1)",
+          "pct": 3.3
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 92.032421875,
+        "form_control": 2.6833984375
+      },
+      "join_failures": 0,
+      "worst_geometry": []
+    },
+    {
+      "page": "inspector",
+      "state": "console_tab",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 0.394,
+      "geometry_diffs": 0,
+      "top": [
+        {
+          "selector": "#console-output",
+          "pct": 70.7
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.console-panel active:nth-of-type(4) > div.console-toolbar:nth-of-type(1)",
+          "pct": 4.0
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-toolbar:nth-of-type(1)",
+          "pct": 3.5
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 90.3677455357143,
+        "form_control": 3.0477120535714284
+      },
+      "join_failures": 0,
+      "worst_geometry": []
+    },
+    {
+      "page": "inspector",
+      "state": "console_tab",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.176,
+      "geometry_diffs": 0,
+      "top": [
+        {
+          "selector": "#console-output",
+          "pct": 79.5
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-main:nth-of-type(2) > div.console-panel active:nth-of-type(4) > div.console-toolbar:nth-of-type(1)",
+          "pct": 3.0
+        },
+        {
+          "selector": "body > div.inspector-container > div.inspector-toolbar:nth-of-type(1)",
+          "pct": 2.8
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 93.92075,
+        "form_control": 2.157375
+      },
+      "join_failures": 0,
+      "worst_geometry": []
+    },
+    {
+      "page": "settings",
+      "state": "default",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.587,
+      "geometry_diffs": 67,
+      "top": [
+        {
+          "selector": "html > body",
+          "pct": 47.5
+        },
+        {
+          "selector": "body > div.container",
+          "pct": 4.8
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(1)",
+          "pct": 4.7
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 73.94140625
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#focusShortcutKey",
+          "max_delta_px": 1.4
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-label:nth-of-type(6) > span",
+          "max_delta_px": 1.31
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(2) > div.setting-label > span",
+          "max_delta_px": 1.11
+        }
+      ]
+    },
+    {
+      "page": "settings",
+      "state": "default",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 0.753,
+      "geometry_diffs": 67,
+      "top": [
+        {
+          "selector": "html > body",
+          "pct": 34.8
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(1)",
+          "pct": 6.7
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(2)",
+          "pct": 6.4
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 69.4033203125
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#focusShortcutKey",
+          "max_delta_px": 1.4
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-label:nth-of-type(6) > span",
+          "max_delta_px": 1.31
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(2) > div.setting-label > span",
+          "max_delta_px": 1.11
+        }
+      ]
+    },
+    {
+      "page": "settings",
+      "state": "default",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.448,
+      "geometry_diffs": 67,
+      "top": [
+        {
+          "selector": "html > body",
+          "pct": 57.6
+        },
+        {
+          "selector": "body > div.container",
+          "pct": 3.8
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(1)",
+          "pct": 3.0
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 76.99249999999999
+      },
+      "join_failures": 0,
+      "worst_geometry": [
+        {
+          "selector": "#focusShortcutKey",
+          "max_delta_px": 1.4
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-label:nth-of-type(6) > span",
+          "max_delta_px": 1.31
+        },
+        {
+          "selector": "body > div.container > div.section:nth-of-type(10) > div.setting-row:nth-of-type(2) > div.setting-label > span",
+          "max_delta_px": 1.11
+        }
+      ]
+    },
+    {
+      "page": "report",
+      "state": "default",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.581,
+      "geometry_diffs": 16,
+      "top": [
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.chart-section:nth-of-type(2) > div.chart-container:nth-of-type(2)",
+          "pct": 33.7
+        },
+        {
+          "selector": "html > body",
+          "pct": 10
+        },
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.stats-grid:nth-of-type(1)",
+          "pct": 9.6
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 82.1630859375
+      },
+      "join_failures": 1,
+      "worst_geometry": [
+        {
+          "selector": "#activityChart",
+          "max_delta_px": 1150.0
+        },
+        {
+          "selector": "#protectionChart",
+          "max_delta_px": 1150.0
+        },
+        {
+          "selector": "#content",
+          "max_delta_px": 3.0
+        }
+      ]
+    },
+    {
+      "page": "report",
+      "state": "default",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 0.825,
+      "geometry_diffs": 16,
+      "top": [
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.chart-section:nth-of-type(2) > div.chart-container:nth-of-type(2)",
+          "pct": 25.9
+        },
+        {
+          "selector": "html > body",
+          "pct": 10.5
+        },
+        {
+          "selector": "body > div.container:nth-of-type(1)",
+          "pct": 7.5
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 74.90541294642857
+      },
+      "join_failures": 1,
+      "worst_geometry": [
+        {
+          "selector": "#activityChart",
+          "max_delta_px": 910.0
+        },
+        {
+          "selector": "#protectionChart",
+          "max_delta_px": 910.0
+        },
+        {
+          "selector": "#content",
+          "max_delta_px": 3.0
+        }
+      ]
+    },
+    {
+      "page": "report",
+      "state": "default",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.406,
+      "geometry_diffs": 16,
+      "top": [
+        {
+          "selector": "html > body",
+          "pct": 27.4
+        },
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.chart-section:nth-of-type(2) > div.chart-container:nth-of-type(2)",
+          "pct": 21.6
+        },
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.chart-section:nth-of-type(3) > div.chart-container:nth-of-type(2)",
+          "pct": 7.3
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 84.209375
+      },
+      "join_failures": 1,
+      "worst_geometry": [
+        {
+          "selector": "#activityChart",
+          "max_delta_px": 1150.0
+        },
+        {
+          "selector": "#protectionChart",
+          "max_delta_px": 1150.0
+        },
+        {
+          "selector": "#content",
+          "max_delta_px": 3.0
+        }
+      ]
+    },
+    {
+      "page": "report",
+      "state": "weekly",
+      "size": "1280x800",
+      "width": 1280,
+      "height": 800,
+      "status": "ok",
+      "pixel_diff_pct": 0.581,
+      "geometry_diffs": 17,
+      "top": [
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.chart-section:nth-of-type(2) > div.chart-container:nth-of-type(2)",
+          "pct": 33.7
+        },
+        {
+          "selector": "html > body",
+          "pct": 10
+        },
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.stats-grid:nth-of-type(1)",
+          "pct": 9.6
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 82.1630859375
+      },
+      "join_failures": 1,
+      "worst_geometry": [
+        {
+          "selector": "#activityChart",
+          "max_delta_px": 1150.0
+        },
+        {
+          "selector": "#protectionChart",
+          "max_delta_px": 1150.0
+        },
+        {
+          "selector": "#content",
+          "max_delta_px": 3.0
+        }
+      ]
+    },
+    {
+      "page": "report",
+      "state": "weekly",
+      "size": "1024x700",
+      "width": 1024,
+      "height": 700,
+      "status": "ok",
+      "pixel_diff_pct": 0.826,
+      "geometry_diffs": 17,
+      "top": [
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.chart-section:nth-of-type(2) > div.chart-container:nth-of-type(2)",
+          "pct": 25.9
+        },
+        {
+          "selector": "html > body",
+          "pct": 10.5
+        },
+        {
+          "selector": "body > div.container:nth-of-type(1)",
+          "pct": 7.5
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 74.90541294642857
+      },
+      "join_failures": 1,
+      "worst_geometry": [
+        {
+          "selector": "#activityChart",
+          "max_delta_px": 910.0
+        },
+        {
+          "selector": "#protectionChart",
+          "max_delta_px": 910.0
+        },
+        {
+          "selector": "#content",
+          "max_delta_px": 3.0
+        }
+      ]
+    },
+    {
+      "page": "report",
+      "state": "weekly",
+      "size": "1600x1000",
+      "width": 1600,
+      "height": 1000,
+      "status": "ok",
+      "pixel_diff_pct": 0.405,
+      "geometry_diffs": 17,
+      "top": [
+        {
+          "selector": "html > body",
+          "pct": 27.4
+        },
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.chart-section:nth-of-type(2) > div.chart-container:nth-of-type(2)",
+          "pct": 21.6
+        },
+        {
+          "selector": "body > div.container:nth-of-type(1) > div:nth-of-type(5) > div.chart-section:nth-of-type(3) > div.chart-container:nth-of-type(2)",
+          "pct": 7.3
+        }
+      ],
+      "notes": [],
+      "taxonomy": {
+        "unknown": 84.209375
+      },
+      "join_failures": 1,
+      "worst_geometry": [
+        {
+          "selector": "#activityChart",
+          "max_delta_px": 1150.0
+        },
+        {
+          "selector": "#protectionChart",
+          "max_delta_px": 1150.0
+        },
+        {
+          "selector": "#content",
+          "max_delta_px": 3.0
+        }
+      ]
+    }
+  ],
+  "census": {
+    "source": "CSS_PROPERTY_CENSUS_2026-11-03.json",
+    "report": null,
+    "date": "2026-11-03",
+    "oracle": "143.0.7499.4",
+    "red_total": 212,
+    "pages": {
+      "chrome": {
+        "declared": 93,
+        "red": [
+          {
+            "property": "-webkit-text-fill-color",
+            "class": "parse",
+            "sites": 30
+          },
+          {
+            "property": "-webkit-user-select",
+            "class": "unsupported",
+            "sites": 59
+          },
+          {
+            "property": "animation",
+            "class": "parse",
+            "sites": 65
+          },
+          {
+            "property": "animation-delay",
+            "class": "parse",
+            "sites": 44
+          },
+          {
+            "property": "animation-duration",
+            "class": "parse",
+            "sites": 58
+          },
+          {
+            "property": "animation-fill-mode",
+            "class": "parse",
+            "sites": 39
+          },
+          {
+            "property": "animation-iteration-count",
+            "class": "parse",
+            "sites": 38
+          },
+          {
+            "property": "appearance",
+            "class": "unsupported",
+            "sites": 59
+          },
+          {
+            "property": "backdrop-filter",
+            "class": "unsupported",
+            "sites": 47
+          },
+          {
+            "property": "background-clip",
+            "class": "parse",
+            "sites": 50
+          },
+          {
+            "property": "background-image",
+            "class": "parse",
+            "sites": 65
+          },
+          {
+            "property": "background-position",
+            "class": "parse",
+            "sites": 64
+          },
+          {
+            "property": "background-repeat",
+            "class": "parse",
+            "sites": 65
+          },
+          {
+            "property": "background-size",
+            "class": "parse",
+            "sites": 63
+          },
+          {
+            "property": "border-style",
+            "class": "parse",
+            "sites": 61
+          },
+          {
+            "property": "box-shadow",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "cursor",
+            "class": "unsupported",
+            "sites": 66
+          },
+          {
+            "property": "display",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "filter",
+            "class": "parse",
+            "sites": 63
+          },
+          {
+            "property": "flex-direction",
+            "class": "computed",
+            "sites": 66
+          },
+          {
+            "property": "font-family",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "letter-spacing",
+            "class": "computed",
+            "sites": 64
+          },
+          {
+            "property": "outline",
+            "class": "unsupported",
+            "sites": 66
+          },
+          {
+            "property": "outline-color",
+            "class": "unsupported",
+            "sites": 53
+          },
+          {
+            "property": "outline-offset",
+            "class": "unsupported",
+            "sites": 65
+          },
+          {
+            "property": "overscroll-behavior",
+            "class": "unsupported",
+            "sites": 29
+          },
+          {
+            "property": "scrollbar-color",
+            "class": "unsupported",
+            "sites": 31
+          },
+          {
+            "property": "scrollbar-width",
+            "class": "unsupported",
+            "sites": 53
+          },
+          {
+            "property": "text-align",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "text-decoration",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "text-transform",
+            "class": "computed",
+            "sites": 62
+          },
+          {
+            "property": "transform-origin",
+            "class": "parse",
+            "sites": 57
+          },
+          {
+            "property": "transition",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "transition-duration",
+            "class": "parse",
+            "sites": 57
+          },
+          {
+            "property": "user-select",
+            "class": "unsupported",
+            "sites": 62
+          },
+          {
+            "property": "z-index",
+            "class": "computed",
+            "sites": 67
+          }
+        ]
+      },
+      "shelf": {
+        "declared": 50,
+        "red": [
+          {
+            "property": "animation",
+            "class": "parse",
+            "sites": 65
+          },
+          {
+            "property": "box-shadow",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "cursor",
+            "class": "unsupported",
+            "sites": 66
+          },
+          {
+            "property": "display",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "flex-direction",
+            "class": "computed",
+            "sites": 66
+          },
+          {
+            "property": "font-family",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "letter-spacing",
+            "class": "computed",
+            "sites": 64
+          },
+          {
+            "property": "outline",
+            "class": "unsupported",
+            "sites": 66
+          },
+          {
+            "property": "text-align",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "text-transform",
+            "class": "computed",
+            "sites": 62
+          },
+          {
+            "property": "transition",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "user-select",
+            "class": "unsupported",
+            "sites": 62
+          },
+          {
+            "property": "z-index",
+            "class": "computed",
+            "sites": 67
+          }
+        ]
+      },
+      "inspector": {
+        "declared": 56,
+        "red": [
+          {
+            "property": "cursor",
+            "class": "unsupported",
+            "sites": 66
+          },
+          {
+            "property": "display",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "flex-direction",
+            "class": "computed",
+            "sites": 66
+          },
+          {
+            "property": "font-family",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "letter-spacing",
+            "class": "computed",
+            "sites": 64
+          },
+          {
+            "property": "outline",
+            "class": "unsupported",
+            "sites": 66
+          },
+          {
+            "property": "outline-offset",
+            "class": "unsupported",
+            "sites": 65
+          },
+          {
+            "property": "text-align",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "text-decoration",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "text-transform",
+            "class": "computed",
+            "sites": 62
+          },
+          {
+            "property": "transition",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "user-select",
+            "class": "unsupported",
+            "sites": 62
+          },
+          {
+            "property": "vertical-align",
+            "class": "parse",
+            "sites": 66
+          }
+        ]
+      },
+      "settings": {
+        "declared": 60,
+        "red": [
+          {
+            "property": "-webkit-text-fill-color",
+            "class": "parse",
+            "sites": 30
+          },
+          {
+            "property": "accent-color",
+            "class": "unsupported",
+            "sites": 7
+          },
+          {
+            "property": "animation",
+            "class": "parse",
+            "sites": 65
+          },
+          {
+            "property": "animation-delay",
+            "class": "parse",
+            "sites": 44
+          },
+          {
+            "property": "animation-duration",
+            "class": "parse",
+            "sites": 58
+          },
+          {
+            "property": "background-clip",
+            "class": "parse",
+            "sites": 50
+          },
+          {
+            "property": "box-shadow",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "cursor",
+            "class": "unsupported",
+            "sites": 66
+          },
+          {
+            "property": "display",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "flex-direction",
+            "class": "computed",
+            "sites": 66
+          },
+          {
+            "property": "font-family",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "letter-spacing",
+            "class": "computed",
+            "sites": 64
+          },
+          {
+            "property": "outline",
+            "class": "unsupported",
+            "sites": 66
+          },
+          {
+            "property": "scrollbar-color",
+            "class": "unsupported",
+            "sites": 31
+          },
+          {
+            "property": "scrollbar-width",
+            "class": "unsupported",
+            "sites": 53
+          },
+          {
+            "property": "text-align",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "text-transform",
+            "class": "computed",
+            "sites": 62
+          },
+          {
+            "property": "transition",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "transition-duration",
+            "class": "parse",
+            "sites": 57
+          }
+        ]
+      },
+      "report": {
+        "declared": 48,
+        "red": [
+          {
+            "property": "-webkit-text-fill-color",
+            "class": "parse",
+            "sites": 30
+          },
+          {
+            "property": "background-clip",
+            "class": "parse",
+            "sites": 50
+          },
+          {
+            "property": "box-shadow",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "cursor",
+            "class": "unsupported",
+            "sites": 66
+          },
+          {
+            "property": "display",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "flex-direction",
+            "class": "computed",
+            "sites": 66
+          },
+          {
+            "property": "font-family",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "letter-spacing",
+            "class": "computed",
+            "sites": 64
+          },
+          {
+            "property": "scrollbar-color",
+            "class": "unsupported",
+            "sites": 31
+          },
+          {
+            "property": "scrollbar-width",
+            "class": "unsupported",
+            "sites": 53
+          },
+          {
+            "property": "text-align",
+            "class": "computed",
+            "sites": 67
+          },
+          {
+            "property": "text-transform",
+            "class": "computed",
+            "sites": 62
+          },
+          {
+            "property": "transition",
+            "class": "parse",
+            "sites": 67
+          },
+          {
+            "property": "z-index",
+            "class": "computed",
+            "sites": 67
+          }
+        ]
+      }
+    }
+  }
+}

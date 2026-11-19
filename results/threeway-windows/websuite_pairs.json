@@ -1,0 +1,147 @@
+[
+ {
+  "case": "cases__article-typography",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__article-typography\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__article-typography\\chrome\\baseline.png"
+ },
+ {
+  "case": "cases__card-grid",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__card-grid\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__card-grid\\chrome\\baseline.png"
+ },
+ {
+  "case": "cases__css-selectors",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__css-selectors\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__css-selectors\\chrome\\baseline.png"
+ },
+ {
+  "case": "cases__flex-positioning",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__flex-positioning\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__flex-positioning\\chrome\\baseline.png"
+ },
+ {
+  "case": "cases__form-elements",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__form-elements\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__form-elements\\chrome\\baseline.png"
+ },
+ {
+  "case": "cases__gradient-backgrounds",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__gradient-backgrounds\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__gradient-backgrounds\\chrome\\baseline.png"
+ },
+ {
+  "case": "cases__image-gallery",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__image-gallery\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__image-gallery\\chrome\\baseline.png"
+ },
+ {
+  "case": "cases__sticky-scroll",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__sticky-scroll\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\cases__sticky-scroll\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__backgrounds",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__backgrounds\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__backgrounds\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__bg-pure",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__bg-pure\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__bg-pure\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__bg-simple",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__bg-simple\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__bg-simple\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__bg-solid",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__bg-solid\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__bg-solid\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__combinators",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__combinators\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__combinators\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__form-controls",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__form-controls\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__form-controls\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__gpu-gradient-debug",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gpu-gradient-debug\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gpu-gradient-debug\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__gpu-gradient-regression",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gpu-gradient-regression\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gpu-gradient-regression\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__gradient-no-radius",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gradient-no-radius\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gradient-no-radius\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__gradient-radius-only",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gradient-radius-only\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gradient-radius-only\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__gradients",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gradients\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__gradients\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__image-intrinsic-size",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__image-intrinsic-size\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__image-intrinsic-size\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__images-intrinsic",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__images-intrinsic\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__images-intrinsic\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__pseudo-classes",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__pseudo-classes\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__pseudo-classes\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__rendering-debug__gradient-overlay",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__rendering-debug__gradient-overlay\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__rendering-debug__gradient-overlay\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__rendering-debug",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__rendering-debug\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__rendering-debug\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__rounded-corners",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__rounded-corners\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__rounded-corners\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__selectors-combinators",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__selectors-combinators\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__selectors-combinators\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__selectors-specificity",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__selectors-specificity\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__selectors-specificity\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__specificity",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__specificity\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__specificity\\chrome\\baseline.png"
+ },
+ {
+  "case": "micro__sticky-basic",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__sticky-basic\\rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\websuite_work\\micro__sticky-basic\\chrome\\baseline.png"
+ }
+]

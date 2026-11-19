@@ -1,0 +1,132 @@
+[
+ {
+  "case": "new_tab",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\new_tab.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\new_tab.png"
+ },
+ {
+  "case": "about",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\about.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\about.png"
+ },
+ {
+  "case": "settings",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\settings.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\settings.png"
+ },
+ {
+  "case": "chrome_rustkit",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\chrome_rustkit.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\chrome_rustkit.png"
+ },
+ {
+  "case": "shelf",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\shelf.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\shelf.png"
+ },
+ {
+  "case": "article-typography",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\article-typography.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\article-typography.png"
+ },
+ {
+  "case": "card-grid",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\card-grid.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\card-grid.png"
+ },
+ {
+  "case": "css-selectors",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\css-selectors.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\css-selectors.png"
+ },
+ {
+  "case": "flex-positioning",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\flex-positioning.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\flex-positioning.png"
+ },
+ {
+  "case": "form-elements",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\form-elements.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\form-elements.png"
+ },
+ {
+  "case": "gradient-backgrounds",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\gradient-backgrounds.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\gradient-backgrounds.png"
+ },
+ {
+  "case": "image-gallery",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\image-gallery.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\image-gallery.png"
+ },
+ {
+  "case": "sticky-scroll",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\sticky-scroll.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\sticky-scroll.png"
+ },
+ {
+  "case": "backgrounds",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\backgrounds.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\backgrounds.png"
+ },
+ {
+  "case": "bg-solid",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\bg-solid.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\bg-solid.png"
+ },
+ {
+  "case": "bg-pure",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\bg-pure.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\bg-pure.png"
+ },
+ {
+  "case": "combinators",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\combinators.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\combinators.png"
+ },
+ {
+  "case": "form-controls",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\form-controls.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\form-controls.png"
+ },
+ {
+  "case": "gradients",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\gradients.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\gradients.png"
+ },
+ {
+  "case": "gradient-no-radius",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\gradient-no-radius.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\gradient-no-radius.png"
+ },
+ {
+  "case": "gradient-radius-only",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\gradient-radius-only.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\gradient-radius-only.png"
+ },
+ {
+  "case": "gpu-gradient-regression",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\gpu-gradient-regression.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\gpu-gradient-regression.png"
+ },
+ {
+  "case": "images-intrinsic",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\images-intrinsic.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\images-intrinsic.png"
+ },
+ {
+  "case": "pseudo-classes",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\pseudo-classes.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\pseudo-classes.png"
+ },
+ {
+  "case": "rounded-corners",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\rounded-corners.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\rounded-corners.png"
+ },
+ {
+  "case": "specificity",
+  "rustkit": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\rustkit\\campaign\\specificity.png",
+  "chrome": "P:\\repos\\hiwave-wt\\win-3way\\results\\threeway-windows\\chrome\\campaign\\specificity.png"
+ }
+]

@@ -1,0 +1,697 @@
+{
+  "summary": {
+    "set": "chrome-board-42",
+    "cases": 42,
+    "scored": 42,
+    "errors": [],
+    "size_mismatches": [],
+    "mean_pixels_over_8_pct": 1.3203,
+    "mean_channel_diff": 0.7075,
+    "worst10_by_pixels_over_8": [
+      {
+        "case": "inspector/default/1024x700",
+        "pixels_over_8_pct": 5.279,
+        "mean_channel_diff": 3.0552
+      },
+      {
+        "case": "inspector/default/1280x800",
+        "pixels_over_8_pct": 3.6953,
+        "mean_channel_diff": 2.1387
+      },
+      {
+        "case": "chrome/downloads_open/1024x700",
+        "pixels_over_8_pct": 2.4074,
+        "mean_channel_diff": 1.2729
+      },
+      {
+        "case": "inspector/default/1600x1000",
+        "pixels_over_8_pct": 2.365,
+        "mean_channel_diff": 1.3687
+      },
+      {
+        "case": "chrome/address_focused/1024x700",
+        "pixels_over_8_pct": 2.3006,
+        "mean_channel_diff": 1.4053
+      },
+      {
+        "case": "chrome/hover_tab2/1024x700",
+        "pixels_over_8_pct": 2.1657,
+        "mean_channel_diff": 1.2364
+      },
+      {
+        "case": "chrome/default/1024x700",
+        "pixels_over_8_pct": 2.1588,
+        "mean_channel_diff": 1.2444
+      },
+      {
+        "case": "chrome/find_open/1024x700",
+        "pixels_over_8_pct": 2.0033,
+        "mean_channel_diff": 1.1622
+      },
+      {
+        "case": "chrome/address_focused/1280x800",
+        "pixels_over_8_pct": 1.9116,
+        "mean_channel_diff": 1.1698
+      },
+      {
+        "case": "settings/default/1024x700",
+        "pixels_over_8_pct": 1.7486,
+        "mean_channel_diff": 0.7187
+      }
+    ],
+    "board_green": 18,
+    "mean_geometry_diffs": 105.0
+  },
+  "rows": [
+    {
+      "case": "chrome/default/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.7123,
+      "mean_channel_diff": 0.9529,
+      "geometry_diffs": 165,
+      "board_green": false
+    },
+    {
+      "case": "chrome/default/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 2.1588,
+      "mean_channel_diff": 1.2444,
+      "geometry_diffs": 163,
+      "board_green": false
+    },
+    {
+      "case": "chrome/default/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 1.2495,
+      "mean_channel_diff": 0.6861,
+      "geometry_diffs": 164,
+      "board_green": false
+    },
+    {
+      "case": "chrome/hover_tab2/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.7172,
+      "mean_channel_diff": 0.9472,
+      "geometry_diffs": 165,
+      "board_green": false
+    },
+    {
+      "case": "chrome/hover_tab2/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 2.1657,
+      "mean_channel_diff": 1.2364,
+      "geometry_diffs": 163,
+      "board_green": false
+    },
+    {
+      "case": "chrome/hover_tab2/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 1.2526,
+      "mean_channel_diff": 0.6825,
+      "geometry_diffs": 164,
+      "board_green": false
+    },
+    {
+      "case": "chrome/address_focused/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.9116,
+      "mean_channel_diff": 1.1698,
+      "geometry_diffs": 165,
+      "board_green": false
+    },
+    {
+      "case": "chrome/address_focused/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 2.3006,
+      "mean_channel_diff": 1.4053,
+      "geometry_diffs": 163,
+      "board_green": false
+    },
+    {
+      "case": "chrome/address_focused/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 1.4571,
+      "mean_channel_diff": 0.9085,
+      "geometry_diffs": 164,
+      "board_green": false
+    },
+    {
+      "case": "chrome/sidebar_collapsed/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 0.7161,
+      "mean_channel_diff": 0.3645,
+      "geometry_diffs": 154,
+      "board_green": true
+    },
+    {
+      "case": "chrome/sidebar_collapsed/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 0.9516,
+      "mean_channel_diff": 0.5083,
+      "geometry_diffs": 129,
+      "board_green": true
+    },
+    {
+      "case": "chrome/sidebar_collapsed/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 0.4983,
+      "mean_channel_diff": 0.2402,
+      "geometry_diffs": 158,
+      "board_green": true
+    },
+    {
+      "case": "chrome/find_open/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.6015,
+      "mean_channel_diff": 0.9796,
+      "geometry_diffs": 165,
+      "board_green": false
+    },
+    {
+      "case": "chrome/find_open/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 2.0033,
+      "mean_channel_diff": 1.1622,
+      "geometry_diffs": 163,
+      "board_green": false
+    },
+    {
+      "case": "chrome/find_open/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 1.2015,
+      "mean_channel_diff": 0.8115,
+      "geometry_diffs": 164,
+      "board_green": false
+    },
+    {
+      "case": "chrome/downloads_open/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.7352,
+      "mean_channel_diff": 0.8997,
+      "geometry_diffs": 149,
+      "board_green": false
+    },
+    {
+      "case": "chrome/downloads_open/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 2.4074,
+      "mean_channel_diff": 1.2729,
+      "geometry_diffs": 124,
+      "board_green": false
+    },
+    {
+      "case": "chrome/downloads_open/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 1.1505,
+      "mean_channel_diff": 0.5827,
+      "geometry_diffs": 153,
+      "board_green": false
+    },
+    {
+      "case": "chrome/focus_mode/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 0.2679,
+      "mean_channel_diff": 0.0986,
+      "geometry_diffs": 154,
+      "board_green": true
+    },
+    {
+      "case": "chrome/focus_mode/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 0.383,
+      "mean_channel_diff": 0.1405,
+      "geometry_diffs": 129,
+      "board_green": true
+    },
+    {
+      "case": "chrome/focus_mode/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 0.1714,
+      "mean_channel_diff": 0.0634,
+      "geometry_diffs": 158,
+      "board_green": true
+    },
+    {
+      "case": "shelf/default/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 0.434,
+      "mean_channel_diff": 0.197,
+      "geometry_diffs": 18,
+      "board_green": true
+    },
+    {
+      "case": "shelf/default/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 0.6221,
+      "mean_channel_diff": 0.2808,
+      "geometry_diffs": 18,
+      "board_green": true
+    },
+    {
+      "case": "shelf/default/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 0.2782,
+      "mean_channel_diff": 0.1278,
+      "geometry_diffs": 18,
+      "board_green": true
+    },
+    {
+      "case": "shelf/shelf_search/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 0.2285,
+      "mean_channel_diff": 0.1056,
+      "geometry_diffs": 6,
+      "board_green": true
+    },
+    {
+      "case": "shelf/shelf_search/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 0.3253,
+      "mean_channel_diff": 0.15,
+      "geometry_diffs": 6,
+      "board_green": true
+    },
+    {
+      "case": "shelf/shelf_search/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 0.147,
+      "mean_channel_diff": 0.0674,
+      "geometry_diffs": 6,
+      "board_green": true
+    },
+    {
+      "case": "inspector/default/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 3.6953,
+      "mean_channel_diff": 2.1387,
+      "geometry_diffs": 254,
+      "board_green": false
+    },
+    {
+      "case": "inspector/default/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 5.279,
+      "mean_channel_diff": 3.0552,
+      "geometry_diffs": 254,
+      "board_green": false
+    },
+    {
+      "case": "inspector/default/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 2.365,
+      "mean_channel_diff": 1.3687,
+      "geometry_diffs": 254,
+      "board_green": false
+    },
+    {
+      "case": "inspector/console_tab/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 0.6854,
+      "mean_channel_diff": 0.2326,
+      "geometry_diffs": 0,
+      "board_green": true
+    },
+    {
+      "case": "inspector/console_tab/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 0.9792,
+      "mean_channel_diff": 0.323,
+      "geometry_diffs": 0,
+      "board_green": true
+    },
+    {
+      "case": "inspector/console_tab/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 0.4387,
+      "mean_channel_diff": 0.1541,
+      "geometry_diffs": 0,
+      "board_green": true
+    },
+    {
+      "case": "settings/default/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.3339,
+      "mean_channel_diff": 0.6002,
+      "geometry_diffs": 67,
+      "board_green": false
+    },
+    {
+      "case": "settings/default/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 1.7486,
+      "mean_channel_diff": 0.7187,
+      "geometry_diffs": 67,
+      "board_green": false
+    },
+    {
+      "case": "settings/default/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 1.0616,
+      "mean_channel_diff": 0.465,
+      "geometry_diffs": 67,
+      "board_green": true
+    },
+    {
+      "case": "report/default/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.0956,
+      "mean_channel_diff": 0.5351,
+      "geometry_diffs": 16,
+      "board_green": false
+    },
+    {
+      "case": "report/default/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 1.5349,
+      "mean_channel_diff": 0.7325,
+      "geometry_diffs": 16,
+      "board_green": false
+    },
+    {
+      "case": "report/default/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 0.7508,
+      "mean_channel_diff": 0.3836,
+      "geometry_diffs": 16,
+      "board_green": true
+    },
+    {
+      "case": "report/weekly/1280x800",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.1132,
+      "mean_channel_diff": 0.5589,
+      "geometry_diffs": 17,
+      "board_green": false
+    },
+    {
+      "case": "report/weekly/1024x700",
+      "rustkit_size": [
+        1024,
+        700
+      ],
+      "chrome_size": [
+        1024,
+        700
+      ],
+      "pixels_over_8_pct": 1.5626,
+      "mean_channel_diff": 0.7637,
+      "geometry_diffs": 17,
+      "board_green": false
+    },
+    {
+      "case": "report/weekly/1600x1000",
+      "rustkit_size": [
+        1600,
+        1000
+      ],
+      "chrome_size": [
+        1600,
+        1000
+      ],
+      "pixels_over_8_pct": 0.7621,
+      "mean_channel_diff": 0.401,
+      "geometry_diffs": 17,
+      "board_green": true
+    }
+  ]
+}

@@ -1,0 +1,559 @@
+{
+  "summary": {
+    "set": "websuite-cases-micro-29",
+    "cases": 29,
+    "scored": 29,
+    "errors": [],
+    "size_mismatches": [],
+    "mean_pixels_over_8_pct": 1.5804,
+    "mean_channel_diff": 0.8798,
+    "worst10_by_pixels_over_8": [
+      {
+        "case": "cases__article-typography",
+        "pixels_over_8_pct": 5.8265,
+        "mean_channel_diff": 4.3233
+      },
+      {
+        "case": "micro__form-controls",
+        "pixels_over_8_pct": 3.5897,
+        "mean_channel_diff": 4.0504
+      },
+      {
+        "case": "cases__css-selectors",
+        "pixels_over_8_pct": 2.867,
+        "mean_channel_diff": 1.1325
+      },
+      {
+        "case": "cases__card-grid",
+        "pixels_over_8_pct": 2.3999,
+        "mean_channel_diff": 0.7545
+      },
+      {
+        "case": "micro__image-intrinsic-size",
+        "pixels_over_8_pct": 2.2821,
+        "mean_channel_diff": 1.3799
+      },
+      {
+        "case": "micro__selectors-specificity",
+        "pixels_over_8_pct": 2.1916,
+        "mean_channel_diff": 0.9131
+      },
+      {
+        "case": "micro__selectors-combinators",
+        "pixels_over_8_pct": 2.1799,
+        "mean_channel_diff": 0.9063
+      },
+      {
+        "case": "micro__backgrounds",
+        "pixels_over_8_pct": 2.0729,
+        "mean_channel_diff": 1.177
+      },
+      {
+        "case": "micro__combinators",
+        "pixels_over_8_pct": 1.8748,
+        "mean_channel_diff": 0.6848
+      },
+      {
+        "case": "micro__specificity",
+        "pixels_over_8_pct": 1.87,
+        "mean_channel_diff": 0.7586
+      }
+    ],
+    "chrome_capture": "the oracle's deterministic context (pinned CfT 148.0.7778.216 win64 through Playwright), with the parity reset for websuite/micro pages injected once <html> exists (capture_chrome_websuite.mjs)"
+  },
+  "rows": [
+    {
+      "case": "cases__article-typography",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 5.8265,
+      "mean_channel_diff": 4.3233,
+      "html": "websuite/cases/article-typography/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "registry"
+    },
+    {
+      "case": "cases__card-grid",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 2.3999,
+      "mean_channel_diff": 0.7545,
+      "html": "websuite/cases/card-grid/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "registry"
+    },
+    {
+      "case": "cases__css-selectors",
+      "rustkit_size": [
+        800,
+        1200
+      ],
+      "chrome_size": [
+        800,
+        1200
+      ],
+      "pixels_over_8_pct": 2.867,
+      "mean_channel_diff": 1.1325,
+      "html": "websuite/cases/css-selectors/index.html",
+      "width": 800,
+      "height": 1200,
+      "size_from": "registry"
+    },
+    {
+      "case": "cases__flex-positioning",
+      "rustkit_size": [
+        800,
+        1000
+      ],
+      "chrome_size": [
+        800,
+        1000
+      ],
+      "pixels_over_8_pct": 1.1623,
+      "mean_channel_diff": 0.4308,
+      "html": "websuite/cases/flex-positioning/index.html",
+      "width": 800,
+      "height": 1000,
+      "size_from": "registry"
+    },
+    {
+      "case": "cases__form-elements",
+      "rustkit_size": [
+        800,
+        600
+      ],
+      "chrome_size": [
+        800,
+        600
+      ],
+      "pixels_over_8_pct": 1.3473,
+      "mean_channel_diff": 0.5041,
+      "html": "websuite/cases/form-elements/index.html",
+      "width": 800,
+      "height": 600,
+      "size_from": "registry"
+    },
+    {
+      "case": "cases__gradient-backgrounds",
+      "rustkit_size": [
+        800,
+        600
+      ],
+      "chrome_size": [
+        800,
+        600
+      ],
+      "pixels_over_8_pct": 1.3123,
+      "mean_channel_diff": 0.5865,
+      "html": "websuite/cases/gradient-backgrounds/index.html",
+      "width": 800,
+      "height": 600,
+      "size_from": "registry"
+    },
+    {
+      "case": "cases__image-gallery",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.0588,
+      "mean_channel_diff": 0.5024,
+      "html": "websuite/cases/image-gallery/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "registry"
+    },
+    {
+      "case": "cases__sticky-scroll",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.1667,
+      "mean_channel_diff": 0.4739,
+      "html": "websuite/cases/sticky-scroll/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__backgrounds",
+      "rustkit_size": [
+        900,
+        1000
+      ],
+      "chrome_size": [
+        900,
+        1000
+      ],
+      "pixels_over_8_pct": 2.0729,
+      "mean_channel_diff": 1.177,
+      "html": "websuite/micro/backgrounds/index.html",
+      "width": 900,
+      "height": 1000,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__bg-pure",
+      "rustkit_size": [
+        800,
+        600
+      ],
+      "chrome_size": [
+        800,
+        600
+      ],
+      "pixels_over_8_pct": 0.0,
+      "mean_channel_diff": 0.0278,
+      "html": "websuite/micro/bg-pure/index.html",
+      "width": 800,
+      "height": 600,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__bg-simple",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 0.0,
+      "mean_channel_diff": 0.0,
+      "html": "websuite/micro/bg-simple/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "default 1280x800"
+    },
+    {
+      "case": "micro__bg-solid",
+      "rustkit_size": [
+        800,
+        600
+      ],
+      "chrome_size": [
+        800,
+        600
+      ],
+      "pixels_over_8_pct": 0.6558,
+      "mean_channel_diff": 0.2619,
+      "html": "websuite/micro/bg-solid/index.html",
+      "width": 800,
+      "height": 600,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__combinators",
+      "rustkit_size": [
+        800,
+        800
+      ],
+      "chrome_size": [
+        800,
+        800
+      ],
+      "pixels_over_8_pct": 1.8748,
+      "mean_channel_diff": 0.6848,
+      "html": "websuite/micro/combinators/index.html",
+      "width": 800,
+      "height": 800,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__form-controls",
+      "rustkit_size": [
+        800,
+        1200
+      ],
+      "chrome_size": [
+        800,
+        1200
+      ],
+      "pixels_over_8_pct": 3.5897,
+      "mean_channel_diff": 4.0504,
+      "html": "websuite/micro/form-controls/index.html",
+      "width": 800,
+      "height": 1200,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__gpu-gradient-debug",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.3884,
+      "mean_channel_diff": 1.2297,
+      "html": "websuite/micro/gpu-gradient-debug/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "default 1280x800"
+    },
+    {
+      "case": "micro__gpu-gradient-regression",
+      "rustkit_size": [
+        800,
+        1200
+      ],
+      "chrome_size": [
+        800,
+        1200
+      ],
+      "pixels_over_8_pct": 1.1807,
+      "mean_channel_diff": 0.7279,
+      "html": "websuite/micro/gpu-gradient-regression/index.html",
+      "width": 800,
+      "height": 1200,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__gradient-no-radius",
+      "rustkit_size": [
+        800,
+        600
+      ],
+      "chrome_size": [
+        800,
+        600
+      ],
+      "pixels_over_8_pct": 1.7563,
+      "mean_channel_diff": 1.2087,
+      "html": "websuite/micro/gradient-no-radius/index.html",
+      "width": 800,
+      "height": 600,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__gradient-radius-only",
+      "rustkit_size": [
+        800,
+        600
+      ],
+      "chrome_size": [
+        800,
+        600
+      ],
+      "pixels_over_8_pct": 1.484,
+      "mean_channel_diff": 0.8043,
+      "html": "websuite/micro/gradient-radius-only/index.html",
+      "width": 800,
+      "height": 600,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__gradients",
+      "rustkit_size": [
+        900,
+        1000
+      ],
+      "chrome_size": [
+        900,
+        1000
+      ],
+      "pixels_over_8_pct": 0.4784,
+      "mean_channel_diff": 0.3653,
+      "html": "websuite/micro/gradients/index.html",
+      "width": 900,
+      "height": 1000,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__image-intrinsic-size",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 2.2821,
+      "mean_channel_diff": 1.3799,
+      "html": "websuite/micro/image-intrinsic-size/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "default 1280x800"
+    },
+    {
+      "case": "micro__images-intrinsic",
+      "rustkit_size": [
+        800,
+        1400
+      ],
+      "chrome_size": [
+        800,
+        1400
+      ],
+      "pixels_over_8_pct": 0.9558,
+      "mean_channel_diff": 0.412,
+      "html": "websuite/micro/images-intrinsic/index.html",
+      "width": 800,
+      "height": 1400,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__pseudo-classes",
+      "rustkit_size": [
+        800,
+        800
+      ],
+      "chrome_size": [
+        800,
+        800
+      ],
+      "pixels_over_8_pct": 1.667,
+      "mean_channel_diff": 0.6618,
+      "html": "websuite/micro/pseudo-classes/index.html",
+      "width": 800,
+      "height": 800,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__rendering-debug__gradient-overlay",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 0.0,
+      "mean_channel_diff": 0.0948,
+      "html": "websuite/micro/rendering-debug/gradient-overlay.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "default 1280x800"
+    },
+    {
+      "case": "micro__rendering-debug",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 0.0,
+      "mean_channel_diff": 0.0,
+      "html": "websuite/micro/rendering-debug/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "default 1280x800"
+    },
+    {
+      "case": "micro__rounded-corners",
+      "rustkit_size": [
+        900,
+        1000
+      ],
+      "chrome_size": [
+        900,
+        1000
+      ],
+      "pixels_over_8_pct": 1.5017,
+      "mean_channel_diff": 0.617,
+      "html": "websuite/micro/rounded-corners/index.html",
+      "width": 900,
+      "height": 1000,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__selectors-combinators",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 2.1799,
+      "mean_channel_diff": 0.9063,
+      "html": "websuite/micro/selectors-combinators/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "default 1280x800"
+    },
+    {
+      "case": "micro__selectors-specificity",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 2.1916,
+      "mean_channel_diff": 0.9131,
+      "html": "websuite/micro/selectors-specificity/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "default 1280x800"
+    },
+    {
+      "case": "micro__specificity",
+      "rustkit_size": [
+        800,
+        600
+      ],
+      "chrome_size": [
+        800,
+        600
+      ],
+      "pixels_over_8_pct": 1.87,
+      "mean_channel_diff": 0.7586,
+      "html": "websuite/micro/specificity/index.html",
+      "width": 800,
+      "height": 600,
+      "size_from": "registry"
+    },
+    {
+      "case": "micro__sticky-basic",
+      "rustkit_size": [
+        1280,
+        800
+      ],
+      "chrome_size": [
+        1280,
+        800
+      ],
+      "pixels_over_8_pct": 1.5629,
+      "mean_channel_diff": 0.5245,
+      "html": "websuite/micro/sticky-basic/index.html",
+      "width": 1280,
+      "height": 800,
+      "size_from": "default 1280x800"
+    }
+  ]
+}
