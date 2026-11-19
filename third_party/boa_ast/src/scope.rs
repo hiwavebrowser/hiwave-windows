@@ -108,8 +108,22 @@ pub(crate) struct Inner {
     // HIWAVE PATCH (arrow this): set on the function scope of an arrow function, whose `this`
     // is its enclosing function's.
     arrow: Cell<bool>,
+    // HIWAVE PATCH (eval-var-per-call): the number of non-local bindings when this scope's first
+    // activation started, before a direct eval in any call could add a `var` to it.
+    first_activation: FirstActivation,
 
     context: Rc<ScopeContext>,
+}
+
+/// The binding count a scope's activations start with (`Scope::activation_bindings`). A cache, so it
+/// takes no part in comparing scopes.
+#[derive(Debug, Default)]
+struct FirstActivation(Cell<Option<u32>>);
+
+impl PartialEq for FirstActivation {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl Scope {
@@ -125,6 +139,7 @@ impl Scope {
                 function: true,
                 this_escaped: Cell::new(false),
                 arrow: Cell::new(false),
+                first_activation: FirstActivation::default(),
                 context: Rc::default(),
             }),
         }
@@ -141,6 +156,7 @@ impl Scope {
                 function,
                 this_escaped: Cell::new(false),
                 arrow: Cell::new(false),
+                first_activation: FirstActivation::default(),
                 context: parent.inner.context.clone(),
                 outer: Some(parent),
             }),
@@ -227,6 +243,20 @@ impl Scope {
             .iter()
             .filter(|binding| binding.escapes())
             .count() as u32
+    }
+
+    /// HIWAVE PATCH (eval-var-per-call): how many non-local bindings the scope had when its first
+    /// activation started, before a direct eval in any call could add a `var`. A sloppy direct eval
+    /// adds its `var`s to the scope every call shares, but they belong to the call that ran it; the
+    /// bindings from this count on are eval-added in every later call's environment.
+    #[must_use]
+    pub fn activation_bindings(&self) -> u32 {
+        if let Some(n) = self.inner.first_activation.0.get() {
+            return n;
+        }
+        let n = self.num_bindings_non_local();
+        self.inner.first_activation.0.set(Some(n));
+        n
     }
 
     /// Adjust the binding indices to exclude local bindings.

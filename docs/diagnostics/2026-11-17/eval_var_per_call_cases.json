@@ -1,0 +1,121 @@
+{
+ "note": "A function whose body runs a sloppy direct eval: one call's eval declares a var, another call of the same function did not; each reads or writes the name.",
+ "cases": [
+  {
+   "name": "read_in_function_after_other_call_declared",
+   "js": "function f(s) { eval(s); return b; } var b = 1; String([f('var b = 2'), f(''), f('var b = 3'), f('')])",
+   "chrome": "2,1,3,1"
+  },
+  {
+   "name": "read_in_function_before_other_call_declared",
+   "js": "function f(s) { eval(s); return b; } var b = 1; String([f(''), f('var b = 2'), f('')])",
+   "chrome": "1,2,1"
+  },
+  {
+   "name": "closure_made_before_other_call_declared",
+   "js": "function f(s) { eval(s); return function () { return b; }; } var b = 1; var g1 = f(''); var g2 = f('var b = 2'); String([g1(), g2(), g1()])",
+   "chrome": "1,2,1"
+  },
+  {
+   "name": "closure_made_after_other_call_declared",
+   "js": "function f(s) { eval(s); return function () { return b; }; } var b = 1; var g2 = f('var b = 2'); var g1 = f(''); String([g1(), g2(), g1()])",
+   "chrome": "1,2,1"
+  },
+  {
+   "name": "closure_reads_from_a_block",
+   "js": "function f(s) { eval(s); return function (a) { var d; { let c = 3; d = function () { a; }; with ({}) {} return b; } }; } var b = 1; var g1 = f(''); var g2 = f('var b = 2;'); g1(0); String([g1(0), g2(0)])",
+   "chrome": "1,2"
+  },
+  {
+   "name": "closure_writes",
+   "js": "function f(s) { eval(s); return function (v) { b = v; return b; }; } var b = 1; var g2 = f('var b = 2'); var g1 = f(''); String([g1(5), b, g2(7), b, g1(9), b])",
+   "chrome": "5,5,7,5,9,9"
+  },
+  {
+   "name": "typeof_a_name_only_another_call_declared",
+   "js": "function f(s) { eval(s); return function () { return typeof zz; }; } var g2 = f('var zz = 1'); var g1 = f(''); String([g1(), g2()])",
+   "chrome": "undefined,number"
+  },
+  {
+   "name": "read_a_name_only_another_call_declared",
+   "js": "function f(s) { eval(s); return function () { try { return zz; } catch (e) { return e.constructor.name; } }; } var g2 = f('var zz = 1'); var g1 = f(''); String([g1(), g2()])",
+   "chrome": "ReferenceError,1"
+  },
+  {
+   "name": "own_eval_after_another_call_declared_other_names",
+   "js": "function f(s) { eval(s); return function () { return [typeof x, typeof y]; }; } var g1 = f('var x = 1'); var g2 = f('var y = 2'); String([g1(), g2()])",
+   "chrome": "number,undefined,undefined,number"
+  },
+  {
+   "name": "delete_an_eval_var",
+   "js": "function f(s) { eval(s); return function () { return [delete b, typeof b]; }; } var g2 = f('var b = 2'); var g1 = f(''); String([g2(), g1()])",
+   "chrome": "true,undefined,true,undefined"
+  },
+  {
+   "name": "later_call_strict_eval_code_reads_a_name_an_earlier_call_declared",
+   "js": "var f = function (code) { return eval(code); }; String([f(\"eval('var x = 2;'); typeof x\"), f(\"'use strict'; eval('var x = 2;'); typeof x\"), f('typeof x')])",
+   "chrome": "number,undefined,undefined"
+  },
+  {
+   "name": "later_call_eval_code_reads_a_name_an_earlier_call_declared",
+   "js": "var f = function (code) { return eval(code); }; String([f('var x = 2; x'), f('typeof x'), f('var x = 3; x'), f('typeof x')])",
+   "chrome": "2,undefined,3,undefined"
+  },
+  {
+   "name": "closure_made_before_another_call_declared_reads_by_strict_eval",
+   "js": "var f = function (c) { if (c) return eval(c); return function (d) { return eval(d); }; }; var old = f(''); f(\"eval('var x = 2;')\"); var r = []; try { r.push(old(\"'use strict'; typeof x\")); } catch (e) { r.push(e.constructor.name); } try { r.push(old('typeof x')); } catch (e) { r.push(e.constructor.name); } String(r)",
+   "chrome": "undefined,undefined"
+  },
+  {
+   "name": "closure_made_before_another_call_declared_declares_it_too",
+   "js": "var f = function (c) { if (c) return eval(c); return function (d) { return eval(d); }; }; var old = f(''); f(\"eval('var x = 2;')\"); String([old('var x = 5; x'), old('typeof x')])",
+   "chrome": "5,undefined"
+  },
+  {
+   "name": "suspended_generator_resumed_after_another_call_declared",
+   "js": "function* g(c) { yield; return eval(c); } var a = g(\"'use strict'; typeof x\"); a.next(); var b = g(\"eval('var x = 2'); typeof x\"); b.next(); var rb = b.next().value; var r; try { r = a.next().value; } catch (e) { r = e.constructor.name; } String([rb, r])",
+   "chrome": "number,undefined"
+  },
+  {
+   "name": "arrow_made_before_another_call_declared",
+   "js": "var f = function (c) { if (c) return eval(c); return (d) => eval(d); }; var old = f(''); f(\"eval('var x = 2;')\"); var r; try { r = old(\"'use strict'; typeof x\"); } catch (e) { r = e.constructor.name; } String(r)",
+   "chrome": "undefined"
+  },
+  {
+   "name": "eval_in_eval_made_before_another_call_declared",
+   "js": "var f = function (c) { if (c) return eval(c); return function (d) { return eval(\"eval(d)\"); }; }; var old = f(''); f(\"eval('var x = 2;')\"); var r; try { r = old(\"'use strict'; typeof x\"); } catch (e) { r = e.constructor.name; } String(r)",
+   "chrome": "undefined"
+  },
+  {
+   "name": "default_parameters_closure_made_before_another_call_declared",
+   "js": "var f = function (a = 0, c) { if (c) return eval(c); return function (d) { return eval(d); }; }; var old = f(0, ''); f(0, \"eval('var x = 2;')\"); var r = []; try { r.push(old(\"'use strict'; typeof x\")); } catch (e) { r.push(e.constructor.name); } try { r.push(old('typeof x')); } catch (e) { r.push(e.constructor.name); } String(r)",
+   "chrome": "undefined,undefined"
+  },
+  {
+   "name": "default_parameters_eval_var_per_call",
+   "js": "var f = function (a = 0, c) { eval(c); return function () { return typeof x; }; }; var g1 = f(0, ''); var g2 = f(0, 'var x = 2'); String([g1(), g2()])",
+   "chrome": "undefined,number"
+  },
+  {
+   "name": "old_activation_sloppy_eval_writes_the_outer_name",
+   "js": "var x = 1; var f = function (c) { if (c) return eval(c); return function (d) { return eval(d); }; }; var old = f(''); f(\"eval('var x = 2;')\"); old('x = 5'); String([x, old('x')])",
+   "chrome": "5,5"
+  },
+  {
+   "name": "default_parameters_eval_var_read_in_the_same_call",
+   "js": "var f = function (a = 0) { eval('var x = 2'); return x; }; String([f(), f()])",
+   "chrome": "2,2"
+  },
+  {
+   "name": "default_parameters_eval_var_typeof_and_write",
+   "js": "var f = function (a = 0) { eval('var y = 3'); y = y + 1; return [typeof y, y]; }; String(f())",
+   "chrome": "number,4"
+  },
+  {
+   "name": "default_parameters_eval_function_declaration",
+   "js": "var f = function (a = 0) { eval('function g() { return 4; }'); return g(); }; String(f())",
+   "chrome": "4"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

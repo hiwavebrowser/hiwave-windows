@@ -235,7 +235,12 @@ impl EnvironmentStack {
         function_slots: FunctionSlots,
         global: &Gc<DeclarativeEnvironment>,
     ) {
+        // HIWAVE PATCH (eval-var-per-call): sized from the scope's current count, so every index code
+        // compiled against the shared scope (eval code included) is in range. The slots past the count
+        // at the first activation are other calls' eval `var`s: marked as eval-added, so a lookup
+        // takes them only once this call's own eval declares them (`holds_binding`).
         let num_bindings = scope.num_bindings_non_local();
+        let first_activation = scope.activation_bindings();
 
         let (poisoned, with) = self.compute_poisoned_with(global);
 
@@ -243,6 +248,7 @@ impl EnvironmentStack {
             DeclarativeEnvironment::new(
                 DeclarativeEnvironmentKind::Function(FunctionEnvironment::new(
                     num_bindings,
+                    first_activation,
                     function_slots,
                     scope,
                 )),
@@ -486,7 +492,9 @@ impl Context {
                         if let Some(env) = env.kind().as_function()
                             && let Some(b) = env.compile().get_binding(locator.name())
                         {
-                            if env.is_deleted_binding(b.binding_index()) {
+                            // HIWAVE PATCH (eval-var-per-call): a name another call's eval declared is not
+                            // this call's binding: look further out.
+                            if env.is_deleted_binding(b.binding_index()) || !env.holds_binding(b.binding_index()) {
                                 continue;
                             }
                             locator.set_scope(b.scope());

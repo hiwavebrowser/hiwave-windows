@@ -36,6 +36,7 @@
 //! and `filter`/`backdrop-filter` lists. Not here yet: `background-position`,
 //! pseudo-element transitions, and `transition-behavior: allow-discrete`.
 
+use crate::svg_computed::{same_paint, Paint};
 use rustkit_bindings::{CssAnimationControl, CssAnimationInfo};
 use rustkit_css::{
     AnimationDirection, AnimationFillMode, AnimationItem, AnimationIterationCount,
@@ -1182,6 +1183,25 @@ pub(crate) struct Animations {
     /// and what the build painted of it, so that a frame can be restyled
     /// without a build (`LayoutCtx::animation_frame`).
     pub(crate) captured: HashMap<usize, Captured>,
+    /// A2.2: the svg paint lane (`svg_update`). `fill` / `stroke` of the
+    /// elements of inline svgs, which have no `ComputedStyle`: each one a
+    /// transition covers, with its resolved value as of the last pass, by
+    /// raw NodeId and property name.
+    svg_base: HashMap<(usize, &'static str), Paint>,
+    svg_transitions: Vec<SvgTransition>,
+    /// What the last lane pass resolved: the author paint map and the DOM
+    /// generation. While neither changed and nothing moves, a pass would
+    /// find what the last one found (`LayoutCtx::svg_paint_transitions`).
+    pub(crate) svg_last: Option<(std::rc::Weak<HashMap<usize, crate::SvgPaintStyle>>, u64)>,
+}
+
+/// A2.2: a `fill` or `stroke` transition of an element of an inline svg.
+/// Its timing is a `Transition`'s (its `prop` unused: svg paint is no
+/// `PROPS` row), between two colours.
+#[derive(Clone, Debug)]
+struct SvgTransition {
+    t: Transition,
+    prop: &'static str,
 }
 
 /// An animated element as the last build (or animation frame) left it.
@@ -1229,6 +1249,7 @@ impl Animations {
             if name == "all"
                 || name == "none"
                 || PROPS.iter().any(|p| p.name == name)
+                || SVG_PAINT_PROPS.contains(&name.as_str())
                 || !expands_to(&name).is_empty()
                 || self.reported.contains(&name)
             {
@@ -1245,6 +1266,7 @@ impl Animations {
         !self.transitions.is_empty()
             || !self.events.is_empty()
             || self.css.iter().any(CssAnimation::moving)
+            || !self.svg_transitions.is_empty()
     }
 
     pub(crate) fn take_events(&mut self) -> Vec<AnimationEvent> {
@@ -1437,6 +1459,19 @@ impl Animations {
         for a in gone {
             self.cancel_animation_event(&a);
         }
+        let mut gone = Vec::new();
+        self.svg_transitions.retain(|t| {
+            if alive(t.t.node) {
+                true
+            } else {
+                gone.push(t.clone());
+                false
+            }
+        });
+        for t in gone {
+            self.push_svg_event(&t, "transitioncancel", t.t.elapsed_at(now));
+        }
+        self.svg_base.retain(|(node, _), _| alive(*node));
     }
 
     /// The build's hand-off for one element: start the transitions its
@@ -1521,11 +1556,6 @@ impl Animations {
                 } else if old == new {
                     continue;
                 }
-                // To the microsecond: `0.1` seconds as an f32 is 100.0000015
-                // ms as an f64, and an end at exactly 1100 would be missed.
-                let us = |ms: f64| (ms * 1000.0).round() / 1000.0;
-                let duration_ms = us((spec.duration.max(0.0) as f64) * 1000.0);
-                let delay_ms = us(spec.delay as f64 * 1000.0);
                 // The before-change value: what the element shows now.
                 let (from, reversing) = match running {
                     Some(at) => {
@@ -1536,48 +1566,71 @@ impl Animations {
                     }
                     None => (old.clone(), None),
                 };
-                if duration_ms + delay_ms.max(0.0) <= 0.0 || interpolate(&from, new, 0.5).is_none()
-                {
+                let Some(t) = self.new_transition(node, *i, from, new, spec, reversing) else {
                     continue;
-                }
-                // css-transitions-1 §3, the reversing shortening factor:
-                // a transition back to where the cancelled one started
-                // takes as long as that one had got.
-                let (reversing_adjusted_start, factor) = match reversing {
-                    Some(t) if t.reversing_adjusted_start == *new => {
-                        let p = t.timing.evaluate(t.progress(now));
-                        let f = (p * t.reversing_shortening + (1.0 - t.reversing_shortening))
-                            .abs()
-                            .clamp(0.0, 1.0);
-                        (t.to.clone(), f)
-                    }
-                    _ => (from.clone(), 1.0),
-                };
-                let delay_ms = if delay_ms < 0.0 {
-                    us(delay_ms * factor as f64)
-                } else {
-                    delay_ms
-                };
-                let id = self.next_id();
-                let t = Transition {
-                    id,
-                    node,
-                    prop: *i,
-                    from,
-                    to: new.clone(),
-                    created_ms: now,
-                    delay_ms,
-                    duration_ms: us(duration_ms * factor as f64),
-                    timing: spec.timing.clone(),
-                    reversing_adjusted_start,
-                    reversing_shortening: factor,
-                    started: false,
-                    done: false,
                 };
                 self.push_event(&t, "transitionrun", t.elapsed_at_start());
                 self.transitions.push(t);
             }
         }
+    }
+
+    /// A transition of `node`'s property `prop` from `from` to `new` under
+    /// `spec`, starting at the clock; `reversing` is the running one it
+    /// replaces. `None` when there is nothing to run: no duration and no
+    /// delay, or values that do not interpolate.
+    fn new_transition(
+        &mut self,
+        node: usize,
+        prop: usize,
+        from: AnimValue,
+        new: &AnimValue,
+        spec: &TransitionItem,
+        reversing: Option<Transition>,
+    ) -> Option<Transition> {
+        let now = self.clock_ms;
+        // To the microsecond: `0.1` seconds as an f32 is 100.0000015
+        // ms as an f64, and an end at exactly 1100 would be missed.
+        let us = |ms: f64| (ms * 1000.0).round() / 1000.0;
+        let duration_ms = us((spec.duration.max(0.0) as f64) * 1000.0);
+        let delay_ms = us(spec.delay as f64 * 1000.0);
+        if duration_ms + delay_ms.max(0.0) <= 0.0 || interpolate(&from, new, 0.5).is_none() {
+            return None;
+        }
+        // css-transitions-1 §3, the reversing shortening factor:
+        // a transition back to where the cancelled one started
+        // takes as long as that one had got.
+        let (reversing_adjusted_start, factor) = match reversing {
+            Some(t) if t.reversing_adjusted_start == *new => {
+                let p = t.timing.evaluate(t.progress(now));
+                let f = (p * t.reversing_shortening + (1.0 - t.reversing_shortening))
+                    .abs()
+                    .clamp(0.0, 1.0);
+                (t.to.clone(), f)
+            }
+            _ => (from.clone(), 1.0),
+        };
+        let delay_ms = if delay_ms < 0.0 {
+            us(delay_ms * factor as f64)
+        } else {
+            delay_ms
+        };
+        let id = self.next_id();
+        Some(Transition {
+            id,
+            node,
+            prop,
+            from,
+            to: new.clone(),
+            created_ms: now,
+            delay_ms,
+            duration_ms: us(duration_ms * factor as f64),
+            timing: spec.timing.clone(),
+            reversing_adjusted_start,
+            reversing_shortening: factor,
+            started: false,
+            done: false,
+        })
     }
 
     /// Overlay the running transitions of this element.
@@ -2332,6 +2385,27 @@ impl Animations {
                 ended: false,
             });
         }
+        for (k, svg) in self.svg_transitions.iter().enumerate() {
+            let t = &svg.t;
+            out.push(CssAnimationInfo {
+                id: t.id,
+                node: t.node,
+                pseudo: None,
+                kind: "transition",
+                // After every `PROPS` row, in the lane's order.
+                index: PROPS.len() + k,
+                name: svg.prop.to_string(),
+                start_ms: t.created_ms,
+                paused_ms: None,
+                delay_ms: t.delay_ms,
+                duration_ms: t.duration_ms,
+                iterations: 1.0,
+                direction: "normal",
+                fill: "backwards",
+                easing: easing_text(&t.timing),
+                ended: false,
+            });
+        }
         for a in self.css.iter().filter(|a| !a.cancelled) {
             out.push(CssAnimationInfo {
                 id: a.id,
@@ -2391,6 +2465,21 @@ impl Animations {
     pub(crate) fn control(&mut self, c: &CssAnimationControl) {
         let now = self.clock_ms;
         if c.kind == "transition" {
+            if let Some(at) = self.svg_transitions.iter().position(|t| t.t.id == c.id) {
+                match c.op.as_str() {
+                    "cancel" => {
+                        let t = self.svg_transitions.remove(at);
+                        self.svg_base.remove(&(t.t.node, t.prop));
+                        self.push_svg_event(&t, "transitioncancel", t.t.elapsed_at(now));
+                    }
+                    "finish" => {
+                        let t = &mut self.svg_transitions[at].t;
+                        t.created_ms = now - t.delay_ms - t.duration_ms;
+                    }
+                    _ => {}
+                }
+                return;
+            }
             let Some(at) = self.transitions.iter().position(|t| t.id == c.id) else {
                 return;
             };
@@ -2525,6 +2614,155 @@ pub(crate) fn compose(underlying: &AnimValue, value: &AnimValue, composite: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SVG_BLUE: Color = Color {
+        r: 0,
+        g: 0,
+        b: 255,
+        a: 1.0,
+    };
+    const SVG_RED: Color = Color {
+        r: 255,
+        g: 0,
+        b: 0,
+        a: 1.0,
+    };
+
+    fn linear_100ms(property: &str) -> Option<TransitionItem> {
+        Some(TransitionItem {
+            property: property.to_string(),
+            duration: 0.1,
+            delay: 0.0,
+            timing: TimingFunction::Linear,
+        })
+    }
+
+    /// One lane pass at `at` ms with `fill` of node 7 as `paint`.
+    fn svg_pass(
+        a: &mut Animations,
+        at: f64,
+        paint: Paint,
+        spec: Option<TransitionItem>,
+    ) -> Vec<(usize, &'static str, Color)> {
+        a.clock_ms = at;
+        a.svg_update(&[(7, "fill", paint, spec)]);
+        a.svg_overlay()
+    }
+
+    fn kinds(a: &mut Animations) -> Vec<&'static str> {
+        a.take_events().iter().map(|e| e.kind).collect()
+    }
+
+    /// A2.2: a colour against a colour interpolates (premultiplied, as
+    /// `color`), with run, start and end at the element.
+    #[test]
+    fn svg_fill_colours_interpolate() {
+        let mut a = Animations::default();
+        assert!(svg_pass(&mut a, 0.0, Paint::Color(SVG_BLUE), linear_100ms("all")).is_empty());
+        let start = svg_pass(&mut a, 0.0, Paint::Color(SVG_RED), linear_100ms("all"));
+        assert_eq!(start, vec![(7, "fill", SVG_BLUE)]);
+        assert!(a.svg_moving() && a.active());
+        assert!(!a.running(), "the svg lane is not a `running()` one");
+        let mid = svg_pass(&mut a, 50.0, Paint::Color(SVG_RED), linear_100ms("all"));
+        assert_eq!(mid.len(), 1);
+        assert_eq!((mid[0].2.r, mid[0].2.g, mid[0].2.b), (128, 0, 128));
+        assert!(svg_pass(&mut a, 100.0, Paint::Color(SVG_RED), linear_100ms("all")).is_empty());
+        assert!(!a.svg_moving());
+        let events = a.take_events();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.node, e.kind, e.property.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (7, "transitionrun", "fill"),
+                (7, "transitionstart", "fill"),
+                (7, "transitionend", "fill")
+            ]
+        );
+    }
+
+    /// `none` and `url()` do not interpolate (Chrome 148): no transition,
+    /// no event; `currentcolor` both times is no change.
+    #[test]
+    fn svg_paint_keywords_are_discrete() {
+        let url = Paint::Url("#g".to_string(), None);
+        for (before, after) in [
+            (Paint::None, Paint::Color(SVG_RED)),
+            (Paint::Color(SVG_RED), Paint::None),
+            (url.clone(), Paint::Color(SVG_RED)),
+            (Paint::Color(SVG_RED), url),
+            (Paint::CurrentColor(SVG_BLUE), Paint::CurrentColor(SVG_RED)),
+        ] {
+            let mut a = Animations::default();
+            svg_pass(&mut a, 0.0, before.clone(), linear_100ms("fill"));
+            let moving = svg_pass(&mut a, 0.0, after.clone(), linear_100ms("fill"));
+            assert!(
+                moving.is_empty() && !a.svg_moving(),
+                "{before:?} to {after:?}"
+            );
+            assert!(
+                kinds(&mut a).is_empty(),
+                "{before:?} to {after:?}: no events"
+            );
+        }
+    }
+
+    /// A transition list that stops naming the property (no item covers
+    /// it: `None`), or an element that left the svg, cancels the running one (the lane's own sweep).
+    #[test]
+    fn svg_transitions_are_swept() {
+        let mut a = Animations::default();
+        svg_pass(&mut a, 0.0, Paint::Color(SVG_BLUE), linear_100ms("fill"));
+        svg_pass(&mut a, 0.0, Paint::Color(SVG_RED), linear_100ms("fill"));
+        assert!(svg_pass(&mut a, 20.0, Paint::Color(SVG_RED), None).is_empty());
+        assert_eq!(
+            kinds(&mut a),
+            vec!["transitionrun", "transitionstart", "transitioncancel"]
+        );
+        assert!(a.svg_lane_empty());
+
+        let mut a = Animations::default();
+        svg_pass(&mut a, 0.0, Paint::Color(SVG_BLUE), linear_100ms("fill"));
+        svg_pass(&mut a, 0.0, Paint::Color(SVG_RED), linear_100ms("fill"));
+        a.clock_ms = 20.0;
+        a.svg_update(&[]);
+        assert!(a.svg_lane_empty());
+        assert_eq!(
+            kinds(&mut a),
+            vec!["transitionrun", "transitionstart", "transitioncancel"]
+        );
+    }
+
+    /// Back to where it started midway: the running one is cancelled and
+    /// the new one runs from the value shown, shortened (css-transitions-1
+    /// §3), as the `PROPS` lane does.
+    #[test]
+    fn an_svg_transition_reverses_from_where_it_got_to() {
+        let mut a = Animations::default();
+        svg_pass(&mut a, 0.0, Paint::Color(SVG_BLUE), linear_100ms("fill"));
+        svg_pass(&mut a, 0.0, Paint::Color(SVG_RED), linear_100ms("fill"));
+        let back = svg_pass(&mut a, 40.0, Paint::Color(SVG_BLUE), linear_100ms("fill"));
+        assert_eq!(back.len(), 1);
+        assert_eq!(
+            (back[0].2.r, back[0].2.b),
+            (102, 153),
+            "from the colour at 40 ms"
+        );
+        // 40 ms out, so 40 ms back.
+        assert!(svg_pass(&mut a, 80.0, Paint::Color(SVG_BLUE), linear_100ms("fill")).is_empty());
+        assert_eq!(
+            kinds(&mut a),
+            vec![
+                "transitionrun",
+                "transitionstart",
+                "transitioncancel",
+                "transitionrun",
+                "transitionstart",
+                "transitionend"
+            ]
+        );
+    }
 
     #[test]
     fn colours_interpolate_premultiplied() {
@@ -2804,5 +3042,175 @@ mod tests {
                 "transitionend"
             ]
         );
+    }
+}
+
+// ------------------------------------------------------------ svg paint
+
+/// The svg paint properties the svg lane transitions (A2.2).
+pub(crate) const SVG_PAINT_PROPS: &[&str] = &["fill", "stroke"];
+
+/// The transition item of `items` that covers svg paint property `prop`.
+pub(crate) fn svg_spec_for<'a>(
+    items: &'a [TransitionItem],
+    prop: &str,
+) -> Option<&'a TransitionItem> {
+    spec_for(items, prop)
+}
+
+impl Animations {
+    /// Whether an svg paint transition's value is moving at the clock: one
+    /// in its delay holds its start value, so its frames need no build
+    /// until the delay ends (`active()` keeps the frames turning).
+    pub(crate) fn svg_moving(&self) -> bool {
+        self.svg_transitions.iter().any(|t| self.clock_ms >= t.t.start_ms())
+    }
+
+    /// Whether the svg lane holds nothing: no before-change value and no
+    /// transition.
+    pub(crate) fn svg_lane_empty(&self) -> bool {
+        self.svg_base.is_empty() && self.svg_transitions.is_empty()
+    }
+
+    /// Whether the svg lane holds anything for `node`'s `prop`.
+    pub(crate) fn svg_holds(&self, node: usize, prop: &'static str) -> bool {
+        self.svg_base.contains_key(&(node, prop))
+            || self
+                .svg_transitions
+                .iter()
+                .any(|t| t.t.node == node && t.prop == prop)
+    }
+
+    fn push_svg_event(&mut self, t: &SvgTransition, kind: &'static str, elapsed_s: f32) {
+        self.events.push(AnimationEvent {
+            node: t.t.node,
+            kind,
+            property: t.prop.to_string(),
+            name: String::new(),
+            elapsed_s,
+        });
+    }
+
+    /// A2.2: one pass of the svg paint lane, given every svg element's
+    /// `fill` and `stroke` as the author rules, presentation attributes and
+    /// inheritance resolve them (`svg_computed::resolve_paints`, no
+    /// transition applied), with the transition item that covers it.
+    /// `paints` lists every element and property the lane holds
+    /// (`svg_holds`) and every one a transition covers; anything left out
+    /// is gone (its element left the svg, or the document).
+    ///
+    /// The rules are `transitions_update`'s: a covered value that changed
+    /// since the last pass starts a transition from what the element
+    /// showed (a running one is cancelled, with the reversing shortening);
+    /// one heading where the value now is keeps going; a transition whose
+    /// value is no longer covered is cancelled. Colours interpolate
+    /// (premultiplied, as `color`); `none`, `url()` and `currentcolor` do
+    /// not (Chrome 148 starts no transition for the first two; the third is
+    /// a stated gap), so the value jumps.
+    pub(crate) fn svg_update(
+        &mut self,
+        paints: &[(usize, &'static str, Paint, Option<TransitionItem>)],
+    ) {
+        let now = self.clock_ms;
+        let covered: std::collections::HashSet<(usize, &str)> = paints
+            .iter()
+            .filter(|p| p.3.is_some())
+            .map(|p| (p.0, p.1))
+            .collect();
+        // The cancel sweep: svg content gets no build visit, so the
+        // end-of-build sweep never sees it.
+        let mut gone = Vec::new();
+        self.svg_transitions.retain(|t| {
+            if covered.contains(&(t.t.node, t.prop)) {
+                true
+            } else {
+                gone.push(t.clone());
+                false
+            }
+        });
+        for t in gone {
+            self.push_svg_event(&t, "transitioncancel", t.t.elapsed_at(now));
+        }
+        self.svg_base.retain(|key, _| covered.contains(key));
+        for (node, prop, new, spec) in paints {
+            let Some(spec) = spec else { continue };
+            let prev = self.svg_base.insert((*node, *prop), new.clone());
+            let Some(old) = prev.filter(|_| !self.disabled) else {
+                continue;
+            };
+            let running = self
+                .svg_transitions
+                .iter()
+                .position(|t| t.t.node == *node && t.prop == *prop);
+            match running {
+                // Already heading there: the running one keeps going.
+                Some(at) if matches!(new, Paint::Color(c) if self.svg_transitions[at].t.to == AnimValue::Color(*c)) => {
+                    continue
+                }
+                None if same_paint(&old, new) => continue,
+                _ => {}
+            }
+            let (from, reversing) = match running {
+                Some(at) => {
+                    let t = self.svg_transitions.remove(at);
+                    let current = t.t.value_at(now);
+                    self.push_svg_event(&t, "transitioncancel", t.t.elapsed_at(now));
+                    (Some(current), Some(t.t))
+                }
+                None => (
+                    match old {
+                        Paint::Color(c) => Some(AnimValue::Color(c)),
+                        _ => None,
+                    },
+                    None,
+                ),
+            };
+            let (Some(from), Paint::Color(to)) = (from, new) else {
+                continue;
+            };
+            let Some(t) = self.new_transition(
+                *node,
+                usize::MAX,
+                from,
+                &AnimValue::Color(*to),
+                spec,
+                reversing,
+            ) else {
+                continue;
+            };
+            let t = SvgTransition { t, prop: *prop };
+            self.push_svg_event(&t, "transitionrun", t.t.elapsed_at_start());
+            self.svg_transitions.push(t);
+        }
+    }
+
+    /// The running svg paint transitions' values at the clock, as
+    /// (raw NodeId, property, colour), with their `transitionstart` and
+    /// `transitionend` queued as the phases change. One that ended is
+    /// dropped: the resolved value is its end value.
+    pub(crate) fn svg_overlay(&mut self) -> Vec<(usize, &'static str, Color)> {
+        let now = self.clock_ms;
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.svg_transitions.len() {
+            let t = &mut self.svg_transitions[i];
+            if !t.t.started && now >= t.t.start_ms() {
+                t.t.started = true;
+                let (t, elapsed) = (t.clone(), t.t.elapsed_at_start());
+                self.push_svg_event(&t, "transitionstart", elapsed);
+            }
+            let t = &self.svg_transitions[i];
+            if now >= t.t.end_ms() {
+                let (t, elapsed) = (t.clone(), (t.t.duration_ms / 1000.0) as f32);
+                self.push_svg_event(&t, "transitionend", elapsed);
+                self.svg_transitions.remove(i);
+                continue;
+            }
+            if let AnimValue::Color(c) = t.t.value_at(now) {
+                out.push((t.t.node, t.prop, c));
+            }
+            i += 1;
+        }
+        out
     }
 }

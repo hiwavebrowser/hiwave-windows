@@ -213,18 +213,15 @@ pub trait TreeSink {
 }
 
 /// Parse HTML from a string using the provided sink.
-pub fn parse<S: TreeSink>(html: &str, mut sink: S) -> ParseResult<S> {
-    let tokens = tokenizer::tokenize(html)?;
-    sink = tree_builder::build_tree(tokens, sink)?;
-    Ok(sink)
+pub fn parse<S: TreeSink>(html: &str, sink: S) -> ParseResult<S> {
+    parse_scripted(html, sink, false)
 }
 
 /// `parse` with the scripting flag (HTML §13.2.3.5): on for a document
 /// whose scripts run, where `<noscript>` holds raw text and nothing in it
 /// becomes an element.
 pub fn parse_scripted<S: TreeSink>(html: &str, sink: S, scripting: bool) -> ParseResult<S> {
-    let tokens = tokenizer::tokenize_scripted(html, scripting)?;
-    tree_builder::build_tree_scripted(tokens, sink, scripting)
+    tree_builder::TreeBuilder::new(sink).parse(html, scripting)
 }
 
 /// `parse_fragment` with the scripting flag of the context element's
@@ -235,9 +232,8 @@ pub fn parse_fragment_scripted<S: TreeSink>(
     context_element: &str,
     scripting: bool,
 ) -> ParseResult<S> {
-    let tokens = tokenizer::tokenize_scripted(html, scripting)?;
     let context = FragmentContext::new(context_element);
-    tree_builder::build_tree_fragment_scripted(tokens, sink, context, scripting)
+    tree_builder::TreeBuilder::new_fragment(sink, context).parse(html, scripting)
 }
 
 /// Parse HTML from bytes using the provided sink.
@@ -270,9 +266,7 @@ pub fn parse_fragment<S: TreeSink>(
     sink: S,
     context_element: &str,
 ) -> ParseResult<S> {
-    let tokens = tokenizer::tokenize(html)?;
-    let context = FragmentContext::new(context_element);
-    tree_builder::build_tree_fragment(tokens, sink, context)
+    parse_fragment_scripted(html, sink, context_element, false)
 }
 
 #[cfg(test)]

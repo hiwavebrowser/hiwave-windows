@@ -139,7 +139,45 @@ impl Font {
     }
 }
 
+/// The face the current document registered for `family` (`@font-face`, this thread's
+/// `webfonts` set) closest to `weight` and `italic`, or `None` when it registered none. A
+/// document's face outranks every system lookup, as on macOS.
+pub fn web_font_face(family: &str, weight: u16, italic: bool) -> Option<FontFace> {
+    crate::webfonts::lookup(family, weight, italic).map(|face| FontFace { face })
+}
+
 impl FontFace {
+    /// The face's PostScript name ("Ahem"), read from the face itself (a document's web face has
+    /// no system `Font` to ask), or an empty string when it carries none.
+    pub fn postscript_name(&self) -> String {
+        use windows::core::Interface;
+        unsafe {
+            let Ok(face3) = self.face.cast::<IDWriteFontFace3>() else {
+                return String::new();
+            };
+            let mut strings: Option<IDWriteLocalizedStrings> = None;
+            let mut exists = BOOL(0);
+            if face3
+                .GetInformationalStrings(DWRITE_INFORMATIONAL_STRING_POSTSCRIPT_NAME, &mut strings, &mut exists)
+                .is_err()
+                || !exists.as_bool()
+            {
+                return String::new();
+            }
+            let Some(strings) = strings else {
+                return String::new();
+            };
+            let Ok(len) = strings.GetStringLength(0) else {
+                return String::new();
+            };
+            let mut buf = vec![0u16; len as usize + 1];
+            if strings.GetString(0, &mut buf).is_err() {
+                return String::new();
+            }
+            String::from_utf16_lossy(&buf[..len as usize])
+        }
+    }
+
     /// The DirectWrite face itself, for a rasterizer that draws with it.
     pub fn raw(&self) -> &IDWriteFontFace {
         &self.face

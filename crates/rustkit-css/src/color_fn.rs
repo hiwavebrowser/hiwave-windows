@@ -201,6 +201,47 @@ pub(crate) fn parse_color_function(value: &str) -> Option<Color> {
     Some(Color::new(rgb[0], rgb[1], rgb[2], alpha))
 }
 
+/// Parse an absolute HWB color into the engine's sRGB paint representation.
+pub(crate) fn parse_hwb(value: &str) -> Option<Color> {
+    let inner = value.strip_prefix("hwb(")?;
+    let inner = strip_comments(inner.strip_suffix(')').unwrap_or(inner));
+    let tokens = tokenize(&inner)?;
+    let (h, w, b, alpha) = match tokens.as_slice() {
+        [Tok::Arg(h), Tok::Arg(w), Tok::Arg(b)] => (*h, *w, *b, 1.0),
+        [Tok::Arg(h), Tok::Arg(w), Tok::Arg(b), Tok::Slash, Tok::Arg(a)] => {
+            let alpha = match parse_arg(a)? {
+                Arg::Number(n) => n,
+                Arg::Percent(p) => p / 100.0,
+                Arg::None => 0.0,
+                Arg::Degrees(_) => return None,
+            };
+            (*h, *w, *b, alpha.max(0.0).min(1.0))
+        }
+        _ => return None,
+    };
+    let hue = match parse_arg(h)? {
+        Arg::Number(n) | Arg::Degrees(n) if n.is_finite() => f64::from(n).rem_euclid(360.0) / 360.0,
+        Arg::Number(_) | Arg::Degrees(_) | Arg::None => 0.0,
+        Arg::Percent(_) => return None,
+    };
+    let percent = |token| match parse_arg(token)? {
+        Arg::Percent(p) | Arg::Number(p) => Some(f64::from(p).max(0.0) / 100.0),
+        Arg::None => Some(0.0),
+        Arg::Degrees(_) => None,
+    };
+    let (white, black) = (percent(w)?, percent(b)?);
+    let sum = white + black;
+    let channel = |offset| {
+        let level = if sum >= 1.0 {
+            white / sum
+        } else {
+            crate::hue_to_rgb(0.0, 1.0, hue + offset) * (1.0 - sum) + white
+        };
+        (level * 255.0 + 1e-6).round() as u8
+    };
+    Some(Color::new(channel(1.0 / 3.0), channel(0.0), channel(-1.0 / 3.0), alpha))
+}
+
 #[derive(Debug)]
 enum Tok<'a> {
     Arg(&'a str),

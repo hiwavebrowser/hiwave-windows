@@ -289,6 +289,17 @@ pub(crate) fn aspect_ratio_content_height(
 /// 1 px of padding above and below and 6 px left and right, and a 2 px (outset) border. Chrome for
 /// Testing 148.0.7778.216 on Linux and macOS (CB3b, CB3c): a bare 16 px Arial button is 24 x 24
 /// for the label `x` (8 + 6 + 6 + 2 + 2 wide, 18 + 1 + 1 + 2 + 2 tall).
+/// The key prefix of a replaced box with natural sizes and no natural ratio (CSS Images
+/// 3 §4.1: a `<video>` before its metadata is 300x150 with no ratio). A missing axis takes
+/// its natural size, not the other axis across a ratio: Chrome 148 lays out `<video
+/// width=100>` as 100x150 (MEDIA-AVF, `docs/diagnostics/2026-11-18/media_box_cft148.json`).
+pub const NO_RATIO_KEY_PREFIX: &str = "rustkit-noratio:";
+
+/// Whether an image box's key names a replaced box with no natural ratio.
+pub fn key_has_no_ratio(url: &str) -> bool {
+    url.starts_with(NO_RATIO_KEY_PREFIX)
+}
+
 pub const UA_BUTTON_PADDING: [f32; 4] = [1.0, 6.0, 1.0, 6.0];
 pub const UA_BUTTON_BORDER: f32 = 2.0;
 /// The same, summed over both sides of an axis.
@@ -3945,6 +3956,20 @@ impl LayoutBox {
         // Which axes the page left to the ratio: a minimum that grows the
         // other axis takes these along and leaves a specified size alone.
         let (width_is_auto, height_is_auto) = (explicit_width.is_none(), explicit_height.is_none());
+        // No natural ratio (`NO_RATIO_KEY_PREFIX`): an axis the page left `auto` is its
+        // natural size, and nothing below scales one axis by the other.
+        let no_ratio = matches!(&self.box_type, BoxType::Image { url, .. } if key_has_no_ratio(url))
+            && self.style.aspect_ratio.is_none();
+        let (explicit_width, explicit_height, width_is_auto, height_is_auto) = if no_ratio {
+            (
+                Some(explicit_width.unwrap_or(natural_width)),
+                Some(explicit_height.unwrap_or(natural_height)),
+                false,
+                false,
+            )
+        } else {
+            (explicit_width, explicit_height, width_is_auto, height_is_auto)
+        };
 
         // A specified `aspect-ratio` replaces the natural ratio before the
         // intrinsic-sizing rules run, so a missing axis is derived from the
@@ -4016,7 +4041,7 @@ impl LayoutBox {
         }
         if let Some(mh) = max_height {
             if height > mh && height > 0.0 {
-                width = if width > 0.0 {
+                width = if width > 0.0 && !no_ratio {
                     mh * width / height
                 } else {
                     width
@@ -4103,6 +4128,10 @@ impl LayoutBox {
         };
         if !matches!(self.style.width, Length::Auto) || *natural_width <= 0.0 {
             return None;
+        }
+        // No natural ratio: the height never reaches the width.
+        if matches!(&self.box_type, BoxType::Image { url, .. } if key_has_no_ratio(url)) && self.style.aspect_ratio.is_none() {
+            return Some(*natural_width);
         }
         let s = &self.style;
         let vertical_decoration = [&s.padding_top, &s.padding_bottom, &s.border_top_width, &s.border_bottom_width]
@@ -4950,6 +4979,23 @@ impl LayoutBox {
                     containing_block,
                     percent_height_base,
                 );
+                // A block-level replaced box (`<video style="display:block">`) is a
+                // block in the flow: its top margin collapses with the margins pending
+                // before it, and its bottom margin stays pending for what follows, as
+                // a block's do (`layout_block_with_collapse`). It is never empty, so
+                // its own two margins never collapse through it (Chromium 148:
+                // `float_margin_tests`, "video block h0"). `layout_image_in` placed it
+                // one own top margin below the cursor; the collapsed margin replaces it.
+                if !matches!(self.style.display, rustkit_css::Display::Inline) && !self.style.display.is_atomic_inline() {
+                    let top = self.dimensions.margin.top;
+                    if !std::mem::take(&mut margin_context.first_child_top_adjoined) {
+                        margin_context.add_margin(top);
+                    }
+                    let collapsed = margin_context.resolve();
+                    self.dimensions.content.y += collapsed - top;
+                    margin_context.reset();
+                    margin_context.add_margin(self.dimensions.margin.bottom);
+                }
             }
             BoxType::FormControl(ref control) => {
                 self.layout_form_control(control.clone(), containing_block, percent_height_base);
@@ -5383,6 +5429,15 @@ impl LayoutBox {
             }
             let Some(child) = first else { break };
             if float_before.cleared_by(child.style.clear) {
+                break;
+            }
+            // A block-level replaced box (`<img style="display:block">`) adjoins its top
+            // margin and ends the chain: nothing is inside it (Chromium 148).
+            if matches!(child.box_type, BoxType::Image { .. })
+                && !matches!(child.style.display, rustkit_css::Display::Inline)
+                && !child.style.display.is_atomic_inline()
+            {
+                chain.push(child.length_to_px(&child.style.margin_top, width));
                 break;
             }
             if !matches!(child.box_type, BoxType::Block | BoxType::AnonymousBlock)
@@ -7781,15 +7836,17 @@ impl LayoutBox {
             // first materialize the pending block margin into the cursor —
             // otherwise the preceding block's bottom margin is silently
             // dropped — and must not collapse margins across the line box.
+            // A replaced element (`BoxType::Image`) is inline-level only when it is
+            // displayed inline: a block-level one (`<video style="display:block">`) is
+            // a block box whose margins adjoin its siblings' (Chromium 148; a replaced
+            // box is never empty, so they never collapse through it).
             let is_inline_level = is_inline_block
                 || matches!(
                     child.box_type,
-                    BoxType::Inline
-                        | BoxType::Text(_)
-                        | BoxType::Image { .. }
-                        | BoxType::FormControl(_)
-                        | BoxType::LineBreak
-                );
+                    BoxType::Inline | BoxType::Text(_) | BoxType::FormControl(_) | BoxType::LineBreak
+                )
+                || (matches!(child.box_type, BoxType::Image { .. })
+                    && matches!(child.style.display, rustkit_css::Display::Inline));
             if is_inline_level {
                 cursor_y += margin_context.resolve();
                 margin_context.reset();

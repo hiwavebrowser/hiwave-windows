@@ -76,7 +76,7 @@ fn attributes_keep_the_order_they_were_written_in() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "Windows parity row (dom1 1 px): rect menu at y 285, Chromium 284")]
+#[cfg_attr(windows, ignore = "Windows parity row (dom1 1 px): rect menu at y 285, Chromium 284; fixed upstream by hiwave-macos #1345")]
 fn a_box_outside_its_ancestors_box_is_hit() {
     let (mut engine, view, got) =
         report_of(include_str!("../../../docs/diagnostics/2026-11-12/dom1_hit_outside_ancestor.html"));

@@ -1,0 +1,269 @@
+{
+  "chrome": "148.0.7778.216",
+  "sampled_at_ms": [
+    25,
+    50,
+    75
+  ],
+  "duration_ms": 100,
+  "timing": "linear",
+  "cases": [
+    {
+      "label": "fill blue->red",
+      "css": "#p{fill:blue;transition:all 100ms linear}#p.on{fill:red}",
+      "toggle": "p",
+      "read": "p fill",
+      "attrs": "",
+      "at": {
+        "25": "rgb(64, 0, 191)",
+        "50": "rgb(128, 0, 128)",
+        "75": "rgb(191, 0, 64)"
+      },
+      "transitions": [
+        "p:fill"
+      ],
+      "painted_at_50": {
+        "centre": "128,0,128,255",
+        "stroke": "128,0,128,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": [
+        "p:run:fill",
+        "p:start:fill",
+        "p:end:fill"
+      ]
+    },
+    {
+      "label": "stroke blue->red",
+      "css": "#p{fill:none;stroke:blue;transition:all 100ms linear}#p.on{stroke:red}",
+      "toggle": "p",
+      "read": "p stroke",
+      "attrs": "",
+      "at": {
+        "25": "rgb(64, 0, 191)",
+        "50": "rgb(128, 0, 128)",
+        "75": "rgb(191, 0, 64)"
+      },
+      "transitions": [
+        "p:stroke"
+      ],
+      "painted_at_50": {
+        "centre": "255,255,255,255",
+        "stroke": "128,0,128,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": [
+        "p:run:stroke",
+        "p:start:stroke",
+        "p:end:stroke"
+      ]
+    },
+    {
+      "label": "fill named transition",
+      "css": "#p{fill:blue;transition:fill 100ms linear}#p.on{fill:red}",
+      "toggle": "p",
+      "read": "p fill",
+      "attrs": "",
+      "at": {
+        "25": "rgb(64, 0, 191)",
+        "50": "rgb(128, 0, 128)",
+        "75": "rgb(191, 0, 64)"
+      },
+      "transitions": [
+        "p:fill"
+      ],
+      "painted_at_50": {
+        "centre": "128,0,128,255",
+        "stroke": "128,0,128,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": [
+        "p:run:fill",
+        "p:start:fill",
+        "p:end:fill"
+      ]
+    },
+    {
+      "label": "fill none->red",
+      "css": "#p{fill:none;transition:all 100ms linear}#p.on{fill:red}",
+      "toggle": "p",
+      "read": "p fill",
+      "attrs": "",
+      "at": {
+        "25": "rgb(255, 0, 0)",
+        "50": "rgb(255, 0, 0)",
+        "75": "rgb(255, 0, 0)"
+      },
+      "transitions": [],
+      "painted_at_50": {
+        "centre": "255,0,0,255",
+        "stroke": "255,0,0,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": []
+    },
+    {
+      "label": "fill red->none",
+      "css": "#p{fill:red;transition:all 100ms linear}#p.on{fill:none}",
+      "toggle": "p",
+      "read": "p fill",
+      "attrs": "",
+      "at": {
+        "25": "none",
+        "50": "none",
+        "75": "none"
+      },
+      "transitions": [],
+      "painted_at_50": {
+        "centre": "255,255,255,255",
+        "stroke": "255,255,255,255"
+      },
+      "end": "none",
+      "events": []
+    },
+    {
+      "label": "fill url->red",
+      "css": "#p{fill:url(#g);transition:all 100ms linear}#p.on{fill:red}",
+      "toggle": "p",
+      "read": "p fill",
+      "attrs": "",
+      "at": {
+        "25": "rgb(255, 0, 0)",
+        "50": "rgb(255, 0, 0)",
+        "75": "rgb(255, 0, 0)"
+      },
+      "transitions": [],
+      "painted_at_50": {
+        "centre": "255,0,0,255",
+        "stroke": "255,0,0,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": []
+    },
+    {
+      "label": "fill attr->css",
+      "css": "#p{transition:all 100ms linear}#p.on{fill:red}",
+      "toggle": "p",
+      "read": "p fill",
+      "attrs": "fill=blue",
+      "at": {
+        "25": "rgb(64, 0, 191)",
+        "50": "rgb(128, 0, 128)",
+        "75": "rgb(191, 0, 64)"
+      },
+      "transitions": [
+        "p:fill"
+      ],
+      "painted_at_50": {
+        "centre": "128,0,128,255",
+        "stroke": "128,0,128,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": [
+        "p:run:fill",
+        "p:start:fill",
+        "p:end:fill"
+      ]
+    },
+    {
+      "label": "fill on svg, inherited by rect",
+      "css": "#s{fill:blue;transition:all 100ms linear}#s.on{fill:red}",
+      "toggle": "s",
+      "read": "p fill",
+      "attrs": "",
+      "at": {
+        "25": "rgb(64, 0, 191)",
+        "50": "rgb(128, 0, 128)",
+        "75": "rgb(191, 0, 64)"
+      },
+      "transitions": [
+        "s:fill"
+      ],
+      "painted_at_50": {
+        "centre": "128,0,128,255",
+        "stroke": "128,0,128,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": [
+        "s:run:fill",
+        "s:start:fill",
+        "s:end:fill"
+      ]
+    },
+    {
+      "label": "fill on svg read on svg",
+      "css": "#s{fill:blue;transition:all 100ms linear}#s.on{fill:red}",
+      "toggle": "s",
+      "read": "s fill",
+      "attrs": "",
+      "at": {
+        "25": "rgb(64, 0, 191)",
+        "50": "rgb(128, 0, 128)",
+        "75": "rgb(191, 0, 64)"
+      },
+      "transitions": [
+        "s:fill"
+      ],
+      "painted_at_50": {
+        "centre": "128,0,128,255",
+        "stroke": "128,0,128,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": [
+        "s:run:fill",
+        "s:start:fill",
+        "s:end:fill"
+      ]
+    },
+    {
+      "label": "fill currentcolor, color moves",
+      "css": "#s{color:blue;transition:all 100ms linear}#s.on{color:red}#p{fill:currentcolor}",
+      "toggle": "s",
+      "read": "p fill",
+      "attrs": "",
+      "at": {
+        "25": "rgb(64, 0, 191)",
+        "50": "rgb(128, 0, 128)",
+        "75": "rgb(191, 0, 64)"
+      },
+      "transitions": [
+        "s:color"
+      ],
+      "painted_at_50": {
+        "centre": "128,0,128,255",
+        "stroke": "128,0,128,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": [
+        "s:run:color",
+        "s:start:color",
+        "s:end:color"
+      ]
+    },
+    {
+      "label": "hover-like: class on svg, rule on rect",
+      "css": "#p{fill:blue;transition:all 100ms linear}#s.on #p{fill:red}",
+      "toggle": "s",
+      "read": "p fill",
+      "attrs": "",
+      "at": {
+        "25": "rgb(64, 0, 191)",
+        "50": "rgb(128, 0, 128)",
+        "75": "rgb(191, 0, 64)"
+      },
+      "transitions": [
+        "p:fill"
+      ],
+      "painted_at_50": {
+        "centre": "128,0,128,255",
+        "stroke": "128,0,128,255"
+      },
+      "end": "rgb(255, 0, 0)",
+      "events": [
+        "p:run:fill",
+        "p:start:fill",
+        "p:end:fill"
+      ]
+    }
+  ]
+}

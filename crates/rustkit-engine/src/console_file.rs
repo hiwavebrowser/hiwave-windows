@@ -15,9 +15,9 @@
 //! one ([`crate::console_log::brief_url`]).
 //!
 //! `HIWAVE_CONSOLE_LOG=1` is a different, older switch: the tracing mirror
-//! in `console_log`. A value names a file here only when it has a `/` in
-//! it ([`setting`]), so `1`, `0` and every other bare word mean what they
-//! did before.
+//! in `console_log`. A value names a file here only when it has a `/` or a
+//! `\` in it ([`setting`]), so `1`, `0` and every other bare word mean what
+//! they did before.
 //!
 //! When it is off, every function here returns before formatting a line,
 //! and no file is made.
@@ -56,8 +56,8 @@ pub fn set_path(path: impl Into<PathBuf>) {
 pub(crate) enum Setting {
     /// Nothing: unset, or the tracing mirror's own values.
     Off,
-    /// A value with a `/` in it names the file (`/tmp/console.jsonl`,
-    /// `./console.jsonl`).
+    /// A value with a `/` or a `\` in it names the file (`/tmp/console.jsonl`,
+    /// `./console.jsonl`, `C:\logs\console.jsonl`).
     File(PathBuf),
     /// Neither: a mistake worth saying once.
     NotAPath,
@@ -65,9 +65,8 @@ pub(crate) enum Setting {
 
 pub(crate) fn setting(value: &std::ffi::OsStr) -> Setting {
     let bytes = value.as_encoded_bytes();
-    // A separator makes it a path: `/`, and on Windows `\` too, which every path there uses
-    // (`C:\logs\c.jsonl` named no file and the variable did nothing).
-    if bytes.contains(&b'/') || (cfg!(windows) && bytes.contains(&b'\\')) {
+    // A separator, `/` or `\` (every Windows path is written with it), on every OS alike.
+    if bytes.contains(&b'/') || bytes.contains(&b'\\') {
         return Setting::File(PathBuf::from(value));
     }
     // `1`, `0`, and the bare words people set a switch to (`true`, `on`).
@@ -91,7 +90,7 @@ fn open_configured(chosen: Option<PathBuf>, env: Option<std::ffi::OsString>, lim
                 // The rule, never the value.
                 tracing::warn!(
                     "HIWAVE_CONSOLE_LOG is set to something that is neither `1` (the tracing mirror) nor a path: \
-                     the console log file is written only to a value with a `/` in it (`./name` for the current directory); \
+                     the console log file is written only to a value with a `/` or a `\\` in it (`./name` for the current directory); \
                      nothing will be written to it"
                 );
                 return None;

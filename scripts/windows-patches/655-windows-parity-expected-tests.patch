@@ -1,85 +1,20 @@
-Windows: seven rustkit-engine tests fail here on a hardware GPU and on the software adapter alike
-(refresh #20, found by the chunked engine run; RTX 4090 and forced WARP give the same result).
-They are not adapter failures; each is a Windows parity gap with its own row:
+Windows: rustkit-engine dom1_attr_order_hit_tests::a_box_outside_its_ancestors_box_is_hit fails here on
+a hardware GPU and on the software adapter alike: `font: 12px/14px Times` resolves to Segoe UI, not
+Times New Roman, so the `menu` inline-block sits 1 px low (y 285, Chromium 284; Chrome 157 on this
+machine also 284). Upstream fixes it in hiwave-macos #1345 (Windows FontSubstitutes), in batch 111.
 
-  Windows parity row (web fonts): DirectWrite shapes text in the system face (Segoe UI) rather
-  than the page's installed web face (Ahem, Noto Sans), so these assert a face or its pixels and fail:
-    incremental_layout_tests::a_web_font_landing_after_layout_measures_text_afresh
-    paint_only_web_font_tests::a_committed_frame_draws_its_web_font_on_a_thread_that_did_not_install_it
-    paint_only_web_font_tests::an_element_scroll_keeps_the_web_font_when_another_view_painted
-    paint_only_web_font_tests::static_text_keeps_its_web_font_across_paint_only_frames_when_another_view_paints
-    paint_only_web_font_tests::web_faces_hold_by_weight_when_another_view_on_the_thread_paints
-    paint_only_web_font_tests::web_faces_hold_while_another_thread_installs_its_own
-  Windows parity row (dom1 1 px):
-    dom1_attr_order_hit_tests::a_box_outside_its_ancestors_box_is_hit (rect menu y 285, Chromium 284)
-
-Each is ignored on Windows with the row in its reason. Remove each hunk when its row lands.
+Refresh #21: the six web-font ignores this patch carried are gone (upstream #1343 is in this base).
+Remove this patch when the sync brings #1345.
 
 diff --git a/crates/rustkit-engine/src/dom1_attr_order_hit_tests.rs b/crates/rustkit-engine/src/dom1_attr_order_hit_tests.rs
-index 576adca9..884059b2 100644
+index 884059b2..116bcbc4 100644
 --- a/crates/rustkit-engine/src/dom1_attr_order_hit_tests.rs
 +++ b/crates/rustkit-engine/src/dom1_attr_order_hit_tests.rs
 @@ -76,6 +76,7 @@ fn attributes_keep_the_order_they_were_written_in() {
  }
  
  #[test]
-+#[cfg_attr(windows, ignore = "Windows parity row (dom1 1 px): rect menu at y 285, Chromium 284")]
++#[cfg_attr(windows, ignore = "Windows parity row (dom1 1 px): rect menu at y 285, Chromium 284; fixed upstream by hiwave-macos #1345")]
  fn a_box_outside_its_ancestors_box_is_hit() {
      let (mut engine, view, got) =
          report_of(include_str!("../../../docs/diagnostics/2026-11-12/dom1_hit_outside_ancestor.html"));
-diff --git a/crates/rustkit-engine/src/incremental_layout_tests.rs b/crates/rustkit-engine/src/incremental_layout_tests.rs
-index 1e007202..ab39a545 100644
---- a/crates/rustkit-engine/src/incremental_layout_tests.rs
-+++ b/crates/rustkit-engine/src/incremental_layout_tests.rs
-@@ -546,6 +546,7 @@ const FONT_PAGE: &str = "<!doctype html><html><head><style>\
- /// measures text afresh (verify: 0 mismatches, panics otherwise), and a
- /// change after the face landed is laid out incrementally in it.
- #[test]
-+#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
- fn a_web_font_landing_after_layout_measures_text_afresh() {
-     let _mode = ModeGuard::set(Mode::Verify);
-     let server = serve_byte_routes(vec![
-diff --git a/crates/rustkit-engine/src/paint_only_web_font_tests.rs b/crates/rustkit-engine/src/paint_only_web_font_tests.rs
-index 547bf634..565e1976 100644
---- a/crates/rustkit-engine/src/paint_only_web_font_tests.rs
-+++ b/crates/rustkit-engine/src/paint_only_web_font_tests.rs
-@@ -120,6 +120,7 @@ fn dark(pixels: &[u8]) -> usize {
- /// frame, in the page's web font, whether or not the other view painted
- /// a frame in between; and the frames are still painted without a layout.
- #[test]
-+#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
- fn static_text_keeps_its_web_font_across_paint_only_frames_when_another_view_paints() {
-     let (mut engine, page, other, _server) = two_views();
-     let first = first_line_pixels(&engine, page);
-@@ -153,6 +154,7 @@ fn static_text_keeps_its_web_font_across_paint_only_frames_when_another_view_pai
- /// A wheel over a scroller builds the list again over the same boxes: its
- /// text stays in the page's web font after the other view painted.
- #[test]
-+#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
- fn an_element_scroll_keeps_the_web_font_when_another_view_painted() {
-     let (mut engine, page, other, _server) = two_views();
-     rt().block_on(engine.pump_live(other, 16));
-@@ -221,6 +223,7 @@ fn assert_weighted_faces(lines: &[(String, String, f32)], when: &str) {
- /// Bold and regular lines keep their own web faces and widths on every
- /// frame while another thread keeps installing a different site's faces.
- #[test]
-+#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
- fn web_faces_hold_while_another_thread_installs_its_own() {
-     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-     use std::sync::Arc;
-@@ -276,6 +279,7 @@ fn web_faces_hold_while_another_thread_installs_its_own() {
- /// partition painting its own web font between this page's paint-only and
- /// full frames leaves the bold and regular faces alone.
- #[test]
-+#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
- fn web_faces_hold_by_weight_when_another_view_on_the_thread_paints() {
-     let server = serve_byte_routes(vec![
-         ("/", "text/html", WEIGHTED.as_bytes().to_vec()),
-@@ -325,6 +329,7 @@ body { margin: 20px; font: 20px/20px E56Ahem, Helvetica; background: white; colo
- </style></head><body><p style="margin:0">XXXXX &#x1F600;</p></body></html>"#;
- 
- #[test]
-+#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
- fn a_committed_frame_draws_its_web_font_on_a_thread_that_did_not_install_it() {
-     let server = serve_byte_routes(vec![
-         ("/", "text/html", PER_CHAR.as_bytes().to_vec()),

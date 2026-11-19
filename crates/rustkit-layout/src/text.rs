@@ -1011,6 +1011,15 @@ impl FontCache {
             stretch: stretch.to_dwrite_value() as u8,
         };
 
+        // A face the document registered via @font-face outranks every platform lookup (as on
+        // macOS). Not cached by family name: the same name resolves to another face once the
+        // document's faces change.
+        if let Some(face) = rustkit_text::web_font_face(family, weight.0, style == FontStyle::Italic) {
+            if let Ok(design_metrics) = face.metrics() {
+                return Ok(Self::metrics_from_design(&design_metrics, size));
+            }
+        }
+
         // Try cache first
         {
             let cache = self.fonts.read().unwrap();
@@ -1071,31 +1080,37 @@ impl FontCache {
                     .metrics()
                     .map_err(|e| TextError::DirectWriteError(e.to_string()))?;
 
-                // Convert design units to pixels (DWRITE uses camelCase)
-                let units_per_em = design_metrics.design_units_per_em as f32;
-                let scale = size / units_per_em;
-
-                let ascent = design_metrics.ascent as f32 * scale;
-                let descent = design_metrics.descent as f32 * scale;
-                let leading = design_metrics.line_gap as f32 * scale;
-
-                return Ok(TextMetrics {
-                    width: 0.0,
-                    height: ascent + descent + leading,
-                    ascent,
-                    descent,
-                    leading,
-                    underline_offset: design_metrics.underline_position as f32 * scale,
-                    underline_thickness: design_metrics.underline_thickness as f32 * scale,
-                    strikethrough_offset: design_metrics.strikethrough_position as f32 * scale,
-                    strikethrough_thickness: design_metrics.strikethrough_thickness as f32 * scale,
-                    overline_offset: -ascent,
-                });
+                return Ok(Self::metrics_from_design(&design_metrics, size));
             }
         }
 
         // Fallback to computed metrics
         Ok(TextMetrics::with_font_size(size))
+    }
+
+    /// A face's design metrics at `size` px.
+    #[cfg(windows)]
+    fn metrics_from_design(design_metrics: &rustkit_text::FontMetrics, size: f32) -> TextMetrics {
+        // Convert design units to pixels (DWRITE uses camelCase)
+        let units_per_em = design_metrics.design_units_per_em as f32;
+        let scale = size / units_per_em;
+
+        let ascent = design_metrics.ascent as f32 * scale;
+        let descent = design_metrics.descent as f32 * scale;
+        let leading = design_metrics.line_gap as f32 * scale;
+
+        TextMetrics {
+            width: 0.0,
+            height: ascent + descent + leading,
+            ascent,
+            descent,
+            leading,
+            underline_offset: design_metrics.underline_position as f32 * scale,
+            underline_thickness: design_metrics.underline_thickness as f32 * scale,
+            strikethrough_offset: design_metrics.strikethrough_position as f32 * scale,
+            strikethrough_thickness: design_metrics.strikethrough_thickness as f32 * scale,
+            overline_offset: -ascent,
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1289,11 +1304,18 @@ impl TextShaper {
         let collection =
             RkFontCollection::system().map_err(|e| TextError::DirectWriteError(e.to_string()))?;
 
-        // Find first available font in chain
+        // Find first available font in chain: for each family, a face the document registered
+        // via @font-face first (it outranks the system, as on macOS), then the system collection.
         let mut font_family_name = font_chain.primary.clone();
-        let mut found_font = None;
+        let mut found_font: Option<(rustkit_text::FontFace, String)> = None;
 
         for family_name in font_chain.all_families() {
+            if let Some(face) = rustkit_text::web_font_face(family_name, weight.0, style == FontStyle::Italic) {
+                font_family_name = family_name.to_string();
+                let postscript_name = face.postscript_name();
+                found_font = Some((face, postscript_name));
+                break;
+            }
             if let Ok(Some(family)) = collection.font_family_by_name(family_name) {
                 let dw_weight = RkFontWeight::from_u32(weight.0 as u32);
                 let dw_style = match style {
@@ -1304,18 +1326,17 @@ impl TextShaper {
                 let dw_stretch = RkFontStretch::from_u32(stretch.to_dwrite_value());
 
                 if let Ok(font) = family.first_matching_font(dw_weight, dw_stretch, dw_style) {
-                    font_family_name = family_name.to_string();
-                    found_font = Some(font);
-                    break;
+                    if let Ok(face) = font.create_font_face() {
+                        font_family_name = family_name.to_string();
+                        found_font = Some((face, font.postscript_name()));
+                        break;
+                    }
                 }
             }
         }
 
         // If we found a font, use DirectWrite for accurate shaping
-        if let Some(font) = found_font {
-            let face = font
-                .create_font_face()
-                .map_err(|e| TextError::DirectWriteError(e.to_string()))?;
+        if let Some((face, postscript_name)) = found_font {
             let design_metrics = face
                 .metrics()
                 .map_err(|e| TextError::DirectWriteError(e.to_string()))?;
@@ -1421,7 +1442,7 @@ impl TextShaper {
                     // `FaceIdentity`).
                     let face_identity = FaceIdentity {
                         id: rustkit_text::intern_face(&face),
-                        postscript_name: font.postscript_name(),
+                        postscript_name: postscript_name.clone(),
                         face_index: face.index(),
                     };
 
@@ -4310,8 +4331,8 @@ mod shape_memo_tests {
         let _ = shape(&shaper, text, 400, 15.0);
         let before = misses();
         let generation = rustkit_text::webfonts::generation();
-        // Bumps the generation where a web-font registry exists (macOS and
-        // Linux); elsewhere it installs nothing and the generation holds still.
+        // Bumps the generation where a web-font registry exists (macOS, Linux and
+        // Windows); elsewhere it installs nothing and the generation holds still.
         rustkit_text::webfonts::install("lat12-shape-memo-probe", &[]);
         let changed = rustkit_text::webfonts::generation() != generation;
         let _ = shape(&shaper, text, 400, 15.0);
@@ -4320,7 +4341,7 @@ mod shape_memo_tests {
         } else {
             assert_eq!(misses(), before, "no change to the set: still a hit");
         }
-        let has_registry = cfg!(any(target_os = "macos", target_os = "linux"));
+        let has_registry = cfg!(any(target_os = "macos", target_os = "linux", windows));
         assert_eq!(changed, has_registry);
     }
 }

@@ -49,6 +49,10 @@ pub struct ImageCache {
     /// Maximum memory usage
     #[allow(dead_code)]
     max_memory: usize,
+
+    /// Changes so far: each image put in (an eviction happens inside a put) and each clear
+    /// ([`Self::changes`]).
+    changes: u64,
 }
 
 impl ImageCache {
@@ -58,6 +62,7 @@ impl ImageCache {
             cache: LruCache::new(NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(1).unwrap())),
             stats: CacheStats::default(),
             max_memory: 256 * 1024 * 1024, // 256MB default
+            changes: 0,
         }
     }
 
@@ -70,8 +75,16 @@ impl ImageCache {
 
     /// Insert an image into the cache
     pub fn insert(&mut self, url: Url, image: Arc<LoadedImage>) {
+        self.changes += 1;
         self.cache.put(url, image);
         self.stats.count = self.cache.len();
+    }
+
+    /// How many times the cache changed so far: a number that moves whenever an image arrives,
+    /// is evicted (inside a put) or is cleared, for a holder of layout built from the cache to
+    /// tell whether it may be stale.
+    pub fn changes(&self) -> u64 {
+        self.changes
     }
 
     /// Check if an image is in the cache
@@ -81,6 +94,7 @@ impl ImageCache {
 
     /// Clear the cache
     pub fn clear(&mut self) {
+        self.changes += 1;
         self.cache.clear();
         self.stats.count = 0;
     }

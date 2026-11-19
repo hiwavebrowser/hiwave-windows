@@ -173,7 +173,20 @@
     getter(CSSRule.prototype, 'parentStyleSheet', function () { return this._sheet; });
     getter(CSSRule.prototype, 'parentRule', function () { return null; });
     getter(CSSStyleRule.prototype, 'selectorText', function () { return this._selector; }, function (v) {
-        v = String(v).trim().replace(/\s+/g, ' ');
+        // Consume whole strings and escapes before collapsing CSS whitespace.
+        var tokens = /"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'|\\(?:[\da-fA-F]{1,6}[\t\n\f\r ]?|[\s\S])|\/\*[\s\S]*?\*\/|[\t\n\f\r ]+|./g;
+        var text = '', space = false, comment = false;
+        for (var token of String(v).match(tokens) || []) {
+            if (token.slice(0, 2) === '/*') { comment = true; continue; }
+            if (/^[\t\n\f\r ]/.test(token)) { space = true; continue; }
+            // A comment ends a token. Do not join two name tokens into one.
+            if (comment && !space && /[\w-]$/.test(text) && /^[\w-]/.test(token)) return;
+            if (space && text) text += ' ';
+            text += token;
+            space = false;
+            comment = false;
+        }
+        v = text;
         if (!v || /[{};]/.test(v)) return;
         this._selector = v; this._raw = null; changed(this._sheet);
     });

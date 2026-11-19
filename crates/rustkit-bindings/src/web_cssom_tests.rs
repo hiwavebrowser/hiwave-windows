@@ -285,3 +285,17 @@ fn css_escape_follows_cssom_serialize_an_identifier() {
         "a\\ b|\\31 a|-\\31 a|\\-|a\u{fffd}|a\\:b\\.c\\#d|\\7f |é_-x|--a"
     );
 }
+
+#[test]
+fn rule_selector_text_discards_comments_without_rewriting_strings() {
+    let b = bound();
+    assert_eq!(
+        ev(&b, r#"var s = new CSSStyleSheet(); s.insertRule('p {}');
+            var rule = s.cssRules[0];
+            rule.selectorText = '[title="two  spaces /* literal */"] /* comment */ .child';
+            rule.selectorText"#),
+        r#"[title="two  spaces /* literal */"] .child"#
+    );
+    assert_eq!(ev(&b, "rule.selectorText = 'a/**/b'; rule.selectorText"),
+               r#"[title="two  spaces /* literal */"] .child"#);
+}

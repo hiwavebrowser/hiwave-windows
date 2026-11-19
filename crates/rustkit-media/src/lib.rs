@@ -10,6 +10,11 @@
 //! - **Media controls**: Play, pause, seek, volume
 //! - **Media events**: play, pause, ended, timeupdate, etc.
 //!
+//! ## AVFoundation
+//!
+//! [`avf`] (macOS) is the glue to AVFoundation that MEDIA-AVF builds on
+//! (`docs/design/MEDIA_AVF.md`).
+//!
 //! ## Architecture
 //!
 //! ```text
@@ -19,6 +24,9 @@
 //!     └── HTMLVideoElement
 //!            └── VideoDecoder (TODO)
 //! ```
+
+#[cfg(target_os = "macos")]
+pub mod avf;
 
 use hashbrown::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

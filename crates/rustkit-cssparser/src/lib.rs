@@ -658,11 +658,10 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                 &mut current_decls,
                 in_value,
             );
-            let selector = current_selector.trim().to_string();
-            if !selector.is_empty() && !current_decls.is_empty() {
+            if !current_selector.is_empty() && !current_decls.is_empty() {
                 out.rules.push(RuleAst {
-                    selector,
-                    declarations: current_decls.clone(),
+                    selector: std::mem::take(&mut current_selector),
+                    declarations: std::mem::take(&mut current_decls),
                     media: Vec::new(),
                     container: Vec::new(),
                     layer: None,
@@ -796,10 +795,9 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
             &mut current_decls,
             in_value,
         );
-        let selector = current_selector.trim().to_string();
-        if !selector.is_empty() && !current_decls.is_empty() {
+        if !current_selector.is_empty() && !current_decls.is_empty() {
             out.rules.push(RuleAst {
-                selector,
+                selector: current_selector,
                 declarations: current_decls,
                 media: Vec::new(),
                 container: Vec::new(),

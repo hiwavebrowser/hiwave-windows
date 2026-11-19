@@ -439,6 +439,27 @@ where
             )));
         }
 
+        // It is a Syntax Error if the StatementList of a Script (and so of eval code) directly holds a
+        // UsingDeclaration or an AwaitUsingDeclaration (Explicit Resource Management): a script has no scope
+        // that disposes at its end. Inside a block or a function the declaration is allowed.
+        if body.statements().iter().any(|item| {
+            matches!(
+                item,
+                boa_ast::StatementListItem::Declaration(d) if matches!(
+                    **d,
+                    boa_ast::Declaration::Lexical(
+                        boa_ast::declaration::LexicalDeclaration::Using(_)
+                            | boa_ast::declaration::LexicalDeclaration::AwaitUsing(_)
+                    )
+                )
+            )
+        }) {
+            return Err(Error::lex(LexError::Syntax(
+                "a using declaration is not allowed at the top level of a script".into(),
+                Position::new(1, 1),
+            )));
+        }
+
         Ok(body)
     }
 }

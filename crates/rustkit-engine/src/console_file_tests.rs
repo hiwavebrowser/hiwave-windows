@@ -99,7 +99,7 @@ fn of_kind<'a>(lines: &'a [serde_json::Value], kind: &str) -> &'a serde_json::Va
 }
 
 #[test]
-fn only_a_value_with_a_slash_names_a_file() {
+fn only_a_value_with_a_separator_names_a_file() {
     use crate::console_file::{setting, Setting};
     use std::ffi::OsStr;
     // `1` is the tracing mirror's switch (console_log); it and every other
@@ -109,9 +109,11 @@ fn only_a_value_with_a_slash_names_a_file() {
     }
     assert_eq!(setting(OsStr::new("/tmp/c.jsonl")), Setting::File(PathBuf::from("/tmp/c.jsonl")));
     assert_eq!(setting(OsStr::new("./c.jsonl")), Setting::File(PathBuf::from("./c.jsonl")));
-    // Windows: a path there is written with backslashes.
-    #[cfg(windows)]
-    assert_eq!(setting(OsStr::new(r"C:\logs\c.jsonl")), Setting::File(PathBuf::from(r"C:\logs\c.jsonl")));
+    // A backslash is a separator too, on every OS: a Windows path is written with it
+    // (`C:\logs\c.jsonl` named no file and the variable did nothing there).
+    for path in [r"C:\logs\c.jsonl", r".\c.jsonl"] {
+        assert_eq!(setting(OsStr::new(path)), Setting::File(PathBuf::from(path)), "{path:?}");
+    }
 }
 
 // ---- The process's own sink: `set_path`, the variable, a file that
@@ -551,13 +553,7 @@ impl Drop for RemoveDir {
 fn a_value_that_is_neither_a_word_nor_a_path_is_not_a_path() {
     use crate::console_file::{setting, Setting};
     use std::ffi::OsStr;
-    // On Windows a backslash is a separator, so `C:\logs\console.jsonl` is a path there.
-    let wrongs: &[&str] = if cfg!(windows) {
-        &["console.jsonl", "console log", "~"]
-    } else {
-        &["console.jsonl", "C:\\logs\\console.jsonl", "console log", "~"]
-    };
-    for wrong in wrongs {
+    for wrong in ["console.jsonl", "console log", "~"] {
         assert_eq!(setting(OsStr::new(wrong)), Setting::NotAPath, "{wrong:?}");
     }
 }

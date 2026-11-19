@@ -1179,3 +1179,76 @@ match, `replace`, `split`, an `exec` loop and `matchAll` over a 16 KiB string (u
 the patch. Measured (not a test, release build, this machine): at 2^15 / 2^16 / 2^17 characters,
 `match(/x/g)` 125 / 369 / 1295 ms before, 68 / 130 / 283 ms after; `replaceAll` 120 / 470 / 1875 ms
 before, 2 / 6 / 12 ms after; `split` 116 / 471 / 1871 ms before, 1 / 1 / 3 ms after.
+
+## Patch: `using` declarations outside a block are bound (`using-bindings`)
+
+**Files.** `third_party/boa_ast/src/scope_analyzer.rs` (global, function and eval declaration
+instantiation), `third_party/boa_parser/src/parser/mod.rs` (`ScriptBody`).
+
+**What.** A `using` or `await using` declaration in a function, arrow, method, generator, async
+function, async generator or class static block body, or through `new Function`, now has its names
+bound in that body's lexical scope, as block declaration instantiation already bound them in a block.
+Before, those three instantiations skipped both kinds (`_ => {}`), so the declaration had no binding
+to initialize. A `using` or `await using` declaration directly in a script's statement list, which is
+also eval code's, is a SyntaxError (Explicit Resource Management early error), as Chrome 148 reports.
+Inside a block, a function or a module it is allowed. Likewise, one directly in a `switch`
+statement's `case` or `default` clause is a SyntaxError (`boa_parser` `CaseBlock`); inside a block in
+the clause it is allowed.
+
+**Not changed.** Disposal: the bytecompiler still binds these names as `let` without adding the value
+to a disposal stack, so `Symbol.dispose` / `Symbol.asyncDispose` are not called and a non-object value
+is not refused. `for (using x of ...)` is not parsed yet. Both are separate rows.
+
+**Pin.** `crates/rustkit-js/tests/using_bindings.rs`: 19 cases against Chrome for Testing
+148.0.7778.216 (`docs/diagnostics/2026-11-17/using_binding_cases.json`); 18 held, the `for` head named
+as a row. Red without the patch: 17 of 19 gave no answer or the wrong one.
+
+## Patch: a var declared by one call's direct eval belongs to that call (`eval-var-per-call`)
+
+**Files.** `third_party/boa_ast/src/scope.rs` (`Scope::activation_bindings`),
+`third_party/boa_engine/src/environments/runtime/mod.rs` (`push_function`, `find_runtime_binding`),
+`third_party/boa_engine/src/environments/runtime/declarative/function.rs` (`new`, `holds_binding`).
+
+**What.** A sloppy direct eval adds its `var`s to the function's compile-time scope, which every call
+of the function shares, and grows only the calling environment for them (`extend_from_compile`).
+
+- **Name lookup:** a lookup in a function holding a direct eval found the name in the shared scope
+  and used that slot, whether or not this call's eval had declared it. It now takes the slot only
+  when this call holds it: a binding the function was compiled with, or one its own eval declared,
+  which initializes it. Otherwise it looks further out.
+- **Environment sizing (unchanged):** a call's environment is still sized from the scope's current
+  count, so every index that code compiled against the shared scope uses, eval code included, is in
+  range.
+- **New slots:** the slots past the count at the scope's first activation start marked as
+  eval-added (deletable), as `extend_from_compile` marks them, so the lookup above can tell them
+  apart.
+- **Older environments:** an environment created before another call's eval grew the shared scope
+  is shorter than the indices code compiled after the growth uses. `get` answers such a slot as
+  uninitialized, and `set` adds it, marked eval-added (`FunctionEnvironment::get` / `set`). The
+  lexical, global and module environments' `get` / `set` take the same guard (a function with
+  parameter expressions keeps its vars in a separate lexical environment). No test here reaches
+  those three past their end; the guard is so that no order of calls can.
+
+**Pin.** `crates/rustkit-js/tests/eval_var_per_call.rs`: 10 cases (reads, writes, `typeof`, `delete`,
+calls before and after the declaring call), each against Chrome for Testing 148.0.7778.216
+(`docs/diagnostics/2026-11-17/eval_var_per_call_cases.json`). Red without the patch: 9 of 10 differed
+(wrong value, a wrong ReferenceError, or no answer).
+
+## Patch: a direct eval in a class element keeps the bindings around the class (`class-element-eval`)
+
+**Files.** `third_party/boa_ast/src/operations/mod.rs` (`contains`, `visit_class_element`).
+
+**What.** Boa decides which scopes keep their bindings in environments, rather than in registers, from
+`contains(node, ContainsSymbol::DirectEval)`: a scope holding a direct eval, or holding a function
+that does, keeps them all, so the eval can find them by name at run time. For a class element the
+answer was always no: method bodies were skipped, a field was asked only about its name, and a
+static block not at all. So `{ let x = 1; class C { m() { return eval('x'); } } }` left `x` in a
+register, where the eval could not find it by name. It now answers as a
+nested function does: a method by its `contains_direct_eval`, and a field, private field or static
+field initializer and a static block by what they contain. Every other symbol keeps the spec's
+ComputedPropertyContains rule (only a computed name is looked at).
+
+**Pin.** `crates/rustkit-js/tests/class_element_eval.rs`: 21 cases, run as classic scripts, against
+Chrome for Testing 148.0.7778.216 (`docs/diagnostics/2026-11-17/class_element_eval_cases.json`). Red
+without the patch: 16 of 21 differed (no answer, a wrong value such as `undefined` for a static
+block's read, or the class instead of the value).

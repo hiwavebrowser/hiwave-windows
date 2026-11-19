@@ -1224,53 +1224,61 @@ fn rasterize_glyph_directwrite(
                 }
             };
 
-        let mut collection: Option<IDWriteFontCollection> = None;
-        if factory.GetSystemFontCollection(&mut collection, false).is_err() {
-            return None;
-        }
-        let collection = collection?;
-
-        // Family lookup with the same fallback ladder the Windows tree used.
-        let family_wide: Vec<u16> =
-            key.font_family.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut index: u32 = 0;
-        let mut exists = windows::core::BOOL(0);
-        let direct = !key.font_family.is_empty()
-            && collection
-                .FindFamilyName(PCWSTR(family_wide.as_ptr()), &mut index, &mut exists)
-                .is_ok()
-            && exists.as_bool();
-        if !direct {
-            let mut found = false;
-            for fallback in ["Segoe UI", "Arial", "Tahoma"] {
-                let fb_wide: Vec<u16> =
-                    fallback.encode_utf16().chain(std::iter::once(0)).collect();
-                if collection
-                    .FindFamilyName(PCWSTR(fb_wide.as_ptr()), &mut index, &mut exists)
-                    .is_ok()
-                    && exists.as_bool()
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
+        // A face the document registered via @font-face outranks the system collection, as
+        // in shaping: the face `webfonts::face_id` names for this family list (the glyph key's).
+        let web_face = rustkit_text::webfonts::lookup_list(&key.font_family, key.font_weight, key.font_style == 1);
+        let face = match web_face {
+            Some(face) => face,
+            None => {
+            let mut collection: Option<IDWriteFontCollection> = None;
+            if factory.GetSystemFontCollection(&mut collection, false).is_err() {
                 return None;
             }
-        }
+            let collection = collection?;
 
-        let family = collection.GetFontFamily(index).ok()?;
-        let dw_weight = DWRITE_FONT_WEIGHT(key.font_weight as i32);
-        let dw_stretch = DWRITE_FONT_STRETCH(5); // Normal
-        let dw_style = if key.font_style == 1 {
-            DWRITE_FONT_STYLE_ITALIC
-        } else {
-            DWRITE_FONT_STYLE_NORMAL
+            // Family lookup with the same fallback ladder the Windows tree used.
+            let family_wide: Vec<u16> =
+                key.font_family.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut index: u32 = 0;
+            let mut exists = windows::core::BOOL(0);
+            let direct = !key.font_family.is_empty()
+                && collection
+                    .FindFamilyName(PCWSTR(family_wide.as_ptr()), &mut index, &mut exists)
+                    .is_ok()
+                && exists.as_bool();
+            if !direct {
+                let mut found = false;
+                for fallback in ["Segoe UI", "Arial", "Tahoma"] {
+                    let fb_wide: Vec<u16> =
+                        fallback.encode_utf16().chain(std::iter::once(0)).collect();
+                    if collection
+                        .FindFamilyName(PCWSTR(fb_wide.as_ptr()), &mut index, &mut exists)
+                        .is_ok()
+                        && exists.as_bool()
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return None;
+                }
+            }
+
+            let family = collection.GetFontFamily(index).ok()?;
+            let dw_weight = DWRITE_FONT_WEIGHT(key.font_weight as i32);
+            let dw_stretch = DWRITE_FONT_STRETCH(5); // Normal
+            let dw_style = if key.font_style == 1 {
+                DWRITE_FONT_STYLE_ITALIC
+            } else {
+                DWRITE_FONT_STYLE_NORMAL
+            };
+            let font = family
+                .GetFirstMatchingFont(dw_weight, dw_stretch, dw_style)
+                .ok()?;
+            font.CreateFontFace().ok()?
+            }
         };
-        let font = family
-            .GetFirstMatchingFont(dw_weight, dw_stretch, dw_style)
-            .ok()?;
-        let face = font.CreateFontFace().ok()?;
 
         let codepoint = key.codepoint as u32;
         let mut glyph_indices = [0u16; 1];
