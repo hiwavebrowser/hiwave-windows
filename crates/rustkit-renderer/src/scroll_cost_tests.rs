@@ -74,6 +74,7 @@ fn text(s: &str, x: f32, y: f32, color: Color) -> DisplayCommand {
         ascent: Some(13.0),
         run: None,
         faces: None,
+        undilated: false,
     }
 }
 
@@ -1302,6 +1303,7 @@ fn fuzz_case(seed: u64) -> FuzzCase {
                     ascent: Some(size * 0.9),
                     run: None,
                     faces: None,
+                    undilated: false,
                 });
                 for _ in 0..rng.u(4) {
                     let width = advance * len as f32 * if rng.chance(0.8) { 1.0 } else { -1.0 };

@@ -1,7 +1,7 @@
 // fetch, Headers, Request and Response, built on the script-network bridge.
 //
 // No network access of its own: fetch() queues a request on
-// window.__rustkit_net and waits for the engine, which vets and fetches it
+// __rk.net and waits for the engine, which vets and fetches it
 // under the page's FetchPolicy (the one allow/deny layer). Installed only
 // after the bridge and XMLHttpRequest (which shares its body encoding).
 //
@@ -10,7 +10,7 @@
 // streams are read whole before sending; no cookies (the policy sends none);
 // `cache`, `integrity`, `keepalive`, `priority` are stored and ignored.
 (function (g) {
-    var net = g.__rustkit_net;
+    var net = __rk.net;
     if (!net || !net.util || typeof g.fetch === 'function') return;
     var U = net.util;
     var domError = U.domError, utf8 = U.utf8;
@@ -464,6 +464,19 @@
             }
             Promise.resolve(body.ready).then(function () {
                 if (settled) return;
+                if (/^blob:/i.test(s.url)) {
+                    // A blob URL is answered from the store, never from the
+                    // network (Fetch §4.2 "scheme fetch", blob): GET only,
+                    // and a URL nothing stands behind is a network error.
+                    var blob = s.method === 'GET' ? U.blob(s.url) : null;
+                    done();
+                    if (!blob) { reject(typeError('Failed to fetch')); return; }
+                    var bh = new Headers();
+                    bh[H].list = [['content-length', String(blob.bytes.length)]].concat(blob.type ? [['content-type', blob.type]] : []);
+                    bh[H].guard = 'immutable';
+                    resolve(makeResponse(blob.bytes, 'basic', 200, 'OK', bh, s.url, false));
+                    return;
+                }
                 var headers = req[H][H].list.map(function (e) { return [e[0], e[1]]; });
                 id = net.request({
                     method: s.method, url: s.url, headers: headers,
@@ -477,7 +490,7 @@
                     var h = new Headers();
                     (r.headers || []).forEach(function (e) { h[H].list.push([String(e[0]).toLowerCase(), String(e[1])]); });
                     h[H].guard = 'immutable';
-                    var status = r.status, bytes = U.fromBase64(r.body_b64);
+                    var status = r.status, bytes = U.bodyBytes(r);
                     if (type === 'opaque' || type === 'opaqueredirect') { status = 0; h[H].list = []; bytes = null; }
                     if (NULL_BODY_STATUS[status]) bytes = null;
                     resolve(makeResponse(bytes, type, status, type === 'opaque' || type === 'opaqueredirect' ? '' : (r.status_text || ''), h, type === 'opaque' ? '' : r.url, !!r.redirected));

@@ -407,3 +407,40 @@ fn panel_paths_round_trip() {
         assert_eq!(devtools_node_of(bad), None, "{bad}");
     }
 }
+
+/// The Inspector's console, as the app's panel reads it (`devtools_console`): an unhandled
+/// rejection is one line, also when a page listener heard it, and none when a listener canceled
+/// its event (Chrome for Testing 148: `prevent`, `notPrevented` and `pageErrors` in
+/// `docs/diagnostics/2026-11-15/unhandled_rejection_cft148.json`). A RustKit document's lines
+/// come from the engine alone: the app injects no console script into it (`console_inject.js`
+/// is for the WebKit content path, which macOS does not build).
+#[test]
+fn the_console_has_one_line_for_an_unhandled_rejection_and_none_for_a_canceled_one() {
+    let (mut engine, view) = page("<html><body><p>hi</p></body></html>");
+    engine.devtools_attach(view, true).unwrap();
+    let mut since = engine.devtools_console(view, 0).unwrap().next_seq;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let mut lines_after = |engine: &mut Engine, script: &str| -> Vec<(String, String)> {
+        // The script stands for the page's own (a host's script rejects for nobody).
+        engine.execute_as_page_script(view, script).unwrap();
+        // The page's errors reach the Inspector with the live loop's turn.
+        rt.block_on(engine.pump_live(view, 16));
+        let c = engine.devtools_console(view, since).unwrap();
+        since = c.next_seq;
+        c.entries.iter().map(|e| (e.kind.to_string(), e.message.split(' ').take(3).collect::<Vec<_>>().join(" "))).collect()
+    };
+    let one = vec![("script_error".to_string(), "Uncaught (in promise)".to_string())];
+    // No listener.
+    assert_eq!(lines_after(&mut engine, "Promise.reject(new Error('a'))"), one);
+    // A listener that only looks.
+    assert_eq!(
+        lines_after(&mut engine, "window.__heard = 0; window.addEventListener('unhandledrejection', function () { __heard++; }); Promise.reject(new Error('b'))"),
+        one
+    );
+    // A listener that cancels.
+    assert_eq!(
+        lines_after(&mut engine, "window.addEventListener('unhandledrejection', function (e) { e.preventDefault(); }); Promise.reject(new Error('c'))"),
+        Vec::<(String, String)>::new()
+    );
+    assert_eq!(engine.execute_script(view, "window.__heard").unwrap(), "Number(2.0)");
+}

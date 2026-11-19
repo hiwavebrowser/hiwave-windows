@@ -1,7 +1,7 @@
 // HTML drag and drop (HTML §6.11): a constructible DataTransfer over a drag
 // data store with its protection modes, a minimal DataTransferItemList, and
 // the hook the engine's drag-and-drop processing model drives
-// (`__rkDragStore`, read by dom.rs's `__rkFireDrag`). Evaluated after
+// (`__rk.dragStore`, read by dom.rs's `__rk.fireDrag`). Evaluated after
 // web_interfaces.js, whose interface-only DataTransfer this replaces.
 //
 // Modes (§6.11.2.2): 'rw' in dragstart (and for `new DataTransfer()`), 'ro'
@@ -31,26 +31,28 @@
     }
 
     // ---- DataTransferItem / DataTransferItemList (string items only)
+    // An item's (and a list's) store and entry: kept here, not on the object.
+    var STORES = new WeakMap(), ENTRIES = new WeakMap();
     function DataTransferItem() { throw new TypeError('Illegal constructor'); }
     function makeItem(store, entry) {
         var item = Object.create(DataTransferItem.prototype);
-        hidden(item, '__rkStore', store);
-        hidden(item, '__rkEntry', entry);
+        STORES.set(item, store);
+        ENTRIES.set(item, entry);
         return item;
     }
     function live(item) {
-        var s = item.__rkStore;
-        return s.mode !== 'disabled' && s.items.indexOf(item.__rkEntry) >= 0;
+        var s = STORES.get(item);
+        return s.mode !== 'disabled' && s.items.indexOf(ENTRIES.get(item)) >= 0;
     }
     Object.defineProperty(DataTransferItem.prototype, 'kind', {
-        get: function () { return live(this) ? this.__rkEntry.kind : ''; }, configurable: true, enumerable: true
+        get: function () { return live(this) ? ENTRIES.get(this).kind : ''; }, configurable: true, enumerable: true
     });
     Object.defineProperty(DataTransferItem.prototype, 'type', {
-        get: function () { return live(this) ? this.__rkEntry.type : ''; }, configurable: true, enumerable: true
+        get: function () { return live(this) ? ENTRIES.get(this).type : ''; }, configurable: true, enumerable: true
     });
     DataTransferItem.prototype.getAsString = function (callback) {
         if (typeof callback !== 'function' || !live(this)) return;
-        var s = this.__rkStore, e = this.__rkEntry;
+        var s = STORES.get(this), e = ENTRIES.get(this);
         if (s.mode !== 'rw' && s.mode !== 'ro') return;
         var data = e.data;
         Promise.resolve().then(function () { callback(data); });
@@ -60,7 +62,7 @@
 
     function DataTransferItemList() { throw new TypeError('Illegal constructor'); }
     function syncList(list) {
-        var s = list.__rkStore;
+        var s = STORES.get(list);
         var n = s.mode === 'disabled' ? 0 : s.items.length;
         for (var k in list) {
             if (/^\d+$/.test(k)) delete list[k];
@@ -72,11 +74,11 @@
         }
     }
     Object.defineProperty(DataTransferItemList.prototype, 'length', {
-        get: function () { var s = this.__rkStore; return s.mode === 'disabled' ? 0 : s.items.length; },
+        get: function () { var s = STORES.get(this); return s.mode === 'disabled' ? 0 : s.items.length; },
         configurable: true, enumerable: true
     });
     DataTransferItemList.prototype.add = function (data, type) {
-        var s = this.__rkStore;
+        var s = STORES.get(this);
         if (s.mode !== 'rw') return null;
         if (typeof data !== 'string') return null; // File items are not supported.
         var t = String(type).toLowerCase();
@@ -91,7 +93,7 @@
         return e.item;
     };
     DataTransferItemList.prototype.remove = function (index) {
-        var s = this.__rkStore;
+        var s = STORES.get(this);
         if (s.mode !== 'rw') {
             var D = g.DOMException;
             throw D ? new D('The data transfer is not writable.', 'InvalidStateError') : new Error('InvalidStateError');
@@ -100,7 +102,7 @@
         syncList(this);
     };
     DataTransferItemList.prototype.clear = function () {
-        var s = this.__rkStore;
+        var s = STORES.get(this);
         if (s.mode !== 'rw') return;
         s.items.length = 0;
         syncList(this);
@@ -115,7 +117,7 @@
         var s = { mode: 'rw', items: [], effectAllowed: 'none', dropEffect: 'none' };
         hidden(this, STORE, s);
         var list = Object.create(DataTransferItemList.prototype);
-        hidden(list, '__rkStore', s);
+        STORES.set(list, s);
         hidden(s, 'list', list);
         var files = [];
         files.item = function (i) { return files[i] || null; };
@@ -228,7 +230,8 @@
     // The drag in progress: its DataTransfer, and whether its source is a
     // link (for the uninitialized effectAllowed).
     var current = null, linkSource = false;
-    hidden(g, '__rkDragStore', {
+    // Inherits from nothing: the engine's own object, read by `fireDrag`.
+    __rk.dragStore = Object.setPrototypeOf({
         // dragstart: a fresh store, with the data the user agent puts in
         // for a link or an image (§6.11.5 step "drag data store item list").
         begin: function (source) {
@@ -276,5 +279,5 @@
             }
             return op;
         }
-    });
+    }, null);
 })(globalThis);

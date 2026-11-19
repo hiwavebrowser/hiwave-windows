@@ -197,28 +197,28 @@ impl FontFamilyChain {
 
     /// Resolve a CSS font-family value to a chain.
     pub fn from_css_value(value: &str) -> Self {
-        let families: Vec<&str> = value
+        let listed: Vec<&str> = value
             .split(',')
             .map(|s| s.trim().trim_matches('"').trim_matches('\''))
             .collect();
-
-        // `-apple-system` and `BlinkMacSystemFont` are macOS-only aliases.
-        // Chrome on Windows does not recognise them, so they are skipped like
-        // any other family that is not installed and the stack falls through
-        // (`-apple-system, BlinkMacSystemFont, sans-serif` becomes plain
-        // `sans-serif`). Treating them as `system-ui` picked Segoe UI where
-        // Chrome picked Arial.
-        #[cfg(windows)]
-        let families: Vec<&str> = families
-            .into_iter()
-            .filter(|f| {
-                let l = f.to_lowercase();
-                l != "-apple-system" && l != "blinkmacsystemfont"
-            })
+        // `-apple-system` is WebKit's name for the system font; Chrome has
+        // never supported it, so it is an unknown family and the stack goes
+        // on to the next one (Chrome for Testing 148: `-apple-system` alone
+        // is the default serif, `-apple-system, "Segoe UI", Helvetica` is
+        // Helvetica). CB7b.
+        let families: Vec<&str> = listed
+            .iter()
+            .copied()
+            .filter(|f| !f.eq_ignore_ascii_case("-apple-system"))
+            // Windows: Chrome there does not know `BlinkMacSystemFont` either (macOS's name for the
+            // system font), so it is skipped too (Chrome for Testing 148 win64:
+            // docs/diagnostics/2026-11-18/font_alias_win148.json).
+            .filter(|f| !(cfg!(windows) && f.eq_ignore_ascii_case("BlinkMacSystemFont")))
             .collect();
 
         if families.is_empty() {
-            return Self::sans_serif();
+            // Only unknown names: Chrome's default (standard) font.
+            return if listed.is_empty() { Self::sans_serif() } else { Self::serif() };
         }
 
         let primary = families[0];
@@ -228,7 +228,7 @@ impl FontFamilyChain {
             "sans-serif" => Self::sans_serif(),
             "serif" => Self::serif(),
             "monospace" => Self::monospace(),
-            "system-ui" | "-apple-system" | "blinkmacsystemfont" => Self::system_ui(),
+            "system-ui" | "blinkmacsystemfont" => Self::system_ui(),
             // Chrome's faces on macOS lead: Apple Chancery and Papyrus.
             "cursive" => Self::new("Apple Chancery")
                 .with_fallback("Comic Sans MS")
@@ -242,10 +242,7 @@ impl FontFamilyChain {
                 for fallback in families.iter().skip(1) {
                     // Recursively handle generic families in fallback chain
                     let lower = fallback.to_lowercase();
-                    if lower == "system-ui"
-                        || lower == "-apple-system"
-                        || lower == "blinkmacsystemfont"
-                    {
+                    if lower == "system-ui" || lower == "blinkmacsystemfont" {
                         let sys_chain = Self::system_ui();
                         chain.fallbacks.push(sys_chain.primary);
                         chain.fallbacks.extend(sys_chain.fallbacks);
@@ -1192,6 +1189,63 @@ thread_local! {
     static MISSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Test-only: shapes that missed the memo on this thread so far.
+#[cfg(test)]
+pub(crate) fn shape_memo_misses() -> usize {
+    MISSES.with(|c| c.get())
+}
+
+/// Bytes the per-thread shaped-text memo of [`TextShaper::shape`] may hold
+/// (SHAPED-CAP), its queue of turned-away strings included; past it, entries
+/// are evicted one at a time (`text_memo`), never all at once. Each entry is
+/// weighed by [`shaped_entry_bytes`]: its key, its run with its glyphs, and
+/// the memo's bookkeeping. A relayout shapes each text row under at least two
+/// keys (layout, display list): a 16,384-entry cap made relayouts above about
+/// 16 k distinct rows re-shape most of them. A short row (a 5-digit number)
+/// weighs about 500 bytes, so this holds about 60,000 of them.
+pub(crate) const SHAPED_TEXT_MEMO_BYTES: usize = 32 << 20;
+
+type ShapedKey = (String, String, Vec<String>, u16, u8, u8, u32);
+
+/// What one shaped-memo entry costs: the key and the run with everything
+/// they own on the heap (texts, family names, glyphs, face name) and the
+/// memo's per-entry bookkeeping. Allocator rounding is not counted.
+fn shaped_entry_bytes(key: &ShapedKey, run: &std::rc::Rc<ShapedRun>) -> usize {
+    use std::mem::size_of;
+    let key_bytes = size_of::<ShapedKey>()
+        + key.0.capacity()
+        + key.1.capacity()
+        + key.2.capacity() * size_of::<String>()
+        + key.2.iter().map(String::capacity).sum::<usize>();
+    let run_bytes = 2 * size_of::<usize>()
+        + size_of::<ShapedRun>()
+        + run.text.capacity()
+        + run.font_family.capacity()
+        + run.glyphs.capacity() * size_of::<PositionedGlyph>()
+        + run
+            .face
+            .as_ref()
+            .map_or(0, |face| face.postscript_name.capacity());
+    key_bytes
+        + run_bytes
+        + crate::text_memo::bookkeeping_bytes::<ShapedKey, std::rc::Rc<ShapedRun>>()
+}
+
+thread_local! {
+    static SHAPED_MEMO: std::cell::RefCell<
+        crate::text_memo::TextMemo<ShapedKey, std::rc::Rc<ShapedRun>>,
+    > = std::cell::RefCell::new(crate::text_memo::TextMemo::with_byte_budget(
+        SHAPED_TEXT_MEMO_BYTES,
+        shaped_entry_bytes,
+    ));
+}
+
+/// Test-only: the bytes this thread's shaped-text memo holds.
+#[cfg(test)]
+pub(crate) fn shaped_memo_bytes() -> usize {
+    SHAPED_MEMO.with(|m| m.borrow().weight())
+}
+
 /// Text shaper for complex text layout.
 pub struct TextShaper {
     #[allow(dead_code)]
@@ -1472,8 +1526,6 @@ impl TextShaper {
         stretch: FontStretch,
         size: f32,
     ) -> Result<ShapedRun, TextError> {
-        use std::cell::RefCell;
-
         // `font-size: 0`: no glyph, no advance, no extent. Core Text is not
         // asked: it answers a size of 0 with its default size, so text that
         // a page had hidden this way was measured about 12px tall.
@@ -1492,23 +1544,8 @@ impl TextShaper {
             });
         }
 
-        type Key = (String, String, Vec<String>, u16, u8, u8, u32);
-        struct Memo {
-            generation: u64,
-            runs: HashMap<Key, ShapedRun>,
-        }
-        // Bounds memory on a text-heavy page; refilling costs one shape per
-        // entry, which is what every call cost before the memo.
-        const MAX_ENTRIES: usize = 16384;
-        thread_local! {
-            static MEMO: RefCell<Memo> = RefCell::new(Memo {
-                generation: 0,
-                runs: HashMap::new(),
-            });
-        }
-
         let generation = rustkit_text::webfonts::generation();
-        let key: Key = (
+        let key: ShapedKey = (
             text.to_string(),
             font_chain.primary.clone(),
             font_chain.fallbacks.clone(),
@@ -1517,26 +1554,20 @@ impl TextShaper {
             stretch as u8,
             size.to_bits(),
         );
-        let cached = MEMO.with(|m| {
+        let cached = SHAPED_MEMO.with(|m| {
             let mut m = m.borrow_mut();
-            if m.generation != generation {
-                m.runs.clear();
-                m.generation = generation;
-            }
-            m.runs.get(&key).cloned()
+            m.sync_generation(generation);
+            m.get(&key)
         });
         if let Some(run) = cached {
-            return Ok(run);
+            return Ok((*run).clone());
         }
         #[cfg(test)]
         MISSES.with(|c| c.set(c.get() + 1));
         let run = self.shape_uncached(text, font_chain, weight, style, stretch, size)?;
-        MEMO.with(|m| {
-            let mut m = m.borrow_mut();
-            if m.runs.len() >= MAX_ENTRIES {
-                m.runs.clear();
-            }
-            m.runs.insert(key, run.clone());
+        SHAPED_MEMO.with(|m| {
+            m.borrow_mut()
+                .insert(key, std::rc::Rc::new(run.clone()))
         });
         Ok(run)
     }
@@ -1668,8 +1699,31 @@ impl TextShaper {
             // fallback faces this run actually used.
             let mut used_fallback_extents: Option<(f32, f32, f32)> = None;
 
+            // EM1: characters still to fold into the emoji sequence glyph
+            // the previous head started (Chrome shapes a ZWJ family, a
+            // skin-toned emoji, a flag, a keycap as ONE cluster with one
+            // advance). They are recorded `Ignorable`: no advance, nothing
+            // drawn of their own; paint draws the sequence at the head.
+            let mut fold_left = 0usize;
+            let primary_emoji_advance = rustkit_text::macos::apple_emoji_advance(&ct_font);
+
             while utf16_idx < char_count && char_idx < text_chars.len() {
                 let c = text_chars[char_idx];
+                if fold_left > 0 {
+                    fold_left -= 1;
+                    glyphs.push(PositionedGlyph {
+                        glyph_id: glyph_ids[utf16_idx],
+                        x: x_offset,
+                        y: 0.0,
+                        advance: 0.0,
+                        character: c,
+                        cluster: char_idx as u32,
+                        face: GlyphFace::Ignorable,
+                    });
+                    utf16_idx += c.len_utf16();
+                    char_idx += 1;
+                    continue;
+                }
                 let advance = glyph_advances[utf16_idx].width as f32;
 
                 // A character the chosen face has no glyph for is shaped by
@@ -1702,8 +1756,33 @@ impl TextShaper {
                         primary_has_glyph,
                     )
                 };
+                // The head of an emoji sequence its emoji face forms as one
+                // glyph takes the rest of its grapheme cluster with it.
+                // So does the head of a run whose own face is an Apple
+                // emoji face (`font-family: "Apple Color Emoji"`).
+                let primary_emoji_head =
+                    face == GlyphFace::Primary && primary_has_glyph && primary_emoji_advance.is_some();
+                if face == (GlyphFace::Fallback { emoji: true }) || primary_emoji_head {
+                    let n = rustkit_text::macos::emoji_cluster_len(&text_chars[char_idx..]);
+                    if n > 1 {
+                        let cluster: String = text_chars[char_idx..char_idx + n].iter().collect();
+                        let formed = if primary_emoji_head {
+                            rustkit_text::macos::emoji_cluster_glyph(&ct_font, &cluster)
+                        } else {
+                            rustkit_text::macos::fallback_face_for_presentation(&ct_font, c, true)
+                                .and_then(|(face, _)| rustkit_text::macos::emoji_cluster_glyph(&face, &cluster))
+                        };
+                        if let Some((_, covered)) = formed {
+                            fold_left = covered - 1;
+                        }
+                    }
+                }
                 let final_advance = match face {
-                    GlyphFace::Primary if primary_has_glyph => primary_advance,
+                    // A primary Apple emoji face advances as it does when
+                    // reached by fallback (#1072 R1 nit 4).
+                    GlyphFace::Primary if primary_has_glyph => {
+                        primary_emoji_advance.unwrap_or(primary_advance)
+                    }
                     GlyphFace::Primary => notdef_advance,
                     // Variation selectors / joiners are zero-width
                     // wherever they land (they modify a neighbour).
@@ -3138,28 +3217,61 @@ mod tests {
         #[cfg(not(target_os = "macos"))]
         assert_eq!(system.primary, "Segoe UI");
 
-        let apple = FontFamilyChain::from_css_value("-apple-system");
-        #[cfg(target_os = "macos")]
-        assert_eq!(apple.primary, ".AppleSystemUIFont");
-        // Windows: the alias is skipped, so it falls through to `sans-serif`.
+        let blink = FontFamilyChain::from_css_value("BlinkMacSystemFont");
+        #[cfg(not(windows))]
+        assert_eq!(blink.primary, system.primary);
+        // Chrome on Windows does not know `BlinkMacSystemFont`: alone it is the default serif.
         #[cfg(windows)]
-        assert_eq!(apple.primary, "Arial");
-        #[cfg(all(not(target_os = "macos"), not(windows)))]
-        assert_eq!(apple.primary, "Segoe UI");
+        assert_eq!(blink.primary, FontFamilyChain::serif().primary);
     }
 
     #[cfg(windows)]
     #[test]
     fn macos_only_aliases_fall_through_on_windows() {
-        // The css-selectors stack: Chrome on Windows resolves it to Arial.
+        // Chrome for Testing 148 win64 (docs/diagnostics/2026-11-18/font_alias_win148.json).
         let c = FontFamilyChain::from_css_value("-apple-system, BlinkMacSystemFont, sans-serif");
+        assert_eq!(c.primary, "Arial");
+        let c = FontFamilyChain::from_css_value("BlinkMacSystemFont, sans-serif");
         assert_eq!(c.primary, "Arial");
         // A real family after the aliases still wins.
         let c = FontFamilyChain::from_css_value("-apple-system, 'Segoe UI', sans-serif");
         assert_eq!(c.primary, "Segoe UI");
-        // system-ui is not an alias of the two above: it stays Segoe UI.
+        // system-ui is not one of them: it stays Segoe UI.
         let c = FontFamilyChain::from_css_value("system-ui, sans-serif");
         assert_eq!(c.primary, "Segoe UI");
+    }
+
+    /// `-apple-system` is WebKit's name for the system font. Chrome has never
+    /// supported it: it is an unknown family, skipped in the stack like any
+    /// font that is not installed (CB7b). Chrome for Testing 148 on macOS,
+    /// `getBoundingClientRect` of "Hello world" at 14px: `-apple-system`
+    /// alone is 67.27, as the default serif (Times) is, where the system
+    /// font is 72.34; `-apple-system, BlinkMacSystemFont` is the system
+    /// font; `-apple-system, "Segoe UI", Helvetica` is Helvetica (69.25).
+    #[test]
+    fn apple_system_is_an_unknown_family_as_in_chrome() {
+        let serif = FontFamilyChain::serif();
+        let alone = FontFamilyChain::from_css_value("-apple-system");
+        assert_eq!(alone.primary, serif.primary, "-apple-system alone is the default serif");
+        let system = FontFamilyChain::from_css_value("system-ui");
+        let then_blink = FontFamilyChain::from_css_value("-apple-system, BlinkMacSystemFont");
+        #[cfg(not(windows))]
+        assert_eq!(then_blink.primary, system.primary, "the next family, the system font");
+        #[cfg(windows)]
+        assert_eq!(then_blink.primary, serif.primary, "on Windows both are unknown: the default serif");
+        let stack = FontFamilyChain::from_css_value("-apple-system, \"Segoe UI\", Helvetica");
+        let mut walk = std::iter::once(stack.primary.as_str())
+            .chain(stack.fallbacks.iter().map(String::as_str));
+        assert!(
+            // Windows: Segoe UI is the system font and a family this stack names (Chrome for
+            // Testing 148 win64 resolves the stack to it), so only -apple-system is checked there.
+            !walk.any(|f| (f == system.primary && !cfg!(windows)) || f.eq_ignore_ascii_case("-apple-system")),
+            "no system font ahead of Helvetica: {} {:?}",
+            stack.primary,
+            stack.fallbacks
+        );
+        assert_eq!(stack.primary, "Segoe UI");
+        assert_eq!(stack.fallbacks.first().map(String::as_str), Some("Helvetica"));
     }
 
     /// A generic keyword after families that are not installed resolves

@@ -4,7 +4,7 @@
 //! sockets, no URL policy. The engine enables the bridge, drains the queue,
 //! runs every request under its `FetchPolicy` (rustkit-net) and delivers the
 //! outcome. A bindings instance that never called [`DomBindings::enable_net_bridge`]
-//! has no `__rustkit_net`, so no network surface can exist on it.
+//! has no `__rk.net`, so no network surface can exist on it.
 
 use super::*;
 
@@ -58,7 +58,7 @@ impl DomBindings {
             .evaluate_with_host(include_str!("web_xhr.js"))?;
         self.runtime
             .borrow_mut()
-            .evaluate_script(include_str!("web_fetch.js"))?;
+            .evaluate_with_host(include_str!("web_fetch.js"))?;
         Ok(())
     }
 
@@ -67,7 +67,7 @@ impl DomBindings {
         matches!(
             self.runtime
                 .borrow_mut()
-                .evaluate_script("typeof window.__rustkit_net === 'object'"),
+                .evaluate_host_turn("return typeof __rk.net === 'object'", &[]),
             Ok(JsValue::Boolean(true))
         )
     }
@@ -75,9 +75,8 @@ impl DomBindings {
     /// Take every request queued since the last call, in the order the page
     /// made them. Empty when the bridge is not enabled.
     pub fn take_net_requests(&self) -> Vec<NetRequest> {
-        let taken = self.runtime.borrow_mut().evaluate_bookkeeping(
-            "window.__rustkit_net ? window.__rustkit_net.take() : '[]'",
-        );
+        let taken = self.runtime.borrow_mut().evaluate_host_bookkeeping(
+            "return __rk.net ? __rk.net.take() : '[]'");
         match taken {
             Ok(JsValue::String(json)) => serde_json::from_str(&json).unwrap_or_default(),
             _ => Vec::new(),
@@ -96,17 +95,28 @@ impl DomBindings {
                 body_b64,
                 kind,
                 redirected,
-            } => serde_json::json!({
-                "id": id,
-                "ok": true,
-                "url": url,
-                "status": status,
-                "status_text": status_text,
-                "headers": headers,
-                "body_b64": body_b64,
-                "kind": kind,
-                "redirected": redirected,
-            }),
+            } => {
+                // The body goes to the host's byte stash and script takes
+                // it as one buffer (`web_net_bridge.js` `deliver`). Inside
+                // the delivery's source text, megabytes of base64 had to
+                // be lexed, parsed and decoded by script loops: 3 s for
+                // 256 KB.
+                let stashed = self.runtime.borrow_mut().stash_base64(id, &body_b64);
+                let mut payload = serde_json::json!({
+                    "id": id,
+                    "ok": true,
+                    "url": url,
+                    "status": status,
+                    "status_text": status_text,
+                    "headers": headers,
+                    "kind": kind,
+                    "redirected": redirected,
+                });
+                if !stashed {
+                    payload["body_b64"] = serde_json::Value::String(body_b64);
+                }
+                payload
+            }
             NetDelivery::Error(reason) => serde_json::json!({
                 "id": id,
                 "ok": false,
@@ -115,18 +125,20 @@ impl DomBindings {
         };
         // A JSON document inside a JS string literal: quote it with serde.
         let quoted = serde_json::to_string(&payload.to_string()).unwrap_or_default();
-        let delivered = self.runtime.borrow_mut().evaluate_script(&format!(
-            "window.__rustkit_net ? window.__rustkit_net.deliver({quoted}) : false"
-        ))?;
-        Ok(matches!(delivered, JsValue::Boolean(true)))
+        let delivered = self.runtime.borrow_mut().evaluate_host_turn(&format!(
+            "return __rk.net ? __rk.net.deliver({quoted}) : false"
+        ), &[]);
+        // Nobody was waiting (aborted, navigated away): the body goes too.
+        self.runtime.borrow_mut().drop_stashed_bytes(id);
+        Ok(matches!(delivered?, JsValue::Boolean(true)))
     }
 
     /// Set `id`'s callback aside so a later [`Self::fail_pending_net_requests`]
     /// does not settle it. The engine delivers the answer on a turn that
     /// still has JavaScript budget. `false` when nothing is waiting for `id`.
     pub fn shelve_net_request(&self, id: u64) -> bool {
-        match self.runtime.borrow_mut().evaluate_bookkeeping(&format!(
-            "window.__rustkit_net ? window.__rustkit_net.shelve({id}) : false"
+        match self.runtime.borrow_mut().evaluate_host_bookkeeping(&format!(
+            "return __rk.net ? __rk.net.shelve({id}) : false"
         )) {
             Ok(JsValue::Boolean(kept)) => kept,
             _ => false,
@@ -138,7 +150,7 @@ impl DomBindings {
         match self
             .runtime
             .borrow_mut()
-            .evaluate_bookkeeping("window.__rustkit_net ? window.__rustkit_net.unshelve() : 0")
+            .evaluate_host_bookkeeping("return __rk.net ? __rk.net.unshelve() : 0")
         {
             Ok(JsValue::Number(n)) => n as usize,
             _ => 0,
@@ -150,9 +162,9 @@ impl DomBindings {
     /// A request shelved with [`Self::shelve_net_request`] is not one of them.
     pub fn fail_pending_net_requests(&self, reason: &str) -> usize {
         let quoted = serde_json::to_string(reason).unwrap_or_default();
-        match self.runtime.borrow_mut().evaluate_script(&format!(
-            "window.__rustkit_net ? window.__rustkit_net.fail_all({quoted}) : 0"
-        )) {
+        match self.runtime.borrow_mut().evaluate_host_turn(&format!(
+            "return __rk.net ? __rk.net.fail_all({quoted}) : 0"
+        ), &[]) {
             Ok(JsValue::Number(n)) => n as usize,
             _ => 0,
         }
@@ -163,7 +175,7 @@ impl DomBindings {
         match self
             .runtime
             .borrow_mut()
-            .evaluate_bookkeeping("window.__rustkit_net ? window.__rustkit_net.waiting() : 0")
+            .evaluate_host_bookkeeping("return __rk.net ? __rk.net.waiting() : 0")
         {
             Ok(JsValue::Number(n)) => n as usize,
             _ => 0,

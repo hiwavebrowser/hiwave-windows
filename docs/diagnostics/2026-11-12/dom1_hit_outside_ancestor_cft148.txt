@@ -1,0 +1,38 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() after load
+abs_body (40,310): item2_link
+abs_body edge (79,329): abs_body
+beside abs_body (90,310): item2_link
+abs_rel (230,80): abs_rel
+fixed (430,95): fixed
+neg above (600,30): neg
+neg inside stage (640,65): s3
+tall below stage (30,200): tall
+tall right of box (100,200): HTML
+clipped inside (220,130): clipped
+clipped below (220,180): HTML
+abs_escape (430,215): abs_escape
+abs_clipped (630,215): HTML
+trigger (20,270): trigger
+item1 (30,292): item1
+item2 (30,315): item2_link
+right of menu (140,292): HTML
+moved (250,335): moved
+moved origin (220,265): s9
+fl (420,275): fl
+rel_inline (610,320): rel_inline
+over (60,460): over
+under only (20,445): under
+z_top (250,460): z_top
+z_low only (280,475): z_low
+field (450,470): field
+no_pe (620,455): HTML
+hidden (700,455): HTML
+empty page (780,590): HTML
+rect abs_body: 20 300 60 30
+rect fixed: 410 80 60 30
+rect neg: 590 20 60 30
+rect abs_escape: 410 200 60 30
+rect menu: 10 284 120 40
+rect moved: 220 320 60 30
+rect fl: 400 260 60 30
+rect field: 400 460 108 21

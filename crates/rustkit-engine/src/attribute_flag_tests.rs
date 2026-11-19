@@ -63,7 +63,7 @@ fn the_flag_splits_from_the_value_and_folds_only_with_i() {
         ("data-x=\"a~=b\"", "a~=b", true),
         ("data-x=\"a^=b\" i", "A^=B", true),
     ] {
-        let attributes: HashMap<String, String> = [("data-x".to_string(), value.to_string())].into();
+        let attributes: rustkit_dom::AttrMap = [("data-x".to_string(), value.to_string())].into();
         assert_eq!(
             SelectorMatcher.match_attribute_selector(test, &attributes),
             passes,

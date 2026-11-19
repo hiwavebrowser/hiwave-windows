@@ -38,6 +38,9 @@ pub struct FrameStats {
     pub per_pass: bool,
     /// Quads handed to the GPU (colors, glyphs, images).
     pub quads: u64,
+    /// Outline clip masks (`PushClipPath`) rasterised on the CPU and
+    /// uploaded this frame, i.e. not found in the mask cache.
+    pub clip_masks_rasterized: u64,
     /// Of those, quads with no pixel inside the viewport (measure mode only).
     pub quads_offscreen: u64,
 }

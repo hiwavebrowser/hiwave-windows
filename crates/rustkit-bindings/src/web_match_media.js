@@ -7,7 +7,7 @@
 //
 // `matches` is read against the viewport as it stands (`window.innerWidth`
 // / `innerHeight`), so it is right after a resize even before the page
-// hears about it. `change` fires from `__rustkit_media_changes()`, which
+// hears about it. `change` fires from `__rk.mediaChanges()`, which
 // the engine runs after the `resize` event (the "evaluate media queries and
 // report changes" step of update the rendering, HTML §8.1.7.3), for every
 // list whose answer flipped since it was last reported. A list joins the
@@ -32,7 +32,7 @@
 
     var proto = MediaQueryList.prototype;
     // The DOM install's listener registry (`hasListener(target, type)`).
-    var HOOKS = g.__rkDomHooks || {};
+    var HOOKS = __rk.domHooks || {};
     // MediaQueryList -> { media, w, h, matches, reported, onchange }
     var STATE = new WeakMap();
     // The lists that can hear `change`, in the order they started to.
@@ -123,7 +123,7 @@
     // answers how many heard `change`. A list nothing can hear any more is
     // dropped instead (see the header). Listener exceptions go to the
     // engine's error log through dispatchEvent, as any listener's do.
-    g.__rustkit_media_changes = function () {
+    __rk.mediaChanges = function () {
         var lists = live.slice(), fired = 0;
         for (var i = 0; i < lists.length; i++) {
             var mql = lists[i], s = STATE.get(mql);

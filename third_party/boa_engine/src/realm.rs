@@ -72,9 +72,36 @@ struct Inner {
     host_classes: GcRefCell<FxHashMap<TypeId, StandardConstructor>>,
 
     host_defined: GcRefCell<HostDefined>,
+
+    /// HIWAVE PATCH (global-lexical-scope): what `late_global_lexical` found for a name, valid
+    /// while the global scope has the recorded number of bindings (it only grows).
+    // Safety: nothing here needs tracing.
+    #[unsafe_ignore_trace]
+    late_lexicals: std::cell::RefCell<(u32, FxHashMap<JsString, Option<boa_ast::scope::BindingLocator>>)>,
 }
 
 impl Realm {
+    /// HIWAVE PATCH (global-lexical-scope): the realm's global lexical binding for `name`, if any
+    /// script has declared one. Cached per name: a global read of a name nobody declared (`Math`,
+    /// `document`) costs one hash lookup, not a scan of the scope.
+    pub(crate) fn late_global_lexical(&self, name: &JsString) -> Option<boa_ast::scope::BindingLocator> {
+        let count = self.inner.scope.num_bindings();
+        if count == 0 {
+            return None;
+        }
+        let mut cache = self.inner.late_lexicals.borrow_mut();
+        if cache.0 != count {
+            cache.0 = count;
+            cache.1.clear();
+        }
+        if let Some(found) = cache.1.get(name) {
+            return found.clone();
+        }
+        let found = self.inner.scope.get_binding(name);
+        cache.1.insert(name.clone(), found.clone());
+        found
+    }
+
     /// Create a new [`Realm`].
     #[inline]
     pub fn create(hooks: &dyn HostHooks, root_shape: &RootShape) -> JsResult<Self> {
@@ -98,6 +125,7 @@ impl Realm {
                 global_this,
                 template_map: GcRefCell::default(),
                 loaded_modules: GcRefCell::default(),
+                late_lexicals: std::cell::RefCell::default(),
                 host_classes: GcRefCell::default(),
                 host_defined: GcRefCell::default(),
             }),

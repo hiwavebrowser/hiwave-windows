@@ -48,6 +48,8 @@ const MAX_REPORTS: usize = 256;
 const MAX_REPORTED_TEXTS: usize = 1024;
 /// Script paths remembered (frames in any other path are dropped).
 const MAX_KNOWN_PATHS: usize = 4096;
+/// How many page scripts the embedder can register ([`Diagnostics::register_script`]).
+pub(crate) const MAX_SCRIPTS: usize = 4096;
 /// Frames kept per report.
 const MAX_FRAMES: usize = 32;
 
@@ -145,12 +147,48 @@ pub fn standard_name(name: Option<&str>) -> &'static str {
         .unwrap_or("Error")
 }
 
+/// One page script in one realm.
+struct ScriptEntry {
+    realm: usize,
+    url: String,
+    muted: bool,
+}
+
+/// What the page is told of an uncaught exception.
+pub(crate) enum Told {
+    /// Without detail (HTML's muted errors): "Script error.", no file, no
+    /// position, no value.
+    Nothing,
+    /// The exception, and where it was thrown.
+    At { file: String, line: u32, column: u32 },
+}
+
 #[derive(Default)]
 pub(crate) struct Diagnostics {
     /// The embedder records page errors ([`crate::JsRuntime::set_error_reports`]).
     pub(crate) on: Cell<bool>,
     /// Reports keep the page's message text (unsafe to share).
     pub(crate) keep_text: Cell<bool>,
+    /// An uncaught exception is announced to the embedder's scripts first
+    /// ([`crate::JsRuntime::set_error_events`]).
+    pub(crate) error_events: Cell<bool>,
+    /// An announcement is under way: an exception thrown by what it calls is
+    /// reported and not announced.
+    announcing_error: Cell<bool>,
+    /// What the embedder said of each page script it evaluates
+    /// ([`crate::JsRuntime::register_script`]), by the name it is evaluated
+    /// under: per realm, its URL and whether its errors are reported
+    /// without detail. Read when a script is compiled (its code carries the
+    /// answer from then on) and for the file an event names; never to
+    /// decide what an error event says.
+    scripts: RefCell<std::collections::HashMap<String, Vec<ScriptEntry>>>,
+    /// How many entries `scripts` holds. A script past its room is one
+    /// nothing was said of: compiled as reported without detail.
+    script_count: Cell<usize>,
+    /// Each realm's document URL, as the embedder gave it.
+    documents: RefCell<std::collections::HashMap<usize, String>>,
+    /// The realm entered (the runtime keeps it in step).
+    pub(crate) realm: Cell<usize>,
     reports: RefCell<VecDeque<ErrorReport>>,
     /// What listeners and timers threw, as the script log has always had it
     /// (`describe::text`), whether or not reports are on.
@@ -404,7 +442,7 @@ impl Diagnostics {
     /// `path` names a script the engine evaluates (noted only while
     /// reports are on: nothing is kept for an embedder that records none).
     pub(crate) fn know_path(&self, path: &str) {
-        if !self.on.get() {
+        if !self.on.get() && !self.error_events.get() {
             return;
         }
         let mut known = self.known_paths.borrow_mut();
@@ -427,6 +465,141 @@ impl Diagnostics {
 
     pub(crate) fn take_reported_texts(&self) -> Vec<String> {
         self.reported_texts.borrow_mut().drain(..).collect()
+    }
+
+    /// HTML "report an exception", the page's part: hand `value` to
+    /// `host`'s `fireError` (the embedder's script that fires the `error`
+    /// event at the realm's global) as `(value, text, path, line, column)`,
+    /// where `text` is the value as a console line shows it and the
+    /// position is where it was thrown (`""`, 0, 0 when that is in no
+    /// script of the page's). Whether a listener canceled the event; a
+    /// canceled exception is reported no further.
+    ///
+    /// Nothing is announced with events off, to a host with no `fireError`,
+    /// or while an announcement is under way: an exception an `error`
+    /// handler throws is reported and fires no event of its own.
+    pub(crate) fn announce(
+        &self,
+        host: &JsObject,
+        value: &JsValue,
+        report: &ErrorReport,
+        withheld: bool,
+        context: &mut Context,
+    ) -> bool {
+        use boa_engine::{js_string, JsString};
+        if !self.error_events.get() || self.announcing_error.get() {
+            return false;
+        }
+        // The host object inherits from nothing and owns the slot.
+        let Ok(fire) = host.get(js_string!("fireError"), context) else {
+            return false;
+        };
+        let Some(fire) = fire.as_callable() else {
+            return false;
+        };
+        let string = |s: &str| JsValue::from(JsString::from(s));
+        let args = match self.told(report, withheld) {
+            Told::Nothing => [JsValue::null(), string("Script error."), string(""), JsValue::from(0), JsValue::from(0)],
+            Told::At { file, line, column } => {
+                let text = format!("Uncaught {}", crate::describe::text(value, context));
+                [value.clone(), string(&text), string(&file), JsValue::from(line), JsValue::from(column)]
+            }
+        };
+        self.announcing_error.set(true);
+        let result = fire.call(&JsValue::undefined(), &args, context);
+        self.announcing_error.set(false);
+        matches!(result, Ok(answer) if answer.as_boolean() == Some(false))
+    }
+
+    /// What the page is told of the exception `report` describes.
+    /// `withheld` is the answer of the code that was running where it was
+    /// thrown (the code block's own flag, set when its script was
+    /// compiled): nothing. Otherwise the exception, and where: the
+    /// innermost of the page's frames under the URL its script was
+    /// registered with, or the document for code with no script of its own.
+    pub(crate) fn told(&self, report: &ErrorReport, withheld: bool) -> Told {
+        if withheld {
+            return Told::Nothing;
+        }
+        let realm = self.realm.get();
+        let document = || self.documents.borrow().get(&realm).cloned().unwrap_or_default();
+        match report.frames.first() {
+            Some(at) if report.located => match self.script(&at.path, realm) {
+                Some((url, _)) => Told::At { file: url, line: at.line, column: at.column },
+                None => Told::At { file: document(), line: 0, column: 0 },
+            },
+            _ => Told::At { file: document(), line: 0, column: 0 },
+        }
+    }
+
+    /// What `realm` registered for the script evaluated as `name`: its URL
+    /// and whether its errors are reported without detail.
+    pub(crate) fn script(&self, name: &str, realm: usize) -> Option<(String, bool)> {
+        let scripts = self.scripts.borrow();
+        let entry = scripts.get(name)?.iter().find(|entry| entry.realm == realm)?;
+        Some((entry.url.clone(), entry.muted))
+    }
+
+    /// Whether the script `realm` is about to compile as `name` is one
+    /// whose errors are reported without detail: what was registered for
+    /// it, and so for a script nothing was registered for.
+    pub(crate) fn compiles_withheld(&self, name: &str, realm: usize) -> bool {
+        self.script(name, realm).is_none_or(|(_, muted)| muted)
+    }
+
+    /// The script `realm` evaluates as `name` is the one at `url`; `muted`:
+    /// its errors are reported to the page without detail. With the table
+    /// full nothing is added, and scripts not in it are unknown ones.
+    pub(crate) fn register_script(&self, realm: usize, name: &str, url: &str, muted: bool) {
+        let mut scripts = self.scripts.borrow_mut();
+        if let Some(entry) = scripts.get_mut(name).and_then(|entries| entries.iter_mut().find(|entry| entry.realm == realm)) {
+            entry.url = url.to_string();
+            entry.muted = muted;
+            return;
+        }
+        if self.script_count.get() >= MAX_SCRIPTS {
+            return;
+        }
+        self.script_count.set(self.script_count.get() + 1);
+        scripts.entry(name.to_string()).or_default().push(ScriptEntry { realm, url: url.to_string(), muted });
+    }
+
+    /// `realm`'s document is at `url`.
+    pub(crate) fn set_document_url(&self, realm: usize, url: &str) {
+        self.documents.borrow_mut().insert(realm, url.to_string());
+    }
+
+    /// `realm` is gone: its scripts and document go with it.
+    pub(crate) fn drop_realm(&self, realm: usize) {
+        let mut scripts = self.scripts.borrow_mut();
+        let mut dropped = 0;
+        scripts.retain(|_, entries| {
+            let before = entries.len();
+            entries.retain(|entry| entry.realm != realm);
+            dropped += before - entries.len();
+            !entries.is_empty()
+        });
+        self.script_count.set(self.script_count.get().saturating_sub(dropped));
+        self.documents.borrow_mut().remove(&realm);
+    }
+
+    /// A listener or timer threw `value` (the bindings' reporter, called on
+    /// `host`): announced, then reported unless a listener canceled it (a
+    /// canceled one is still among the error reports, marked).
+    /// `withheld`: the answer of the code that threw it.
+    pub(crate) fn uncaught(&self, host: Option<&JsObject>, value: &JsValue, withheld: bool, context: &mut Context) {
+        if let Some(host) = host.filter(|_| self.error_events.get() && !self.announcing_error.get()) {
+            let report = self.describe(value, None, false, context);
+            if self.announce(host, value, &report, withheld, context) {
+                // Not reported as the embedder's own text; still described
+                // for the embedder's reports, with the mark.
+                if self.on.get() {
+                    self.push(ErrorReport { canceled: true, ..report });
+                }
+                return;
+            }
+        }
+        self.reported(value, context);
     }
 
     /// A listener or timer threw `value` (the bindings' reporter).
@@ -466,6 +639,7 @@ impl Diagnostics {
             located: false,
             rejection,
             module: None,
+            canceled: false,
         };
         if let Some(s) = value.as_string() {
             let s = s.to_std_string_escaped();
@@ -639,6 +813,7 @@ impl Diagnostics {
                     located: false,
                     rejection: false,
                     module: None,
+                    canceled: false,
                 }
             }
         }

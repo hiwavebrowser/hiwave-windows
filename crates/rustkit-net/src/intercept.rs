@@ -200,7 +200,7 @@ impl RequestInterceptor {
 
     /// Intercept a request.
     pub async fn intercept(&self, request: &Request) -> InterceptAction {
-        trace!(url = %request.url, "Intercepting request");
+        trace!(url = %crate::origin_for_log(&request.url), "Intercepting request");
 
         // Check custom handlers first
         for handler in &self.handlers {
@@ -208,7 +208,7 @@ impl RequestInterceptor {
             match action {
                 InterceptAction::Allow => continue,
                 other => {
-                    debug!(url = %request.url, action = ?other, "Handler intercepted");
+                    debug!(url = %crate::origin_for_log(&request.url), action = ?other, "Handler intercepted");
                     return other;
                 }
             }
@@ -228,7 +228,7 @@ impl RequestInterceptor {
                         }
                     }
                 };
-                debug!(url = %request.url, pattern = %rule.pattern.pattern, action = ?action, "Rule matched");
+                debug!(url = %crate::origin_for_log(&request.url), pattern = %rule.pattern.pattern, action = ?action, "Rule matched");
                 return action;
             }
         }

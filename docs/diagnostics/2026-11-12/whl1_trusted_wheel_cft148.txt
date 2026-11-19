@@ -1,0 +1,18 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report()
+# after each Playwright mouse.wheel(dx, dy) at (x, y), then step(name): plain 50,30 0,100; cancels 50,100 0,100; passive 50,170 0,100;
+# handler 50,240 0,100; quiet 50,310 0,100; scroller 450,50 0,100; plain 50,30 0,-100; plain 50,30 40,0
+plain: target=plain delta=0,100,0 mode=0 wheelDelta=-120,0,-120 client=50,30 page=50,30 offset=50,30 trusted=true cancelable=true bubbles=true composed=true phase=2 [object WheelEvent] detail=0 buttons=0 scrollY=0
+after plain: scrollY=100 scroller=0
+cancels: target=cancels delta=0,100,0 mode=0 wheelDelta=-120,0,-120 client=50,100 page=50,100 offset=50,30 trusted=true cancelable=true bubbles=true composed=true phase=2 [object WheelEvent] detail=0 buttons=0 scrollY=0
+cancels: defaultPrevented=true
+after cancels: scrollY=0 scroller=0
+after passive: scrollY=100 scroller=0
+handler: ran
+after handler: scrollY=0 scroller=0
+after quiet: scrollY=100 scroller=0
+scroller: target=inside deltaY=100 scrollTop=0
+after scroller: scrollY=0 scroller=100
+plain: target=plain delta=0,-100,0 mode=0 wheelDelta=120,0,120 client=50,30 page=50,30 offset=50,30 trusted=true cancelable=true bubbles=true composed=true phase=2 [object WheelEvent] detail=0 buttons=0 scrollY=0
+after plain up at the top: scrollY=0 scroller=0
+plain: target=plain delta=40,0,0 mode=0 wheelDelta=-120,-120,0 client=50,30 page=50,30 offset=50,30 trusted=true cancelable=true bubbles=true composed=true phase=2 [object WheelEvent] detail=0 buttons=0 scrollY=0
+after plain sideways: scrollY=0 scroller=0

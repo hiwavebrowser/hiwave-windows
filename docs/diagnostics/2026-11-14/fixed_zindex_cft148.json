@@ -1,0 +1,66 @@
+{
+ "fixed_z2_over_fixed_z1_later": {
+  "top": "a",
+  "hit": "a"
+ },
+ "fixed_auto_over_fixed_negative_later": {
+  "top": "a",
+  "hit": "a"
+ },
+ "fixed_auto_then_fixed_auto": {
+  "top": "b",
+  "hit": "b"
+ },
+ "fixed_z1_over_fixed_auto_later": {
+  "top": "a",
+  "hit": "a"
+ },
+ "fixed_z0_then_fixed_auto": {
+  "top": "b",
+  "hit": "b"
+ },
+ "fixed_z5_in_static_wrapper_over_fixed_z1": {
+  "top": "a",
+  "hit": "a"
+ },
+ "fixed_z9_in_z0_context_under_fixed_z1": {
+  "top": "b",
+  "hit": "b"
+ },
+ "absolute_z2_over_fixed_z1_later": {
+  "top": "a",
+  "hit": "a"
+ },
+ "fixed_header_auto_over_fixed_bg_negative_in_wrapper": {
+  "top": "a",
+  "hit": "a"
+ },
+ "flex_item_z3_over_earlier_absolute": {
+  "top": "b",
+  "hit": "b"
+ },
+ "flex_item_z3_over_absolute_one_layer_down": {
+  "top": "b",
+  "hit": "b"
+ },
+ "opacity_block_after_earlier_absolute_in_wrapper": {
+  "top": "b",
+  "hit": "b"
+ },
+ "transform_block_after_earlier_absolute_in_wrapper": {
+  "top": "b",
+  "hit": "b"
+ },
+ "body_overflow_x_hidden_fixed_z5_in_wrapper": {
+  "top": "a",
+  "hit": "a"
+ },
+ "absolute_z5_in_static_wrapper_over_absolute_z1": {
+  "top": "a",
+  "hit": "a"
+ },
+ "fixed_z5_in_overflow_hidden_wrapper_over_fixed_z1": {
+  "top": "a",
+  "hit": "a"
+ }
+}

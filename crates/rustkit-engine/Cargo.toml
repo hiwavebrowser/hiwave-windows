@@ -54,6 +54,10 @@ tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# The console file's open flags and owner check (console_file.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Windows (conditional)
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation"] }
@@ -64,6 +68,8 @@ cocoa = "0.25"
 objc = "0.2"
 
 [dev-dependencies]
+# The engine's tests share one wgpu device (`Compositor::share_device`, T41b).
+rustkit-compositor = { path = "../rustkit-compositor", features = ["test-support"] }
 # Only to force a collection in navigation_release_tests (M2).
 boa_gc = "0.22"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -85,4 +91,9 @@ harness = false
 # CH2.E35: makes an NSWindow (main thread only), so no test harness.
 [[test]]
 name = "macos_window_surface_drop"
+harness = false
+
+# M1e: a Cmd edit chord whose wait ran out edits once (NSWindow, no harness).
+[[test]]
+name = "macos_chord_timeout_edit"
 harness = false

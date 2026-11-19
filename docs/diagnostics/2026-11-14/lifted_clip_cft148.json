@@ -1,0 +1,254 @@
+{
+ "opacity_overflow_hidden_rel_inside": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "transform_overflow_hidden_rel_inside": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "root_overflow_hidden_rel_inside": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_overflow_auto_rel_inside": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_overflow_scroll_rel_inside": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_clip_path_rel_inside": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "root_clip_path_rel_inside": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_border_radius_rel_inside": {
+  "red": false,
+  "hit": "r",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "root_border_radius_rel_inside": {
+  "red": false,
+  "hit": "r",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_overflow_hidden_positioned_clipper": {
+  "red": false,
+  "hit": "DIV",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_rel_outside_overflow_hidden": {
+  "red": true,
+  "hit": "r",
+  "px": [
+   255,
+   2,
+   2
+  ]
+ },
+ "root_rel_outside_overflow_hidden": {
+  "red": true,
+  "hit": "r",
+  "px": [
+   255,
+   0,
+   0
+  ]
+ },
+ "opacity_rel_outside_overflow_hidden_rel_between": {
+  "red": true,
+  "hit": "r",
+  "px": [
+   255,
+   2,
+   2
+  ]
+ },
+ "opacity_rel_outside_clip_path": {
+  "red": false,
+  "hit": "DIV",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_overflow_hidden_abs_in_abs": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_overflow_hidden_rel_inside_border_area": {
+  "red": false,
+  "hit": "c",
+  "px": [
+   2,
+   2,
+   255
+  ]
+ },
+ "root_overflow_hidden_rel_inside_border_area": {
+  "red": false,
+  "hit": "c",
+  "px": [
+   0,
+   0,
+   255
+  ]
+ },
+ "opacity_overflow_hidden_fixed_inside": {
+  "red": true,
+  "hit": "r",
+  "px": [
+   255,
+   3,
+   3
+  ]
+ },
+ "opacity_overflow_hidden_rel_opacity_between": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "root_overflow_hidden_rel_opacity_between": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_rel_outside_overflow_hidden_opacity_between": {
+  "red": true,
+  "hit": "r",
+  "px": [
+   255,
+   5,
+   5
+  ]
+ },
+ "opacity_overflow_auto_scrolled_rel_opacity_between": {
+  "red": true,
+  "hit": "r",
+  "px": [
+   252,
+   3,
+   5
+  ]
+ },
+ "opacity_overflow_auto_scrolled_rel_abs": {
+  "red": true,
+  "hit": "r",
+  "px": [
+   255,
+   3,
+   3
+  ]
+ },
+ "opacity_overflow_hidden_transform_holds_abs": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_overflow_hidden_filter_holds_abs": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_overflow_hidden_transform_holds_fixed": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "opacity_overflow_hidden_filter_holds_fixed": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ },
+ "root_overflow_hidden_rel_transform_holds_fixed": {
+  "red": false,
+  "hit": "BODY",
+  "px": [
+   255,
+   255,
+   255
+  ]
+ }
+}

@@ -57,6 +57,24 @@ const CASCADE_GAPS: &[(&str, &str)] = &[
     (r#".tab:last-child span"#, "s2"),
     (r#".tab[data-id="1"] ~ .tab span"#, "s2"),
     (r#".tab[data-id="0"] + .tab span"#, "s1"),
+    // CH2.E51 pins: Chrome for Testing 148.0.7778.216, `querySelectorAll` and the cascade agree on all of them.
+    (r#".tab:only-child span"#, ""),
+    (r##"#tabs :nth-child(odd) span"##, "s0,s2"),
+    (r#".tab:nth-last-child(2) span"#, "s1"),
+    (r#".tab:first-of-type .tab-title"#, "s0"),
+    (r#".tab:last-of-type span"#, "s2"),
+    (r#".tab:nth-of-type(2n) span"#, "s1"),
+    (r#"div:nth-child(2) > span"#, "s1"),
+    (r#".tab:not(:first-child) span"#, "s1,s2"),
+    (r#".tab:not(:last-child) > span"#, "s0,s1"),
+    (r#".tab:not(:nth-child(2)) span"#, "s0,s2"),
+    (r##"#tabs > :first-child > span"##, "s0"),
+    (r#".tab:first-child + .tab span"#, "s1"),
+    (r#".tab:first-child ~ .tab:last-child span"#, "s2"),
+    (r#".tab[data-id="0"] ~ .tab[data-id="2"] span"#, "s2"),
+    (r#".tab:not([data-id="0"]) + .tab span"#, "s2"),
+    (r#"body :first-child .tab-title"#, "s0,s1,s2"),
+    (r##"#tabs :last-child > span"##, "s2"),
 ];
 
 fn loaded(html: &str) -> (Engine, EngineViewId) {
@@ -155,7 +173,6 @@ fn style_matching_agrees_with_chrome_on_the_same_cases() {
 
 /// The follow-up's red test: both the query and the style over-match.
 #[test]
-#[ignore = "CH2.E50 follow-up: structural pseudo-classes on ancestors, attributes on sibling compounds"]
 fn cascade_gaps_match_chrome() {
     let (mut engine, view) = loaded(PAGE);
     let mut wrong = Vec::new();

@@ -412,6 +412,31 @@ fn a_link_clicked_during_the_image_wait_navigates_once_and_the_old_load_fires_no
     assert_eq!(path.as_deref(), Some("String(\"/next\")"));
 }
 
+/// LAT15b: a link to a place in the same page (`href="#t"`), clicked while the image arrives, is a
+/// navigation inside the document (HTML 7.4.2.3.3): the page scrolls, the URL gets the fragment,
+/// and the LOAD KEEPS GOING (Chrome). It must not be handed to the window as a navigation, which
+/// cancels the load and loads the page again.
+#[test]
+fn a_fragment_link_clicked_during_the_image_wait_scrolls_and_the_load_goes_on() {
+    let page = r##"<!doctype html><body style="margin:0">
+<a id="link" href="#t" style="display:block;width:400px;height:200px;background:rgb(0,160,0)">jump</a>
+<div style="height:1500px"></div><div id="t" style="height:40px">target</div><div style="height:1500px"></div>
+<img src="/slow.jpg" width="100" height="100">
+<script>window.addEventListener('load', function () { fetch('/beacon?load'); });</script>"##;
+    let fixture = serve(vec![("/page", html(page)), ("/slow.jpg", slow_image(2_000)), ("/beacon", html("ok"))]);
+    let mut load = Load::start(&fixture, "/page");
+    load.follow = true;
+    load.wait_main();
+    assert!(load.click(200.0, 100.0, Duration::from_secs(20)).is_some());
+    // Past the image's arrival, so the load can end.
+    let nav = load.nav;
+    assert!(load.until(Duration::from_secs(15), |l| l.completed(nav).is_some()), "the load of the clicked page completes");
+    assert!(load.followed.is_empty(), "the fragment link was handed to the window as a navigation: {:?}", load.followed);
+    assert_eq!(fixture.requests("/page").len(), 1, "the page was loaded once, not again");
+    let (state, _) = load.eval("location.hash + ',' + (window.scrollY > 1000) + ',' + document.readyState", Duration::from_secs(5));
+    assert_eq!(state.as_deref(), Some("String(\"#t,true,complete\")"));
+}
+
 /// A navigation sent while the load waits is not applied at a safe point:
 /// the commands behind it wait for it, in order.
 #[test]
@@ -773,10 +798,11 @@ fn a_served_listener_record_keeps_its_place_in_the_script_log() {
 
 /// The app's find-in-page script, run while an image arrives and before a
 /// page script that replaces the text (as a hydrating page does). In
-/// RustKit content the script stops at `Range.surroundContents`, which is
-/// not callable here, after it has added its `<style>`; it does so after
-/// the load too (a separate gap). The pin: the find is answered at once,
-/// wraps no text, and the page's own script and load are untouched.
+/// RustKit content it wraps each match with `Range.surroundContents` (CH2.E47:
+/// it used to throw there, after adding its `<style>`, so nothing was ever
+/// highlighted). The pin: the find is answered at once with its count, the
+/// match is wrapped before the page's own script runs (the script sees the
+/// mark), and the script's replacement of the text and the load are untouched.
 #[test]
 fn find_in_page_mid_load_then_a_hydrating_script() {
     const FIND: &str = include_str!("../../hiwave-app/src/ui/find_in_page.js");
@@ -798,30 +824,20 @@ document.getElementById('main').textContent = 'hydrated hello world';</script>"#
     let answer = wait(&mut rx, Duration::from_secs(20));
     let waited = sent.elapsed();
     assert!(waited < SERVED, "find waited {waited:?}");
-    // macOS's find script wraps matches with Range.surroundContents, which RustKit lacks, so
-    // there the find errors. The Windows copy of find_in_page.js wraps with createTextNode and
-    // insertBefore (no surroundContents), so it answers with the count instead.
-    let expect_error = !cfg!(windows);
-    assert!(
-        answer.as_ref().is_some_and(|r| if expect_error {
-            r.as_ref().is_err_and(|e| e.contains("surroundContents") || e.contains("not a callable"))
-        } else {
-            r.as_ref().is_ok_and(|v| v == "String(\"1\")")
-        }),
-        "find mid-load: {answer:?}"
-    );
+    assert_eq!(answer, Some(Ok("String(\"1\")".to_string())), "find mid-load");
     load.wait_complete();
     let (state, _) = load.eval(
         "String(window.sawMark) + ',' + document.getElementById('main').textContent + ',' + document.readyState",
         Duration::from_secs(5),
     );
-    assert_eq!(state.as_deref(), Some("String(\"false,hydrated hello world,complete\")"));
+    // The find wrapped "hello" before the page's script ran, so the script saw the mark.
+    assert_eq!(state.as_deref(), Some("String(\"true,hydrated hello world,complete\")"));
 }
 
 /// The app's autofill scripts mid-load. On macOS the autofill helper is
 /// not injected into RustKit content (main.rs injects it off macOS only),
-/// so the trigger is a no-op and the credentials message reaches only a
-/// page listener. Neither touches the form or the load.
+/// so the trigger and the picker call are no-ops. Neither touches the form
+/// or the load.
 #[test]
 fn autofill_scripts_mid_load_leave_the_form_and_the_load_alone() {
     let page = r#"<!doctype html><body style="margin:0">
@@ -832,11 +848,11 @@ fn autofill_scripts_mid_load_leave_the_form_and_the_load_alone() {
     let fixture = serve(vec![("/page", html(page)), ("/slow.jpg", slow_image(2_000))]);
     let mut load = Load::start(&fixture, "/page");
     load.wait_main();
-    // `UserEvent::TriggerAutofill` and `SendAutofillCredentials`, verbatim.
+    // `UserEvent::TriggerAutofill` and `ipc::autofill::picker_script`, verbatim.
     let (_, waited) = load.eval("if(window.hiwaveAutofill) { hiwaveAutofill.trigger(); }", Duration::from_secs(20));
     assert!(waited < SERVED, "the trigger waited {waited:?}");
     let _ = load.eval(
-        "window.postMessage({ type: 'hiwave_autofill_credentials', credentials: [{\"username\":\"u\",\"password\":\"p\"}] }, '*');",
+        "(function(l){var a=window.hiwaveAutofill;if(a&&typeof a.showCredentials==='function'){a.showCredentials(l);}})([{\"id\":\"0123456789abcdef\",\"username\":\"u\"}]);",
         Duration::from_secs(20),
     );
     load.wait_complete();

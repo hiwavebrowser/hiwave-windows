@@ -1,0 +1,262 @@
+{
+ "cases": [
+  {
+   "name": "the bulletproof list: embedded-opentype is skipped for the woff2 after it",
+   "src": "url(/a.eot?#iefix) format(\"embedded-opentype\"), url(/a.woff2) format(\"woff2\"), url(/a.woff) format(\"woff\"), url(/a.ttf) format(\"truetype\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "two src descriptors: the later one is the list",
+   "css": "font-family: T; src: url(/a.eot); src: url(/a.eot?#iefix) format(\"embedded-opentype\"), url(/a.woff) format(\"woff\"), url(/a.ttf) format(\"truetype\");",
+   "chrome": "/a.woff"
+  },
+  {
+   "name": "the first supported format wins, not the best one",
+   "src": "url(/a.woff) format(\"woff\"), url(/a.woff2) format(\"woff2\")",
+   "chrome": "/a.woff"
+  },
+  {
+   "name": "svg fonts are skipped",
+   "src": "url(/a.svg#T) format(\"svg\"), url(/a.ttf) format(\"truetype\")",
+   "chrome": "/a.ttf"
+  },
+  {
+   "name": "format(\"truetype\")",
+   "src": "url(/a.ttf) format(\"truetype\")",
+   "chrome": "/a.ttf"
+  },
+  {
+   "name": "format(\"opentype\")",
+   "src": "url(/a.otf) format(\"opentype\")",
+   "chrome": "/a.otf"
+  },
+  {
+   "name": "format(\"collection\")",
+   "src": "url(/a.ttc) format(\"collection\")",
+   "chrome": "/a.ttc"
+  },
+  {
+   "name": "format(\"woff\")",
+   "src": "url(/a.woff) format(\"woff\")",
+   "chrome": "/a.woff"
+  },
+  {
+   "name": "format(\"woff2\")",
+   "src": "url(/a.woff2) format(\"woff2\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "format(woff2) as a keyword",
+   "src": "url(/a.woff2) format(woff2)",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "format(truetype) as a keyword",
+   "src": "url(/a.ttf) format(truetype)",
+   "chrome": "/a.ttf"
+  },
+  {
+   "name": "format(embedded-opentype) as a keyword is still skipped",
+   "src": "url(/a.eot) format(embedded-opentype), url(/a.woff) format(woff)",
+   "chrome": "/a.woff"
+  },
+  {
+   "name": "the format string is case-insensitive",
+   "src": "url(/a.woff2) format(\"WOFF2\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "single quotes and a quoted url",
+   "src": "url('/a.woff2') format('woff2')",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "upper-case function names",
+   "src": "URL(/a.woff) FORMAT(\"woff\")",
+   "chrome": "/a.woff"
+  },
+  {
+   "name": "an unknown format string is skipped",
+   "src": "url(/a.xyz) format(\"xyz\"), url(/a.woff) format(\"woff\")",
+   "chrome": "/a.woff"
+  },
+  {
+   "name": "an empty format string is skipped",
+   "src": "url(/a.xyz) format(\"\"), url(/a.woff) format(\"woff\")",
+   "chrome": "/a.woff"
+  },
+  {
+   "name": "a source with no format() is tried",
+   "src": "url(/a.woff2), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "a source with no format() after a skipped one",
+   "src": "url(/a.eot) format(\"embedded-opentype\"), url(/b.woff2)",
+   "chrome": "/b.woff2"
+  },
+  {
+   "name": "only an unsupported format: nothing is requested",
+   "src": "url(/a.eot) format(\"embedded-opentype\")",
+   "chrome": ""
+  },
+  {
+   "name": "only unsupported formats: nothing is requested",
+   "src": "url(/a.eot) format(\"embedded-opentype\"), url(/a.svg) format(\"svg\")",
+   "chrome": ""
+  },
+  {
+   "name": "local() that is not installed, then a url",
+   "src": "local(\"No Such Font Xyzzy\"), url(/a.woff2) format(\"woff2\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "format(\"woff2-variations\")",
+   "src": "url(/a.woff2) format(\"woff2-variations\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "format(\"woff-variations\")",
+   "src": "url(/a.woff) format(\"woff-variations\")",
+   "chrome": "/a.woff"
+  },
+  {
+   "name": "format(\"truetype-variations\")",
+   "src": "url(/a.ttf) format(\"truetype-variations\")",
+   "chrome": "/a.ttf"
+  },
+  {
+   "name": "format(\"opentype-variations\")",
+   "src": "url(/a.otf) format(\"opentype-variations\")",
+   "chrome": "/a.otf"
+  },
+  {
+   "name": "format(woff2-variations) as a keyword",
+   "src": "url(/a.woff2) format(woff2-variations), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "tech(variations)",
+   "src": "url(/a.woff2) format(woff2) tech(variations), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech(color-COLRv1)",
+   "src": "url(/a.woff2) format(woff2) tech(color-COLRv1), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech(color-COLRv0)",
+   "src": "url(/a.woff2) format(woff2) tech(color-COLRv0), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech(color-SVG)",
+   "src": "url(/a.woff2) format(woff2) tech(color-SVG), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "tech(color-sbix)",
+   "src": "url(/a.woff2) format(woff2) tech(color-sbix), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech(color-CBDT)",
+   "src": "url(/a.woff2) format(woff2) tech(color-CBDT), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech(features-opentype)",
+   "src": "url(/a.woff2) format(woff2) tech(features-opentype), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech(features-aat)",
+   "src": "url(/a.woff2) format(woff2) tech(features-aat), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech(features-graphite)",
+   "src": "url(/a.woff2) format(woff2) tech(features-graphite), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "tech(palettes)",
+   "src": "url(/a.woff2) format(woff2) tech(palettes), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech(incremental)",
+   "src": "url(/a.woff2) format(woff2) tech(incremental), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "tech() with two supported technologies",
+   "src": "url(/a.woff2) format(woff2) tech(variations, palettes), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech() with one unsupported technology of two",
+   "src": "url(/a.woff2) format(woff2) tech(variations, incremental), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "tech() with an unknown technology",
+   "src": "url(/a.woff2) format(woff2) tech(warp-drive), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "tech() without format()",
+   "src": "url(/a.woff2) tech(variations), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "tech(VARIATIONS) in upper case",
+   "src": "url(/a.woff2) format(woff2) tech(VARIATIONS), url(/b.woff) format(\"woff\")",
+   "chrome": "/a.woff2"
+  },
+  {
+   "name": "an entry that is no source at all",
+   "src": "warp(/a.woff2), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "format() with nothing in it",
+   "src": "url(/a.woff2) format(), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "format() with two strings",
+   "src": "url(/a.woff2) format(\"woff2\", \"woff\"), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "an unknown format keyword",
+   "src": "url(/a.woff2) format(warp), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "junk after format()",
+   "src": "url(/a.woff2) format(\"woff2\") warp, url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "a data: url with commas in a skipped format, then a url",
+   "src": "url(data:application/vnd.ms-fontobject;base64,AAAA,BBBB) format(\"embedded-opentype\"), url(/b.woff) format(\"woff\")",
+   "chrome": "/b.woff"
+  },
+  {
+   "name": "a ) inside a quoted url",
+   "src": "url(\"/a).eot\") format(\"embedded-opentype\"), url(\"/b).woff\") format(\"woff\")",
+   "chrome": "/b).woff"
+  },
+  {
+   "name": "a source that is no font, then a font: the second is asked for after the first fails",
+   "src": "url(/a.bin), url(/b.woff2) format(\"woff2\")",
+   "chrome": "/a.bin /b.woff2",
+   "gap": "no fall-through to the next source when a fetched font fails to decode: a follow-up row",
+   "engine": "/a.bin"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

@@ -91,6 +91,11 @@ pub struct FrameCommit {
     /// press outside it closes it and goes nowhere else, so a view with a
     /// region (the RustKit chrome over the page) is hit everywhere.
     pub modal_popup: bool,
+    /// The `@font-face` set `list` was built with (E56). The window draws
+    /// a content thread's frame on its own thread, whose slot holds other
+    /// faces or none; it installs these before drawing, because a line
+    /// drawn per character resolves its family by name when drawn.
+    pub web_fonts: rustkit_layout::webfonts::FaceSet,
 }
 
 impl FrameCommit {
@@ -524,7 +529,11 @@ impl Presenter {
             visit: VisitTag::none(),
             canvas: self.background_color,
             modal_popup: false,
+            web_fonts: Default::default(),
         });
+        // The faces the frame was built with, on the thread that draws it
+        // (E56): this thread's slot may hold another document's, or none.
+        rustkit_layout::webfonts::install_set(&commit.web_fonts);
         // A transparent view clears to nothing: what its document does not
         // paint shows the views below (CH3.A3c).
         let transparent = self.transparent.contains(&viewhost_id);
@@ -762,6 +771,8 @@ impl Presenter {
         let mut urls_to_upload: Vec<(String, std::sync::Arc<rustkit_image::LoadedImage>, bool)> =
             Vec::new();
         let mut urls_seen = HashSet::new();
+        let mut canvas_uploads = Vec::new();
+        let mut gpu_canvases: Vec<String> = Vec::new();
 
         for cmd in commands {
             // Extract URL from BackgroundImage, Image and MaskedColor commands
@@ -776,8 +787,25 @@ impl Presenter {
                 continue; // Already processed
             }
 
+            // GPU canvas A1: the canvas's own texture, brought up to date
+            // from the draws its page handed over, whether or not it is
+            // uploaded already.
+            if crate::canvas_paint::is_gpu_key(url) {
+                gpu_canvases.push(url.clone());
+                continue;
+            }
+
             // Skip if already in renderer
             if if mask { renderer.has_mask_image(url) } else { renderer.has_image(url) } {
+                continue;
+            }
+
+            // A canvas bitmap (STR-7b) comes from the engine's canvas
+            // paints, not the image cache.
+            if crate::canvas_paint::is_bitmap_key(url) {
+                if let Some(frame) = crate::canvas_paint::bitmap_frame(url) {
+                    canvas_uploads.push((url.clone(), frame));
+                }
                 continue;
             }
 
@@ -810,8 +838,29 @@ impl Presenter {
             }
         }
 
+        // A canvas's earlier bitmaps go once a list no longer names them:
+        // every new bitmap has a key of its own.
+        renderer.retain_images(|key| {
+            !crate::canvas_paint::is_bitmap_key(key) || urls_seen.contains(&(key.to_string(), false))
+        });
+
+        for key in gpu_canvases {
+            let batches = crate::canvas_paint::take_gpu_batches(&key);
+            if batches.is_empty() {
+                continue;
+            }
+            let result = renderer.replay_canvas(&key, &batches);
+            crate::canvas_paint::gpu_replayed(&key, result);
+        }
+
         // Now upload all collected images
         let mut uploaded_count = 0;
+        for (key, frame) in canvas_uploads {
+            match renderer.upload_premultiplied_image(&key, frame.width, frame.height, &frame.rgba) {
+                Ok(()) => uploaded_count += 1,
+                Err(e) => tracing::warn!(?e, "Failed to upload a canvas bitmap"),
+            }
+        }
         for (url_str, image, mask) in urls_to_upload {
             let frame = image.current_frame(Duration::ZERO);
             let uploaded = if mask {
@@ -1078,6 +1127,7 @@ mod present_choice_tests {
             visit: VisitTag::none(),
             canvas: [1.0, 1.0, 1.0, 1.0],
             modal_popup: false,
+            web_fonts: Default::default(),
         }
     }
 

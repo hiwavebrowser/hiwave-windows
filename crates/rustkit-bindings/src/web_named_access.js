@@ -17,7 +17,7 @@
 // property (no child navigables), an HTMLCollection result is a snapshot,
 // and an object element is exposed whatever its fallback content.
 (function (g) {
-    var HOOKS = g.__rkDomHooks, Window = g.Window;
+    var HOOKS = __rk.domHooks, Window = g.Window;
     if (!HOOKS || typeof HOOKS.windowNamed !== 'function' || typeof Window !== 'function') return;
     var named = HOOKS.windowNamed, FRAME = named.FRAME;
     var W = Window.prototype;

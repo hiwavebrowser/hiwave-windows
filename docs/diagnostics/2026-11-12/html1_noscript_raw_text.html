@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>HTML1: noscript holds text when scripting is on</title>
+<noscript id="nh"><link rel="stylesheet" href="html1_noscript_missing.css"><meta name="inside" content="noscript"><style>#probe { color: rgb(255, 0, 0); }</style></noscript>
+<style>#probe { margin: 0; }</style>
+</head><body>
+<p id="probe">probe</p>
+<noscript id="nb"><strong id="ns_strong">enable <em>JS</em></strong> &amp; &lt;b&gt; <img id="ns_img" src="html1_noscript_pixel.png" width="50" height="50"><iframe src="html1_noscript_frame.html"></iframe></noscript>
+<div id="wrap"><noscript id="nw"><p>one</p><!-- c --><script>window.ranInNoscript = true;</script></noscript><span id="after">after</span></div>
+<p id="inp">text <noscript id="np"><b>bold</b></noscript> tail</p>
+<table id="tab"><tr><td><noscript id="nt"><i>cell</i></noscript>x</td></tr></table>
+<noscript id="odd"><div>open </noscript ><span id="after_odd">closed by a spaced end tag</span>
+<noscript id="empty"></noscript>
+<script>
+function attempt(f) { try { return f(); } catch (e) { return 'THROWS ' + e.name; } }
+function kids(n) { return Array.prototype.map.call(n.childNodes, function (c) { return c.nodeType === 1 ? c.localName : c.nodeType === 3 ? '#text(' + c.data.length + ')' : '#' + c.nodeType; }).join(','); }
+window.report = function () {
+    var out = [];
+    function line(label, f) { out.push(label + ': ' + attempt(f)); }
+    ['nh', 'nb', 'nw', 'np', 'nt', 'odd', 'empty'].forEach(function (id) {
+        var n = document.getElementById(id);
+        line(id + ' childNodes', function () { return n.childNodes.length + ' [' + kids(n) + '] children=' + n.children.length + ' parent=' + n.parentNode.localName; });
+        line(id + ' textContent', function () { return JSON.stringify(n.textContent); });
+        line(id + ' innerHTML', function () { return JSON.stringify(n.innerHTML); });
+    });
+    line('nb outerHTML', function () { return JSON.stringify(document.getElementById('nb').outerHTML); });
+    line('queries', function () {
+        return [document.querySelector('noscript strong'), document.getElementById('ns_strong'), document.getElementById('ns_img'),
+            document.querySelector('noscript *'), document.querySelectorAll('noscript').length, document.images.length,
+            document.querySelectorAll('iframe').length, document.querySelectorAll('meta[name=inside]').length,
+            document.querySelectorAll('link').length, document.querySelectorAll('style').length].join(' ');
+    });
+    line('head children', function () { return Array.prototype.map.call(document.head.children, function (c) { return c.localName; }).join(','); });
+    line('script inside did not run', function () { return String(window.ranInNoscript); });
+    line('style inside does not apply', function () { return getComputedStyle(document.getElementById('probe')).color + ' sheets=' + document.styleSheets.length; });
+    line('does not render', function () {
+        var nb = document.getElementById('nb'), r = nb.getBoundingClientRect();
+        return getComputedStyle(nb).display + ' ' + r.width + 'x' + r.height + ' offsetParent=' + nb.offsetParent + ' probe y=' + document.getElementById('probe').getBoundingClientRect().y + ' after y=' + document.getElementById('after').getBoundingClientRect().y;
+    });
+    line('odd end tag', function () { return document.getElementById('after_odd').parentNode.localName + ' ' + JSON.stringify(document.getElementById('after_odd').textContent); });
+    line('innerText', function () { return JSON.stringify(document.getElementById('inp').innerText) + ' ' + JSON.stringify(document.getElementById('nb').innerText.slice(0, 20)); });
+    line('innerHTML set on a live element', function () { var d = document.createElement('div'); d.innerHTML = '<noscript><b>x</b>&amp;</noscript><i>y</i>'; return kids(d) + ' / ' + kids(d.firstChild) + ' / ' + JSON.stringify(d.firstChild.textContent) + ' / ' + JSON.stringify(d.innerHTML); });
+    line('innerHTML set on a noscript', function () { var n = document.createElement('noscript'); n.innerHTML = '<b>x</b>'; return kids(n) + ' ' + JSON.stringify(n.innerHTML); });
+    line('insertAdjacentHTML', function () { var d = document.createElement('div'); d.insertAdjacentHTML('beforeend', '<noscript><b>x</b></noscript>'); return kids(d.firstChild); });
+    line('appendChild into a noscript', function () { var n = document.createElement('noscript'); n.appendChild(document.createElement('b')).textContent = 'x<'; return kids(n) + ' ' + JSON.stringify(n.innerHTML) + ' ' + JSON.stringify(n.outerHTML); });
+    line('DOMParser', function () { var d = new DOMParser().parseFromString('<noscript><b>x</b></noscript><p>y', 'text/html'); var n = d.querySelector('noscript'); return n.parentNode.localName + ' ' + kids(n) + ' ' + JSON.stringify(n.innerHTML) + ' b=' + (d.querySelector('noscript b') !== null); });
+    line('DOMParser head', function () { var d = new DOMParser().parseFromString('<head><noscript><link rel=stylesheet href=a.css><p>x</p></noscript></head>', 'text/html'); return kids(d.head) + ' / ' + kids(d.body) + ' / ' + kids(d.querySelector('noscript')); });
+    line('createHTMLDocument', function () { var d = document.implementation.createHTMLDocument('t'); d.body.innerHTML = '<noscript><b>x</b></noscript>'; return kids(d.body.firstChild); });
+    line('template', function () { var t = document.createElement('template'); t.innerHTML = '<noscript><b>x</b></noscript>'; return kids(t.content.firstChild); });
+    line('createContextualFragment', function () { var r = document.createRange(); r.selectNodeContents(document.body); return kids(r.createContextualFragment('<noscript><b>x</b></noscript>').firstChild); });
+    return out.join('\n');
+};
+</script>
+</body></html>

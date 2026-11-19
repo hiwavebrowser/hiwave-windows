@@ -7,6 +7,11 @@ impl ByteCompiler<'_> {
         let value = self.register_allocator.alloc();
         self.compile_expr(switch.val(), &value);
         let outer_scope = self.push_declarative_scope(switch.scope());
+        // HIWAVE PATCH (switch-tdz): see `switch_scope_ids`.
+        let switch_scope_id = switch.scope().map(boa_ast::scope::Scope::unique_id);
+        if let Some(id) = switch_scope_id {
+            self.switch_scope_ids.push(id);
+        }
 
         self.block_declaration_instantiation(switch);
 
@@ -53,6 +58,9 @@ impl ByteCompiler<'_> {
         }
 
         self.pop_switch_control_info();
+        if switch_scope_id.is_some() {
+            self.switch_scope_ids.pop();
+        }
         self.pop_declarative_scope(outer_scope);
     }
 }

@@ -1,0 +1,24 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() of dispatch_event_argument.html
+an Event: true heard=[x:false:true]
+a CustomEvent: true heard=[x:false:true]
+a MouseEvent: true heard=[x:false:true]
+a subclass instance: true heard=[x:false:true]
+document.createEvent: true heard=[x:false:true]
+no argument: THROWS TypeError
+null: THROWS TypeError
+a string: THROWS TypeError
+an object with a type: THROWS TypeError
+an object with the Event prototype: THROWS TypeError
+a Proxy of an Event: THROWS TypeError
+a Proxy of an Event that answers every read: THROWS TypeError
+an Event of another document: true heard=[x:false:true]
+the same Event twice: true true heard=[x:false:true x:false:true]
+on window: THROWS TypeError
+on document: THROWS TypeError
+on an EventTarget: THROWS TypeError
+isTrusted of a made event: false own=true get=function set=undefined enumerable=true configurable=false on-prototype=false
+assigning isTrusted: false
+assigning isTrusted in strict code: THROWS TypeError
+defining isTrusted: THROWS TypeError
+deleting isTrusted: false false
+a subclass with its own isTrusted: false heard=[x:false:true]

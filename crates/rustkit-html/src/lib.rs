@@ -160,6 +160,16 @@ pub trait TreeSink {
         self.append_child(parent, table);
     }
 
+    /// Make `node`, already in the tree, the insertion point again (pushed
+    /// on the sink's stack of open elements): HTML §13.2.6.4.6, a head
+    /// element after `</head>` goes back into the head. The default does
+    /// nothing.
+    fn reopen(&mut self, _node: Self::NodeId) {}
+
+    /// Take `node` off the sink's stack of open elements, wherever it is on
+    /// it (the head, once such an element is in). The default does nothing.
+    fn remove_open(&mut self, _node: Self::NodeId) {}
+
     /// Add each of `attrs` that `target` does not already have (HTML
     /// §13.2.6.4.7, a second `<html>` or `<body>` start tag). The existing
     /// value wins. The default ignores them.
@@ -207,6 +217,27 @@ pub fn parse<S: TreeSink>(html: &str, mut sink: S) -> ParseResult<S> {
     let tokens = tokenizer::tokenize(html)?;
     sink = tree_builder::build_tree(tokens, sink)?;
     Ok(sink)
+}
+
+/// `parse` with the scripting flag (HTML §13.2.3.5): on for a document
+/// whose scripts run, where `<noscript>` holds raw text and nothing in it
+/// becomes an element.
+pub fn parse_scripted<S: TreeSink>(html: &str, sink: S, scripting: bool) -> ParseResult<S> {
+    let tokens = tokenizer::tokenize_scripted(html, scripting)?;
+    tree_builder::build_tree_scripted(tokens, sink, scripting)
+}
+
+/// `parse_fragment` with the scripting flag of the context element's
+/// document.
+pub fn parse_fragment_scripted<S: TreeSink>(
+    html: &str,
+    sink: S,
+    context_element: &str,
+    scripting: bool,
+) -> ParseResult<S> {
+    let tokens = tokenizer::tokenize_scripted(html, scripting)?;
+    let context = FragmentContext::new(context_element);
+    tree_builder::build_tree_fragment_scripted(tokens, sink, context, scripting)
 }
 
 /// Parse HTML from bytes using the provided sink.

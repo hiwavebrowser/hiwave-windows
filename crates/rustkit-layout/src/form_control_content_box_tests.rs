@@ -13,6 +13,7 @@ fn text_input(input_type: &str) -> FormControlType {
         value: String::new(),
         placeholder: String::new(),
         input_type: input_type.to_string(),
+        size: 20,
     }
 }
 

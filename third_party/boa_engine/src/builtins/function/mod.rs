@@ -399,6 +399,39 @@ impl BuiltInFunctionObject {
         generator: bool,
         context: &mut Context,
     ) -> JsResult<JsObject> {
+        // HIWAVE PATCH (error-detail): code made at run time carries the
+        // answer of the code that made it.
+        let detail = context.vm.frame().code_block.error_detail();
+        Self::create_dynamic_function_as(constructor, new_target, args, r#async, generator, detail, context)
+    }
+
+    /// A plain function of this realm from text, compiled as `detail`
+    /// whatever code is running: for a host that compiles text for the
+    /// page (a handler attribute is the document's code). `parameters` is
+    /// the parameter list's text and `body` the body's; neither runs any
+    /// script to be read. Nothing is kept afterwards, whether it compiles
+    /// or not.
+    pub fn compile_function_as(
+        parameters: &JsString,
+        body: &JsString,
+        detail: crate::vm::ErrorDetail,
+        context: &mut Context,
+    ) -> JsResult<JsObject> {
+        let constructor = context.intrinsics().constructors().function().constructor();
+        let args = [JsValue::from(parameters.clone()), JsValue::from(body.clone())];
+        Self::create_dynamic_function_as(constructor, &JsValue::undefined(), &args, false, false, detail, context)
+    }
+
+    fn create_dynamic_function_as(
+        constructor: JsObject,
+        new_target: &JsValue,
+        args: &[JsValue],
+        r#async: bool,
+        generator: bool,
+        detail: crate::vm::ErrorDetail,
+        context: &mut Context,
+    ) -> JsResult<JsObject> {
+        // END HIWAVE PATCH
         // 1. If newTarget is undefined, set newTarget to constructor.
         let new_target = if new_target.is_undefined() {
             constructor.into()
@@ -502,6 +535,10 @@ impl BuiltInFunctionObject {
             let parameters = parser
                 .parse_formal_parameters(context.interner_mut(), generator, r#async)
                 .map_err(|e| {
+                    // HIWAVE PATCH (native recursion): too deep a source is a RangeError.
+                    if e.is_stack_overflow() {
+                        return JsNativeError::range().with_message("Maximum call stack size exceeded");
+                    }
                     JsNativeError::syntax()
                         .with_message(format!("failed to parse function parameters: {e}"))
                 })?;
@@ -551,6 +588,10 @@ impl BuiltInFunctionObject {
             let body = parser
                 .parse_function_body(context.interner_mut(), generator, r#async)
                 .map_err(|e| {
+                    // HIWAVE PATCH (native recursion): too deep a source is a RangeError.
+                    if e.is_stack_overflow() {
+                        return JsNativeError::range().with_message("Maximum call stack size exceeded");
+                    }
                     JsNativeError::syntax()
                         .with_message(format!("failed to parse function body: {e}"))
                 })?;
@@ -656,6 +697,9 @@ impl BuiltInFunctionObject {
         let in_with = context.vm.frame().environments.has_object_environment();
         let spanned_source_text = SpannedSourceText::new_empty();
 
+        // HIWAVE PATCH (error-detail): compiled as its maker said.
+        let _detail = crate::vm::ErrorDetailScope::enter(detail);
+        // END HIWAVE PATCH
         let code = FunctionCompiler::new(spanned_source_text)
             .name(js_string!("anonymous"))
             .generator(generator)
@@ -713,7 +757,7 @@ impl BuiltInFunctionObject {
         }
 
         // 4. Let argList be ? CreateListFromArrayLike(argArray).
-        let arg_list = arg_array.create_list_from_array_like(&[], context)?;
+        let arg_list = arg_array.create_argument_list_from_array_like(context)?; // HIWAVE PATCH (array-like-length)
 
         // 5. Perform PrepareForTailCall().
         // TODO?: 5. PrepareForTailCall

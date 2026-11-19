@@ -64,6 +64,21 @@
         out[BYTES] = this[BYTES].slice(s, Math.max(s, e));
         return out;
     };
+    // ---- Blob URLs (File API §8.3). The store is the host's (rustkit-js
+    // `bytes::Blobs`): `URL.createObjectURL` (web_url.js) copies the Blob's
+    // bytes into it, in the page's own turn, and nothing of it is on the
+    // window. The engine reads it without running script
+    // (`DomBindings::blob_url_text`); fetch() reads it through the bridge's
+    // util. web_url.js takes this and deletes it.
+    g.__rkBlobInternals = {
+        // The Blob's own bytes and type, or null for anything else.
+        record: function (blob) {
+            if (!(blob instanceof Blob)) return null;
+            var bytes = blob[BYTES];
+            return bytes instanceof Uint8Array ? { bytes: bytes, type: String(blob._type || '') } : null;
+        }
+    };
+
     Blob.prototype.text = function () { var self = this; return Promise.resolve().then(function () { return fromUtf8(self[BYTES]); }); };
     Blob.prototype.arrayBuffer = function () {
         var self = this;
@@ -263,4 +278,7 @@
         }
         return clone(value);
     });
+
+    // For web_file_reader.js, which deletes it: a Blob's bytes.
+    Object.defineProperty(g, '__rkBlobBytes', { value: function (blob) { return blob[BYTES]; }, configurable: true, writable: true });
 })(globalThis);

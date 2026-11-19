@@ -1,0 +1,170 @@
+{
+ "cases": [
+  {
+   "name": "s_acc_to_data",
+   "js": "(function(){var log=[];var P={set zz(v){log.push('s'+v)}};function f(o,v){o.zz=v}var o=Object.create(P);f(o,1);f(o,2);Object.defineProperty(P,'zz',{value:7,writable:true,configurable:true});f(o,3);return log.join(',')+'/'+Object.hasOwn(o,'zz')+'/'+P.zz})()",
+   "chrome": "s1,s2/true/7"
+  },
+  {
+   "name": "s_acc_to_ro",
+   "js": "(function(){var log=[];var P={set zz(v){log.push('s'+v)}};function f(o,v){o.zz=v}var o=Object.create(P);f(o,1);f(o,2);Object.defineProperty(P,'zz',{value:7,writable:false,configurable:true});f(o,3);return log.join(',')+'/'+Object.hasOwn(o,'zz')+'/'+o.zz})()",
+   "chrome": "s1,s2/false/7"
+  },
+  {
+   "name": "s_args",
+   "js": "(function(){function g(){return arguments}function f(o,v){o[0]=v;return o[0]}var a=g(1,2),b=g(3,4);var r=[f(a,5),f(b,6),f(a,7)];return r.join(',')+'/'+a[0]+b[0]})()",
+   "chrome": "5,6,7/76"
+  },
+  {
+   "name": "s_args_mapped",
+   "js": "(function(){function g(x){var a=arguments;function f(o,v){o[0]=v}f(a,5);f(a,6);return x}return g(1)+','+g(2)})()",
+   "chrome": "6,6"
+  },
+  {
+   "name": "s_data_to_acc",
+   "js": "(function(){var log=[];var P={zz:0};function f(o,v){o.zz=v}var o=Object.create(P);var q=Object.create(P);f(o,1);f(q,2);Object.defineProperty(P,'zz',{set:function(v){log.push('s'+v)},configurable:true});var r=Object.create(P);f(r,3);return log.join(',')+'/'+Object.hasOwn(r,'zz')})()",
+   "chrome": "s3/false"
+  },
+  {
+   "name": "s_delete",
+   "js": "(function(){var log=[];var P={set zz(v){log.push('s'+v)}};function f(o,v){o.zz=v}var o=Object.create(P);f(o,1);f(o,2);delete P.zz;f(o,3);return log.join(',')+'/'+Object.hasOwn(o,'zz')})()",
+   "chrome": "s1,s2/true"
+  },
+  {
+   "name": "s_delete_last",
+   "js": "(function(){var log=[];var P={a:1,set zz(v){log.push('s'+v)}};function f(o,v){o.zz=v}var o=Object.create(P);f(o,1);f(o,2);delete P.zz;f(o,3);return log.join(',')+'/'+Object.hasOwn(o,'zz')})()",
+   "chrome": "s1,s2/true"
+  },
+  {
+   "name": "s_delete_nb",
+   "js": "(function(){var log=[];var P={set zz(v){log.push('s'+v)},yy:1,set ww(v){log.push('w'+v)}};function f(o,v){o.zz=v}var o=Object.create(P);f(o,1);f(o,2);delete P.zz;f(o,3);return log.join(',')+'/'+Object.hasOwn(o,'zz')+'/'+o.zz})()",
+   "chrome": "s1,s2/true/3"
+  },
+  {
+   "name": "s_setter_swap",
+   "js": "(function(){var log=[];var P={set zz(v){log.push('a'+v)}};function f(o,v){o.zz=v}var o=Object.create(P);f(o,1);f(o,2);Object.defineProperty(P,'zz',{set:function(v){log.push('b'+v)},configurable:true});f(o,3);return log.join(',')})()",
+   "chrome": "a1,a2,b3"
+  },
+  {
+   "name": "s_strict_nosetter",
+   "js": "(function(){'use strict';var P={get zz(){return 1}};function f(o,v){o.zz=v}var o=Object.create(P);var out=[];for(var i=0;i<3;i++){try{f(o,i);out.push('ok')}catch(e){out.push(e.constructor.name)}}return out.join(',')})()",
+   "chrome": "TypeError,TypeError,TypeError"
+  },
+  {
+   "name": "g_acc_to_data",
+   "js": "(function(){var P={get zz(){return 'g'}};function f(o){return o.zz}var o=Object.create(P);var r=[f(o),f(o)];Object.defineProperty(P,'zz',{value:'d',configurable:true});r.push(f(o));return r.join(',')})()",
+   "chrome": "g,g,d"
+  },
+  {
+   "name": "g_athena",
+   "js": "(function(){var orig=Array.prototype.filter;var out=[];Object.defineProperty(Array.prototype,'filter',{get:function(){return orig},configurable:true});function f(a){return a.filter(function(x){return x>1}).length}out.push(f([1,2,3]));Object.defineProperty(Array.prototype,'filter',{value:orig,writable:true,configurable:true});out.push(f([1,2,3,4]));return out.join(',')})()",
+   "chrome": "2,3"
+  },
+  {
+   "name": "g_data_to_acc",
+   "js": "(function(){var P={zz:'d'};function f(o){return o.zz}var o=Object.create(P);var r=[f(o),f(o)];Object.defineProperty(P,'zz',{get:function(){return 'g'},configurable:true});r.push(f(o));return r.join(',')})()",
+   "chrome": "d,d,g"
+  },
+  {
+   "name": "g_delete",
+   "js": "(function(){var P={get zz(){return 'g'},yy:'Y'};function f(o){return o.zz}var o=Object.create(P);var r=[f(o),f(o)];delete P.zz;r.push(String(f(o)));return r.join(',')})()",
+   "chrome": "g,g,undefined"
+  },
+  {
+   "name": "g_delete_data",
+   "js": "(function(){var P={zz:'a',yy:'b',xx:'c'};function f(o){return o.zz}var o=Object.create(P);var r=[f(o),f(o)];delete P.zz;r.push(String(f(o)));return r.join(',')})()",
+   "chrome": "a,a,undefined"
+  },
+  {
+   "name": "g_delete_only",
+   "js": "(function(){var P={zz:'a'};function f(o){return o.zz}var o=Object.create(P);var r=[f(o),f(o)];delete P.zz;r.push(String(f(o)));return r.join(',')})()",
+   "chrome": "a,a,undefined"
+  },
+  {
+   "name": "g_getter_swap",
+   "js": "(function(){var P={get zz(){return 'a'}};function f(o){return o.zz}var o=Object.create(P);var r=[f(o),f(o)];Object.defineProperty(P,'zz',{get:function(){return 'b'},configurable:true});r.push(f(o));return r.join(',')})()",
+   "chrome": "a,a,b"
+  },
+  {
+   "name": "u_global_ro",
+   "js": "(function(){globalThis.gx=0;var f=new Function('v','gx=v');f(1);f(2);Object.defineProperty(globalThis,'gx',{writable:false});f(3);return String(gx)})()",
+   "chrome": "2"
+  },
+  {
+   "name": "u_global_ro_name",
+   "js": "(function(){globalThis.gy=0;var g=new Function('return gy');var a=[g(),g()];Object.defineProperty(globalThis,'gy',{get:function(){return 'acc'},configurable:true});a.push(g());return a.join(',')})()",
+   "chrome": "0,0,acc"
+  },
+  {
+   "name": "u_own_freeze",
+   "js": "(function(){function big(p){var o=Object.create(p);for(var i=0;i<1100;i++)o['k'+i]=i;return o};var o=big(Object.prototype);o.x=0;function f(o,v){o.x=v}f(o,1);f(o,2);Object.freeze(o);try{f(o,3)}catch(e){}return String(o.x)})()",
+   "chrome": "2"
+  },
+  {
+   "name": "u_own_ro_strict",
+   "js": "(function(){'use strict';function big(p){var o=Object.create(p);for(var i=0;i<1100;i++)o['k'+i]=i;return o};var o=big(Object.prototype);o.x=0;function f(o,v){o.x=v}f(o,1);f(o,2);Object.defineProperty(o,'x',{writable:false});var r='none';try{f(o,3)}catch(e){r=e.constructor.name}return o.x+'/'+r})()",
+   "chrome": "2/TypeError"
+  },
+  {
+   "name": "u_proto_getter_swap_builtin",
+   "js": "(function(){var P=Array.prototype;Object.defineProperty(P,'zz',{get:function(){return 'a'},configurable:true});function f(o){return o.zz}var a=[];var r=[f(a),f(a)];Object.defineProperty(P,'zz',{get:function(){return 'b'}});r.push(f(a));delete P.zz;r.push(String(f(a)));return r.join(',')})()",
+   "chrome": "a,a,b,undefined"
+  },
+  {
+   "name": "u_proto_setter_to_getteronly_strict",
+   "js": "(function(){'use strict';var P=Array.prototype;var log=[];Object.defineProperty(P,'zz',{set:function(v){log.push(v)},configurable:true});function f(o,v){o.zz=v}var a=[];f(a,1);f(a,2);Object.defineProperty(P,'zz',{set:undefined,get:function(){return 1}});var r='none';try{f(a,3)}catch(e){r=e.constructor.name}delete P.zz;return log.join(',')+'/'+r})()",
+   "chrome": "1,2/TypeError"
+  },
+  {
+   "name": "u_shadow_get",
+   "js": "(function(){function big(p){var o=Object.create(p);for(var i=0;i<1100;i++)o['k'+i]=i;return o};var P={zz:'proto'};var o=big(P);function f(o){return o.zz}var r=[f(o),f(o)];o.zz='own';r.push(f(o));return r.join(',')})()",
+   "chrome": "proto,proto,own"
+  },
+  {
+   "name": "u_shadow_set",
+   "js": "(function(){function big(p){var o=Object.create(p);for(var i=0;i<1100;i++)o['k'+i]=i;return o};var log=[];var P={set zz(v){log.push(v)}};var o=big(P);function f(o,v){o.zz=v}f(o,1);f(o,2);Object.defineProperty(o,'zz',{value:0,writable:true,configurable:true});f(o,3);return log.join(',')+'/'+o.zz})()",
+   "chrome": "1,2/3"
+  },
+  {
+   "name": "r_lazy_getter_own",
+   "js": "(function(){var n=0;var o={get zz(){Object.defineProperty(o,'zz',{value:function(){n++;return 'called'},configurable:true});return 'first'}};function f(x){return x.zz}var a=f(o);var b=f(o);return a+','+typeof b+','+n})()",
+   "chrome": "first,function,0"
+  },
+  {
+   "name": "r_proto_getter_deletes",
+   "js": "(function(){var P={get zz(){delete P.zz;return 'g'},yy:'Y'};var o=Object.create(P);function f(x){return x.zz}var a=f(o);var b=f(o);return a+','+String(b)})()",
+   "chrome": "g,undefined"
+  },
+  {
+   "name": "r_proto_getter_redefines_data",
+   "js": "(function(){var P={get zz(){Object.defineProperty(P,'zz',{value:'d',configurable:true});return 'g'},yy:'Y'};var o=Object.create(P);function f(x){return x.zz}return [f(o),f(o),f(o)].join(',')})()",
+   "chrome": "g,d,d"
+  },
+  {
+   "name": "r_setter_redefines_own",
+   "js": "(function(){var log=[];var o={set zz(v){log.push('s'+v);Object.defineProperty(o,'zz',{value:0,writable:true,configurable:true})}};function f(x,v){x.zz=v}f(o,1);f(o,2);f(o,3);return log.join(',')+'/'+o.zz})()",
+   "chrome": "s1/3"
+  },
+  {
+   "name": "r_proto_setter_deletes",
+   "js": "(function(){var log=[];var P={set zz(v){log.push('s'+v);delete P.zz},yy:'Y'};var o=Object.create(P);function f(x,v){x.zz=v}f(o,1);f(o,2);f(o,3);return log.join(',')+'/'+Object.hasOwn(o,'zz')+'/'+o.zz+'/'+P.yy})()",
+   "chrome": "s1/true/3/Y"
+  },
+  {
+   "name": "r_global_getter_redefines",
+   "js": "(function(){Object.defineProperty(globalThis,'gz',{get:function(){Object.defineProperty(globalThis,'gz',{value:'d',configurable:true,writable:true});return 'g'},configurable:true});var g=new Function('return gz');return [g(),g(),g()].join(',')})()",
+   "chrome": "g,d,d"
+  },
+  {
+   "name": "r_proto_getter_defines_own",
+   "js": "(function(){var n=0;var P={get zz(){n++;Object.defineProperty(this,'zz',{value:'own'});return 'lazy'}};var o=Object.create(P);function f(x){return x.zz}var a=f(o),b=f(o),c=f(o);return a+','+b+','+c+','+n})()",
+   "chrome": "lazy,own,own,1"
+  },
+  {
+   "name": "r_proto_setter_defines_own",
+   "js": "(function(){var n=0;var P={set zz(v){n++;Object.defineProperty(this,'zz',{value:v,writable:true,configurable:true})}};var o=Object.create(P);function f(x,v){x.zz=v}f(o,1);f(o,2);f(o,3);return o.zz+','+n+','+Object.hasOwn(o,'zz')})()",
+   "chrome": "3,1,true"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

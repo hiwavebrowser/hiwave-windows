@@ -1,4 +1,4 @@
-//! HTML drag and drop's script side (web_dnd.js, dom.rs `__rkFireDrag`):
+//! HTML drag and drop's script side (web_dnd.js, dom.rs `__rk.fireDrag`):
 //! the DataTransfer and its drag data store's protection modes, and the
 //! DragEvent the engine's processing model fires.
 

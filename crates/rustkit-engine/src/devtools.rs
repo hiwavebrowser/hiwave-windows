@@ -569,7 +569,7 @@ impl Engine {
         }
         if on {
             if let Some(bindings) = view.bindings.as_ref() {
-                inspector_glue::attach(bindings, &view.inspector);
+                inspector_glue::attach(bindings, &view.inspector, id.raw());
             }
         }
         Ok(())

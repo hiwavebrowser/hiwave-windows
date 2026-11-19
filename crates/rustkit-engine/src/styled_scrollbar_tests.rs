@@ -173,7 +173,10 @@ fn the_standard_properties_win_over_the_pseudo_elements() {
 fn dragging_the_thumb_fifty_pixels_scrolls_in_proportion() {
     // Chrome: 50 * (600 - 200) / (200 - 67) = 150.
     let (mut engine, view) = loaded(&page(""));
-    assert!(engine.mouse_down_at_point(view, 307.0, 30.0) || true);
+    // The press is on the thumb: the scrollbar takes it (a press there moves no focus and starts
+    // the drag).
+    engine.mouse_down_at_point(view, 307.0, 30.0);
+    assert!(engine.views[&view].scrollbar_pressed.is_some(), "the press at (307, 30) is not on the scrollbar");
     engine.mouse_move_at_point(view, 307.0, 55.0);
     engine.mouse_move_at_point(view, 307.0, 80.0);
     engine.click_at_point(view, 307.0, 80.0);

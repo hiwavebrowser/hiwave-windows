@@ -1,0 +1,39 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() after load
+nh childNodes: 1 [#text(144)] children=0 parent=head
+nh textContent: "<link rel=\"stylesheet\" href=\"html1_noscript_missing.css\"><meta name=\"inside\" content=\"noscript\"><style>#probe { color: rgb(255, 0, 0); }</style>"
+nh innerHTML: "<link rel=\"stylesheet\" href=\"html1_noscript_missing.css\"><meta name=\"inside\" content=\"noscript\"><style>#probe { color: rgb(255, 0, 0); }</style>"
+nb childNodes: 1 [#text(187)] children=0 parent=body
+nb textContent: "<strong id=\"ns_strong\">enable <em>JS</em></strong> &amp; &lt;b&gt; <img id=\"ns_img\" src=\"html1_noscript_pixel.png\" width=\"50\" height=\"50\"><iframe src=\"html1_noscript_frame.html\"></iframe>"
+nb innerHTML: "<strong id=\"ns_strong\">enable <em>JS</em></strong> &amp; &lt;b&gt; <img id=\"ns_img\" src=\"html1_noscript_pixel.png\" width=\"50\" height=\"50\"><iframe src=\"html1_noscript_frame.html\"></iframe>"
+nw childNodes: 1 [#text(65)] children=0 parent=div
+nw textContent: "<p>one</p><!-- c --><script>window.ranInNoscript = true;</script>"
+nw innerHTML: "<p>one</p><!-- c --><script>window.ranInNoscript = true;</script>"
+np childNodes: 1 [#text(11)] children=0 parent=p
+np textContent: "<b>bold</b>"
+np innerHTML: "<b>bold</b>"
+nt childNodes: 1 [#text(11)] children=0 parent=td
+nt textContent: "<i>cell</i>"
+nt innerHTML: "<i>cell</i>"
+odd childNodes: 1 [#text(10)] children=0 parent=body
+odd textContent: "<div>open "
+odd innerHTML: "<div>open "
+empty childNodes: 0 [] children=0 parent=body
+empty textContent: ""
+empty innerHTML: ""
+nb outerHTML: "<noscript id=\"nb\"><strong id=\"ns_strong\">enable <em>JS</em></strong> &amp; &lt;b&gt; <img id=\"ns_img\" src=\"html1_noscript_pixel.png\" width=\"50\" height=\"50\"><iframe src=\"html1_noscript_frame.html\"></iframe></noscript>"
+queries:     7 0 0 0 0 1
+head children: meta,title,noscript,style
+script inside did not run: undefined
+style inside does not apply: rgb(0, 0, 0) sheets=1
+does not render: inline 0x0 offsetParent=null probe y=8 after y=26
+odd end tag: body "closed by a spaced end tag"
+innerText: "text tail" "<strong id=\"ns_stron"
+innerHTML set on a live element: noscript,i / #text(13) / "<b>x</b>&amp;" / "<noscript><b>x</b>&amp;</noscript><i>y</i>"
+innerHTML set on a noscript: #text(8) "<b>x</b>"
+insertAdjacentHTML: #text(8)
+appendChild into a noscript: b "<b>x&lt;</b>" "<noscript><b>x&lt;</b></noscript>"
+DOMParser: head  "" b=false
+DOMParser head: noscript / p / link
+createHTMLDocument: b
+template: b
+createContextualFragment: #text(8)

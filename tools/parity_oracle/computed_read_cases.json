@@ -351,8 +351,7 @@
    {
     "prop": "box-shadow",
     "value": "1px 1px #000, 2px 2px #111",
-    "chrome": "rgb(0, 0, 0) 1px 1px 0px 0px, rgb(17, 17, 17) 2px 2px 0px 0px",
-    "gap": "the parser reads a list as one shadow"
+    "chrome": "rgb(0, 0, 0) 1px 1px 0px 0px, rgb(17, 17, 17) 2px 2px 0px 0px"
    },
    {
     "prop": "box-shadow",

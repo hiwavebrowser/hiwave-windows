@@ -1,0 +1,15 @@
+# WHL1 R1 LOW 1: defaultPrevented is read-only; only a listener that may cancel cancels.
+# Chrome for Testing 148.0.7778.216, headless: window.report() of whl1_default_prevented.html.
+assign true: returned true after=false inside=false returnValue=true
+assign true, strict: returned true after=false threw TypeError inside=false returnValue=true
+defineProperty value true: returned true after=true inside=true returnValue=true
+preventDefault: returned false after=true inside=true returnValue=false
+returnValue = false: returned false after=true inside=true returnValue=false
+passive: preventDefault: returned true after=false inside=false returnValue=true
+passive: returnValue = false: returned true after=false inside=false returnValue=true
+passive: assign true: returned true after=false inside=false returnValue=true
+passive: defineProperty: returned true after=true inside=true returnValue=true
+not dispatched, preventDefault: true
+not cancelable, preventDefault: false
+descriptor: get=function set=undefined own=false
+returnValue descriptor: get=function set=function

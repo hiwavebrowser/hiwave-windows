@@ -28,6 +28,51 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::f32::consts::PI;
 use thiserror::Error;
 
+mod raster;
+pub use raster::{raster_totals, set_raster_timing, CanvasBitmap, RasterTotals};
+pub mod gpu;
+pub use gpu::{compare_premultiplied, gpu_canvas_enabled, set_gpu_canvas, GpuBatch, GpuReset, PixelDiff};
+
+#[cfg(test)]
+mod recording_tests;
+
+/// The largest canvas bitmap, in pixels: Chrome 148 draws on a 16384 x 16384
+/// canvas and not on one pixel more (it reads back zeros).
+pub const MAX_CANVAS_AREA: u64 = 16384 * 16384;
+/// The longest canvas bitmap side. Chrome 148 draws on 32768 x 1 and not on
+/// 100000 x 1; tiny-skia and Skia both stop at this side.
+pub const MAX_CANVAS_SIDE: u32 = 65535;
+
+/// Whether a `width` x `height` bitmap is within the canvas limits.
+pub fn bitmap_fits(width: u32, height: u32) -> bool {
+    width <= MAX_CANVAS_SIDE && height <= MAX_CANVAS_SIDE && width as u64 * height as u64 <= MAX_CANVAS_AREA
+}
+
+/// The RGBA byte length of a `width` x `height` pixel read, `None` past
+/// [`MAX_CANVAS_AREA`] pixels (getImageData then throws RangeError, as
+/// Chrome does) or on overflow.
+pub fn rgba_len(width: u32, height: u32) -> Option<usize> {
+    let pixels = (width as u64).checked_mul(height as u64)?;
+    if pixels > MAX_CANVAS_AREA {
+        return None;
+    }
+    usize::try_from(pixels.checked_mul(4)?).ok()
+}
+
+/// What the raster takes from a context's state for a draw, at the call
+/// (GPU canvas A0: the draw is recorded with it).
+macro_rules! draw_ctx {
+    ($c:expr) => {
+        raster::DrawCtx {
+            size: ($c.width, $c.height),
+            op: $c.state.global_composite_operation,
+            clip: $c.state.raster_clip.clone(),
+            alpha: $c.state.global_alpha,
+            t: $c.state.transform,
+        }
+    };
+}
+
 // ==================== Errors ====================
 
 /// Errors that can occur in canvas operations.
@@ -195,9 +240,8 @@ impl RadialGradient {
 /// Canvas pattern.
 #[derive(Debug, Clone)]
 pub struct CanvasPattern {
-    pub image_data: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
+    /// The source's pixels when the pattern was set as a style.
+    pub bitmap: std::sync::Arc<CanvasBitmap>,
     pub repetition: PatternRepetition,
 }
 
@@ -632,6 +676,9 @@ pub struct CanvasState {
     /// box of every clip path intersected so far (a non-rectangular clip
     /// clips to its box). `None` is the whole bitmap.
     pub clip_rect: Option<[f32; 4]>,
+    /// The clip as the bitmap's coverage mask (`None`: no clip), which
+    /// the raster draws through.
+    pub(crate) raster_clip: raster::ClipMask,
 }
 
 impl Default for CanvasState {
@@ -657,6 +704,7 @@ impl Default for CanvasState {
             shadow_offset_y: 0.0,
             clip_path: None,
             clip_rect: None,
+            raster_clip: None,
         }
     }
 }
@@ -674,7 +722,8 @@ pub struct ImageData {
 impl ImageData {
     /// Create new image data.
     pub fn new(width: u32, height: u32) -> Self {
-        let len = (width * height * 4) as usize;
+        // Past the limit (or on overflow) the data is empty.
+        let len = rgba_len(width, height).unwrap_or(0);
         Self {
             width,
             height,
@@ -684,8 +733,8 @@ impl ImageData {
 
     /// Create from existing data.
     pub fn from_data(width: u32, height: u32, data: Vec<u8>) -> Result<Self, CanvasError> {
-        let expected_len = (width * height * 4) as usize;
-        if data.len() != expected_len {
+        let expected_len = (width as u64) * (height as u64) * 4;
+        if data.len() as u64 != expected_len {
             return Err(CanvasError::InvalidArgument(format!(
                 "Data length {} doesn't match expected {}",
                 data.len(), expected_len
@@ -788,9 +837,17 @@ pub struct CanvasRenderingContext2D {
     bytes: usize,
     /// See [`Self::generation`].
     generation: u64,
-    /// Pixel buffer (optional, for getImageData).
-    pixel_buffer: Option<ImageData>,
+    /// The bitmap every draw is rasterized into (`getImageData`), and the
+    /// draws recorded since it was last brought up to date (GPU canvas A0):
+    /// every read replays them first. A cell, so that reads stay `&self`.
+    raster: std::cell::RefCell<raster::Recorded>,
+    /// See `is_origin_clean`.
+    origin_clean: bool,
+    /// See [`Self::context_id`].
+    id: u64,
 }
+
+static CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -811,7 +868,9 @@ impl CanvasRenderingContext2D {
             bounds: Vec::new(),
             bytes: 0,
             generation: next_generation(),
-            pixel_buffer: None,
+            raster: std::cell::RefCell::new(raster::Recorded::new(gpu::gpu_canvas_enabled())),
+            origin_clean: true,
+            id: CONTEXT_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -969,6 +1028,7 @@ impl CanvasRenderingContext2D {
         self.state = CanvasState::default();
         self.state_stack.clear();
         self.path = Path2D::new();
+        self.raster.get_mut().reset();
         self.drop_all();
     }
 
@@ -1207,6 +1267,8 @@ impl CanvasRenderingContext2D {
                 self.occlude(region);
             }
         }
+        let d = draw_ctx!(self);
+        self.raster.get_mut().push(raster::Op::Fill { d, path: vec![PathCommand::Rect(x, y, w, h)], even_odd: false, style: style.clone() });
         self.record(DrawCommand::FillRect { x, y, w, h, style, transform: t });
     }
 
@@ -1215,6 +1277,7 @@ impl CanvasRenderingContext2D {
         if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) {
             return;
         }
+        self.raster_stroke(vec![PathCommand::Rect(x, y, w, h)]);
         self.record(DrawCommand::StrokeRect {
             x, y, w, h,
             style: self.state.stroke_style.with_alpha(self.state.global_alpha),
@@ -1222,6 +1285,21 @@ impl CanvasRenderingContext2D {
             dash: self.dash(),
             transform: self.state.transform,
         });
+    }
+
+    /// Rasterizes a stroke of `path` with the current line styles.
+    fn raster_stroke(&mut self, path: Vec<PathCommand>) {
+        let style = self.state.stroke_style.with_alpha(self.state.global_alpha);
+        let line = raster::Line {
+            width: self.state.line_width,
+            cap: self.state.line_cap,
+            join: self.state.line_join,
+            miter_limit: self.state.miter_limit,
+            dash: self.state.line_dash.clone(),
+            dash_offset: self.state.line_dash_offset,
+        };
+        let d = draw_ctx!(self);
+        self.raster.get_mut().push(raster::Op::Stroke { d, path, line, style });
     }
 
     fn dash(&self) -> LineDash {
@@ -1240,10 +1318,17 @@ impl CanvasRenderingContext2D {
             return;
         }
         let t = self.state.transform;
+        let clip = self.state.raster_clip.clone();
         let q = quad(&t, x, y, w, h);
         let canvas = self.canvas_rect();
         let clip_covers = self.state.clip_rect.is_none_or(|c| contains4(c, canvas));
         let corners = [(0.0, 0.0), (canvas[2], 0.0), (canvas[2], canvas[3]), (0.0, canvas[3])];
+        if clip.is_none() && corners.iter().all(|&p| in_convex_quad(&q, p)) {
+            // GPU canvas A1 (switch on only): neither picture replays what
+            // a clear of the whole bitmap hides.
+            self.raster.get_mut().full_clear((self.width, self.height));
+        }
+        self.raster.get_mut().push(raster::Op::Clear { clip, rect: [x, y, w, h], t });
         if clip_covers && corners.iter().all(|&p| in_convex_quad(&q, p)) {
             self.drop_all();
             return;
@@ -1288,9 +1373,13 @@ impl CanvasRenderingContext2D {
         if segments.is_empty() {
             return;
         }
+        let style = self.state.fill_style.with_alpha(self.state.global_alpha);
+        let d = draw_ctx!(self);
+        let path = self.path.commands().to_vec();
+        self.raster.get_mut().push(raster::Op::Fill { d, path, even_odd, style: style.clone() });
         self.record(DrawCommand::FillPath {
             segments,
-            style: self.state.fill_style.with_alpha(self.state.global_alpha),
+            style,
             even_odd,
             transform: self.state.transform,
         });
@@ -1302,6 +1391,7 @@ impl CanvasRenderingContext2D {
         if segments.is_empty() {
             return;
         }
+        self.raster_stroke(self.path.commands().to_vec());
         self.record(DrawCommand::StrokePath {
             segments,
             style: self.state.stroke_style.with_alpha(self.state.global_alpha),
@@ -1314,6 +1404,19 @@ impl CanvasRenderingContext2D {
     /// Clip to current path: the clip becomes its intersection with the
     /// path's bounding box in bitmap pixels.
     pub fn clip(&mut self) {
+        self.clip_with_rule(false);
+    }
+
+    /// Clip to the current path under the even-odd rule or non-zero.
+    pub fn clip_with_rule(&mut self, even_odd: bool) {
+        self.state.raster_clip = raster::clip_to(
+            (self.width, self.height),
+            &self.state.raster_clip,
+            self.path.commands(),
+            even_odd,
+            &self.state.transform,
+            self.raster.get_mut().gpu_on(),
+        );
         self.state.clip_path = Some(self.path.clone());
         let t = self.state.transform;
         let mut b = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
@@ -1469,26 +1572,97 @@ impl CanvasRenderingContext2D {
 
     /// Get image data from canvas.
     pub fn get_image_data(&self, x: i32, y: i32, width: u32, height: u32) -> ImageData {
-        // Return from pixel buffer if available
-        if let Some(ref buffer) = self.pixel_buffer {
-            let mut data = ImageData::new(width, height);
-            for dy in 0..height {
-                for dx in 0..width {
-                    let sx = (x + dx as i32) as u32;
-                    let sy = (y + dy as i32) as u32;
-                    if let Some((r, g, b, a)) = buffer.get_pixel(sx, sy) {
-                        data.set_pixel(dx, dy, r, g, b, a);
-                    }
-                }
-            }
-            return data;
+        ImageData { width, height, data: self.raster.borrow_mut().flush().read(x, y, width, height) }
+    }
+
+    /// The bitmap as premultiplied RGBA rows, `width` x `height`: what the
+    /// engine paints to the screen (STR-7b).
+    pub fn premultiplied_pixels(&self) -> Vec<u8> {
+        self.raster.borrow_mut().flush().premultiplied((self.width, self.height))
+    }
+
+    /// The bitmap's pixels, for another canvas to draw or repeat; `None`
+    /// when nothing was drawn on it.
+    pub fn bitmap(&self) -> Option<CanvasBitmap> {
+        self.raster.borrow_mut().flush().bitmap()
+    }
+
+    /// drawImage of a bitmap (another canvas, a decoded image): the source
+    /// rect `src` (`sx, sy, sw, sh`) into the destination rect `dst`.
+    pub fn draw_bitmap(&mut self, image: CanvasBitmap, src: [f32; 4], dst: [f32; 4]) {
+        if src.iter().chain(&dst).any(|v| !v.is_finite()) {
+            return;
         }
-        ImageData::new(width, height)
+        let d = draw_ctx!(self);
+        self.raster.get_mut().push(raster::Op::Image { d, image, src, dst });
+        self.generation = next_generation();
+    }
+
+    /// putImageData: the part `dirty` (`x, y, w, h`, already cut to the
+    /// image) of `data` written at `x, y` as it is (HTML §4.12.5.1.15).
+    pub fn put_image_data_dirty(&mut self, data: &ImageData, x: i32, y: i32, dirty: [i32; 4]) {
+        let op = raster::put_op((self.width, self.height), &data.data, data.width, x, y, dirty);
+        self.raster.get_mut().push(op);
+        self.generation = next_generation();
     }
 
     /// Put image data to canvas.
     pub fn put_image_data(&mut self, data: ImageData, x: i32, y: i32) {
         self.record(DrawCommand::PutImageData { data, x, y });
+    }
+
+    // ==================== The raster recording (GPU canvas A0) ====================
+
+    /// Draws recorded and not yet rasterized into the bitmap: a read
+    /// (`getImageData`, `bitmap`, `premultiplied_pixels`, `bitmap_bytes`)
+    /// replays them first.
+    pub fn pending_ops(&self) -> usize {
+        self.raster.borrow().pending_ops()
+    }
+
+    /// The bytes the pending draws hold (at most about
+    /// [`PENDING_BYTE_BUDGET`]).
+    pub fn pending_bytes(&self) -> usize {
+        self.raster.borrow().pending_bytes()
+    }
+
+    // ==================== The GPU picture (GPU canvas A1) ====================
+
+    /// Whether this context keeps a GPU picture (`HIWAVE_GPU_CANVAS=1` or
+    /// [`gpu::set_gpu_canvas`] when it was created, and not given up since).
+    pub fn gpu_canvas(&self) -> bool {
+        self.raster.borrow().gpu_on()
+    }
+
+    /// A number unique to this context in the process: the key its GPU
+    /// texture is kept under.
+    pub fn context_id(&self) -> u64 {
+        self.id
+    }
+
+    /// The draws recorded since the last batch, for the presenter's GPU
+    /// replay, or a reset from the CPU bitmap (`force_reset`, or when the
+    /// GPU picture must start over). Moves the GPU position to the end.
+    pub fn take_gpu_batch(&self, force_reset: bool) -> gpu::GpuBatch {
+        self.raster.borrow_mut().take_gpu((self.width, self.height), force_reset)
+    }
+
+    /// Draws the GPU has not taken yet (0 without a GPU picture).
+    pub fn gpu_pending_ops(&self) -> usize {
+        self.raster.borrow().gpu_pending()
+    }
+
+    /// Gives the GPU picture up for this context's life (the presenter has
+    /// no texture for it): it is shown from its CPU bitmap, as with the
+    /// switch off.
+    pub fn leave_gpu(&self) {
+        self.raster.borrow_mut().leave_gpu();
+    }
+
+    /// Tests: rasterize every draw at the call, as before the recording.
+    #[doc(hidden)]
+    pub fn set_immediate_raster(&mut self, on: bool) {
+        self.raster.get_mut().set_immediate(on);
     }
 
     // ==================== Commands ====================
@@ -1504,6 +1678,23 @@ impl CanvasRenderingContext2D {
     /// [`RECORDING_BYTE_BUDGET`]).
     pub fn recorded_bytes(&self) -> usize {
         self.bytes
+    }
+
+    /// The bytes the bitmap holds (none before the first draw).
+    pub fn bitmap_bytes(&self) -> usize {
+        self.raster.borrow_mut().flush().bytes()
+    }
+
+    /// Whether the bitmap is origin-clean (HTML §4.12.5.1: no image of
+    /// another origin, nor a canvas or pattern that was not clean, has been
+    /// drawn on it). Resizing does not clean it.
+    pub fn is_origin_clean(&self) -> bool {
+        self.origin_clean
+    }
+
+    /// Mark the bitmap as not origin-clean, for good.
+    pub fn taint(&mut self) {
+        self.origin_clean = false;
     }
 
     /// Get recorded draw commands.
@@ -1612,6 +1803,10 @@ pub fn command_extent(command: &DrawCommand, canvas: [f32; 4]) -> [f32; 4] {
         DrawCommand::Clip { .. } | DrawCommand::DrawImage { .. } | DrawCommand::PutImageData { .. } => canvas,
     }
 }
+
+/// The most a context holds in draws recorded and not yet rasterized
+/// (GPU canvas A0); past it they are replayed into the bitmap.
+pub const PENDING_BYTE_BUDGET: usize = 4 << 20;
 
 /// The most a canvas's recording may hold (estimated by [`command_bytes`]).
 pub const RECORDING_BYTE_BUDGET: usize = 8 << 20;

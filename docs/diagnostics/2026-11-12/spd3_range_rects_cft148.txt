@@ -1,0 +1,68 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() after load
+chars 2..5 bounding: 39.27 10 28.91 19
+chars 2..5 rects: 1 [39.27 10 28.91 19]
+first char bounding: 20 10 9.64 19
+first char rects: 1 [20 10 9.64 19]
+whole node bounding: 20 10 96.33 19
+whole node rects: 1 [20 10 96.33 19]
+caret at 3 bounding: 48.89 10 0 19
+caret at 3 rects: 1 [48.89 10 0 19]
+caret at 0 bounding: 20 10 0 19
+caret at 0 rects: 1 [20 10 0 19]
+caret at end bounding: 116.33 10 0 19
+caret at end rects: 1 [116.33 10 0 19]
+selectNodeContents p bounding: 20 10 96.33 19
+selectNodeContents p rects: 1 [20 10 96.33 19]
+selectNode p bounding: 20 10 780 20
+selectNode p rects: 2 [20 10 780 20] [20 10 96.33 19]
+wrapped 2..12 bounding: 20 40 86.7 39
+wrapped 2..12 rects: 2 [39.27 40 67.44 19] [20 60 19.27 19]
+wrapped all bounding: 20 40 86.7 59
+wrapped all rects: 3 [20 40 86.7 19] [20 60 86.7 19] [20 80 38.53 19]
+wrapped caret at a line start bounding: 20 60 0 19
+wrapped caret at a line start rects: 1 [20 60 0 19]
+wrapped across the break bounding: 20 40 86.7 39
+wrapped across the break rects: 2 [97.06 40 9.64 19] [20 60 9.64 19]
+mixed all bounding: 20 110 150.86 19
+mixed all rects: 5 [20 110 57.8 19] [77.8 110 44.53 19] [80.8 110 38.53 19] [122.33 110 38.53 19] [160.86 110 10 10]
+mixed text into bold bounding: 39.27 110 60.8 19
+mixed text into bold rects: 2 [39.27 110 38.53 19] [80.8 110 19.27 19]
+mixed bold element bounding: 77.8 110 44.53 19
+mixed bold element rects: 2 [77.8 110 44.53 19] [80.8 110 38.53 19]
+mixed image bounding: 160.86 110 10 10
+mixed image rects: 1 [160.86 110 10 10]
+mixed element offsets bounding: 77.8 110 83.06 19
+mixed element offsets rects: 3 [77.8 110 44.53 19] [80.8 110 38.53 19] [122.33 110 38.53 19]
+across blocks bounding: 20 140 48.17 39
+across blocks rects: 2 [39.27 140 28.91 19] [20 160 28.91 19]
+blocks container bounding: 20 140 780 40
+blocks container rects: 4 [20 140 780 20] [20 140 48.17 19] [20 160 780 20] [20 160 57.8 19]
+tall line bounding: 20 203 38.53 19
+tall line rects: 1 [20 203 38.53 19]
+big span text bounding: 68.17 196 43.36 28
+big span text rects: 1 [68.17 196 43.36 28]
+tall across sizes bounding: 39.27 196 101.17 28
+tall across sizes rects: 4 [39.27 203 28.91 19] [68.17 196 43.36 28] [68.17 196 43.36 28] [111.53 203 28.91 19]
+collapsed spaces 0..3 bounding: 20 243 0 19
+collapsed spaces 0..3 rects: 1 [20 243 0 19]
+collapsed spaces 3..9 bounding: 20 243 38.53 19
+collapsed spaces 3..9 rects: 1 [20 243 38.53 19]
+collapsed spaces all bounding: 20 243 144.5 19
+collapsed spaces all rects: 1 [20 243 144.5 19]
+pre 0..4 bounding: 20 273 38.53 19
+pre 0..4 rects: 1 [20 273 38.53 19]
+hidden bounding: 0 0 0 0
+hidden rects: 0 []
+empty element bounding: 0 0 0 0
+empty element rects: 0 []
+detached bounding: 0 0 0 0
+detached rects: 0 []
+proportional 2..14 bounding: 34.67 304 79.11 18
+proportional 2..14 rects: 1 [34.67 304 79.11 18]
+scrolled chars 2..5 bounding: 39.27 -20 28.91 19
+scrolled chars 2..5 rects: 1 [39.27 -20 28.91 19]
+list type: [object DOMRectList] [object DOMRect] function true null
+getTargetRanges: function true 0 true
+StaticRange: function [object StaticRange] true 1 4 false true true
+targetRanges init: 1 false false false
+StaticRange errors: THROWS TypeError | THROWS InvalidNodeTypeError

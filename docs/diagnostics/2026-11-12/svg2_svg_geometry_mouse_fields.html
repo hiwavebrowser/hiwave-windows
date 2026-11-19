@@ -1,0 +1,107 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>SVG2: SVG element geometry for script; mouse and wheel event fields</title>
+<style>
+html, body { margin: 0; }
+body { height: 2000px; font: 12px/14px Times; }
+#pad { position: absolute; left: 500px; top: 40px; width: 100px; height: 60px; padding: 10px 0 0 20px; border: 5px solid #999; }
+#inner { width: 40px; height: 20px; margin: 4px 0 0 6px; background: #9cf; }
+</style></head><body>
+<div style="height:30px"></div>
+<svg id="s" width="400" height="300" style="margin-left:20px;display:block"><g id="g" transform="translate(40,10)"><rect id="r" x="0" y="0" width="300" height="200" fill="#eee"></rect><circle id="c" cx="100" cy="100" r="40" fill="#9cf"></circle><g id="g2" transform="scale(2)"><rect id="r2" x="110" y="10" width="20" height="15" fill="#fc9"></rect></g><line id="ln" x1="10" y1="190" x2="110" y2="190" stroke="black"></line><path id="p" d="M200 120 L 260 120 L 230 180 Z" fill="#c9f"></path><rect id="nope" x="150" y="10" width="40" height="20" fill="red" pointer-events="none"></rect></g><g id="empty"></g></svg>
+<svg id="v" width="200" height="100" viewBox="0 0 100 50" style="margin:10px 0 0 20px;display:block"><rect id="vr" x="10" y="5" width="30" height="20" fill="#9c9"></rect><svg id="nested" x="50" y="10" width="40" height="30" viewBox="0 0 20 15"><rect id="nr" x="2" y="3" width="10" height="5" fill="#c99"></rect></svg></svg>
+<div id="pad"><div id="inner"></div></div>
+<script>
+function attempt(f) { try { return f(); } catch (e) { return 'THROWS ' + e.name; } }
+function r2(n) { return Math.round(n * 100) / 100; }
+function $(id) { return document.getElementById(id); }
+function rect(el) { var q = el.getBoundingClientRect(); return [q.x, q.y, q.width, q.height].map(r2).join(' '); }
+function matrix(m) { return m === null ? 'null' : [m.a, m.b, m.c, m.d, m.e, m.f].map(r2).join(' '); }
+var heard = [];
+['mousemove', 'mousedown', 'mouseup', 'click'].forEach(function (type) {
+    document.addEventListener(type, function (e) {
+        if (!e.isTrusted) return;
+        heard.push('trusted ' + type + ' at ' + (e.target.id || e.target.localName) + ': client=' + e.clientX + ',' + e.clientY + ' offset=' + r2(e.offsetX) + ',' + r2(e.offsetY) +
+            ' page=' + e.pageX + ',' + e.pageY + ' layer=' + e.layerX + ',' + e.layerY + ' movement=' + e.movementX + ',' + e.movementY +
+            ' button=' + e.button + ' buttons=' + e.buttons + ' detail=' + e.detail);
+    }, true);
+});
+window.report = function () {
+    var out = [];
+    function line(label, f) { out.push(label + ': ' + attempt(f)); }
+    var IDS = ['s', 'g', 'r', 'c', 'g2', 'r2', 'ln', 'p', 'nope', 'empty', 'v', 'vr', 'nested', 'nr'];
+    IDS.forEach(function (id) { line('rect ' + id, function () { return rect($(id)); }); });
+    IDS.forEach(function (id) { line('getCTM ' + id, function () { return matrix($(id).getCTM()); }); });
+    IDS.forEach(function (id) { line('getScreenCTM ' + id, function () { return matrix($(id).getScreenCTM()); }); });
+    line('owner', function () {
+        return IDS.map(function (id) { var e = $(id); return id + '=' + (e.ownerSVGElement ? e.ownerSVGElement.id : e.ownerSVGElement) + '/' + (e.viewportElement ? e.viewportElement.id : e.viewportElement); }).join(' ');
+    });
+    line('createSVGPoint', function () {
+        var p = $('s').createSVGPoint();
+        var first = Object.prototype.toString.call(p) + ' ' + p.x + ',' + p.y;
+        p.x = 150; p.y = 200;
+        var q = p.matrixTransform($('g').getScreenCTM().inverse());
+        return first + ' -> ' + r2(q.x) + ',' + r2(q.y) + ' ' + Object.prototype.toString.call(q) + ' ' + (typeof $('r').createSVGPoint);
+    });
+    line('matrix type', function () {
+        var m = $('g2').getScreenCTM();
+        return Object.prototype.toString.call(m) + ' ' + (m instanceof DOMMatrix) + ' ' + matrix(m.inverse()) + ' | ' + matrix(m.translate(5, 5)) + ' | ' + matrix($('s').createSVGMatrix());
+    });
+    line('client and offset', function () { var s = $('s'); return [s.clientLeft, s.clientTop, s.clientWidth, s.clientHeight, $('r').clientWidth, typeof $('r').offsetWidth].join(' '); });
+    [['r', 80, 60], ['c', 150, 140], ['c corner (bbox, outside the circle)', 105, 105], ['r2', 310, 70], ['ln', 100, 230], ['p', 290, 190], ['p corner', 262, 215],
+     ['nope lets it through', 220, 55], ['svg background', 30, 320], ['vr', 60, 365], ['nr', 140, 380], ['nested background', 190, 395], ['body', 450, 20]].forEach(function (p) {
+        line('elementFromPoint ' + p[0] + ' (' + p[1] + ',' + p[2] + ')', function () { var e = document.elementFromPoint(p[1], p[2]); return e ? (e.id || e.localName) : 'null'; });
+    });
+    window.scrollTo(0, 50);
+    line('scrolled', function () { return rect($('r')) + ' | ' + matrix($('r').getScreenCTM()) + ' | ' + matrix($('r').getCTM()) + ' | ' + (document.elementFromPoint(80, 10) || {}).id; });
+    window.scrollTo(0, 0);
+
+    // ---- constructed mouse and wheel events
+    line('MouseEvent fields', function () {
+        var e = new MouseEvent('mousemove', { clientX: 150, clientY: 200, screenX: 7, screenY: 8, movementX: 3, movementY: 4, bubbles: true });
+        return [e.clientX, e.clientY, e.pageX, e.pageY, e.x, e.y, e.screenX, e.screenY, e.movementX, e.movementY, e.offsetX, e.offsetY, e.layerX, e.layerY, e.button, e.buttons, e.which].join(' ');
+    });
+    line('MouseEvent defaults', function () { var e = new MouseEvent('click'); return [e.clientX, e.pageX, e.offsetX, e.layerX, e.movementX, e.screenX, e.detail].join(' '); });
+    line('WheelEvent fields', function () {
+        var e = new WheelEvent('wheel', { clientX: 200, clientY: 100, deltaX: 3, deltaY: -10, deltaZ: 1, deltaMode: 1, bubbles: true, cancelable: true });
+        return [e.deltaX, e.deltaY, e.deltaZ, e.deltaMode, e.wheelDelta, e.wheelDeltaX, e.wheelDeltaY, e.detail, e.clientX, e.pageY, e.offsetX, e instanceof MouseEvent].join(' ');
+    });
+    line('WheelEvent defaults and constants', function () {
+        var e = new WheelEvent('wheel');
+        return [e.deltaX, e.deltaY, e.deltaZ, e.deltaMode, e.wheelDelta, e.wheelDeltaX, e.wheelDeltaY, WheelEvent.DOM_DELTA_PIXEL, WheelEvent.DOM_DELTA_LINE, WheelEvent.DOM_DELTA_PAGE, e.DOM_DELTA_PAGE,
+            ['wheelDelta', 'wheelDeltaX', 'wheelDeltaY'].map(function (k) { return Object.prototype.hasOwnProperty.call(WheelEvent.prototype, k); }).join('')].join(' ');
+    });
+    line('wheelDelta from init', function () {
+        var e = new WheelEvent('wheel', { deltaY: 100, wheelDeltaY: -120, wheelDeltaX: 240, wheelDelta: -120 });
+        return [e.deltaY, e.wheelDelta, e.wheelDeltaX, e.wheelDeltaY].join(' ');
+    });
+    // R1 MED 4: the legacy deltas of a constructed wheel, one init per line.
+    [{ deltaX: 3, deltaY: -10 }, { deltaY: 100 }, { deltaX: 40 }, { deltaX: 3, deltaY: -10, deltaMode: 1 }, { deltaY: 100, wheelDeltaY: 55 },
+     { deltaY: 100, wheelDelta: 7 }, { deltaX: 5, wheelDeltaX: -9 }, { deltaY: 0.5 }, { deltaY: 100.7 }, { deltaY: -100.7 }].forEach(function (init) {
+        line('legacy deltas ' + JSON.stringify(init), function () {
+            var e = new WheelEvent('wheel', init);
+            return [e.deltaX, e.deltaY, e.wheelDelta, e.wheelDeltaX, e.wheelDeltaY].join(' ');
+        });
+    });
+    function dispatched(label, target, Ctor, type, init) {
+        line(label, function () {
+            var got = 'not heard';
+            function h(e) { got = [r2(e.offsetX), r2(e.offsetY), e.pageX, e.pageY, e.layerX, e.layerY, e.target.id, e.currentTarget.id || e.currentTarget.localName].join(' '); }
+            target.addEventListener(type, h);
+            window.scrollTo(0, 20);
+            init.bubbles = true;
+            target.dispatchEvent(new Ctor(type, init));
+            window.scrollTo(0, 0);
+            target.removeEventListener(type, h);
+            return got;
+        });
+    }
+    dispatched('offset in a padded box', $('pad'), MouseEvent, 'mousemove', { clientX: 540, clientY: 60 });
+    dispatched('offset in its child, heard on the box', $('inner'), MouseEvent, 'mousemove', { clientX: 540, clientY: 60 });
+    dispatched('offset in an svg rect', $('r'), MouseEvent, 'mousemove', { clientX: 150, clientY: 100 });
+    dispatched('offset in a scaled svg rect', $('r2'), MouseEvent, 'mousemove', { clientX: 310, clientY: 70 });
+    dispatched('offset in the svg', $('s'), MouseEvent, 'mousemove', { clientX: 150, clientY: 100 });
+    dispatched('wheel offset', $('pad'), WheelEvent, 'wheel', { clientX: 540, clientY: 60, deltaY: 5 });
+    return out.concat(heard).join('\n');
+};
+</script>
+</body></html>

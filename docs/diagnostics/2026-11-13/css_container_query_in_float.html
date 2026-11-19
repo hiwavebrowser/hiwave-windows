@@ -1,0 +1,27 @@
+<!DOCTYPE html><html><head><style>
+body { margin: 0; font: 16px sans-serif }
+.blk { overflow: hidden; margin-bottom: 4px }
+.c { container-type: inline-size }
+.q > div { height: 0 }
+@container (min-width: 1px) { .q .a { height: 1px } }
+@container (min-width: 60px) { .q .b { height: 1px } }
+@container (min-width: 110px) { .q .d { height: 1px } }
+@container (min-width: 160px) { .q .e { height: 1px } }
+@container (min-width: 210px) { .q .f { height: 1px } }
+@container (min-width: 260px) { .q .g { height: 1px } }
+@container (min-width: 320px) { .q .h { height: 1px } }
+@container (min-width: 500px) { .q .i { height: 1px } }
+</style></head><body>
+<div class="blk"><div style="float:left"><div id="c1" class="c" style="padding:0 5px"><div style="width:300px;height:5px"></div><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div></div>
+<div class="blk"><div style="float:left;width:250px"><div id="c2" class="c"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div></div>
+<div class="blk"><div style="float:left"><div style="width:220px;height:5px"></div><div id="c3" class="c"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div></div>
+<div class="blk"><div style="float:left;width:30%"><div id="c4" class="c" style="padding:0 10px;border:3px solid"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div></div>
+<div class="blk"><div style="float:right;padding:0 17px"><div style="width:140px;height:5px"></div><div id="c5" class="c"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div></div>
+<div class="blk"><div style="float:left"><p style="margin:0">The quick brown fox jumps over it</p><div id="c6" class="c"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div></div>
+<div class="blk"><div style="float:left;width:400px"><div style="display:flex"><div style="width:120px;flex:none"></div><div id="c7" class="c" style="flex:1"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div></div></div>
+<div class="blk"><div id="c8" class="c" style="float:left;width:300px"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div>
+<div class="blk"><div id="c9" class="c" style="float:left;padding:0 4px"><div style="width:300px;height:5px"></div><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div>
+<div class="blk"><div style="float:left;width:200px;height:10px"></div><div id="c10" class="c" style="overflow:hidden"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div>
+<div class="blk"><div style="float:left;width:50%"><div style="float:left;width:90px;height:5px"></div><div id="c11" class="c" style="display:flow-root"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div></div>
+<div class="blk"><div style="float:left;max-width:180px"><p style="margin:0">The quick brown fox jumps over the lazy dog again</p><div id="c12" class="c"><div class="q"><div class="a"></div><div class="b"></div><div class="d"></div><div class="e"></div><div class="f"></div><div class="g"></div><div class="h"></div><div class="i"></div></div></div></div></div>
+</body></html>

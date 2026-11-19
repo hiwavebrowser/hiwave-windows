@@ -236,7 +236,7 @@ pub(crate) fn install(
                 super::note_mutation(&m, DomDirty::Layout, MutationKind::FormValue, || {
                     format!("{}#edit", node.tag_name().unwrap_or(""))
                 });
-                d.mark(DomDirty::Layout, "form");
+                d.mark(DomDirty::Layout, "form", crate::Logged::Yes);
             }
             JsValue::String(report.to_string())
         }),
@@ -315,12 +315,13 @@ pub(crate) fn install(
             drop(states);
             if moved {
                 // The engine paints a focused control's selection from the
-                // state: lay it out again.
-                d.mark(DomDirty::Layout, "form");
+                // state: lay it out again. No log record: a selection move is
+                // not in the `MutationLog` (LPF1 R1).
+                d.mark(DomDirty::Layout, "form", crate::Logged::No);
             }
             JsValue::String(report.to_string())
         }),
     )?;
-    runtime.evaluate_script(include_str!("editing.js"))?;
+    runtime.evaluate_with_host(include_str!("editing.js"))?;
     Ok(())
 }

@@ -36,10 +36,26 @@
 //! fixed width); they stay false rather than risk a guess wider than the
 //! laid-out box.
 //!
-//! Not covered: container-relative units (`cq*`), style queries, and sizes
-//! that only layout knows (a block's auto height).
+//! CQ1: a view's layout measures every size container's content box, and
+//! the next build answers with that (`MeasuredContainers`); the engine lays
+//! out again while those sizes move (`LayoutCtx::lay_out_document`), so a
+//! flex or grid item, which the estimate cannot see, is answered with its
+//! laid-out size, and a resize is answered again. A measurement is used
+//! only where the engine's layout is known to agree with Chrome's
+//! (`layout_trusted`); elsewhere the fail-safe above still holds. A
+//! container sized by its contents is measured too: rustkit-layout applies
+//! inline-size containment to its intrinsic widths (CQ2), as Chrome does.
+//! Only the inline size moves a layout again: an `inline-size` container's
+//! height is not recorded. A chain of more than two nested
+//! containers, each sized by the answer of the one outside it, does not
+//! settle in one layout: the pass cap returns, the next relayout goes on
+//! from the stored sizes, and the cap is counted
+//! (`ViewLayout::container_unsettled`).
+//!
+//! Not covered: container-relative units (`cq*`) and style queries.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use rustkit_css::{
     BoxSizing, ComputedStyle, ContainerType, Display, Float, Length, Overflow, Position,
@@ -76,11 +92,40 @@ struct Frame {
     /// A float has been entered in this box's formatting context, here or
     /// in an earlier descendant that does not start its own.
     floats: bool,
+    /// CQ1: the engine's laid-out width of this box can stand in for
+    /// Chrome's (`layout_trusted`), so a measured container here answers
+    /// with it.
+    trusted: bool,
+    /// CQ3: the element's node when this build may answer its queries with
+    /// a measurement (a size container in a trusted frame).
+    measurable: Option<usize>,
+    /// Computed font size, CSS px (a measurable container's `em`).
+    em: f32,
+    /// `container-type: size`.
+    is_size: bool,
 }
+
+/// The content-box size of each size container in a view's last layout,
+/// keyed by raw DOM node id: (inline size, block size). CQ1: the build
+/// answers a query on one of these with its laid-out size, which is what
+/// Chrome answers with, instead of the style-time estimate.
+pub(crate) type MeasuredContainers = HashMap<usize, (f32, f32)>;
 
 #[derive(Debug, Default)]
 struct State {
     viewport: (f32, f32),
+    /// Laid-out container sizes from the view's previous layout.
+    measured: MeasuredContainers,
+    /// The size containers this build met in a trusted frame: the only
+    /// ones whose measurements it can use (#1070 R1 LOW: the others are
+    /// left out of the measurements and the memo fingerprint).
+    trusted: HashSet<usize>,
+    /// CQ3: what this build asked of each measurable container, and the
+    /// measurable containers an estimated answer was derived under.
+    asked: HashMap<usize, Vec<Asked>>,
+    fragile: HashSet<usize>,
+    /// This build replays memoized styles (`note_replaying`).
+    replaying: bool,
     /// The root element's font size, CSS px (`rem`); set by the first
     /// element entered.
     root_em: Option<f32>,
@@ -106,9 +151,15 @@ impl DocumentScope {
         viewport: Option<(f32, f32)>,
         any_container_rule: bool,
         first_letter_floats: bool,
+        measured: MeasuredContainers,
     ) -> Self {
         let state = viewport.filter(|_| any_container_rule).map(|(w, h)| State {
             viewport: (w, h),
+            measured,
+            trusted: HashSet::new(),
+            asked: HashMap::new(),
+            fragile: HashSet::new(),
+            replaying: false,
             root_em: None,
             first_letter_floats,
             frames: vec![Frame {
@@ -117,6 +168,10 @@ impl DocumentScope {
                 unknown_names: Vec::new(),
                 new_context: true,
                 floats: false,
+                trusted: true,
+                measurable: None,
+                em: 16.0,
+                is_size: false,
             }],
         });
         Self {
@@ -128,7 +183,140 @@ impl DocumentScope {
 impl Drop for DocumentScope {
     fn drop(&mut self) {
         let previous = self.previous.take();
-        STATE.with(|s| *s.borrow_mut() = previous);
+        let finished = STATE.with(|s| std::mem::replace(&mut *s.borrow_mut(), previous));
+        if let Some(state) = finished {
+            LAST_TRUSTED.with(|t| {
+                *t.borrow_mut() = Some(BuildFacts {
+                    trusted: state.trusted,
+                    asked: state.asked,
+                    fragile: state.fragile,
+                    rem: state.root_em.unwrap_or(16.0),
+                    viewport: state.viewport,
+                    replayed: state.replaying,
+                })
+            });
+        }
+    }
+}
+
+thread_local! {
+    /// The trusted size containers of the last build that ran the walk
+    /// (`take_build_facts`).
+    static LAST_TRUSTED: RefCell<Option<BuildFacts>> = const { RefCell::new(None) };
+}
+
+/// Tells the walk whether the build in progress replays memoized styles,
+/// so that its record is merged into the recording build's
+/// (`BuildFacts::absorb`).
+pub(crate) fn note_replaying(replaying: bool) {
+    STATE.with(|s| {
+        if let Some(state) = s.borrow_mut().as_mut() {
+            state.replaying = replaying;
+        }
+    });
+}
+
+/// What the last build's walk on this thread left (`BuildFacts`), or `None`
+/// when no build has run the walk since the last call (a build that took a
+/// kept tree, or a page without `@container` rules).
+pub(crate) fn take_build_facts() -> Option<BuildFacts> {
+    LAST_TRUSTED.with(|t| t.borrow_mut().take())
+}
+
+/// One condition a build asked of a measurable container, and its answer.
+#[derive(Debug, Clone)]
+struct Asked {
+    condition: String,
+    em: f32,
+    is_size: bool,
+    answer: bool,
+}
+
+/// What a build's walk leaves for `LayoutCtx::lay_out_document`: which
+/// containers its layout may measure, and what the build asked of them, so
+/// that a measurement which changes no answer costs no second build (CQ3).
+#[derive(Debug, Default)]
+pub(crate) struct BuildFacts {
+    /// The size containers met in a trusted frame.
+    pub(crate) trusted: HashSet<usize>,
+    asked: HashMap<usize, Vec<Asked>>,
+    /// Measurable containers with an estimate-answered container under
+    /// them: the estimate starts from their size, so any move of theirs may
+    /// change an answer this record cannot re-check.
+    fragile: HashSet<usize>,
+    rem: f32,
+    viewport: (f32, f32),
+    /// The build replayed memoized styles: it asked only where the memo
+    /// missed, so its record is partial.
+    replayed: bool,
+}
+
+impl BuildFacts {
+    /// The build these facts came from replayed memoized styles.
+    pub(crate) fn replayed(&self) -> bool {
+        self.replayed
+    }
+
+    /// Take a later build's facts. A recording build asked everything its
+    /// styles depend on: its record replaces the old one. A build that
+    /// replayed memoized styles asked only where the memo missed (often
+    /// nothing): what the recording build asked still describes the styles
+    /// it replayed, so the two records are merged. A record that is too
+    /// large can only cost a re-pass, never skip a needed one.
+    pub(crate) fn absorb(&mut self, later: BuildFacts) {
+        if !later.replayed {
+            *self = later;
+            return;
+        }
+        self.trusted = later.trusted;
+        self.fragile.extend(later.fragile);
+        for (node, asked) in later.asked {
+            let kept = self.asked.entry(node).or_default();
+            for a in asked {
+                if !kept.iter().any(|k| k.condition == a.condition) {
+                    kept.push(a);
+                }
+            }
+        }
+    }
+
+    /// Whether the build would answer some query differently with `sizes`
+    /// than it did with `used` (the sizes it was given).
+    pub(crate) fn answers_change(
+        &self,
+        used: &MeasuredContainers,
+        sizes: &MeasuredContainers,
+    ) -> bool {
+        let differs = |a: Option<&(f32, f32)>, b: Option<&(f32, f32)>| match (a, b) {
+            (Some(a), Some(b)) => (a.0 - b.0).abs() > 0.01 || (a.1 - b.1).abs() > 0.01,
+            (None, None) => false,
+            _ => true,
+        };
+        let moved = |node: &usize| differs(used.get(node), sizes.get(node));
+        if self.fragile.iter().any(moved) {
+            return true;
+        }
+        self.asked
+            .iter()
+            .filter(|(node, _)| moved(node))
+            .any(|(node, asked)| {
+                asked.iter().any(|a| {
+                    let now = sizes.get(node).is_some_and(|&(inline, block)| {
+                        rustkit_css::media::container_condition_matches(
+                            &a.condition,
+                            inline,
+                            a.is_size.then_some(block),
+                            rustkit_css::media::ContainerUnits {
+                                em: a.em,
+                                rem: self.rem,
+                                vw: self.viewport.0,
+                                vh: self.viewport.1,
+                            },
+                        )
+                    });
+                    now != a.answer
+                })
+            })
     }
 }
 
@@ -143,6 +331,7 @@ impl ElementScope {
         style: &ComputedStyle,
         parent: Option<&ComputedStyle>,
         tag: Option<&str>,
+        node: Option<usize>,
     ) -> Self {
         let pushed = STATE.with(|s| {
             let mut s = s.borrow_mut();
@@ -161,7 +350,28 @@ impl ElementScope {
                     break;
                 }
             }
-            let frame = frame_for(style, parent, tag, parent_width, state.viewport, float_seen);
+            let mut frame = frame_for(style, parent, tag, parent_width, state.viewport, float_seen);
+            frame.trusted = state.frames.last().is_some_and(|f| f.trusted)
+                && layout_trusted(style, parent, tag, float_seen);
+            // CQ1: a container the last layout measured is answered with its
+            // laid-out content box, as Chrome answers (css-contain-3 §6.1),
+            // wherever it sits: a flex or grid item, a float, a box after a
+            // float. Its descendants' estimates start from it too.
+            if let (Some(n), true) = (node, frame.trusted && style.has_inline_size_containment()) {
+                state.trusted.insert(n);
+                frame.measurable = Some(n);
+            }
+            if let Some(&(inline, block)) = node.and_then(|n| state.measured.get(&n)) {
+                if frame.trusted && style.has_inline_size_containment() {
+                    frame.width = Some(inline);
+                    frame.container = Some(Some(Container {
+                        names: style.container_name.clone(),
+                        inline,
+                        block: (style.container_type == ContainerType::Size).then_some(block),
+                        em: font_px(style),
+                    }));
+                }
+            }
             // A float overhangs a wrapper (block or inline) that does not
             // start a formatting context, so it still narrows a later box
             // there: record it up to the context's root. Whether it ends
@@ -283,15 +493,18 @@ pub(crate) fn applies(preludes: &[String]) -> bool {
         return true;
     }
     STATE.with(|s| {
-        let s = s.borrow();
-        let Some(state) = s.as_ref() else {
+        let mut s = s.borrow_mut();
+        let Some(state) = s.as_mut() else {
             return false;
         };
-        preludes.iter().all(|p| prelude_holds(p, state))
+        // Every prelude is asked (no short circuit), so each is on record.
+        preludes
+            .iter()
+            .fold(true, |all, p| prelude_holds(p, state) && all)
     })
 }
 
-fn prelude_holds(prelude: &str, state: &State) -> bool {
+fn prelude_holds(prelude: &str, state: &mut State) -> bool {
     let frames = &state.frames;
     let prelude = prelude.trim();
     // `<container-name>? <container-query>`: a leading word that is not
@@ -304,7 +517,7 @@ fn prelude_holds(prelude: &str, state: &State) -> bool {
         }
         _ => (None, prelude),
     };
-    for frame in frames.iter().rev() {
+    for (at, frame) in frames.iter().enumerate().rev() {
         let names: &[String] = match &frame.container {
             Some(Some(c)) => &c.names,
             Some(None) => &frame.unknown_names,
@@ -313,7 +526,7 @@ fn prelude_holds(prelude: &str, state: &State) -> bool {
         if name.is_some_and(|n| !names.iter().any(|m| m == n)) {
             continue;
         }
-        return match &frame.container {
+        let answer = match &frame.container {
             Some(Some(c)) => {
                 let units = rustkit_css::media::ContainerUnits {
                     em: c.em,
@@ -321,12 +534,31 @@ fn prelude_holds(prelude: &str, state: &State) -> bool {
                     vw: state.viewport.0,
                     vh: state.viewport.1,
                 };
-                rustkit_css::media::container_condition_matches(
-                    condition, c.inline, c.block, units,
-                )
+                rustkit_css::media::container_condition_matches(condition, c.inline, c.block, units)
             }
             _ => false,
         };
+        // CQ3: on record, so that the layout's measurements can be checked
+        // against what was answered here.
+        match frame.measurable {
+            Some(node) => {
+                let asked = state.asked.entry(node).or_default();
+                if !asked.iter().any(|a| a.condition == condition) {
+                    asked.push(Asked {
+                        condition: condition.to_string(),
+                        em: frame.em,
+                        is_size: frame.is_size,
+                        answer,
+                    });
+                }
+            }
+            // An estimate (or an unknown) answered: it starts from the
+            // measurable containers above it.
+            None => state
+                .fragile
+                .extend(frames[..at].iter().filter_map(|f| f.measurable)),
+        }
+        return answer;
     }
     false
 }
@@ -361,6 +593,10 @@ fn frame_for(
         unknown_names: style.container_name.clone(),
         new_context: starts_context(style),
         floats: false,
+        trusted: false,
+        measurable: None,
+        em: font_px(style),
+        is_size: style.container_type == ContainerType::Size,
     }
 }
 
@@ -452,6 +688,34 @@ fn absolute_length(len: &Length) -> bool {
     )
 }
 
+/// CQ1: whether the engine's laid-out width of this box (given trusted
+/// ancestors) is Chrome's, so that a measured container answers with it.
+/// Flex and grid items are; what #782's fail-safe
+/// list knows the engine still lays out differently is not, with
+/// everything under it: a box beside an earlier float (a context it starts
+/// is not narrowed by the float here), an absolute or fixed box
+/// (percentages and padding against the containing block), a vertical
+/// writing mode (the inline size is the height), a form control, replaced
+/// element or `dialog` (Chrome shrinks a `display: block` button), a
+/// `-webkit-box`, and a child of a multi-column box. A float and its
+/// contents are trusted (CQ3): its shrink-to-fit width, a size container's
+/// contained one among them, matches Chrome on the twelve float shapes in
+/// `css_container_query_in_float.html`.
+fn layout_trusted(
+    style: &ComputedStyle,
+    parent: Option<&ComputedStyle>,
+    tag: Option<&str>,
+    float_seen: bool,
+) -> bool {
+    !float_seen
+        && !matches!(style.position, Position::Absolute | Position::Fixed)
+        && style.writing_mode == WritingMode::HorizontalTb
+        && !style.writing_mode_declared
+        && style.webkit_box.is_none()
+        && !tag.is_some_and(|t| NOT_PLAIN_TAGS.iter().any(|n| t.eq_ignore_ascii_case(n)))
+        && !parent.is_some_and(|p| p.column_count.is_some() || p.columns_declared)
+}
+
 /// A box whose width follows from its parent's by the block rules alone,
 /// or (out of flow) from its own length `width`.
 fn plain_block(style: &ComputedStyle, tag: Option<&str>) -> bool {
@@ -483,6 +747,20 @@ pub(crate) fn note_width_value(style: &mut ComputedStyle, bit: u8, parsed: bool,
         style.width_keywords &= !bit;
     } else {
         style.width_keywords |= bit;
+    }
+    if bit == 1 {
+        // `width` only: which keyword it was (CB3c). A later length or `auto` clears it.
+        let keyword = value.trim().to_ascii_lowercase();
+        style.width_max_content = !parsed
+            && matches!(
+                keyword.as_str(),
+                "max-content" | "-webkit-max-content" | "-moz-max-content"
+            );
+        style.width_min_content = !parsed
+            && matches!(
+                keyword.as_str(),
+                "min-content" | "-webkit-min-content" | "-moz-min-content"
+            );
     }
 }
 
@@ -583,4 +861,51 @@ fn definite_height(style: &ComputedStyle, vp: (f32, f32)) -> Option<f32> {
     let min = limit(&style.min_height)?;
     let height = max.map_or(height, |m| height.min(m));
     Some(min.map_or(height, |m| height.max(m)))
+}
+
+#[cfg(test)]
+mod build_facts_tests {
+    use super::*;
+
+    fn facts(node: usize, condition: &str, answer: bool, replayed: bool) -> BuildFacts {
+        BuildFacts {
+            trusted: HashSet::from([node]),
+            asked: HashMap::from([(
+                node,
+                vec![Asked {
+                    condition: condition.to_string(),
+                    em: 16.0,
+                    is_size: false,
+                    answer,
+                }],
+            )]),
+            fragile: HashSet::new(),
+            rem: 16.0,
+            viewport: (800.0, 600.0),
+            replayed,
+        }
+    }
+
+    /// #1081 R1 MED: a build that replays memoized styles asks only where
+    /// the memo misses, so its record is partial. Replacing the recording
+    /// build's record with it forgot `(min-width: 500px)`, and a later
+    /// move across 500 was taken for a move that changes no answer.
+    #[test]
+    fn a_replayed_builds_partial_record_is_merged_not_swapped_in() {
+        let mut kept = facts(7, "(min-width: 500px)", false, false);
+        kept.absorb(facts(7, "(min-width: 100px)", true, true));
+        let used = MeasuredContainers::from([(7, (400.0, 0.0))]);
+        let wider = MeasuredContainers::from([(7, (600.0, 0.0))]);
+        assert!(
+            kept.answers_change(&used, &wider),
+            "400 -> 600 crosses the recorded (min-width: 500px)"
+        );
+        // A recording build's record replaces the old one.
+        let mut swapped = facts(7, "(min-width: 500px)", false, false);
+        swapped.absorb(facts(7, "(min-width: 100px)", true, false));
+        assert!(
+            !swapped.answers_change(&used, &wider),
+            "only (min-width: 100px) is on record"
+        );
+    }
 }

@@ -275,6 +275,9 @@ impl Module {
         realm: Option<Realm>,
         context: &mut Context,
     ) -> JsResult<Self> {
+        // HIWAVE PATCH (native recursion): a module parse is an engine entry, as a script parse is, so a
+        // source nested too deep fails with a RangeError within the native-stack budget.
+        let _native_entry = crate::native_stack::Entry::new(context.vm.runtime_limits.native_stack_budget());
         let path = src.path().map(Path::to_path_buf);
         let realm = realm.unwrap_or_else(|| context.realm().clone());
 

@@ -440,6 +440,11 @@ pub(crate) fn arguments_exotic_try_get(
 
 /// `[[Get]]` for arguments exotic objects.
 ///
+/// HIWAVE PATCH (ic-exotic-get): `InlineCache::hit_is_get` recognises this function by address to
+/// let a name-read cache hit on an arguments object for a non-numeric name. If this function is
+/// wrapped or replaced, update `hit_is_get`, or those hits silently become misses (slower, not
+/// wrong).
+///
 /// More information:
 ///  - [ECMAScript reference][spec]
 ///

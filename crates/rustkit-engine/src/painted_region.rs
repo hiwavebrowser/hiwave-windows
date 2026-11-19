@@ -176,6 +176,7 @@ fn surface_box(cmd: &DisplayCommand) -> Option<Rect> {
         C::BoxShadow { .. }
         | C::PushClip(_)
         | C::PushClipRounded { .. }
+        | C::PushClipPath { .. }
         | C::PopClip
         | C::PushStackingContext { .. }
         | C::PopStackingContext
@@ -231,7 +232,9 @@ pub fn painted_boxes(list: &DisplayList, scroll: (f32, f32), within: Rect) -> Ve
                 }
                 continue;
             }
-            DisplayCommand::PushClip(rect) | DisplayCommand::PushClipRounded { rect, .. } => {
+            DisplayCommand::PushClip(rect)
+            | DisplayCommand::PushClipRounded { rect, .. }
+            | DisplayCommand::PushClipPath { rect, .. } => {
                 let screen = map_rect(m, normalised(*rect)).unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
                 clips.push(Some(match clip {
                     Some(outer) => intersect(outer, screen),

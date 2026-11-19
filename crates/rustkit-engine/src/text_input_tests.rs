@@ -245,6 +245,29 @@ fn a_cmd_chord_in_a_text_field_edits_and_others_go_to_the_menu() {
     assert!(!engine.handle_command_key(id, 0, "l", false, false), "Cmd+L is the menu's");
 }
 
+#[test]
+fn a_cmd_chord_whose_default_is_refused_is_heard_but_does_not_edit() {
+    // M1e (#1015 R1 nit 1): the window gave the chord to the menu.
+    let (mut engine, id) = page();
+    engine.clipboard().write_text("XY");
+    focus_end(&mut engine, id, "q");
+    js(&mut engine, id, "window.keys = []; document.addEventListener('keydown', function (e) { keys.push(e.key); }); 0");
+    let mut asked = 0;
+    let mut refuse = || {
+        asked += 1;
+        false
+    };
+    assert!(!engine.handle_command_key_if(id, 0, "v", false, false, &mut refuse), "not a claim");
+    assert_eq!(value(&mut engine, id, "q"), "hello", "no paste");
+    assert!(!engine.handle_command_key_if(id, 0, "l", false, false, &mut refuse), "Cmd+L has no default");
+    assert_eq!(asked, 1, "asked once, and only for a chord with an edit to run");
+    assert_eq!(js(&mut engine, id, "keys.join(' ')"), "v l", "both keydowns heard");
+    // A cancelled keydown is the page's, and the default is not asked for.
+    js(&mut engine, id, "document.addEventListener('keydown', function (e) { e.preventDefault(); }); 0");
+    assert!(engine.handle_command_key_if(id, 0, "v", false, false, &mut || panic!("not asked")));
+    assert_eq!(value(&mut engine, id, "q"), "hello");
+}
+
 // ---- the Edit menu's responders ----
 
 #[test]

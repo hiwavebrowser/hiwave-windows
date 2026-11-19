@@ -1292,7 +1292,7 @@
                             <div class="cellar-item-title">${escapeHtml(title)}</div>
                             <div class="cellar-item-meta">
                                 <span class="cellar-item-url">${escapeHtml(url)}</span>
-                                <span>${workspace}</span>
+                                <span>${escapeHtml(workspace)}</span>
                                 <span>${cellaredDate}</span>
                             </div>
                         </div>
@@ -1313,10 +1313,14 @@
             });
         }
 
+        // Text or a double- or single-quoted attribute value: & < > " '.
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            return String(text == null ? '' : text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         elements.refreshCellarBtn.addEventListener('click', () => {

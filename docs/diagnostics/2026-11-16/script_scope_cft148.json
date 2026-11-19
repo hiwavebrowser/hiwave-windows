@@ -1,0 +1,11 @@
+{
+ "errors": [
+  "SyntaxError",
+  "SyntaxError",
+  "SyntaxError"
+ ],
+ "external": "string,false,first,true",
+ "inline": "number,1,false,number,false,true",
+ "timer": "true,number,false",
+ "browser": "148.0.7778.216"
+}

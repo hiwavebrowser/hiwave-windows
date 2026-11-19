@@ -24,6 +24,21 @@ pub struct RuntimeLimits {
     ///
     /// HIWAVE PATCH (recursion)
     host_recursion: usize,
+
+    /// Bytes of native stack one outermost engine entry may use before built-ins and internal
+    /// methods that recurse in Rust throw a `RangeError` instead of overflowing the thread's
+    /// stack (see `native_stack`).
+    ///
+    /// HIWAVE PATCH (native recursion)
+    native_stack: usize,
+
+    /// Whether running out of call frames or operand-stack slots throws a catchable `RangeError`
+    /// ("Maximum call stack size exceeded") instead of the uncatchable `RuntimeLimitError`.
+    /// Host re-entry stays uncatchable either way. Off by default (upstream behaviour); the page
+    /// runtime turns it on.
+    ///
+    /// HIWAVE PATCH (STR-10)
+    catchable_stack_overflow: bool,
 }
 
 impl Default for RuntimeLimits {
@@ -39,6 +54,9 @@ impl Default for RuntimeLimits {
             // dies as `StackSize` instead.
             recursion: 8192,
             host_recursion: 1024, // HIWAVE PATCH (recursion)
+            native_stack: crate::native_stack::DEFAULT_BUDGET, // HIWAVE PATCH (native recursion)
+
+            catchable_stack_overflow: false, // HIWAVE PATCH (STR-10)
             backtrace_limit: 50,
             stack_size: 64 * 1024,
         }
@@ -46,6 +64,19 @@ impl Default for RuntimeLimits {
 }
 
 impl RuntimeLimits {
+    /// Whether a frame or stack-slot overflow is a catchable `RangeError` (STR-10).
+    #[inline]
+    #[must_use]
+    pub const fn catchable_stack_overflow(&self) -> bool {
+        self.catchable_stack_overflow
+    }
+
+    /// Make a frame or stack-slot overflow a catchable `RangeError` (STR-10).
+    #[inline]
+    pub fn set_catchable_stack_overflow(&mut self, value: bool) {
+        self.catchable_stack_overflow = value;
+    }
+
     /// Return the loop iteration limit.
     ///
     /// If the limit is exceeded in a loop it will throw an error.
@@ -121,6 +152,23 @@ impl RuntimeLimits {
     #[must_use]
     pub const fn host_recursion_limit(&self) -> usize {
         self.host_recursion
+    }
+
+    /// Native-stack budget in bytes (see `native_stack`). Default 1 MiB.
+    ///
+    /// HIWAVE PATCH (native recursion)
+    #[inline]
+    #[must_use]
+    pub const fn native_stack_budget(&self) -> usize {
+        self.native_stack
+    }
+
+    /// Set the native-stack budget. Raise it on a thread with a large stack.
+    ///
+    /// HIWAVE PATCH (native recursion)
+    #[inline]
+    pub fn set_native_stack_budget(&mut self, bytes: usize) {
+        self.native_stack = bytes;
     }
 
     /// Set the nested host-call limit before an error is thrown.

@@ -29,7 +29,7 @@ use boa_gc::{Finalize, Trace};
 
 mod builtin;
 mod element;
-mod object;
+pub(crate) mod object;
 
 pub(crate) use builtin::{BuiltinTypedArray, is_valid_integer_index};
 #[cfg(feature = "float16")]

@@ -178,6 +178,7 @@ fn text(s: &str, x: f32, y: f32, color: Color) -> DisplayCommand {
         ascent: Some(13.0),
         run: None,
         faces: None,
+        undilated: false,
     }
 }
 
@@ -446,6 +447,7 @@ fn text_sized(s: &str, x: f32, y: f32, size: f32, color: Color) -> DisplayComman
         ascent: Some((size * 0.88).round()),
         run: None,
         faces: None,
+        undilated: false,
     }
 }
 

@@ -93,7 +93,7 @@ impl Reflect {
                 .with_message("target must be a function")
                 .into());
         }
-        let args = args_list.create_list_from_array_like(&[], context)?;
+        let args = args_list.create_argument_list_from_array_like(context)?;
         target.call(this_arg, &args, context)
     }
 
@@ -129,7 +129,7 @@ impl Reflect {
         // 4. Let args be ? CreateListFromArrayLike(argumentsList).
         let args = args
             .get_or_undefined(1)
-            .create_list_from_array_like(&[], context)?;
+            .create_argument_list_from_array_like(context)?;
 
         // 5. Return ? Construct(target, args, newTarget).
         target

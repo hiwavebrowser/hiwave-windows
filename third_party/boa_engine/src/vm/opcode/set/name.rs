@@ -109,6 +109,18 @@ impl Operation for SetNameByLocator {
 
 /// Checks that the binding pointed by `locator` exists and is initialized.
 fn verify_initialized(locator: &BindingLocator, context: &mut Context) -> JsResult<()> {
+    // HIWAVE PATCH (global-lexical-scope): a `const` another script declared later was not known
+    // when this code was compiled, so the compiler did not emit `ThrowMutateImmutable` for it.
+    if matches!(locator.scope(), BindingLocatorScope::GlobalDeclarative)
+        && context.realm().scope().is_binding_mutable(locator.name()) == Some(false)
+    {
+        return Err(JsNativeError::typ()
+            .with_message(format!(
+                "cannot mutate an immutable binding '{}'",
+                locator.name().to_std_string_escaped()
+            ))
+            .into());
+    }
     if !context.is_initialized_binding(locator)? {
         let key = locator.name();
         let strict = context.vm.frame().code_block.strict();

@@ -1,0 +1,41 @@
+{
+ "log": [
+  "ready",
+  "ael:ready",
+  {
+   "echo": {
+    "a": 1,
+    "b": [
+     1,
+     2,
+     "x"
+    ],
+    "n": null
+   },
+   "isEvent": true,
+   "tgt": true
+  },
+  {
+   "t": "object",
+   "doc": "undefined",
+   "win": "undefined",
+   "name": "",
+   "post": "function",
+   "ael": "function",
+   "imp": "function",
+   "st": "function",
+   "loc": "object",
+   "nav": "object"
+  },
+  {
+   "echo": "both",
+   "isEvent": true,
+   "tgt": true
+  },
+  "listener",
+  "closing"
+ ],
+ "afterTerminate": [],
+ "ctor": "function",
+ "proto": true
+}

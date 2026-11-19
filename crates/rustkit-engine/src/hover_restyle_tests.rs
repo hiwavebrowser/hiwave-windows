@@ -1140,3 +1140,109 @@ fn a_marketplace_shaped_sheet_hovers_on_the_short_path_in_a_few_ms() {
     // here). Gated at a tenth of the full build for a loaded machine.
     assert!(short * 10.0 < full, "a move's builds took {short:.2} ms (full build {full:.2} ms)");
 }
+
+// ---------------------------------------------------------------------------
+// LAT20 (Pete's hand test 11-10): a top-20 retailer's 128 hover restyles
+// all missed the short path with "a rule reads the pseudo-class where no
+// compound shows it" and each laid the whole page out (150-670 ms of
+// layout). The pointer index counts the `:hover`s a selector's text names
+// and the ones the compound parser placed, and calls any difference
+// "anywhere". Utility-class sheets escape a colon into class names
+// (`.md\:hover\:underline:hover`), and attribute values may quote one
+// (`[title=":hover"]`): text, not a pseudo-class, so the counts never
+// agreed and every pointer move took the full path.
+// ---------------------------------------------------------------------------
+
+/// An escaped `\:hover` inside a class name is part of the name: hovering a
+/// post still takes the short path and lays nothing out.
+#[test]
+fn an_escaped_hover_in_a_class_name_keeps_the_short_path() {
+    let (mut engine, view) = feed_page(
+        20,
+        ".md\\:hover\\:underline:hover{text-decoration:underline}\
+         .group:hover .group-hover\\:text-blue{color:blue}",
+    );
+    let at = centre(&mut engine, view, "document.getElementById('p3')");
+    clear_miss();
+    hover(&mut engine, view, at);
+    assert_eq!(last_miss(), "", "the short path was taken");
+    assert_eq!(skipped(&engine, view), 1, "a colour hover lays nothing out");
+    assert!(walked() < 60, "the two builds went into {} nodes: two posts, twice", walked());
+    assert_same(&painted(&engine, view), &painted_by_a_full_relayout(&mut engine, view), "post 3 hovered");
+}
+
+/// A quoted `:hover` in an attribute value is a string, not a pseudo-class.
+#[test]
+fn a_quoted_hover_in_an_attribute_value_keeps_the_short_path() {
+    let (mut engine, view) = feed_page(20, "[title=\":hover\"]{color:red} [data-k='a:hover b']{color:red}");
+    let at = centre(&mut engine, view, "document.getElementById('p3')");
+    clear_miss();
+    hover(&mut engine, view, at);
+    assert_eq!(last_miss(), "", "the short path was taken");
+    assert_eq!(skipped(&engine, view), 1);
+    assert_same(&painted(&engine, view), &painted_by_a_full_relayout(&mut engine, view), "post 3 hovered");
+}
+
+/// An encyclopedia-shaped page of ~6000 elements (an article of sections,
+/// an infobox, a sidebar of links) whose `:hover` rules change colour only:
+/// a hover lays nothing out and builds only the hovered element, twice.
+#[test]
+fn a_colour_hover_on_a_large_article_lays_nothing_out() {
+    let mut html = String::from(
+        "<style>body{margin:0;font:14px/20px sans-serif}\
+         #side{float:left;width:160px} #side a{display:block;color:#36c} #side a:hover{color:#447ff5;text-decoration:underline}\
+         #main{margin-left:170px} .infobox{float:right;width:250px;border:1px solid #a2a9b1}\
+         .infobox td{padding:2px} p a{color:#36c} p a:hover{text-decoration:underline;color:#447ff5}\
+         .infobox tr:hover{background:#eaecf0}</style><div id=side>",
+    );
+    for i in 0..300 {
+        html.push_str(&format!("<a id=k{i} href='#s{i}'>Sidebar link {i}</a>"));
+    }
+    html.push_str("</div><div id=main><table class=infobox>");
+    for i in 0..60 {
+        html.push_str(&format!("<tr><th>Key {i}</th><td>Value <b>{i}</b></td></tr>"));
+    }
+    html.push_str("</table>");
+    for s in 0..300 {
+        html.push_str(&format!("<h2 id=s{s}>Section {s}</h2>"));
+        for p in 0..4 {
+            html.push_str(&format!(
+                "<p>Paragraph {p} of section {s} with <a href='#x'>a link</a>, <i>emphasis</i> and \
+                 <a id=l{s}_{p} href='#y'>another link</a> in a sentence long enough to wrap.</p>"
+            ));
+        }
+    }
+    html.push_str("</div>");
+    let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+    let view = engine
+        .create_headless_view(Bounds { x: 0, y: 0, width: 1000, height: 800 })
+        .expect("view");
+    engine.load_html(view, &html).expect("load_html");
+    let elements: usize = js_string(&mut engine, view, "String(document.getElementsByTagName('*').length)")
+        .parse()
+        .unwrap();
+    assert!(elements > 5000, "{elements} elements");
+    let at = centre(&mut engine, view, "document.getElementById('k3')");
+    clear_miss();
+    hover(&mut engine, view, at);
+    assert_eq!(last_miss(), "", "the short path was taken");
+    let colour = computed(&mut engine, view, "document.getElementById('k3')", "color");
+    let hit = js_string(&mut engine, view, &format!("String((document.elementFromPoint({},{})||{{}}).id)+','+String(document.querySelectorAll(':hover').length)", at.0, at.1));
+    assert_eq!(colour, "rgb(68, 127, 245)", "the link is hovered at {at:?} (hit {hit})");
+    assert_eq!(skipped(&engine, view), 1, "a colour hover lays nothing out ({} restyles)", restyles(&engine, view));
+    assert!(walked() < 20, "the two builds went into {} nodes of {elements}", walked());
+}
+
+/// A `:hover` the index cannot place (a `:has()` argument that starts with
+/// a sibling combinator) still takes the full path, and the miss names the
+/// selector's shape, never its text, so a hand-test log says which form to
+/// place next.
+#[test]
+fn an_unplaced_hover_names_its_shape_in_the_miss() {
+    let (mut engine, view) = feed_page(20, ".post:has(~ .post:hover){color:#333}");
+    let at = centre(&mut engine, view, "document.getElementById('p3')");
+    clear_miss();
+    hover(&mut engine, view, at);
+    assert_eq!(last_miss(), format!("{ANYWHERE_MISS} (has)"));
+    assert_eq!(skipped(&engine, view), 0, "the full path");
+}

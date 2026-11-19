@@ -573,6 +573,82 @@ pub fn create_filter_matrix_pipeline(
     FilterMatrixPipeline { pipeline, matrix_layout }
 }
 
+/// The `clip-path` outline composite (C8b): a layer (premultiplied colour)
+/// laid premultiplied-over its target, scaled per pixel by a coverage mask
+/// (`R8Unorm`) at group 2 (`shaders/clip_mask.wgsl`).
+pub struct ClipMaskPipeline {
+    pub pipeline: wgpu::RenderPipeline,
+    pub mask_layout: wgpu::BindGroupLayout,
+}
+
+pub fn create_clip_mask_pipeline(
+    device: &wgpu::Device,
+    surface_format: wgpu::TextureFormat,
+    uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    texture_bind_group_layout: &wgpu::BindGroupLayout,
+) -> ClipMaskPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Clip Mask Shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/clip_mask.wgsl").into()),
+    });
+    let mask_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("clip_mask_bind_group_layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Clip Mask Pipeline Layout"),
+        bind_group_layouts: &[uniform_bind_group_layout, texture_bind_group_layout, &mask_layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Clip Mask Pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[TextureVertex::LAYOUT],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview: None,
+        cache: None,
+    });
+    ClipMaskPipeline { pipeline, mask_layout }
+}
+
 /// Create the gradient rendering pipeline with uniform and storage buffers.
 pub fn create_gradient_pipeline(
     device: &wgpu::Device,

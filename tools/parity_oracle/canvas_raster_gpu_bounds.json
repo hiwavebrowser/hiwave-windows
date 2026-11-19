@@ -1,0 +1,420 @@
+{
+ "about": "GPU canvas A3 bounds (GPU-AA), per raster pin: how far Chrome's own GPU canvas (chrome_gpu, canvas_raster_gpu_log.mjs) and the CPU bitmap (cpu, rustkit-renderer canvas_gpu_chrome_tests at the commit that pinned them) are from Chrome's software raster, by the pins' metric (largest premultiplied channel difference, mean over Chrome's painted pixels). The GPU picture's bound per case is 1.25x the further of the two, at least max 2 / mean 0.5, and never past the bitmap's own bounds (80 / 14).",
+ "cases": {
+  "fill-rect-solid": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 0,
+    "mean": 0.0
+   }
+  },
+  "fill-rect-fractional-edges": {
+   "chrome_gpu": {
+    "max": 38,
+    "mean": 0.88,
+    "over2": 4
+   },
+   "cpu": {
+    "max": 30,
+    "mean": 3.27
+   }
+  },
+  "stroke-rect-thin": {
+   "chrome_gpu": {
+    "max": 64,
+    "mean": 2.73,
+    "over2": 8
+   },
+   "cpu": {
+    "max": 1,
+    "mean": 0.19
+   }
+  },
+  "stroke-rect-wide-translucent": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 0,
+    "mean": 0.0
+   }
+  },
+  "clear-rect": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 0,
+    "mean": 0.0
+   }
+  },
+  "fill-triangle": {
+   "chrome_gpu": {
+    "max": 76,
+    "mean": 4.58,
+    "over2": 106
+   },
+   "cpu": {
+    "max": 20,
+    "mean": 1.34
+   }
+  },
+  "fill-evenodd": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 0,
+    "mean": 0.0
+   }
+  },
+  "fill-nonzero-overlap": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 0,
+    "mean": 0.0
+   }
+  },
+  "fill-circle": {
+   "chrome_gpu": {
+    "max": 40,
+    "mean": 1.69,
+    "over2": 77
+   },
+   "cpu": {
+    "max": 41,
+    "mean": 1.79
+   }
+  },
+  "stroke-arc-round-cap": {
+   "chrome_gpu": {
+    "max": 54,
+    "mean": 7.67,
+    "over2": 115
+   },
+   "cpu": {
+    "max": 79,
+    "mean": 10.71
+   }
+  },
+  "stroke-arc-ccw": {
+   "chrome_gpu": {
+    "max": 41,
+    "mean": 6.39,
+    "over2": 106
+   },
+   "cpu": {
+    "max": 65,
+    "mean": 13.3
+   }
+  },
+  "stroke-curves": {
+   "chrome_gpu": {
+    "max": 81,
+    "mean": 17.09,
+    "over2": 185
+   },
+   "cpu": {
+    "max": 63,
+    "mean": 8.87
+   }
+  },
+  "joins": {
+   "chrome_gpu": {
+    "max": 102,
+    "mean": 6.5,
+    "over2": 212
+   },
+   "cpu": {
+    "max": 23,
+    "mean": 1.61
+   }
+  },
+  "miter-limit": {
+   "chrome_gpu": {
+    "max": 62,
+    "mean": 7.26,
+    "over2": 198
+   },
+   "cpu": {
+    "max": 62,
+    "mean": 4.14
+   }
+  },
+  "caps": {
+   "chrome_gpu": {
+    "max": 24,
+    "mean": 0.81,
+    "over2": 20
+   },
+   "cpu": {
+    "max": 39,
+    "mean": 0.72
+   }
+  },
+  "closed-stroke": {
+   "chrome_gpu": {
+    "max": 83,
+    "mean": 15.59,
+    "over2": 175
+   },
+   "cpu": {
+    "max": 28,
+    "mean": 4.88
+   }
+  },
+  "global-alpha": {
+   "chrome_gpu": {
+    "max": 1,
+    "mean": 0.21,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 1,
+    "mean": 0.21
+   }
+  },
+  "transform-rotate-scale": {
+   "chrome_gpu": {
+    "max": 26,
+    "mean": 2.55,
+    "over2": 77
+   },
+   "cpu": {
+    "max": 26,
+    "mean": 2.29
+   }
+  },
+  "set-transform-stroke": {
+   "chrome_gpu": {
+    "max": 80,
+    "mean": 10.81,
+    "over2": 99
+   },
+   "cpu": {
+    "max": 38,
+    "mean": 4.81
+   }
+  },
+  "save-restore": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 0,
+    "mean": 0.0
+   }
+  },
+  "ellipse-and-arcto": {
+   "chrome_gpu": {
+    "max": 82,
+    "mean": 7.94,
+    "over2": 95
+   },
+   "cpu": {
+    "max": 51,
+    "mean": 4.33
+   }
+  },
+  "colors": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 0,
+    "mean": 0.0
+   }
+  },
+  "clip-rect": {
+   "chrome_gpu": {
+    "max": 1,
+    "mean": 0.1,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 1,
+    "mean": 0.1
+   }
+  },
+  "clip-circle": {
+   "chrome_gpu": {
+    "max": 66,
+    "mean": 4.23,
+    "over2": 73
+   },
+   "cpu": {
+    "max": 37,
+    "mean": 1.9
+   }
+  },
+  "clip-nested-save-restore": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 15,
+    "mean": 0.56
+   }
+  },
+  "clip-evenodd-transformed": {
+   "chrome_gpu": {
+    "max": 72,
+    "mean": 5.29,
+    "over2": 157
+   },
+   "cpu": {
+    "max": 29,
+    "mean": 2.18
+   }
+  },
+  "linear-gradient": {
+   "chrome_gpu": {
+    "max": 1,
+    "mean": 0.34,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 1,
+    "mean": 0.3
+   }
+  },
+  "linear-gradient-diagonal-alpha-stroke": {
+   "chrome_gpu": {
+    "max": 1,
+    "mean": 0.33,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 2,
+    "mean": 0.76
+   }
+  },
+  "linear-gradient-transformed": {
+   "chrome_gpu": {
+    "max": 23,
+    "mean": 2.52,
+    "over2": 156
+   },
+   "cpu": {
+    "max": 27,
+    "mean": 2.88
+   }
+  },
+  "radial-gradient-focal": {
+   "chrome_gpu": {
+    "max": 1,
+    "mean": 0.34,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 1,
+    "mean": 0.33
+   }
+  },
+  "radial-gradient-concentric-ring": {
+   "chrome_gpu": {
+    "max": 1,
+    "mean": 0.25,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 2,
+    "mean": 0.33
+   }
+  },
+  "pattern-repeat": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   }
+  },
+  "pattern-no-repeat-and-repeat-x": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   }
+  },
+  "draw-image-canvas": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   }
+  },
+  "draw-image-scaled-up": {
+   "chrome_gpu": {
+    "max": 15,
+    "mean": 2.22,
+    "over2": 153
+   }
+  },
+  "draw-image-subrect-scaled-down": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   }
+  },
+  "draw-image-rotated-alpha": {
+   "chrome_gpu": {
+    "max": 16,
+    "mean": 2.13,
+    "over2": 85
+   }
+  },
+  "put-image-data": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 0,
+    "mean": 0.0
+   }
+  },
+  "put-image-data-dirty": {
+   "chrome_gpu": {
+    "max": 0,
+    "mean": 0,
+    "over2": 0
+   },
+   "cpu": {
+    "max": 0,
+    "mean": 0.0
+   }
+  }
+ },
+ "chrome": "148.0.7778.216",
+ "chrome_gpu_args": [
+  "--force-color-profile=srgb",
+  "--disable-lcd-text",
+  "--disable-font-subpixel-positioning",
+  "--use-angle=metal",
+  "--enable-gpu-rasterization",
+  "--enable-accelerated-2d-canvas",
+  "--ignore-gpu-blocklist"
+ ]
+}

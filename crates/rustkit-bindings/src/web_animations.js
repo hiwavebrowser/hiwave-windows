@@ -11,7 +11,7 @@
 // frame, as in a browser.
 //
 // Effect: the animated values go to the engine's animated-style layer
-// (`__rustkit_animated_style.write`, one entry per property in animation
+// (`__rk.animatedStyle.write`, one entry per property in animation
 // order, with its composite), which the build overlays on the element's
 // cascaded style above its CSS animations and transitions. The `style`
 // attribute is never touched (a MutationObserver on it sees nothing;
@@ -28,8 +28,7 @@
 (function (g) {
     var document = g.document;
     if (!document || !g.Element) return;
-    var layer = g.__rustkit_animated_style;
-    try { delete g.__rustkit_animated_style; } catch (_) {}
+    var layer = __rk.animatedStyle;
     if (!layer) return;
 
     var raf = g.requestAnimationFrame;
@@ -403,12 +402,25 @@
     };
 
     // ------------------------------------------------------------- timeline
-    var timeNow = 0;          // the last frame's time
+    var timeNow = 0;          // the timers' clock at the last frame: the timeline without the page clock
     var all = [];             // script animations, oldest first (composite order)
     var frameQueued = false;
     var timeline = {};
-    Object.defineProperty(timeline, 'currentTime', { get: function () { return timeNow; }, enumerable: true });
-    function AnimationTimeline() { throw new TypeError('Illegal constructor'); }
+    // The document timeline is the page clock's frame time, as Chrome's (TIMELINE1,
+    // `timeline_probe_cft148.json`): in a frame its callbacks' timestamp; in a task the time of the
+    // frame of the task's time, the same for the whole task (`__rk.timelineNow`, the timer block).
+    // Script animations compute from it, so `a.currentTime === t - a.startTime` in every frame and
+    // a start time set from the timeline reads 0 at once. CSS animations and transitions are on it
+    // too (TIMELINE2): the engine runs them on the timeline's time (`__rk.animationNow`), and keeps
+    // their start times on the tree's clock, which this document's timeline counts from its origin.
+    function tnow() {
+        if (typeof __rk.timelineNow === 'function') return __rk.timelineNow();
+        return timeNow;
+    }
+    function origin() { return typeof __rk.timeOrigin === 'function' ? __rk.timeOrigin() : 0; }
+    // A CSS animation's or transition's start time on this document's timeline.
+    function cssStart(info) { return info.start - origin(); }
+    Object.defineProperty(timeline, 'currentTime', { get: tnow, enumerable: true });    function AnimationTimeline() { throw new TypeError('Illegal constructor'); }
     function DocumentTimeline() { return timeline; }
     DocumentTimeline.prototype = Object.create(AnimationTimeline.prototype);
     Object.setPrototypeOf(timeline, DocumentTimeline.prototype);
@@ -420,17 +432,26 @@
     }
     function frame(ts) {
         frameQueued = false;
-        if (typeof ts === 'number' && ts > timeNow) timeNow = ts;
+        // Script animations run on the timeline, the frame's stamp (`ft`), which a load-only
+        // capture stamps on the exact grid (`EngineConfig::grid_frame_stamps`), so it reproduces.
+        // `timeNow` is the timers' clock, the timeline's stand-in without the page clock.
+        var vt = typeof __rk.now === 'function' ? __rk.now() : ts;
+        if (typeof vt === 'number' && vt > timeNow) timeNow = vt;
+        var ft = tnow();
         var list = all.slice();
         var more = false;
         for (var i = 0; i < list.length; i++) {
             var a = list[i];
             if (a._pending === 'play') {
-                a._startTime = a._rate === 0 ? timeNow : timeNow - (a._holdTime || 0) / a._rate;
+                a._startTime = a._rate === 0 ? ft : ft - (a._holdTime || 0) / a._rate;
                 if (a._rate !== 0) a._holdTime = null;
                 a._pending = null;
                 a._resolveReady();
             } else if (a._pending === 'pause') {
+                // The hold time is the current time at this frame, the pause's ready time (Chrome:
+                // paused at 100, held at 116.7, the next frame's).
+                if (a._startTime != null && a._holdTime == null) a._holdTime = (ft - a._startTime) * a._rate;
+                a._startTime = null;
                 a._pending = null;
                 a._resolveReady();
             }
@@ -572,9 +593,11 @@
         if (!isFinite(rate)) throw new TypeError("playbackRate must be a finite number");
         var ct = this.currentTime;
         this._rate = rate;
-        if (ct != null && this._holdTime == null && this._startTime != null && this._pending !== 'pause') {
-            if (rate === 0) this._holdTime = ct;
-            else this._startTime = timeNow - ct / rate;
+        if (ct != null && this._holdTime == null && this._startTime != null) {
+            // A pause waiting for its frame is held here, at the time it reads (Chrome
+            // `timeline_probe` "pauseRate": the same before and after `playbackRate = 2`, and after).
+            if (rate === 0 || this._pending === 'pause') this._holdTime = ct;
+            else this._startTime = tnow() - ct / rate;
         }
     };
     Object.defineProperty(Animation.prototype, 'playbackRate', {
@@ -593,14 +616,14 @@
             if (this._idle) return null;
             if (this._holdTime != null) return this._holdTime;
             if (this._startTime == null) return null;
-            return (timeNow - this._startTime) * this._rate;
+            return (tnow() - this._startTime) * this._rate;
         },
         set: function (v) {
             if (v == null) throw new TypeError("Failed to set the 'currentTime' property on 'Animation': currentTime may not be changed from resolved to unresolved");
             v = Number(v);
             this._idle = false;
             if (this._holdTime != null || this._startTime == null || this._pending === 'pause' || this._rate === 0) this._holdTime = v;
-            else this._startTime = timeNow - v / this._rate;
+            else this._startTime = tnow() - v / this._rate;
             if (all.indexOf(this) < 0) all.push(this);
             this._updateFinished(true);
             touch(this._effect);
@@ -625,7 +648,7 @@
             if (ct != null && this._rate > 0 && ct >= end) this._holdTime = didSeek ? ct : end;
             else if (ct != null && this._rate < 0 && ct <= 0) this._holdTime = didSeek ? ct : 0;
             else if (didSeek && this._holdTime != null && this._rate !== 0) {
-                this._startTime = timeNow - this._holdTime / this._rate;
+                this._startTime = tnow() - this._holdTime / this._rate;
                 this._holdTime = null;
             }
         }
@@ -644,9 +667,13 @@
     };
     Animation.prototype._dispatch = function (type) {
         var ev = Object.create(AnimationPlaybackEvent.prototype);
-        ev.type = type; ev.target = this; ev.currentTarget = this; ev.bubbles = false; ev.cancelable = false;
+        ev.type = type; ev.bubbles = false;
+        // Own values: Event.prototype's target and currentTarget are
+        // read-only getters over the DOM dispatch's state.
+        Object.defineProperty(ev, 'target', { value: this, enumerable: true, configurable: true });
+        Object.defineProperty(ev, 'currentTarget', { value: this, enumerable: true, configurable: true });
         ev.currentTime = type === 'cancel' ? null : this.currentTime;
-        ev.timelineTime = timeNow; ev.timeStamp = timeNow; ev.defaultPrevented = false; ev.isTrusted = true;
+        ev.timelineTime = tnow(); ev.timeStamp = tnow(); ev.isTrusted = true;
         var h = this['on' + type];
         var list = (this._listeners[type] || []).slice();
         if (typeof h === 'function') { try { h.call(this, ev); } catch (e) { report(e); } }
@@ -698,8 +725,9 @@
         var ct = this.currentTime;
         if (this._idle || ct == null) ct = this._rate < 0 ? this._end() : 0;
         this._idle = false;
-        this._holdTime = ct;
-        this._startTime = null;
+        // A running animation keeps its start time until the pause's frame takes the hold time
+        // there (`frame`); until then it reads the timeline, which a task does not move.
+        if (this._startTime == null || this._pending === 'play') { this._holdTime = ct; this._startTime = null; }
         if (this._pending == null) this._newReady(false);
         this._pending = 'pause';
         if (all.indexOf(this) < 0) all.push(this);
@@ -715,8 +743,8 @@
         this._idle = false;
         if (all.indexOf(this) < 0) all.push(this);
         if (this._holdTime != null || this._startTime == null || this._rate === 0) this._holdTime = limit;
-        else this._startTime = timeNow - limit / this._rate;
-        if (this._startTime == null) this._startTime = this._rate === 0 ? timeNow : timeNow - limit / this._rate;
+        else this._startTime = tnow() - limit / this._rate;
+        if (this._startTime == null) this._startTime = this._rate === 0 ? tnow() : tnow() - limit / this._rate;
         if (this._pending === 'pause') this._holdTime = null;
         if (this._pending) { this._pending = null; this._resolveReady(); }
         this._updateFinished(true);
@@ -798,7 +826,7 @@
                  direction: info.direction, fill: info.fill, easing: info.easing };
     }
     function cssCurrentTime(info) {
-        return info.paused != null ? info.paused : timeNow - info.start;
+        return info.paused != null ? info.paused : tnow() - cssStart(info);
     }
     function cssPlayState(info) {
         return info.ended ? 'finished' : info.paused != null ? 'paused' : 'running';
@@ -851,7 +879,7 @@
         keys.forEach(function (key) {
             var w = cssWrappers[key];
             if (!w || live[key]) return;
-            var c = w._css, over = c.ended || (c.paused == null && timeNow - c.start >= c.delay + c.duration * (c.iterations == null ? Infinity : c.iterations));
+            var c = w._css, over = c.ended || (c.paused == null && tnow() - cssStart(c) >= c.delay + c.duration * (c.iterations == null ? Infinity : c.iterations));
             if (over && !w._finishedState) { w._finishedState = true; w._finRes(w); microtask(function () { w._dispatch('finish'); }); }
             cssGone(w, !over);
         });
@@ -863,7 +891,7 @@
             set: function () { __rk.unsupported('CSSAnimation', 'currentTime'); }
         });
         Object.defineProperty(proto, 'startTime', {
-            get: function () { return this._gone ? null : this._css.start; },
+            get: function () { return this._gone ? null : cssStart(this._css); },
             set: function () { __rk.unsupported('CSSAnimation', 'currentTime'); }
         });
         Object.defineProperty(proto, 'playbackRate', {

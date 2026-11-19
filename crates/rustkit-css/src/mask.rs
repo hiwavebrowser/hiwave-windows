@@ -457,6 +457,31 @@ mod tests {
     use super::*;
     use crate::BackgroundPositionValue::{Percent, Px};
 
+    /// The bindings' url check on style values (dom.rs `hasBadUrl`) keeps some values the engine then reads
+    /// itself: the engine must read them the same way, so a value the check keeps never reaches the loader as a
+    /// bad url (SEC-STYLE-URL).
+    #[test]
+    fn values_the_bindings_url_check_keeps_are_read_alike_here() {
+        let value = |decl: &str| {
+            let d = crate::split_declaration_list(decl);
+            assert_eq!(d.len(), 1, "{decl:?}: {d:?}");
+            d[0].split_once(':').unwrap().1.trim().to_string()
+        };
+        // A comment holding a url: dropped before any value parser sees it.
+        assert_eq!(value("--x: /* url(a b) */"), "");
+        assert_eq!(value("background-image: /* url(a b) */ url(ok.png)"), "url(ok.png)");
+        assert_eq!(parse_css_url(&value("background-image: /* url(a b) */ url(ok.png)")).as_deref(), Some("ok.png"));
+        // A hash token is not a url, whatever its body.
+        assert_eq!(parse_css_url("#url(a b)"), None);
+        assert_eq!(parse_css_url("#url(ok.png)"), None);
+        // A non-ASCII character before the name, then a bad url body: refused.
+        assert_eq!(parse_css_url("\u{a0}url(a b)"), None);
+        assert_eq!(parse_css_url("\u{b7}url(a b)"), None);
+        // NBSP or NUL inside an unquoted url: refused here (CSS keeps both), so the bindings refuse them too.
+        assert_eq!(parse_css_url("url(a\u{a0}b)"), None);
+        assert_eq!(parse_css_url("url(a\0b)"), None);
+    }
+
     fn no_gradient(_: &str) -> Option<Gradient> {
         None
     }

@@ -275,6 +275,10 @@ struct ModuleCode {
     has_tla: bool,
     requested_modules: IndexSet<super::ModuleRequest, BuildHasherDefault<FxHasher>>,
     path: Option<PathBuf>,
+    // HIWAVE PATCH (error-detail): the flag the module was parsed under;
+    // its code is compiled with it at link time.
+    error_detail: crate::vm::ErrorDetail,
+    // END HIWAVE PATCH
     import_entries: Vec<ImportEntry>,
     local_export_entries: Vec<LocalExportEntry>,
     indirect_export_entries: Vec<IndirectExportEntry>,
@@ -479,6 +483,7 @@ impl SourceTextModule {
                 has_tla,
                 requested_modules,
                 path,
+                error_detail: crate::vm::ErrorDetailScope::current(), // HIWAVE PATCH (error-detail)
                 import_entries,
                 local_export_entries,
                 indirect_export_entries,
@@ -1675,6 +1680,9 @@ impl SourceTextModule {
         let env = source.scope().clone();
 
         let spanned_source_text = SpannedSourceText::new_source_only(source_text.clone());
+        // HIWAVE PATCH (error-detail)
+        let _detail = crate::vm::ErrorDetailScope::enter(self.code.error_detail);
+        // END HIWAVE PATCH
         let mut compiler = ByteCompiler::new(
             js_string!("<main>"),
             true,

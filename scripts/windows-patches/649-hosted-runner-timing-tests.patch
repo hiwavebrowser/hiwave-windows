@@ -13,20 +13,9 @@ named them; the real job's collector swallows cargo's output):
 
 Remove each hunk when upstream lands its row.
 
+Refresh #20: the rustkit-engine hunk is gone. Upstream landed CH2.E30, which bounds the stall at 8 s
+(hiwave-macos 295ce9f4, lib.rs `waited for the stalled subresources`). The renderer hunk remains.
 
---- a/crates/rustkit-engine/src/lib.rs
-+++ b/crates/rustkit-engine/src/lib.rs
-@@ -38910,7 +38910,9 @@
-         };
-         let (engine, view, took) = load_timed(config, port);
-         assert!(
--            took < std::time::Duration::from_millis(2_500),
-+            // 3.5 s, not 2.5 s: a hosted CPU-adapter runner under load took 2.83 s. The
-+            // point is that the network client's 30 s timeout is not waited out.
-+            took < std::time::Duration::from_millis(3_500),
-             "waited for the stalled subresources: {took:?}"
-         );
-         // The sheet that did arrive still applies — and it must be the fast
 
 --- a/crates/rustkit-renderer/src/layer_cost_tests.rs
 +++ b/crates/rustkit-renderer/src/layer_cost_tests.rs

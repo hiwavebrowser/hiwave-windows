@@ -177,16 +177,18 @@ fn constructed_sheets_replace_and_adopt() {
     assert_eq!(ev(&b, "got"), "true,1");
 }
 
-/// Records what `__rkSetAdoptedStyles` is given: `pub(node)` is the last
-/// text list published for `node`, joined with `||`, or `none`.
+/// Records what `__rk.setAdoptedStyles` is given: `pub(node)` is the
+/// last text list published for `node`, joined with `||`, or `none`. The
+/// recorder is put on the host object (a host turn), where the engine's
+/// own is, since no page script can reach it.
 const RECORD_PUBLISH: &str = "globalThis.pubs = new Map(); \
-     globalThis.__rkSetAdoptedStyles = function (node, texts) { pubs.set(node, JSON.parse(texts)); }; \
-     globalThis.pub = function (node) { return pubs.has(node) ? pubs.get(node).join('||') : 'none'; }; ''";
+     __rk.setAdoptedStyles = function (node, texts) { pubs.set(node, JSON.parse(texts)); }; \
+     globalThis.pub = function (node) { return pubs.has(node) ? pubs.get(node).join('||') : 'none'; }; return '';";
 
 #[test]
 fn adopted_style_sheets_is_observable_push_splice_and_length_publish() {
     let b = bound();
-    ev(&b, RECORD_PUBLISH);
+    b.host_turn(RECORD_PUBLISH, &[]).unwrap();
     assert_eq!(
         ev(
             &b,
@@ -212,7 +214,7 @@ fn adopted_style_sheets_is_observable_push_splice_and_length_publish() {
 #[test]
 fn disabled_and_media_republish_and_media_applies_only_where_it_matches() {
     let b = bound();
-    ev(&b, RECORD_PUBLISH);
+    b.host_turn(RECORD_PUBLISH, &[]).unwrap();
     assert_eq!(
         ev(
             &b,
@@ -233,7 +235,7 @@ fn disabled_and_media_republish_and_media_applies_only_where_it_matches() {
 #[test]
 fn one_sheet_adopted_by_many_shadow_roots_republishes_to_each() {
     let b = bound();
-    ev(&b, RECORD_PUBLISH);
+    b.host_turn(RECORD_PUBLISH, &[]).unwrap();
     assert_eq!(
         ev(
             &b,

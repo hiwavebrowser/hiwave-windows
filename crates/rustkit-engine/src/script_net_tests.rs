@@ -141,9 +141,16 @@ pub(crate) fn serve_byte_routes(routes: Vec<(&'static str, &'static str, Vec<u8>
                 };
                 // `/missing...` is a 404, for the failure cases.
                 let status = if fixed.is_none() && path.starts_with("/missing") { "404 Not Found" } else { "200 OK" };
+                // `/redir_<name>` is a 302 to `/<name>`, for the redirect cases.
+                let location = path.strip_prefix("/redir_").filter(|_| fixed.is_none());
+                let (status, body) = match location {
+                    Some(_) => ("302 Found", Vec::new()),
+                    None => (status, body),
+                };
+                let location = location.map(|to| format!("Location: /{to}\r\n")).unwrap_or_default();
                 let _ = write!(
                     stream,
-                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 {status}\r\n{location}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 let _ = stream.write_all(&body);
@@ -172,6 +179,9 @@ fn rig() -> Rig {
     let server = serve();
     let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
     bindings.enable_net_bridge().unwrap();
+    // The bridge for these tests' page script (the engine keeps it on the
+    // host object, out of any page's reach).
+    bindings.host_turn("window.__net = __rk.net; return 0;", &[]).unwrap();
     Rig {
         policy: FetchPolicy::for_page(
             Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap(),
@@ -207,6 +217,7 @@ impl Rig {
             rounds,
             None,
             &crate::inspector::Inspector::new(&Default::default()),
+            false,
         ))
     }
 
@@ -219,7 +230,7 @@ impl Rig {
 fn a_same_origin_request_is_fetched_under_the_policy_and_delivered() {
     let rig = rig();
     rig.js(&format!(
-        "var got; window.__rustkit_net.request({{ url: '{}', destination: 'xhr' }}, function (r) {{ got = r; }});",
+        "var got; window.__net.request({{ url: '{}', destination: 'xhr' }}, function (r) {{ got = r; }});",
         rig.url("/hello")
     ));
     let found = rig.pump(8, Duration::from_secs(10));
@@ -236,7 +247,7 @@ fn a_request_body_survives_both_directions_as_bytes() {
     let rig = rig();
     // "hi", a NUL and a non-UTF-8 byte.
     rig.js(&format!(
-        "var got; window.__rustkit_net.request({{ method: 'POST', url: '{}', body_b64: 'aGkA/w==' }}, function (r) {{ got = r; }});",
+        "var got; window.__net.request({{ method: 'POST', url: '{}', body_b64: 'aGkA/w==' }}, function (r) {{ got = r; }});",
         rig.url("/echo")
     ));
     rig.pump(8, Duration::from_secs(10));
@@ -251,10 +262,10 @@ fn a_denied_request_is_a_generic_network_error_and_never_connects() {
     // Another private address than the page's own: refused before connect.
     rig.js(&format!(
         "var log = []; \
-         window.__rustkit_net.request({{ url: 'http://127.0.0.2:{}/secret' }}, function (r) {{ log.push(r.ok + ':' + r.error); }}); \
-         window.__rustkit_net.request({{ url: 'http://10.0.0.1:9/' }}, function (r) {{ log.push(r.ok + ':' + r.error); }}); \
-         window.__rustkit_net.request({{ url: 'ftp://127.0.0.1/' }}, function (r) {{ log.push(r.ok + ':' + r.error); }}); \
-         window.__rustkit_net.request({{ method: 'NOT A METHOD', url: '{}' }}, function (r) {{ log.push(r.ok + ':' + r.error); }});",
+         window.__net.request({{ url: 'http://127.0.0.2:{}/secret' }}, function (r) {{ log.push(r.ok + ':' + r.error); }}); \
+         window.__net.request({{ url: 'http://10.0.0.1:9/' }}, function (r) {{ log.push(r.ok + ':' + r.error); }}); \
+         window.__net.request({{ url: 'ftp://127.0.0.1/' }}, function (r) {{ log.push(r.ok + ':' + r.error); }}); \
+         window.__net.request({{ method: 'NOT A METHOD', url: '{}' }}, function (r) {{ log.push(r.ok + ':' + r.error); }});",
         rig.port,
         rig.url("/x")
     ));
@@ -273,9 +284,9 @@ fn deliveries_follow_request_order_not_completion_order() {
     let rig = rig();
     rig.js(&format!(
         "var order = []; \
-         window.__rustkit_net.request({{ url: '{}' }}, function () {{ order.push('slow'); }}); \
-         window.__rustkit_net.request({{ url: '{}' }}, function () {{ order.push('fast1'); }}); \
-         window.__rustkit_net.request({{ url: '{}' }}, function () {{ order.push('fast2'); }});",
+         window.__net.request({{ url: '{}' }}, function () {{ order.push('slow'); }}); \
+         window.__net.request({{ url: '{}' }}, function () {{ order.push('fast1'); }}); \
+         window.__net.request({{ url: '{}' }}, function () {{ order.push('fast2'); }});",
         rig.url("/slow"),
         rig.url("/a"),
         rig.url("/b")
@@ -286,7 +297,7 @@ fn deliveries_follow_request_order_not_completion_order() {
 
 const CHAIN: &str = "var path = []; \
      function next(n) {{ \
-         window.__rustkit_net.request({{ url: '{base}/step' + n }}, function (r) {{ \
+         window.__net.request({{ url: '{base}/step' + n }}, function (r) {{ \
              path.push(r.ok ? 'ok' + n : 'err' + n); \
              if (n < {last}) next(n + 1); \
          }}); \
@@ -335,7 +346,7 @@ fn what_outlasts_the_rounds_completes_with_an_error() {
 fn a_retry_loop_on_failure_cannot_hold_the_pump() {
     let rig = rig();
     rig.js(&format!(
-        "var failures = 0;          function again() {{              window.__rustkit_net.request({{ url: '{}' }}, function (r) {{ if (!r.ok) {{ failures++; again(); }} }});          }}          again();",
+        "var failures = 0;          function again() {{              window.__net.request({{ url: '{}' }}, function (r) {{ if (!r.ok) {{ failures++; again(); }} }});          }}          again();",
         rig.url("/never")
     ));
     let found = rig.pump(0, Duration::from_secs(10));
@@ -351,7 +362,7 @@ fn a_retry_loop_on_failure_cannot_hold_the_pump() {
 fn with_no_budget_nothing_is_fetched_and_everything_fails() {
     let rig = rig();
     rig.js(&format!(
-        "var log = []; window.__rustkit_net.request({{ url: '{}' }}, function (r) {{ log.push(r.ok + ':' + r.error); }});",
+        "var log = []; window.__net.request({{ url: '{}' }}, function (r) {{ log.push(r.ok + ':' + r.error); }});",
         rig.url("/late")
     ));
     let found = rig.pump(8, Duration::ZERO);
@@ -373,6 +384,7 @@ fn a_page_without_the_bridge_has_no_requests() {
         8,
         None,
         &crate::inspector::Inspector::new(&Default::default()),
+        false,
     ));
     assert_eq!((found.requests, found.rounds, found.poisoned), (0, 0, false));
 }

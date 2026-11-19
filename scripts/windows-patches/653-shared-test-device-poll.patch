@@ -1,0 +1,25 @@
+Windows CI: rustkit-engine's unit tests died partway on the hosted runner (exit 2173; collect-metrics
+counted only the crates before rustkit-engine). Since T41b (hiwave-macos dc772f67) the tests share one
+wgpu device for the whole process. wgpu frees what a dropped engine held only when its device is
+maintained, and nothing polls the shared one between tests. On a software adapter (WARP, the hosted
+runner's only one) those resources are process memory: ~10 MB a test, 9.2 GB by ~800 tests
+(single-threaded, forced WARP on this machine) against 862 MB on develop 31a1d144 before the sync.
+Polling it when the next test takes it: 889 passed, peak 4.1 GB.
+
+Remove when upstream takes the poll (hiwave-macos PR filed from refresh #20).
+
+--- a/crates/rustkit-engine/src/lib.rs
++++ b/crates/rustkit-engine/src/lib.rs
+@@ -52,6 +52,12 @@ pub(crate) fn test_compositor() -> Result<Compositor, rustkit_compositor::Compos
+     static SHARED_COMPOSITOR: OnceLock<Compositor> = OnceLock::new();
+     test_gpu::hold_for_this_test();
+     if let Some(shared) = SHARED_COMPOSITOR.get() {
++        // wgpu frees what a dropped engine held (textures, buffers, bind groups) only when its
++        // device is maintained. With one device for the whole process, the previous test's are
++        // freed here, before this test allocates its own: on a software adapter (WARP, a hosted
++        // Windows runner) they are process memory, and ~10 MB a test reached 9 GB and ended the
++        // test binary partway through the suite.
++        shared.device().poll(wgpu::Maintain::Wait);
+         return Ok(shared.share_device());
+     }
+     let compositor = Compositor::new()?;

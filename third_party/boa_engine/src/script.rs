@@ -89,6 +89,7 @@ impl Script {
         realm: Option<Realm>,
         context: &mut Context,
     ) -> JsResult<Self> {
+        let _native_entry = crate::native_stack::Entry::new(context.vm.runtime_limits.native_stack_budget()); // HIWAVE PATCH (native recursion)
         let path = src.path().map(Path::to_path_buf);
         let mut parser = Parser::new(src);
         parser.set_identifier(context.next_parser_identifier());

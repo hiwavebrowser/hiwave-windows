@@ -193,6 +193,10 @@ fn nested_layout_modes_are_as_in_chromium() {
         wrong.len(),
         wrong.join("\n")
     );
+    // Windows: the pins and the expected-failure list are macOS's (other fonts), and some listed
+    // cases match here; the check above (no case newly differs) still holds.
+    // (apply_windows_patches.py: the expected-failure list is macOS's)
+    #[cfg(not(windows))]
     assert!(
         listed_but_match.is_empty(),
         "listed as failing but match Chromium now, take them off the list: {listed_but_match:?}"

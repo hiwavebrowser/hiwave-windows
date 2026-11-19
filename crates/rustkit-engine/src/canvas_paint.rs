@@ -62,6 +62,79 @@ pub(crate) fn text_measurer() -> CanvasTextMeasurer {
     })
 }
 
+/// The SVG images a canvas can draw, by URL (`LayoutCtx::canvas_svgs`).
+pub(crate) type CanvasSvgs =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<rustkit_svg::SvgDocument>>>>;
+
+/// The image cache as canvas `drawImage`/`createPattern` reads it: an
+/// `<img>`'s decoded pixels by URL (its first frame), `None` when the
+/// image is not decoded. An SVG image is rasterized at `size` (its natural
+/// size for `(0, 0)`), as Chrome rasterizes it at the size it is drawn.
+pub(crate) fn image_loader(images: std::sync::Arc<rustkit_image::ImageManager>, svgs: CanvasSvgs) -> rustkit_bindings::CanvasImageLoader {
+    Box::new(move |url: &str, size: (u32, u32)| {
+        let doc = svgs.lock().ok().and_then(|m| m.get(url).cloned());
+        let url = url::Url::parse(url).ok()?;
+        let hops = images.response_urls(&url);
+        if let Some(doc) = doc {
+            return svg_bitmap(&doc, size).map(|b| (b, hops));
+        }
+        let image = images.get_cached(&url)?;
+        let frame = image.current_frame(std::time::Duration::ZERO);
+        rustkit_bindings::canvas::CanvasBitmap::from_rgba(frame.width(), frame.height(), frame.data()).map(|b| (b, hops))
+    })
+}
+
+/// `doc` rasterized at `size` (its natural size for `(0, 0)`, 300x150
+/// with none): its path list filled and stroked by a scratch canvas
+/// context, so an SVG drawn into a canvas uses the canvas's own raster.
+fn svg_bitmap(doc: &rustkit_svg::SvgDocument, size: (u32, u32)) -> Option<rustkit_bindings::canvas::CanvasBitmap> {
+    use rustkit_bindings::canvas::{CanvasRenderingContext2D, CanvasStyle, LineCap, LineJoin};
+    let (w, h) = if size.0 > 0 && size.1 > 0 {
+        size
+    } else {
+        let (w, h) = doc.get_size(300.0, 150.0);
+        (w.round().max(1.0) as u32, h.round().max(1.0) as u32)
+    };
+    let mut ctx = CanvasRenderingContext2D::new(w, h);
+    let color = CanvasStyle::Color;
+    for item in doc.path_list(0.0, 0.0, w as f32, h as f32, Color::BLACK) {
+        ctx.begin_path();
+        for (points, closed) in &item.contours {
+            let mut it = points.iter();
+            if let Some(&(x, y)) = it.next() {
+                ctx.move_to(x, y);
+            }
+            for &(x, y) in it {
+                ctx.line_to(x, y);
+            }
+            if *closed {
+                ctx.close_path();
+            }
+        }
+        if let Some(fill) = item.fill {
+            ctx.set_fill_style(color(fill));
+            ctx.fill_with_rule(item.even_odd);
+        }
+        if let Some(stroke) = item.stroke {
+            ctx.set_stroke_style(color(stroke.color));
+            ctx.set_line_width(stroke.width);
+            ctx.set_line_cap(match stroke.cap {
+                rustkit_svg::LineCap::Butt => LineCap::Butt,
+                rustkit_svg::LineCap::Round => LineCap::Round,
+                rustkit_svg::LineCap::Square => LineCap::Square,
+            });
+            ctx.set_line_join(match stroke.join {
+                rustkit_svg::LineJoin::Miter => LineJoin::Miter,
+                rustkit_svg::LineJoin::Round => LineJoin::Round,
+                rustkit_svg::LineJoin::Bevel => LineJoin::Bevel,
+            });
+            ctx.set_miter_limit(stroke.miter_limit);
+            ctx.stroke();
+        }
+    }
+    ctx.bitmap().or_else(|| rustkit_bindings::canvas::CanvasBitmap::from_rgba(w, h, &vec![0; w as usize * h as usize * 4]))
+}
+
 fn measure(font: &CanvasFont, text: &str) -> rustkit_layout::TextMetrics {
     rustkit_layout::measure_text_advanced(
         text,
@@ -80,14 +153,156 @@ fn initial_font() -> CanvasFont {
     CanvasFont::parse("10px sans-serif", 16.0).expect("initial canvas font")
 }
 
-/// A canvas's paint as the last display list built it: for the recording
-/// at `generation`, in a box whose fitted image rect was `dest` and content
+/// A canvas bitmap waiting for, or kept beside, its texture: premultiplied
+/// RGBA rows.
+pub(crate) struct CanvasFrame {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) rgba: Vec<u8>,
+}
+
+/// The canvas bitmaps the display lists name, by image key
+/// (`rustkit-canvas:<node>@<serial>`): the presenter uploads one when a
+/// list it draws names it (`upload_display_list_images`). A key is new for
+/// every bitmap a canvas paints, so a texture is never stale, and leaves
+/// this map when the paint that made it is dropped.
+static FRAMES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<CanvasFrame>>>> =
+    std::sync::LazyLock::new(Default::default);
+static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Whether `url` is a canvas bitmap's image key (as opposed to the layout
+/// placeholder `canvas_key`).
+pub(crate) fn is_bitmap_key(url: &str) -> bool {
+    url.strip_prefix(KEY_PREFIX).is_some_and(|rest| rest.contains('@'))
+}
+
+/// The bitmap a display list names under `key`, if its paint is alive.
+pub(crate) fn bitmap_frame(key: &str) -> Option<std::sync::Arc<CanvasFrame>> {
+    FRAMES.lock().ok()?.get(key).cloned()
+}
+
+/// GPU canvas A1: a canvas's batches on their way from the page thread
+/// (display-list build) to the presenter (`upload_display_list_images`),
+/// which replays them into the canvas's texture. Batches wait here, not in
+/// the frame commit: a commit can be replaced before it is drawn, and its
+/// batches would be lost with it.
+#[derive(Default)]
+pub(crate) struct Mailbox {
+    batches: Vec<rustkit_bindings::canvas::GpuBatch>,
+    bytes: usize,
+    /// The presenter could not draw the batches onto a texture as it was
+    /// (missing, or batches dropped here): the next batch must be a reset.
+    needs_reset: bool,
+    /// The presenter keeps no texture for this canvas: CPU bitmap for good.
+    denied: bool,
+}
+
+/// The most bytes of batches a mailbox holds: past it (a window that is
+/// not presenting) they are dropped and the canvas starts over from its
+/// bitmap at the next batch.
+const MAILBOX_BYTE_CAP: usize = rustkit_bindings::canvas::PENDING_BYTE_BUDGET;
+
+/// Mailboxes by GPU key (`rustkit-canvas:<node>@g<context id>`); one goes
+/// when the paint that made it is dropped.
+static MAILBOXES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Mailbox>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether `url` names a canvas's GPU texture.
+pub(crate) fn is_gpu_key(url: &str) -> bool {
+    url.strip_prefix(KEY_PREFIX).is_some_and(|rest| rest.contains("@g"))
+}
+
+/// Presenter: the batches waiting for `key`, taken.
+pub(crate) fn take_gpu_batches(key: &str) -> Vec<rustkit_bindings::canvas::GpuBatch> {
+    let Ok(mut boxes) = MAILBOXES.lock() else { return Vec::new() };
+    let Some(m) = boxes.get_mut(key) else { return Vec::new() };
+    m.bytes = 0;
+    std::mem::take(&mut m.batches)
+}
+
+/// Presenter: what the replay of `key`'s batches came to.
+pub(crate) fn gpu_replayed(key: &str, result: rustkit_renderer::CanvasReplay) {
+    let Ok(mut boxes) = MAILBOXES.lock() else { return };
+    let Some(m) = boxes.get_mut(key) else { return };
+    match result {
+        rustkit_renderer::CanvasReplay::Drawn => {}
+        rustkit_renderer::CanvasReplay::NeedsReset => m.needs_reset = true,
+        rustkit_renderer::CanvasReplay::Denied => m.denied = true,
+    }
+}
+
+/// Page thread: hands `node`'s new draws to the presenter under `key`;
+/// `false` when the presenter denied the canvas a texture (the caller shows
+/// the CPU bitmap). A mailbox made here starts with a reset: the texture
+/// under a key nobody posted to is unknown.
+fn post_gpu_batch(source: &CanvasSource, node: usize, key: &str) -> bool {
+    let Ok(mut boxes) = MAILBOXES.lock() else { return false };
+    let fresh = !boxes.contains_key(key);
+    let m = boxes.entry(key.to_string()).or_default();
+    if m.denied {
+        return false;
+    }
+    let force = fresh || std::mem::take(&mut m.needs_reset);
+    let Some(batch) = source.take_gpu_batch(node, force) else { return false };
+    if batch.reset.is_some() {
+        m.batches.clear();
+        m.bytes = 0;
+    }
+    m.bytes += batch.bytes();
+    m.batches.push(batch);
+    if m.bytes > MAILBOX_BYTE_CAP {
+        m.batches.clear();
+        m.bytes = 0;
+        m.needs_reset = true;
+    }
+    true
+}
+
+/// Whether a `w` x `h` canvas can have a texture: some area, within the
+/// largest texture every device takes (wgpu's default limit), and its
+/// scratch within the renderer's budget. Checked here so a canvas that
+/// cannot is never posted (the presenter's own check stays).
+fn gpu_fits(w: u32, h: u32) -> bool {
+    const MAX_SIDE: u32 = 8192;
+    w > 0 && h > 0 && w <= MAX_SIDE && h <= MAX_SIDE && w as u64 * h as u64 * 20 <= rustkit_renderer::CANVAS_SCRATCH_BUDGET
+}
+
+/// Whether the presenter asked `key` for a reset.
+fn gpu_needs_reset(key: &str) -> bool {
+    MAILBOXES.lock().ok().and_then(|b| b.get(key).map(|m| m.needs_reset)).unwrap_or(false)
+}
+
+/// Whether the presenter denied `key` a texture.
+fn gpu_denied(key: &str) -> bool {
+    MAILBOXES.lock().ok().and_then(|b| b.get(key).map(|m| m.denied)).unwrap_or(false)
+}
+
+/// A canvas's paint as the last display list built it: for the bitmap at
+/// `generation`, in a box whose fitted image rect was `dest` and content
 /// box `content`.
 pub(crate) struct CanvasPaint {
     generation: u64,
     dest: Rect,
     content: Rect,
+    /// The bitmap's image key in `FRAMES`.
+    key: String,
+    /// What the text overlay drew (text is not in the bitmap yet), with
+    /// the bitmap's image command first.
     pub(crate) commands: Vec<DisplayCommand>,
+}
+
+impl Drop for CanvasPaint {
+    fn drop(&mut self) {
+        if is_gpu_key(&self.key) {
+            if let Ok(mut boxes) = MAILBOXES.lock() {
+                boxes.remove(&self.key);
+            }
+            return;
+        }
+        if let Ok(mut frames) = FRAMES.lock() {
+            frames.remove(&self.key);
+        }
+    }
 }
 
 fn same(a: Rect, b: Rect) -> bool {
@@ -96,28 +311,135 @@ fn same(a: Rect, b: Rect) -> bool {
 
 impl CanvasPaint {
     /// `last` again when the canvas `node` has not drawn since and its box
-    /// is where it was; otherwise its recording painted afresh. `None`
-    /// with no 2D context.
+    /// is where it was; otherwise the canvas painted afresh into `image`,
+    /// the box's image command. A canvas paints its bitmap (STR-7b) as an
+    /// image under a key of its own, fitted to the box like any replaced
+    /// image (`object-fit`, bilinear scaling from the backing store to the
+    /// CSS size, as Chrome does). The bitmap is read again only when the
+    /// canvas drew. `None` with no 2D context.
     pub(crate) fn reuse_or_paint(
         last: Option<CanvasPaint>,
         source: &CanvasSource,
         node: usize,
-        dest: Rect,
-        content: Rect,
+        image: &DisplayCommand,
     ) -> Option<CanvasPaint> {
+        let DisplayCommand::Image { dest_rect: dest, content_box: content, .. } = image else {
+            return None;
+        };
+        let (dest, content) = (*dest, *content);
         let generation = source.generation(node)?;
-        if let Some(last) = last {
-            if last.generation == generation && same(last.dest, dest) && same(last.content, content) {
-                return Some(last);
+        // GPU canvas A1: the canvas's texture under a key that stays while
+        // the context lives; each new paint hands the draws since the last
+        // one to the presenter instead of copying the bitmap.
+        let gpu_key = match source.gpu_context(node) {
+            Some((id, w, h)) if gpu_fits(w, h) => Some(format!("{KEY_PREFIX}{node}@g{id}")),
+            Some(_) => {
+                // No texture this size: from the bitmap for good.
+                source.leave_gpu(node);
+                None
+            }
+            None => None,
+        };
+        let mut last = last;
+        if let Some(key) = &gpu_key {
+            if gpu_denied(key) {
+                if let Ok(mut boxes) = MAILBOXES.lock() {
+                    boxes.remove(key);
+                }
+                source.leave_gpu(node);
+            } else {
+                let mut kept = None;
+                if let Some(l) = last.as_mut().filter(|l| &l.key == key) {
+                    if l.generation == generation && same(l.dest, dest) && same(l.content, content) && !gpu_needs_reset(key) {
+                        return last;
+                    }
+                    // Taken, so that dropping `l` keeps the mailbox.
+                    kept = Some((l.generation, std::mem::take(&mut l.key)));
+                }
+                drop(last.take());
+                let drew = kept.as_ref().is_none_or(|(g, _)| *g != generation) || gpu_needs_reset(key);
+                if !drew || post_gpu_batch(source, node, key) {
+                    let paint = Self::paint_with_key(source, node, image, generation, dest, content, key.clone());
+                    return Some(paint);
+                }
+                // Denied just now: from the bitmap from here on.
+                if let Ok(mut boxes) = MAILBOXES.lock() {
+                    boxes.remove(key);
+                }
+                source.leave_gpu(node);
             }
         }
-        let snapshot = source.snapshot(node)?;
-        Some(CanvasPaint {
-            generation,
-            dest,
-            content,
-            commands: paint_commands(&snapshot, dest, content),
-        })
+        let reused_key = match last {
+            Some(last) if last.generation == generation => {
+                if same(last.dest, dest) && same(last.content, content) {
+                    return Some(last);
+                }
+                // The same bitmap in a moved box: keep its key and texture.
+                let mut last = last;
+                Some(std::mem::take(&mut last.key))
+            }
+            _ => None,
+        };
+        let key = match reused_key {
+            Some(key) => key,
+            None => {
+                let (width, height, rgba) = source.pixels(node)?;
+                if width == 0 || height == 0 || rgba.len() as u64 != width as u64 * height as u64 * 4 {
+                    // Nothing to show: a zero-size texture is invalid, and a
+                    // canvas past the size limits has no bitmap.
+                    return Some(CanvasPaint { generation, dest, content, key: String::new(), commands: Vec::new() });
+                }
+                let key = format!(
+                    "{KEY_PREFIX}{node}@{}",
+                    SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                );
+                if let Ok(mut frames) = FRAMES.lock() {
+                    frames.insert(key.clone(), std::sync::Arc::new(CanvasFrame { width, height, rgba }));
+                }
+                key
+            }
+        };
+        Some(Self::paint_with_key(source, node, image, generation, dest, content, key))
+    }
+
+    /// The paint naming the bitmap or texture `key`, with the text overlay.
+    fn paint_with_key(
+        source: &CanvasSource,
+        node: usize,
+        image: &DisplayCommand,
+        generation: u64,
+        dest: Rect,
+        content: Rect,
+        key: String,
+    ) -> CanvasPaint {
+        let mut commands = Vec::new();
+        let mut bitmap = image.clone();
+        if let DisplayCommand::Image { url, .. } = &mut bitmap {
+            *url = key.clone();
+        }
+        commands.push(bitmap);
+        if let Some(mut snapshot) = source.snapshot(node) {
+            // Text is drawn over the bitmap from the recording, with the
+            // clears and clips that cut it (slice 3 rasterizes text).
+            snapshot.commands.retain(|c| {
+                matches!(
+                    c,
+                    DrawCommand::FillText { .. }
+                        | DrawCommand::StrokeText { .. }
+                        | DrawCommand::Clip { .. }
+                        | DrawCommand::ClearRect { .. }
+                )
+            });
+            if snapshot
+                .commands
+                .iter()
+                .any(|c| matches!(c, DrawCommand::FillText { .. } | DrawCommand::StrokeText { .. }))
+            {
+                commands.extend(paint_commands(&snapshot, dest, content));
+            }
+        }
+        PAINTS.with(|p| p.set(p.get() + 1));
+        CanvasPaint { generation, dest, content, key, commands }
     }
 }
 
@@ -125,8 +447,8 @@ thread_local! {
     static PAINTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many times this thread turned a recording into display commands
-/// (`paint_commands`): a test's window on the paint cache.
+/// How many times this thread painted a canvas afresh
+/// (`CanvasPaint::reuse_or_paint`): a test's window on the paint cache.
 #[cfg(test)]
 pub(crate) fn paints() -> usize {
     PAINTS.with(|p| p.get())
@@ -141,7 +463,6 @@ pub(crate) fn paint_commands(
     dest: Rect,
     content: Rect,
 ) -> Vec<DisplayCommand> {
-    PAINTS.with(|p| p.set(p.get() + 1));
     let mut out = Vec::new();
     if canvas.commands.is_empty() || canvas.width == 0 || canvas.height == 0 {
         return out;
@@ -657,6 +978,7 @@ fn draw_text(
         ascent: Some(0.0),
         run: None,
         faces: None,
+        undilated: false,
     });
 }
 

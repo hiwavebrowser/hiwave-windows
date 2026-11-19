@@ -104,7 +104,10 @@
             width: 300px;
             height: 300px;
             background: radial-gradient(circle, rgba(6, 182, 212, 0.2) 0%, transparent 70%);
-            animation: heroGlow 3s ease-in-out infinite;
+            /* Twice after the load, then it rests on the glow's first frame. An animation that never
+               ends has the page drawn about 60 times a second for as long as it is open (IDLE-CPU). */
+            opacity: 0.3;
+            animation: heroGlow 3s ease-in-out 2;
             pointer-events: none;
             z-index: 0;
         }

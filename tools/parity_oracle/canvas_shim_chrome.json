@@ -1,0 +1,25 @@
+{
+ "version": "Chrome/148.0.0.0",
+ "checks": {
+  "x.arc(1, 2, 3, 4)": "TypeError: Failed to execute 'arc' on 'CanvasRenderingContext2D': 5 arguments required, but only 4 present.",
+  "x.moveTo(1)": "TypeError: Failed to execute 'moveTo' on 'CanvasRenderingContext2D': 2 arguments required, but only 1 present.",
+  "x.lineTo()": "TypeError: Failed to execute 'lineTo' on 'CanvasRenderingContext2D': 2 arguments required, but only 0 present.",
+  "x.clearRect(1, 2, 3)": "TypeError: Failed to execute 'clearRect' on 'CanvasRenderingContext2D': 4 arguments required, but only 3 present.",
+  "x.rotate()": "TypeError: Failed to execute 'rotate' on 'CanvasRenderingContext2D': 1 argument required, but only 0 present.",
+  "x.bezierCurveTo(1, 2, 3, 4, 5)": "TypeError: Failed to execute 'bezierCurveTo' on 'CanvasRenderingContext2D': 6 arguments required, but only 5 present.",
+  "x.arc(1, 2, 3, 4, undefined)": "none",
+  "x.beginPath.call({})": "TypeError: Illegal invocation",
+  "x.stroke.call(null)": "TypeError: Illegal invocation",
+  "x.lineTo.call(5, 1, 2)": "TypeError: Illegal invocation",
+  "Object.getOwnPropertyDescriptor(P, 'lineWidth').set.call({}, 3)": "TypeError: Illegal invocation",
+  "Object.getOwnPropertyDescriptor(P, 'strokeStyle').set.call({}, 'red')": "TypeError: Illegal invocation",
+  "P.arc.call({})": "TypeError: Illegal invocation",
+  "P.moveTo.call({}, 1)": "TypeError: Illegal invocation",
+  "P.clearRect.call(null)": "TypeError: Illegal invocation",
+  "P.translate.call({})": "TypeError: Illegal invocation"
+ },
+ "path_member_extra_argument_reads": 0,
+ "transform_member_extra_argument_reads": 0,
+ "conversion_order": "1,2,3,4,5,6,7,8,9,10",
+ "styles": "#ff0000,#000000,4,round"
+}

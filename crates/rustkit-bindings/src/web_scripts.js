@@ -20,7 +20,7 @@
 (function (g) {
     var internals = g.__rkScriptInternals;
     delete g.__rkScriptInternals;
-    var HOOKS = g.__rkDomHooks;
+    var HOOKS = __rk.domHooks;
     if (!internals || !HOOKS) return;
     // Captured before page script can replace them.
     var indirectEval = g.eval, resolved = Promise.resolve(), URL_ = g.URL, Event_ = g.Event;
@@ -74,7 +74,10 @@
         if (k === 'module') return;
         var was = internals.current(el);
         try {
-            indirectEval(el.textContent);
+            // An inline script is the document's code, whoever inserted
+            // it: its text first, then the one step that compiles and runs it.
+            var text = '' + el.textContent;
+            __rk.runDocumentScript(text);
         } catch (e) {
             try { __rk.reportError(e); } catch (_) {}
         } finally {
@@ -139,6 +142,14 @@
         },
         // A `src` set, or text written, on a script already in the document.
         changed: function (node, op, name) {
+            // Only a text change or a write of `async` or `src` matters to a script: asked first, because
+            // `isScript` reads two properties of the node.
+            if (op === 'setAttr') {
+                var len = String(name).length;
+                if (len !== 5 && len !== 3) return;
+            } else if (op !== 'setText') {
+                return;
+            }
             if (isScript(node) && op === 'setAttr' && String(name).toLowerCase() === 'async') node[FORCE] = false;
             if (fresh === 0 || !isScript(node)) return;
             if (op === 'setText' || (op === 'setAttr' && String(name).toLowerCase() === 'src')) prepare(node);

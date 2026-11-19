@@ -14,7 +14,7 @@ const MAX_BYTES: usize = 65536;
 
 /// `n` bytes from the OS random source, or `None` when it cannot be read.
 #[cfg(not(windows))]
-fn random_bytes(n: usize) -> Option<Vec<u8>> {
+pub(crate) fn random_bytes(n: usize) -> Option<Vec<u8>> {
     let mut bytes = vec![0u8; n];
     std::fs::File::open("/dev/urandom")
         .ok()?
@@ -28,7 +28,7 @@ fn random_bytes(n: usize) -> Option<Vec<u8>> {
 /// `HashMap` seeding use. Without this, `crypto.getRandomValues` and
 /// `crypto.randomUUID` threw `OperationError` on every Windows page.
 #[cfg(windows)]
-fn random_bytes(n: usize) -> Option<Vec<u8>> {
+pub(crate) fn random_bytes(n: usize) -> Option<Vec<u8>> {
     #[link(name = "advapi32")]
     extern "system" {
         #[link_name = "SystemFunction036"]

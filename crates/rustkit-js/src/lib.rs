@@ -18,6 +18,8 @@ pub use import_map::ImportMap;
 pub use module::{DynamicImportFailure, FetchedModule, ModuleHandle, ModuleState};
 pub use control::{mono_us, ThreadStamp, ViewControl, Watchdog};
 #[cfg(feature = "boa")]
+pub use bytes::PixelSlot;
+#[cfg(feature = "boa")]
 mod executor;
 #[cfg(feature = "boa")]
 mod describe;
@@ -25,6 +27,13 @@ mod describe;
 mod rejections;
 #[cfg(feature = "boa")]
 mod diag;
+mod host_calls;
+pub use host_calls::{
+    host_call_exclude, host_call_rows, host_call_rows_since, host_call_totals, set_host_call_timing, HostCallRow,
+    HostCallTotals,
+};
+#[cfg(feature = "boa")]
+mod bytes;
 mod source_context;
 #[cfg(feature = "boa")]
 pub use diag::{standard_name, STANDARD_ERROR_NAMES};
@@ -173,6 +182,54 @@ impl Drop for DiagJob {
     fn drop(&mut self) {
         set_diag_job(self.prev);
     }
+}
+
+/// HIWAVE PATCH (vm-stats): the interpreter's counters as text (opcode counts, inline-cache misses
+/// by site, receiver kind and identifier-like property name), collected when `RUSTKIT_VM_STATS=1` is
+/// set in the environment; empty otherwise. Diagnostic only.
+#[cfg(feature = "boa")]
+pub fn vm_stats_report() -> String {
+    boa_engine::vm_stats::report()
+}
+
+/// Without the Boa engine there is nothing to report.
+#[cfg(not(feature = "boa"))]
+pub fn vm_stats_report() -> String {
+    String::new()
+}
+
+/// HIWAVE PATCH (vm-stats): how many times the opcode named `name` ran on this thread, with
+/// `RUSTKIT_VM_STATS=1`; `None` when the counters are off or `name` is no opcode. Diagnostic only.
+#[cfg(feature = "boa")]
+pub fn vm_stats_opcode_count(name: &str) -> Option<u64> {
+    boa_engine::vm_stats::opcode_count(name)
+}
+
+/// Without the Boa engine there are no counters.
+#[cfg(not(feature = "boa"))]
+pub fn vm_stats_opcode_count(_name: &str) -> Option<u64> {
+    None
+}
+
+/// The interpreter's code-block flags that are not one bit or share a bit with another, and how
+/// many flags there are (two patches once took the same bits). Tests.
+#[cfg(feature = "boa")]
+#[doc(hidden)]
+pub fn code_block_flag_clashes() -> (Vec<&'static str>, usize) {
+    boa_engine::vm::code_block_flag_clashes()
+}
+
+/// How many times a regular expression pattern has been compiled to a matcher in this process (a
+/// regex literal evaluated again, `new RegExp(...)`, `RegExp.prototype.compile`). Diagnostic and tests.
+#[cfg(feature = "boa")]
+pub fn regexp_compile_count() -> u64 {
+    boa_engine::vm_stats::regexp_compiles()
+}
+
+/// Without the Boa engine nothing is compiled here.
+#[cfg(not(feature = "boa"))]
+pub fn regexp_compile_count() -> u64 {
+    0
 }
 
 /// Install the function Boa calls when an interrupt path fires. A null hook
@@ -355,6 +412,11 @@ pub struct ErrorReport {
     /// A module that threw after a top-level `await` outlived the step that
     /// ran it: its path.
     pub module: Option<String>,
+    /// The page cancelled the event fired for it (`error`: `window.onerror`
+    /// returned true, or a listener called `preventDefault`;
+    /// `unhandledrejection` likewise). A console
+    /// shows no such error; a record of what a page threw still has it.
+    pub canceled: bool,
 }
 
 /// Timer callback.
@@ -370,6 +432,19 @@ pub type HostFunction = Box<dyn Fn(&[JsValue]) -> JsValue>;
 /// A [`HostFunction`] that is also told where in the page's script it was
 /// called from ([`JsRuntime::register_host_function_with_caller`]).
 pub type HostFunctionWithCaller = Box<dyn Fn(&[JsValue], Option<ScriptPosition>) -> JsValue>;
+
+thread_local! {
+    static NATIVE_STACK_BUDGET: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Tell runtimes made on this thread how much native stack a script turn may use before a
+/// built-in that recurses in Rust (JSON.stringify of nested arrays, `flat`, a Proxy chain, the
+/// parser) throws a `RangeError` instead of overflowing the thread. Call it first thing on a
+/// thread whose stack size you chose; about half of it leaves room for the host's own frames. A
+/// thread that never calls it gets Boa's 1 MiB, which fits any 2 MiB thread.
+pub fn set_thread_native_stack_budget(bytes: Option<usize>) {
+    NATIVE_STACK_BUDGET.with(|budget| budget.set(bytes));
+}
 
 fn stack_addr() -> usize {
     let slot = 0u8;
@@ -406,8 +481,28 @@ struct PendingTimer {
     repeat: bool,
 }
 
+/// Most rounds of rejection events one turn's end announces: the first is
+/// everything the turn left pending, each later one what the listeners of
+/// the one before rejected ([`JsRuntime::set_rejection_events`]).
+#[cfg(feature = "boa")]
+const MAX_REJECTION_ROUNDS: usize = 16;
+
 /// Default maximum number of loop iterations/pumps per `run_jobs` call.
 pub const DEFAULT_MAX_JOB_ITERATIONS: u64 = 10_000;
+
+/// A function the embedder keeps in a runtime ([`JsRuntime::keep_function`]) and calls by handle. The
+/// handle names the runtime that issued it; another runtime refuses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeptFunction {
+    runtime: u64,
+    index: usize,
+}
+
+/// A process-wide id for each runtime, which its kept-function handles carry.
+fn next_runtime_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 /// JavaScript runtime configuration.
 #[derive(Clone, Debug)]
@@ -464,8 +559,28 @@ impl ExecutionDeadline {
     }
 }
 
+/// One global environment of a [`JsRuntime`]: its own global object, its own
+/// `Object`, `Array` and every other intrinsic. A runtime starts with one
+/// ([`RealmId::MAIN`]); a same-origin nested document gets another
+/// ([`JsRuntime::create_realm`]). Realms of one runtime share its heap, its
+/// job queue and its limits, so their objects can hold each other and call
+/// each other directly (HTML: one agent, several realms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RealmId(usize);
+
+impl RealmId {
+    /// The realm the runtime was created with.
+    pub const MAIN: RealmId = RealmId(0);
+}
+
 /// JavaScript runtime that wraps the underlying engine.
 pub struct JsRuntime {
+    /// The realms made so far, by id; `None` once dropped. `[0]` is the
+    /// main realm.
+    #[cfg(feature = "boa")]
+    realms: Vec<Option<boa_engine::realm::Realm>>,
+    /// The realm evaluation and host-function registration act in.
+    current_realm: RealmId,
     #[cfg(feature = "boa")]
     context: boa_engine::Context,
     /// The module host (see `module`): imports the graph asks for are
@@ -475,6 +590,9 @@ pub struct JsRuntime {
     #[cfg(feature = "boa")]
     executor: std::rc::Rc<executor::HostJobExecutor>,
     config: JsRuntimeConfig,
+    /// The microtask job cap while a watchdog turn is open (H19c): a drain that the budget
+    /// interrupt bounds may run this many jobs. 0 = no raise: the config's cap holds always.
+    armed_job_cap: u64,
     console_handler: Option<Arc<ConsoleHandler>>,
     console_shape_handler: Option<Arc<ConsoleHandler>>,
     /// [`set_console_live`](Self::set_console_live)'s predicate, kept so the
@@ -485,6 +603,10 @@ pub struct JsRuntime {
     deadline: std::rc::Rc<ExecutionDeadline>,
     #[cfg(feature = "boa")]
     rejections: std::rc::Rc<rejections::RejectionHooks>,
+    /// Rejections are being announced ([`Self::notify_rejections`]): the
+    /// turn ends inside it do not start another round.
+    #[cfg(feature = "boa")]
+    announcing_rejections: bool,
     #[cfg(feature = "boa")]
     diag: std::rc::Rc<diag::Diagnostics>,
     /// The natives the embedder's own scripts are handed
@@ -492,9 +614,31 @@ pub struct JsRuntime {
     /// never sees this object.
     #[cfg(feature = "boa")]
     host: boa_engine::JsObject,
+    /// The host object of each realm after the first, by realm index: the
+    /// embedder's scripts keep their entry points on it, so each document
+    /// needs its own.
+    #[cfg(feature = "boa")]
+    realm_hosts: Vec<Option<boa_engine::JsObject>>,
+    /// Bytes left for the embedder's scripts to take by key (`__rk.takeBytes`):
+    /// a response body crosses into script as one buffer, not as text.
+    #[cfg(feature = "boa")]
+    byte_stash: bytes::Stash,
+    /// Canvas pixels on their way to or from script (see `bytes::PixelSlot`).
+    #[cfg(feature = "boa")]
+    pixel_slot: bytes::PixelSlot,
+    /// What stands behind the page's blob URLs (see `bytes::Blobs`).
+    #[cfg(feature = "boa")]
+    blobs: bytes::Blobs,
     /// Page script text, only while an embedder has asked to quote it in
     /// an error log. See [`JsRuntime::set_capture_script_sources`].
     sources: source_context::ScriptSources,
+    /// A test's view of every source handed to the engine (`tap_sources`).
+    source_tap: Option<std::rc::Rc<dyn Fn(&str)>>,
+    /// Functions the embedder kept ([`JsRuntime::keep_function`]), called by handle.
+    #[cfg(feature = "boa")]
+    kept: Vec<boa_engine::JsObject>,
+    /// This runtime's id, carried by the handles it issues.
+    kept_owner: u64,
 }
 
 /// M2: dropping a runtime lets its realm go. The realm's natives (console,
@@ -541,6 +685,14 @@ impl JsRuntime {
 
         #[cfg(feature = "boa")]
         context.strict(config.strict_mode);
+        #[cfg(feature = "boa")]
+        if let Some(bytes) = NATIVE_STACK_BUDGET.with(std::cell::Cell::get) {
+            context.runtime_limits_mut().set_native_stack_budget(bytes);
+        }
+
+        // STR-10: running out of frames is a RangeError the page can catch, as in Chrome.
+        #[cfg(feature = "boa")]
+        context.runtime_limits_mut().set_catchable_stack_overflow(true);
         // A stop runs the `finally` blocks it unwinds through, for the stop
         // grace: a scheduler that posts its next task from a `finally` (as
         // React's does) is otherwise left believing a task is still running,
@@ -550,9 +702,29 @@ impl JsRuntime {
         #[cfg(feature = "boa")]
         let diag = std::rc::Rc::new(diag::Diagnostics::default());
         #[cfg(feature = "boa")]
-        let host = host_object(&diag, &mut context);
+        let byte_stash = bytes::Stash::default();
+        #[cfg(feature = "boa")]
+        let blobs = bytes::Blobs::default();
+        #[cfg(feature = "boa")]
+        let pixel_slot = bytes::PixelSlot::default();
+        #[cfg(feature = "boa")]
+        let host = host_object(&diag, &byte_stash, &blobs, &pixel_slot, &mut context);
+        // One object every realm's host object holds as `shared`:
+        // what the documents of a frame tree must agree on (which events
+        // are the engine's) is kept there, not once per realm. Like the
+        // host object it inherits from nothing: it is made in the first
+        // realm and read in every one.
+        #[cfg(feature = "boa")]
+        {
+            let shared = boa_engine::object::ObjectInitializer::new(&mut context).build();
+            shared.set_prototype(None);
+            let _ = host.set(boa_engine::js_string!("shared"), shared, false, &mut context);
+        }
 
         let mut runtime = Self {
+            #[cfg(feature = "boa")]
+            realms: vec![Some(context.realm().clone())],
+            current_realm: RealmId::MAIN,
             #[cfg(feature = "boa")]
             context,
             #[cfg(feature = "boa")]
@@ -560,6 +732,7 @@ impl JsRuntime {
             #[cfg(feature = "boa")]
             executor,
             config,
+            armed_job_cap: 0,
             console_handler: None,
             console_shape_handler: None,
             console_live: None,
@@ -569,10 +742,24 @@ impl JsRuntime {
             #[cfg(feature = "boa")]
             rejections,
             #[cfg(feature = "boa")]
+            announcing_rejections: false,
+            #[cfg(feature = "boa")]
             diag,
             #[cfg(feature = "boa")]
             host,
+            #[cfg(feature = "boa")]
+            realm_hosts: vec![None],
+            #[cfg(feature = "boa")]
+            byte_stash,
+            #[cfg(feature = "boa")]
+            pixel_slot,
+            #[cfg(feature = "boa")]
+            blobs,
             sources: source_context::ScriptSources::default(),
+            source_tap: None,
+            #[cfg(feature = "boa")]
+            kept: Vec::new(),
+            kept_owner: next_runtime_id(),
         };
 
         // Set up built-in APIs
@@ -584,6 +771,123 @@ impl JsRuntime {
 
         debug!("JavaScript runtime initialized");
         Ok(runtime)
+    }
+
+    /// Make a new realm in this runtime: a fresh global object with the
+    /// language's own globals and this runtime's `console`. Everything the
+    /// embedder installs per page (host functions, its scripts) it installs
+    /// again while the realm is entered.
+    pub fn create_realm(&mut self) -> Result<RealmId, JsError> {
+        #[cfg(feature = "boa")]
+        {
+            let realm = self
+                .context
+                .create_realm()
+                .map_err(|e| JsError::ExecutionError(e.to_string()))?;
+            self.realms.push(Some(realm));
+            let id = RealmId(self.realms.len() - 1);
+            let outer = self.enter_realm(id);
+            let console = self.setup_console();
+            // The new realm's own host object, made in it.
+            let host = host_object(&self.diag, &self.byte_stash, &self.blobs, &self.pixel_slot, &mut self.context);
+            if let Ok(shared) = self.host.get(boa_engine::js_string!("shared"), &mut self.context) {
+                let _ = host.set(boa_engine::js_string!("shared"), shared, false, &mut self.context);
+            }
+            self.realm_hosts.push(Some(host));
+            self.enter_realm(outer);
+            console?;
+            Ok(id)
+        }
+        #[cfg(not(feature = "boa"))]
+        Err(JsError::NotInitialized)
+    }
+
+    /// Make `realm` the one evaluation and host-function registration act
+    /// in, and return the one that was. A dropped or unknown realm leaves
+    /// things as they are. Only between evaluations: a script that is
+    /// running keeps the realm it was started in.
+    pub fn enter_realm(&mut self, realm: RealmId) -> RealmId {
+        let outer = self.current_realm;
+        #[cfg(feature = "boa")]
+        match self.realms.get(realm.0) {
+            Some(Some(target)) => {
+                self.context.enter_realm(target.clone());
+                self.current_realm = realm;
+                self.diag.realm.set(realm.0);
+            }
+            // A dropped realm is entered as gone: evaluation errors until
+            // the outer realm is entered again (see `realm_gone`).
+            Some(None) => self.current_realm = realm,
+            None => {}
+        }
+        outer
+    }
+
+    /// The realm entered is one that was dropped: nothing may run in it,
+    /// and nothing of another realm may stand in for it.
+    fn realm_gone(&self) -> Result<(), JsError> {
+        #[cfg(feature = "boa")]
+        if matches!(self.realms.get(self.current_realm.0), Some(None)) {
+            return Err(JsError::ExecutionError("the realm was dropped".into()));
+        }
+        Ok(())
+    }
+
+    /// The realm evaluation acts in now.
+    pub fn current_realm(&self) -> RealmId {
+        self.current_realm
+    }
+
+    /// Define `name` on `holder`'s global object as `target`'s global
+    /// object: how one document reaches another's `window` (a frame's
+    /// `contentWindow`, a child's `parent`).
+    pub fn expose_realm_global(&mut self, holder: RealmId, name: &str, target: RealmId) -> Result<(), JsError> {
+        #[cfg(feature = "boa")]
+        {
+            let known = |id: RealmId, realms: &[Option<boa_engine::realm::Realm>]| matches!(realms.get(id.0), Some(Some(_)));
+            if !known(holder, &self.realms) || !known(target, &self.realms) {
+                return Err(JsError::ExecutionError("no such realm".into()));
+            }
+            let outer = self.enter_realm(target);
+            let global = self.context.global_object();
+            self.enter_realm(holder);
+            let set = self.context.global_object().set(
+                boa_engine::JsString::from(name),
+                boa_engine::JsValue::from(global),
+                true,
+                &mut self.context,
+            );
+            self.enter_realm(outer);
+            set.map(|_| ()).map_err(|e| JsError::ExecutionError(e.to_string()))
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = (holder, name, target);
+            Err(JsError::NotInitialized)
+        }
+    }
+
+    /// Forget a realm this runtime made (never the main one, never the
+    /// current one). Objects of it that other realms still hold stay alive
+    /// and usable, as any object does; nothing can be evaluated in it again.
+    pub fn drop_realm(&mut self, realm: RealmId) -> bool {
+        if realm == RealmId::MAIN || realm == self.current_realm {
+            return false;
+        }
+        #[cfg(feature = "boa")]
+        if let Some(slot) = self.realms.get_mut(realm.0) {
+            self.blobs.borrow_mut().drop_realm(realm.0);
+            if let Some(host) = self.realm_hosts.get_mut(realm.0) {
+                *host = None;
+            }
+            let dropped = slot.take();
+            self.diag.drop_realm(realm.0);
+            if let Some(realm) = &dropped {
+                self.rejections.drop_realm(realm);
+            }
+            return dropped.is_some();
+        }
+        false
     }
 
     /// Get the runtime configuration.
@@ -612,6 +916,7 @@ impl JsRuntime {
             let _job = DiagJob::enter("microtask");
             let result = self.context.run_jobs();
             self.consume_interrupt();
+            self.notify_rejections();
             result.map_err(|e| JsError::ExecutionError(e.to_string()))
         }
         #[cfg(not(feature = "boa"))]
@@ -712,6 +1017,253 @@ impl JsRuntime {
         let _ = (on, keep_text);
     }
 
+    /// Announce promise rejections to the embedder's scripts, for the
+    /// page's `unhandledrejection` and `rejectionhandled` events. Off by
+    /// default. On: when a turn of page script ends (a script, a kept call,
+    /// a host turn, [`run_jobs`](Self::run_jobs)) and its microtasks have
+    /// run, each promise rejected with no handler is handed to the host
+    /// object's `fireRejection` of the realm whose code rejected it, as
+    /// `("unhandledrejection", promise, reason)`, oldest first, with a
+    /// microtask drain after each; `false` back means a listener canceled
+    /// the event, and that rejection is then left out of the error reports.
+    /// A promise announced this way that gets a handler later is handed
+    /// over once more, as `("rejectionhandled", promise, reason)`, at the
+    /// end of the turn the handler was added in. A realm with no
+    /// `fireRejection` has no events: its rejections are reported as before.
+    /// When a turn's end leaves rejections unannounced, the host object's
+    /// `wakeSoon` is called (no arguments) to ask for another turn.
+    pub fn set_rejection_events(&mut self, on: bool) {
+        #[cfg(feature = "boa")]
+        self.rejections.events.set(on);
+        #[cfg(not(feature = "boa"))]
+        let _ = on;
+    }
+
+    /// Announce uncaught exceptions to the embedder's scripts, for the
+    /// page's `error` event (HTML "report an exception"). Off by default.
+    /// On: an exception a page script ends with
+    /// ([`evaluate_script_named`](Self::evaluate_script_named), a module),
+    /// or one the embedder's scripts hand to the host object's
+    /// `reportError` (a listener's, a timer's), is first handed to the host
+    /// object's `fireError` of the realm it happened in, as
+    /// `(value, text, path, line, column)`. `false` back means a listener
+    /// canceled the event, and that exception is then left out of the error
+    /// reports. An exception thrown during the hand-over is reported and
+    /// not handed over; nothing is handed over after the watchdog stopped
+    /// the turn. A realm with no `fireError` has no event.
+    pub fn set_error_events(&mut self, on: bool) {
+        #[cfg(feature = "boa")]
+        self.diag.error_events.set(on);
+        #[cfg(not(feature = "boa"))]
+        let _ = on;
+    }
+
+    /// Say what the page script evaluated as `name`
+    /// ([`evaluate_script_named`](Self::evaluate_script_named), a module's
+    /// URL) is, for the realm entered: the script at `url`, and whether its
+    /// errors are reported to the page without detail (`muted`, HTML's
+    /// "muted errors": a script of another origin). An announced exception
+    /// ([`set_error_events`](Self::set_error_events)) names `url` as its
+    /// file; one thrown by a `muted` script, or by a script never
+    /// registered, is announced as "Script error." with no file, position
+    /// or value. The script's code carries that from when it is compiled,
+    /// and code it makes at run time carries it too: what an event says is
+    /// decided by the code that was running where the error was thrown.
+    /// At most 4096 scripts are kept; past that a script is an
+    /// unregistered one.
+    pub fn register_script(&mut self, name: &str, url: &str, muted: bool) {
+        #[cfg(feature = "boa")]
+        self.diag.register_script(self.current_realm.0, name, url, muted);
+        #[cfg(not(feature = "boa"))]
+        let _ = (name, url, muted);
+    }
+
+    /// The URL of the document in the realm entered: the file an announced
+    /// exception names when it was thrown by code with no script of its
+    /// own (`eval` code, a handler attribute).
+    pub fn set_document_url(&mut self, url: &str) {
+        #[cfg(feature = "boa")]
+        self.diag.set_document_url(self.current_realm.0, url);
+        #[cfg(not(feature = "boa"))]
+        let _ = url;
+    }
+
+    /// A page script or module ended with `error`: announce it
+    /// ([`set_error_events`](Self::set_error_events)), then report it
+    /// unless a listener canceled the event.
+    #[cfg(feature = "boa")]
+    ///
+    /// What the page is told is decided by the code that was running where
+    /// the error was thrown (the flag its code block was compiled with).
+    /// An error the VM never raised (a script that does not parse) is its
+    /// script's: `evaluated`, as registered. With neither, no detail.
+    pub(crate) fn uncaught_error(&mut self, error: &boa_engine::JsError, announce: bool, evaluated: Option<&str>) {
+        let unraised = evaluated.map(|name| self.diag.compiles_withheld(name, self.current_realm.0));
+        self.uncaught_error_or(error, announce, unraised);
+    }
+
+    /// [`uncaught_error`](Self::uncaught_error), with the answer for an
+    /// error the VM never raised given outright.
+    ///
+    /// With no answer at all (no page script threw it, and it is no page
+    /// script's own failure) the error is the host's: reported, with no
+    /// event at the page.
+    pub(crate) fn uncaught_error_or(&mut self, error: &boa_engine::JsError, announce: bool, unraised: Option<bool>) {
+        let events = announce && self.diag.error_events.get() && !self.deadline.hit.get();
+        if !events && !self.diag.on.get() {
+            return;
+        }
+        let report = self.diag.describe_error(error, &mut self.context);
+        if events {
+            let value = match error.as_opaque() {
+                Some(value) => Some(value.clone()),
+                None => error.clone().into_opaque(&mut self.context).ok(),
+            };
+            if let Some(value) = value {
+                let host = self.entered_host();
+                self.context.reset_recursion_max();
+                self.diag.realm.set(self.current_realm.0);
+                let canceled = match error.detail_withheld().or(unraised) {
+                    Some(withheld) => self.diag.announce(&host, &value, &report, withheld, &mut self.context),
+                    None => false,
+                };
+                self.consume_interrupt();
+                let _ = self.context.run_jobs();
+                self.consume_interrupt();
+                // What the listeners rejected is announced in this turn too.
+                self.notify_rejections();
+                if canceled {
+                    // Still described for the embedder, with the mark.
+                    if self.diag.on.get() {
+                        self.diag.push(ErrorReport { canceled: true, ..report });
+                    }
+                    return;
+                }
+            }
+        }
+        if self.diag.on.get() {
+            self.diag.push(report);
+        }
+    }
+
+    /// HTML "notify about rejected promises", at the end of a turn's
+    /// microtasks. Everything pending at that point is announced, oldest
+    /// first, however many: that is one round. What the listeners rejected
+    /// meanwhile is the next round, and so on; a browser runs each round as
+    /// a task of its own, here they follow in the same turn, up to
+    /// [`MAX_REJECTION_ROUNDS`] of them. A `rejectionhandled` that is owed
+    /// goes ahead of the next event.
+    ///
+    /// When the rounds run out (a listener that rejects again every time),
+    /// or the watchdog stops the turn in a listener, the rest stay pending
+    /// and the embedder's scripts are asked for another turn at once (the
+    /// host object's `wakeSoon`), so they are announced promptly and none is
+    /// dropped. Nothing is announced after a turn the watchdog had already
+    /// stopped: those wait for the next turn's end.
+    #[cfg(feature = "boa")]
+    fn notify_rejections(&mut self) {
+        if !self.rejections.events.get() || self.announcing_rejections || !self.rejections.has_news() {
+            return;
+        }
+        if self.deadline.hit.get() || matches!(self.realms.get(self.current_realm.0), Some(None)) {
+            return;
+        }
+        self.announcing_rejections = true;
+        let mut left_in_round = self.rejections.pending_len();
+        let mut rounds = 1;
+        loop {
+            if self.deadline.hit.get() {
+                break;
+            }
+            if let Some((promise, realm)) = self.rejections.next_handled() {
+                if let Some(reason) = rejections::reason_of(&promise) {
+                    self.fire_rejection("rejectionhandled", &promise, &reason, &realm);
+                }
+                continue;
+            }
+            if left_in_round == 0 {
+                left_in_round = self.rejections.pending_len();
+                if left_in_round == 0 || rounds >= MAX_REJECTION_ROUNDS {
+                    break;
+                }
+                rounds += 1;
+            }
+            let Some((promise, realm)) = self.rejections.next_pending() else {
+                break;
+            };
+            left_in_round -= 1;
+            // Settled otherwise since (not a promise any more, in theory): nothing to say.
+            let Some(reason) = rejections::reason_of(&promise) else {
+                continue;
+            };
+            self.rejections.begin_dispatch(&promise);
+            let canceled = self.fire_rejection("unhandledrejection", &promise, &reason, &realm);
+            self.rejections.end_dispatch((promise, realm), reason, canceled);
+        }
+        if self.rejections.has_news() {
+            self.wake_soon();
+        }
+        self.announcing_rejections = false;
+    }
+
+    /// Ask the embedder's scripts for another turn at once: the entered
+    /// realm's `wakeSoon`, when it has one. Runs no page code.
+    #[cfg(feature = "boa")]
+    fn wake_soon(&mut self) {
+        use boa_engine::{js_string, JsValue as BoaValue};
+        let host = self.entered_host();
+        let wake = host.get(js_string!("wakeSoon"), &mut self.context).ok();
+        if let Some(wake) = wake.as_ref().and_then(|f| f.as_callable()) {
+            let _ = wake.call(&BoaValue::undefined(), &[], &mut self.context);
+        }
+    }
+
+    /// Hand one rejection to `realm`'s `fireRejection` and run the
+    /// microtasks its listeners queued. Whether a listener canceled the
+    /// event. A realm that is gone, or has no such function, has no event.
+    #[cfg(feature = "boa")]
+    fn fire_rejection(
+        &mut self,
+        kind: &str,
+        promise: &boa_engine::JsObject,
+        reason: &boa_engine::JsValue,
+        realm: &boa_engine::realm::Realm,
+    ) -> bool {
+        use boa_engine::{js_string, JsString, JsValue as BoaValue};
+        let Some(index) = self.realms.iter().position(|r| r.as_ref() == Some(realm)) else {
+            return false;
+        };
+        let outer = self.enter_realm(RealmId(index));
+        // A rejection made by a script whose errors are reported without
+        // detail fires no event (HTML HostPromiseRejectionTracker, the
+        // script's muted errors): the reason is not the page's to read.
+        // Decided by the code that rejected it (the promise keeps its
+        // flag). A rejection no page script made is the host's: not
+        // announced to the page, and so always reported.
+        let withheld = promise
+            .downcast_ref::<boa_engine::builtins::promise::Promise>()
+            .and_then(|promise| promise.rejection_detail_withheld())
+            .unwrap_or(true);
+        if withheld {
+            self.enter_realm(outer);
+            return false;
+        }
+        let host = self.entered_host();
+        let fire = host.get(js_string!("fireRejection"), &mut self.context).ok();
+        let mut canceled = false;
+        if let Some(fire) = fire.as_ref().and_then(|f| f.as_callable()) {
+            self.context.reset_recursion_max();
+            let args = [BoaValue::from(JsString::from(kind)), BoaValue::from(promise.clone()), reason.clone()];
+            let result = fire.call(&BoaValue::undefined(), &args, &mut self.context);
+            self.consume_interrupt();
+            let _ = self.context.run_jobs();
+            self.consume_interrupt();
+            canceled = matches!(result, Ok(value) if value.as_boolean() == Some(false));
+        }
+        self.enter_realm(outer);
+        canceled
+    }
+
     /// Keep the source of each named script and module so a later error can
     /// quote the text around its position. Off by default, and turning it
     /// off drops whatever was kept. The page cannot see this.
@@ -741,9 +1293,9 @@ impl JsRuntime {
                 reports.push(report);
             }
             let reasons = self.rejections.take();
-            for reason in reasons {
+            for (reason, canceled) in reasons {
                 let report = self.diag.describe(&reason, None, true, &mut self.context);
-                reports.push(report);
+                reports.push(ErrorReport { canceled, ..report });
             }
             reports
         }
@@ -790,10 +1342,105 @@ impl JsRuntime {
     /// object is reachable only from the closures such a script builds, so
     /// page script cannot report, forge or read through it.
     pub fn evaluate_with_host(&mut self, source: &str) -> Result<JsValue, JsError> {
+        self.call_with_host(source, &[], false)
+    }
+
+    /// Give the host object of the realm entered these names as own
+    /// properties (`undefined` until an embedder's script fills one in),
+    /// before any script runs in it: what the embedder probes
+    /// (`__rk.net ? ... : ...`) is then always an own property. A name the
+    /// host already has is left alone.
+    pub fn reserve_host_slots(&mut self, names: &[&str]) -> Result<(), JsError> {
+        self.realm_gone()?;
+        #[cfg(feature = "boa")]
+        {
+            let host = self.entered_host();
+            self.reserve_slots(&host, names)
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = names;
+            Err(JsError::NotInitialized)
+        }
+    }
+
+    /// [`reserve_host_slots`](Self::reserve_host_slots) for the object
+    /// every realm's host object holds as `shared`: each name is an own
+    /// property of it from now on. A name it already has (a later realm
+    /// reserving again) is left alone.
+    pub fn reserve_shared_slots(&mut self, names: &[&str]) -> Result<(), JsError> {
+        #[cfg(feature = "boa")]
+        {
+            let shared = self
+                .host
+                .get(boa_engine::js_string!("shared"), &mut self.context)
+                .map_err(|e| JsError::ExecutionError(e.to_string()))?;
+            let Some(shared) = shared.as_object() else {
+                return Err(JsError::ExecutionError("no shared state".into()));
+            };
+            self.reserve_slots(&shared.clone(), names)
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = names;
+            Err(JsError::NotInitialized)
+        }
+    }
+
+    /// The host object of the realm entered.
+    #[cfg(feature = "boa")]
+    fn entered_host(&self) -> boa_engine::JsObject {
+        self.realm_hosts.get(self.current_realm.0).cloned().flatten().unwrap_or_else(|| self.host.clone())
+    }
+
+    #[cfg(feature = "boa")]
+    fn reserve_slots(&mut self, object: &boa_engine::JsObject, names: &[&str]) -> Result<(), JsError> {
+        use boa_engine::{property::PropertyDescriptor, JsString};
+        for name in names {
+            let key = JsString::from(*name);
+            let owned = object
+                .has_own_property(key.clone(), &mut self.context)
+                .map_err(|e| JsError::ExecutionError(e.to_string()))?;
+            if owned {
+                continue;
+            }
+            let slot = PropertyDescriptor::builder()
+                .value(boa_engine::JsValue::undefined())
+                .writable(true)
+                .enumerable(true)
+                .configurable(true)
+                .build();
+            object
+                .define_property_or_throw(key, slot, &mut self.context)
+                .map_err(|e| JsError::ExecutionError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Run a function body that holds the host object (`__rk`, as
+    /// [`evaluate_with_host`](Self::evaluate_with_host)) as a turn of page
+    /// script: for the engine's own dispatches (a key, typed text), in
+    /// which the page's listeners run. What `evaluate` does around page
+    /// script is done here too: the deadline stop is consumed, a job-queue
+    /// limit or timeout fails the turn, and an error is reported.
+    ///
+    /// `args` are strings the body reads as `__a[0]`, `__a[1]`, ...: text
+    /// that must not be written into the source (what the user typed),
+    /// which is compiled, may be quoted in an error and may be captured
+    /// for a log.
+    pub fn evaluate_host_turn(&mut self, source: &str, args: &[&str]) -> Result<JsValue, JsError> {
+        self.call_with_host(source, args, true)
+    }
+
+    fn call_with_host(&mut self, source: &str, args: &[&str], turn: bool) -> Result<JsValue, JsError> {
+        self.realm_gone()?;
+        if let Some(tap) = self.source_tap.as_ref() {
+            tap(source);
+        }
         #[cfg(feature = "boa")]
         {
             use boa_engine::Source;
-            let wrapped = format!("(function (__rk) {{\n{source}\n}})");
+            let wrapped = format!("(function (__rk, __a, __realm) {{\n{source}\n}})");
             let function = self
                 .context
                 .eval(Source::from_bytes(wrapped.as_bytes()).with_path(std::path::Path::new(diag::EMBEDDER_PATH)))
@@ -802,18 +1449,56 @@ impl JsRuntime {
                 .as_object()
                 .filter(|f| f.is_callable())
                 .ok_or_else(|| JsError::ExecutionError("host script is not a function".into()))?;
-            let host = boa_engine::JsValue::from(self.host.clone());
-            let result = function.call(&boa_engine::JsValue::undefined(), &[host], &mut self.context);
-            let _ = self.context.run_jobs();
+            let host = self.entered_host();
+            let host = boa_engine::JsValue::from(host);
+            let strings = boa_engine::object::builtins::JsArray::from_iter(
+                args.iter().map(|a| boa_engine::JsValue::from(boa_engine::JsString::from(*a))),
+                &mut self.context,
+            );
+            if turn {
+                self.context.reset_recursion_max();
+            }
+            // `__realm`: the realm the script is installed in, for the
+            // natives that act for one document (the blob store).
+            let realm = boa_engine::JsValue::from(self.current_realm.0 as f64);
+            let result = function.call(&boa_engine::JsValue::undefined(), &[host, strings.into(), realm], &mut self.context);
+            if turn {
+                self.consume_interrupt();
+            }
+            let job_result = self.context.run_jobs();
+            if turn {
+                self.consume_interrupt();
+                self.notify_rejections();
+            }
             self.flush_console_logs();
             match result {
-                Ok(value) => Ok(self.convert_boa_value(&value)),
-                Err(err) => Err(JsError::ExecutionError(describe::error_text(&err, &mut self.context))),
+                Ok(value) => {
+                    if let (true, Err(job_err)) = (turn, job_result) {
+                        // As `evaluate`: only a job-queue limit or timeout
+                        // fails a turn whose own value completed.
+                        let msg = job_err.to_string();
+                        if msg.contains("Job queue") || msg.contains("limit") || msg.contains("timeout") {
+                            if self.diag.on.get() {
+                                let report = self.diag.describe_error(&job_err, &mut self.context);
+                                self.diag.push(report);
+                            }
+                            return Err(JsError::ExecutionError(msg));
+                        }
+                    }
+                    Ok(self.convert_boa_value(&value))
+                }
+                Err(err) => {
+                    if turn && self.diag.on.get() {
+                        let report = self.diag.describe_error(&err, &mut self.context);
+                        self.diag.push(report);
+                    }
+                    Err(JsError::ExecutionError(describe::error_text(&err, &mut self.context)))
+                }
             }
         }
         #[cfg(not(feature = "boa"))]
         {
-            let _ = source;
+            let _ = (source, args, turn);
             Err(JsError::NotInitialized)
         }
     }
@@ -886,7 +1571,17 @@ impl JsRuntime {
     /// page's own scripts go through
     /// [`evaluate_script_named`](Self::evaluate_script_named)).
     pub fn evaluate_script(&mut self, source: &str) -> Result<JsValue, JsError> {
-        self.evaluate(source, None)
+        self.evaluate(source, None, false)
+    }
+
+    /// Evaluate JavaScript code as a script of the page's own with no name
+    /// (a test's script that stands for a page's): unnamed, as
+    /// [`evaluate_script`](Self::evaluate_script), so its frames are passed
+    /// over in reports and its uncaught exception is not announced; but it
+    /// is the document's code, not the embedder's: what it rejects is
+    /// announced to the page, and an error raised for its calls is its own.
+    pub fn evaluate_document_script(&mut self, source: &str) -> Result<JsValue, JsError> {
+        self.evaluate(source, None, true)
     }
 
     /// Evaluate JavaScript code as the script `path`: error positions,
@@ -894,11 +1589,24 @@ impl JsRuntime {
     /// as a URL (`inline#3`) leaves dynamic `import()` resolving against the
     /// document, as an unnamed script does.
     pub fn evaluate_script_named(&mut self, source: &str, path: &str) -> Result<JsValue, JsError> {
-        self.evaluate(source, Some(path))
+        self.evaluate(source, Some(path), false)
     }
 
-    fn evaluate(&mut self, source: &str, path: Option<&str>) -> Result<JsValue, JsError> {
+    /// Hand every source this runtime evaluates from now on to `tap`, the
+    /// embedder's own scripts included (`None` stops). For tests that pin
+    /// what may never be written into script source, such as text the user
+    /// typed; nothing else should hold on to what it is shown.
+    #[doc(hidden)]
+    pub fn tap_sources(&mut self, tap: Option<std::rc::Rc<dyn Fn(&str)>>) {
+        self.source_tap = tap;
+    }
+
+    fn evaluate(&mut self, source: &str, path: Option<&str>, documents: bool) -> Result<JsValue, JsError> {
+        self.realm_gone()?;
         trace!(len = source.len(), "Evaluating script");
+        if let Some(tap) = self.source_tap.as_ref() {
+            tap(source);
+        }
 
         #[cfg(feature = "boa")]
         {
@@ -908,58 +1616,136 @@ impl JsRuntime {
             // below. The live counters are not touched: a stop already
             // unwinds them.
             self.context.reset_recursion_max();
-            let result = match path {
-                Some(path) => {
-                    self.diag.know_path(path);
-                    self.sources.remember(path, source);
-                    self.context
-                        .eval(Source::from_bytes(source).with_path(std::path::Path::new(path)))
-                }
-                None => self
-                    .context
-                    .eval(Source::from_bytes(source).with_path(std::path::Path::new(diag::EMBEDDER_PATH))),
+            // The script's code is compiled carrying what was registered
+            // for it (`register_script`); the embedder's own carries none.
+            // Only while it is compiled: what runs later compiles its own.
+            use boa_engine::vm::{ErrorDetail, ErrorDetailScope};
+            let detail = match path {
+                Some(path) if self.diag.compiles_withheld(path, self.current_realm.0) => ErrorDetail::Withheld,
+                Some(_) => ErrorDetail::Full,
+                None if documents => ErrorDetail::Full,
+                None => ErrorDetail::Embedder,
             };
-            self.consume_interrupt();
-            // Promise reactions (`.then`, `await`) are jobs Boa queues but
-            // does not run on its own; a page's async code never resumes
-            // without this.
-            let job_result = self.context.run_jobs();
-            self.consume_interrupt();
-
-            match result {
-                Ok(value) => {
-                    self.flush_console_logs();
-                    if let Err(job_err) = job_result {
-                        let msg = job_err.to_string();
-                        // Only promote job queue limit or timeout breaches (runaway RangeError policy)
-                        // to script failure; ordinary microtask rejections are handled by Promise rejection events
-                        // and do not fail the synchronous script value that already completed successfully.
-                        if msg.contains("Job queue") || msg.contains("limit") || msg.contains("timeout") {
-                            if self.diag.on.get() {
-                                let report = self.diag.describe_error(&job_err, &mut self.context);
-                                self.diag.push(report);
-                            }
-                            return Err(JsError::ExecutionError(msg));
-                        }
-                    }
-                    let js_value = self.convert_boa_value(&value);
-                    Ok(js_value)
-                }
-                Err(err) => {
-                    self.flush_console_logs();
-                    if self.diag.on.get() {
-                        let report = self.diag.describe_error(&err, &mut self.context);
-                        self.diag.push(report);
-                    }
-                    let msg = describe::error_text(&err, &mut self.context);
-                    Err(JsError::ExecutionError(msg))
-                }
+            if let Some(path) = path {
+                self.diag.know_path(path);
+                self.sources.remember(path, source);
             }
+            let source_path = std::path::Path::new(path.unwrap_or(diag::EMBEDDER_PATH));
+            let compiled = {
+                let _detail = ErrorDetailScope::enter(detail);
+                boa_engine::Script::parse(Source::from_bytes(source).with_path(source_path), None, &mut self.context)
+                    .and_then(|script| script.codeblock(&mut self.context).map(|_| script))
+            };
+            let result = compiled.and_then(|script| script.evaluate(&mut self.context));
+            self.settle_evaluation(result, path)
         }
 
         #[cfg(not(feature = "boa"))]
         {
             let _ = path;
+            Err(JsError::NotInitialized)
+        }
+    }
+
+    /// What follows a script or a kept call: the interrupt state, the microtask drain, console output and
+    /// the error report, then the value.
+    #[cfg(feature = "boa")]
+    /// `page`: the code was the page script of this name, whose uncaught exception is
+    /// announced to the page ([`set_error_events`](Self::set_error_events)).
+    fn settle_evaluation(&mut self, result: boa_engine::JsResult<boa_engine::JsValue>, page: Option<&str>) -> Result<JsValue, JsError> {
+        self.consume_interrupt();
+        // Promise reactions (`.then`, `await`) are jobs Boa queues but
+        // does not run on its own; a page's async code never resumes
+        // without this.
+        let job_result = self.context.run_jobs();
+        self.consume_interrupt();
+        self.notify_rejections();
+
+        match result {
+            Ok(value) => {
+                self.flush_console_logs();
+                if let Err(job_err) = job_result {
+                    let msg = job_err.to_string();
+                    // Only promote job queue limit or timeout breaches (runaway RangeError policy)
+                    // to script failure; ordinary microtask rejections are handled by Promise rejection events
+                    // and do not fail the synchronous script value that already completed successfully.
+                    if msg.contains("Job queue") || msg.contains("limit") || msg.contains("timeout") {
+                        if self.diag.on.get() {
+                            let report = self.diag.describe_error(&job_err, &mut self.context);
+                            self.diag.push(report);
+                        }
+                        return Err(JsError::ExecutionError(msg));
+                    }
+                }
+                let js_value = self.convert_boa_value(&value);
+                Ok(js_value)
+            }
+            Err(err) => {
+                self.flush_console_logs();
+                self.uncaught_error(&err, page.is_some(), page);
+                let msg = describe::error_text(&err, &mut self.context);
+                Err(JsError::ExecutionError(msg))
+            }
+        }
+    }
+
+    /// Evaluate `source`, which must give a function, and keep that function: the embedder calls it later
+    /// by handle ([`Self::call_kept`]) instead of looking it up by name, so script that replaces or deletes
+    /// the global it came from does not change what the embedder calls.
+    pub fn keep_function(&mut self, source: &str) -> Result<KeptFunction, JsError> {
+        #[cfg(feature = "boa")]
+        {
+            use boa_engine::Source;
+            let value = match self
+                .context
+                .eval(Source::from_bytes(source).with_path(std::path::Path::new(diag::EMBEDDER_PATH)))
+            {
+                Ok(value) => value,
+                Err(e) => return Err(JsError::ExecutionError(describe::error_text(&e, &mut self.context))),
+            };
+            let Some(function) = value.as_callable() else {
+                return Err(JsError::ExecutionError(format!("{source} is not a function")));
+            };
+            self.kept.push(function.clone());
+            Ok(KeptFunction { runtime: self.kept_owner, index: self.kept.len() - 1 })
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = source;
+            Err(JsError::NotInitialized)
+        }
+    }
+
+    /// Call a function kept with [`Self::keep_function`], with string, number, boolean or null arguments
+    /// (anything else is passed as undefined). It runs as a script does: the microtask drain and the
+    /// interrupt state after it, and an exception is an `Err`.
+    pub fn call_kept(&mut self, function: KeptFunction, args: &[JsValue]) -> Result<JsValue, JsError> {
+        #[cfg(feature = "boa")]
+        {
+            use boa_engine::{JsString, JsValue as BoaValue};
+            if function.runtime != self.kept_owner {
+                return Err(JsError::ExecutionError("a kept function from another runtime".into()));
+            }
+            let Some(callee) = self.kept.get(function.index).cloned() else {
+                return Err(JsError::ExecutionError("no such kept function".into()));
+            };
+            let args: Vec<BoaValue> = args
+                .iter()
+                .map(|a| match a {
+                    JsValue::String(s) => BoaValue::from(JsString::from(s.as_str())),
+                    JsValue::Number(n) => BoaValue::from(*n),
+                    JsValue::Boolean(b) => BoaValue::from(*b),
+                    JsValue::Null => BoaValue::null(),
+                    _ => BoaValue::undefined(),
+                })
+                .collect();
+            self.context.reset_recursion_max();
+            let result = callee.call(&BoaValue::undefined(), &args, &mut self.context);
+            self.settle_evaluation(result, None)
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = (function, args);
             Err(JsError::NotInitialized)
         }
     }
@@ -1028,6 +1814,9 @@ impl JsRuntime {
 
     /// Close what [`JsRuntime::begin_turn`] opened.
     pub fn end_turn(&mut self, stamp: &control::ThreadStamp) {
+        // HIWAVE PATCH (regex-input-copy): the engine keeps a copy of the last long Latin-1 regexp
+        // input, with the string, between matches; it must not pin the page's string past the turn.
+        boa_engine::builtins::regexp::release_kept_input();
         if self.deadline.control.borrow().is_none() {
             return;
         }
@@ -1046,9 +1835,34 @@ impl JsRuntime {
         self.arm(turn != 0);
     }
 
+    /// The job cap a microtask drain may run to while a watchdog turn is open (H19c): the
+    /// interrupt, which Boa reads at every call, bounds the time, so the cap can be higher than
+    /// the config's. Outside an open turn (no watchdog, e.g. a chrome IPC evaluation) the
+    /// config's cap holds. 0 turns the raise off.
+    pub fn set_armed_max_job_iterations(&mut self, limit: u64) {
+        self.armed_job_cap = limit;
+        let armed = self.deadline.armed.get();
+        self.apply_job_cap(armed);
+    }
+
+    fn apply_job_cap(&mut self, armed: bool) {
+        #[cfg(feature = "boa")]
+        {
+            let cap = if armed {
+                self.config.max_job_iterations.max(self.armed_job_cap)
+            } else {
+                self.config.max_job_iterations
+            };
+            self.executor.set_max_job_iterations(cap);
+        }
+        #[cfg(not(feature = "boa"))]
+        let _ = armed;
+    }
+
     /// Whether Boa stops the running turn by the word (`ALL` it always does).
     fn arm(&mut self, armed: bool) {
         self.deadline.armed.set(armed);
+        self.apply_job_cap(armed);
         #[cfg(feature = "boa")]
         self.context
             .set_interrupt_turn(if armed { self.deadline.turn.get() } else { 0 });
@@ -1098,6 +1912,42 @@ impl JsRuntime {
         }
     }
 
+    /// [`evaluate_bookkeeping`](Self::evaluate_bookkeeping) for what the
+    /// embedder's scripts keep on the host object: `body` is a function
+    /// body whose `__rk` is the host object (`return __rk.now();`). The
+    /// same rules: the interrupt word does not stop it, no promise jobs
+    /// run, and it must call none of the page's functions.
+    pub fn evaluate_host_bookkeeping(&mut self, body: &str) -> Result<JsValue, JsError> {
+        self.realm_gone()?;
+        #[cfg(feature = "boa")]
+        {
+            let armed = self.deadline.armed.get();
+            self.arm(false);
+            let wrapped = format!("(function (__rk) {{\n{body}\n}})");
+            // The host object of the realm entered: each document of a
+            // frame tree keeps its own entry points.
+            let host = self.entered_host();
+            let host = boa_engine::JsValue::from(host);
+            let result = self
+                .context
+                .eval(boa_engine::Source::from_bytes(wrapped.as_bytes()))
+                .and_then(|function| match function.as_callable() {
+                    Some(function) => function.call(&boa_engine::JsValue::undefined(), &[host], &mut self.context),
+                    None => Ok(boa_engine::JsValue::undefined()),
+                });
+            self.arm(armed);
+            match result {
+                Ok(value) => Ok(self.convert_boa_value(&value)),
+                Err(err) => Err(JsError::ExecutionError(err.to_string())),
+            }
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = body;
+            Err(JsError::NotInitialized)
+        }
+    }
+
     /// Evaluate the embedder's own bookkeeping script (reading a queue or a
     /// table the page's script filled), which the interrupt word never
     /// stops: a stop landing in it would lose what it reads, such as the
@@ -1106,6 +1956,7 @@ impl JsRuntime {
     /// the page's, and run at the next evaluation); [`ALL`](control::ALL)
     /// still stops it.
     pub fn evaluate_bookkeeping(&mut self, source: &str) -> Result<JsValue, JsError> {
+        self.realm_gone()?;
         #[cfg(feature = "boa")]
         {
             let armed = self.deadline.armed.get();
@@ -1209,6 +2060,101 @@ impl JsRuntime {
             .expect("reentry probe");
     }
 
+    /// Leave `bytes` for the embedder's scripts to take once with
+    /// `__rk.takeBytes(key)`, as an `ArrayBuffer`. Whoever stashes also
+    /// tells script the key; bytes nobody takes are dropped with
+    /// [`drop_stashed_bytes`](Self::drop_stashed_bytes).
+    pub fn stash_bytes(&mut self, key: u64, bytes: Vec<u8>) {
+        #[cfg(feature = "boa")]
+        self.byte_stash.borrow_mut().insert(key, bytes);
+        #[cfg(not(feature = "boa"))]
+        let _ = (key, bytes);
+    }
+
+    /// [`stash_bytes`](Self::stash_bytes) for bytes held as standard
+    /// base64. `false` (and nothing stashed) when `base64` is not base64.
+    pub fn stash_base64(&mut self, key: u64, base64: &str) -> bool {
+        #[cfg(feature = "boa")]
+        {
+            match bytes::base64_decode(base64.as_bytes()) {
+                Some(bytes) => {
+                    self.stash_bytes(key, bytes);
+                    true
+                }
+                None => false,
+            }
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = (key, base64);
+            false
+        }
+    }
+
+    /// The bytes behind a blob URL (its fragment, if any, is not part of
+    /// the name), for the document in `realm`: `None` when nothing stands
+    /// behind it or it belongs to another origin. Reads the host's store:
+    /// no script runs.
+    pub fn blob_bytes(&self, realm: RealmId, url: &str) -> Option<Vec<u8>> {
+        #[cfg(feature = "boa")]
+        {
+            let name = url.split('#').next().unwrap_or(url);
+            self.blobs.borrow().get(realm.0, name).map(|record| record.bytes.clone())
+        }
+        #[cfg(not(feature = "boa"))]
+        {
+            let _ = (realm, url);
+            None
+        }
+    }
+
+    /// The origin of the document in `realm` (`null` for an opaque one),
+    /// as the embedder knows it. Blob URLs made there carry it, and only
+    /// documents of it reach them. A realm never told is opaque.
+    pub fn set_realm_origin(&mut self, realm: RealmId, origin: &str) {
+        #[cfg(feature = "boa")]
+        self.blobs.borrow_mut().set_origin(realm.0, origin);
+        #[cfg(not(feature = "boa"))]
+        let _ = (realm, origin);
+    }
+
+    /// Where the random part of a blob URL comes from: `n` bytes of the
+    /// OS random source. Without one, nothing is kept behind a blob URL.
+    pub fn set_blob_random(&mut self, random: fn(usize) -> Option<Vec<u8>>) {
+        #[cfg(feature = "boa")]
+        {
+            self.blobs.borrow_mut().random = Some(random);
+        }
+        #[cfg(not(feature = "boa"))]
+        let _ = random;
+    }
+
+    /// Bound what this runtime's blob URLs keep alive, in bytes (the
+    /// default is 256 MiB).
+    pub fn set_blob_store_limit(&mut self, bytes: usize) {
+        #[cfg(feature = "boa")]
+        {
+            self.blobs.borrow_mut().limit = Some(bytes);
+        }
+        #[cfg(not(feature = "boa"))]
+        let _ = bytes;
+    }
+
+    /// The slot canvas pixels cross in (`__rk.pixelsOut`, `__rk.pixelsIn`):
+    /// the embedder's canvas code holds a clone.
+    #[cfg(feature = "boa")]
+    pub fn pixel_slot(&self) -> PixelSlot {
+        self.pixel_slot.clone()
+    }
+
+    /// Forget the bytes stashed under `key`, if script did not take them.
+    pub fn drop_stashed_bytes(&mut self, key: u64) {
+        #[cfg(feature = "boa")]
+        self.byte_stash.borrow_mut().remove(&key);
+        #[cfg(not(feature = "boa"))]
+        let _ = key;
+    }
+
     /// Define a global function `name` that calls `function`.
     pub fn register_host_function(
         &mut self,
@@ -1216,7 +2162,20 @@ impl JsRuntime {
         length: usize,
         function: HostFunction,
     ) -> Result<(), JsError> {
-        self.register_native(name, length, Box::new(move |args, _| function(args)), false)
+        self.register_native(name, length, Box::new(move |args, _| function(args)), false, None)
+    }
+
+    /// [`register_host_function`](Self::register_host_function) for a
+    /// dispatcher whose argument `op_arg` names the operation: the host
+    /// call timing (`host_calls`, SCRIPT-SPLIT) keeps a row per operation.
+    pub fn register_host_function_by_op(
+        &mut self,
+        name: &str,
+        length: usize,
+        op_arg: usize,
+        function: HostFunction,
+    ) -> Result<(), JsError> {
+        self.register_native(name, length, Box::new(move |args, _| function(args)), false, Some(op_arg))
     }
 
     /// [`register_host_function`](Self::register_host_function), also
@@ -1229,7 +2188,7 @@ impl JsRuntime {
         length: usize,
         function: HostFunctionWithCaller,
     ) -> Result<(), JsError> {
-        self.register_native(name, length, function, true)
+        self.register_native(name, length, function, true, None)
     }
 
     fn register_native(
@@ -1238,10 +2197,13 @@ impl JsRuntime {
         length: usize,
         function: HostFunctionWithCaller,
         with_caller: bool,
+        op_arg: Option<usize>,
     ) -> Result<(), JsError> {
         #[cfg(feature = "boa")]
         {
             use boa_engine::{JsString, NativeFunction};
+
+            let slot = host_calls::slot(name);
 
             // SAFETY: `HostFunction` only ever sees and returns the
             // crate's own `JsValue`, which holds no GC-managed data, so the
@@ -1274,7 +2236,16 @@ impl JsRuntime {
                         // says which limit this was.
                         return Err(boa_engine::error::RuntimeLimitError::LoopIteration.into());
                     }
+                    // SCRIPT-SPLIT: timed from here (conversions included) when on.
+                    let mut call = host_calls::enter(slot);
                     let args: Vec<JsValue> = args.iter().map(from_boa_value).collect();
+                    // The operation key only for a timed call: off, nothing more than the flag.
+                    if let Some(i) = op_arg.filter(|_| call.timed()) {
+                        call.op(host_calls::op_key(match args.get(i) {
+                            Some(JsValue::String(op)) => Some(op.as_str()),
+                            _ => None,
+                        }));
+                    }
                     let caller = match with_caller {
                         true => diag::caller_position(context, true),
                         false => None,
@@ -1289,7 +2260,7 @@ impl JsRuntime {
 
         #[cfg(not(feature = "boa"))]
         {
-            let _ = (name, length, function, with_caller);
+            let _ = (name, length, function, with_caller, op_arg);
             Err(JsError::NotInitialized)
         }
     }
@@ -1409,15 +2380,38 @@ fn to_boa_value(value: JsValue) -> boa_engine::JsValue {
 /// The host object [`JsRuntime::evaluate_with_host`] hands the embedder's
 /// scripts: natives that write into `diag`, built here, before any script.
 #[cfg(feature = "boa")]
-fn host_object(diag: &std::rc::Rc<diag::Diagnostics>, context: &mut boa_engine::Context) -> boa_engine::JsObject {
+fn host_object(
+    diag: &std::rc::Rc<diag::Diagnostics>,
+    byte_stash: &bytes::Stash,
+    blobs: &bytes::Blobs,
+    pixels: &bytes::PixelSlot,
+    context: &mut boa_engine::Context,
+) -> boa_engine::JsObject {
     use boa_engine::{js_string, object::ObjectInitializer, NativeFunction};
     let reporter = diag.clone();
     // SAFETY: the closure holds an `Rc<Diagnostics>`, whose only GC handles
     // (the stack getter, report values never) stay rooted while it lives.
     let report_error = unsafe {
-        NativeFunction::from_closure(move |_this, args, context| {
+        NativeFunction::from_closure(move |this, args, context| {
             let value = args.first().cloned().unwrap_or_default();
-            reporter.reported(&value, context);
+            // Whose code threw it. Handed over from a `catch` (the usual
+            // caller): the flag the VM noted for the value it caught. Handed
+            // over for the page (`reportError(e)`, second argument `true`):
+            // the page script calling that function.
+            let for_the_page = args.get(1).and_then(boa_engine::JsValue::as_boolean) == Some(true);
+            let withheld = if for_the_page {
+                context.running_error_detail_withheld(0)
+            } else {
+                context.take_error_detail_note(&value)
+            };
+            match withheld {
+                // Called on the host object (`__rk.reportError(e)`): the
+                // realm's `error` event comes first, and can cancel the report.
+                Some(withheld) => reporter.uncaught(this.as_object().as_ref(), &value, withheld, context),
+                // No page script threw it: the host's own. Reported to the
+                // host, with no event the page could hear or cancel.
+                None => reporter.reported(&value, context),
+            }
             Ok(boa_engine::JsValue::undefined())
         })
     };
@@ -1434,10 +2428,56 @@ fn host_object(diag: &std::rc::Rc<diag::Diagnostics>, context: &mut boa_engine::
             Ok(boa_engine::JsValue::undefined())
         })
     };
-    ObjectInitializer::new(context)
-        .function(report_error, js_string!("reportError"), 1)
+    let mut host = ObjectInitializer::new(context);
+    // Text the page's document owns that the embedder's scripts run for it
+    // (an inline script, a string timer; a handler attribute's function):
+    // compiled here as a page script reported in full, in one step. Each
+    // takes text already computed (anything but a string is a TypeError:
+    // nothing is converted, so no script runs to be read), and nothing is
+    // kept afterwards on any path. The embedder's own `eval` and `Function`
+    // stay the embedder's.
+    let run_document_script = NativeFunction::from_fn_ptr(|_this, args, context| {
+        use boa_engine::vm::{ErrorDetail, ErrorDetailScope};
+        let Some(text) = args.first().and_then(|text| text.as_string()) else {
+            return Err(boa_engine::JsNativeError::typ().with_message("document text must be a string").into());
+        };
+        let text = text.to_std_string_escaped();
+        // A failure before any of the text's code ran (it does not parse,
+        // it declares a name again) is the document's own, as its code is.
+        let script = {
+            let _detail = ErrorDetailScope::enter(ErrorDetail::Full);
+            boa_engine::Script::parse(boa_engine::Source::from_bytes(text.as_bytes()), None, context)
+                .and_then(|script| script.codeblock(context).map(|_| script))
+                .map_err(|error| error.or_detail_withheld(false))?
+        };
+        script.evaluate(context).map_err(|error| error.or_detail_withheld(false))
+    });
+    let compile_document_function = NativeFunction::from_fn_ptr(|_this, args, context| {
+        let (Some(parameters), Some(body)) =
+            (args.first().and_then(|text| text.as_string()), args.get(1).and_then(|text| text.as_string()))
+        else {
+            return Err(boa_engine::JsNativeError::typ().with_message("document text must be a string").into());
+        };
+        boa_engine::builtins::function::BuiltInFunctionObject::compile_function_as(
+            &parameters,
+            &body,
+            boa_engine::vm::ErrorDetail::Full,
+            context,
+        )
+        .map(Into::into)
+        .map_err(|error| error.or_detail_withheld(false))
+    });
+    host.function(report_error, js_string!("reportError"), 1)
         .function(unsupported, js_string!("unsupported"), 2)
-        .build()
+        .function(run_document_script, js_string!("runDocumentScript"), 1)
+        .function(compile_document_function, js_string!("compileDocumentFunction"), 2);
+    bytes::install(&mut host, byte_stash, blobs, pixels);
+    let host = host.build();
+    // The host object inherits from nothing: a name it does not own reads
+    // as `undefined` and a first write makes an own property, with no
+    // lookup through the realm's `Object.prototype`.
+    host.set_prototype(None);
+    host
 }
 
 #[cfg(feature = "boa")]
@@ -1506,12 +2546,34 @@ where
     std::thread::Builder::new()
         .name(name.into())
         .stack_size(SCRIPT_THREAD_STACK_SIZE)
-        .spawn(f)
+        .spawn(move || {
+            set_thread_native_stack_budget(Some(SCRIPT_THREAD_STACK_SIZE / 2));
+            f()
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M2 / #1005: dropping a runtime takes the stack getter so Boa GC can
+    /// free the realm. Without this, getter → realm → natives → Diagnostics
+    /// → getter keeps every navigated document's realm (~10 MB each).
+    #[cfg(feature = "boa")]
+    #[test]
+    fn dropping_a_runtime_takes_the_stack_getter() {
+        let runtime = JsRuntime::new().unwrap();
+        let diag = runtime.diag.clone();
+        assert!(
+            diag.stack_getter.borrow().is_some(),
+            "a live runtime holds Error.prototype.stack's getter"
+        );
+        drop(runtime);
+        assert!(
+            diag.stack_getter.borrow().is_none(),
+            "Drop must take the getter so the realm is not rooted forever"
+        );
+    }
 
     #[test]
     fn test_basic_evaluation() {
@@ -2530,6 +3592,10 @@ mod tests {
             .name("setter-depth".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(|| {
+                // The budget a script thread gives itself (half its stack, as
+                // `spawn_script_thread`): without it the turn gets Boa's 1 MiB, which 400
+                // links overflow in a non-incremental debug build (CI).
+                set_thread_native_stack_budget(Some(4 * 1024 * 1024));
                 let mut runtime = JsRuntime::new().unwrap();
                 let setters = runtime
                     .evaluate_script(
@@ -2588,5 +3654,93 @@ mod tests {
         assert!(max >= 20, "{line}");
         let attribution = interrupt_attribution();
         assert!(attribution.contains(&line), "{attribution}");
+    }
+}
+
+#[cfg(all(test, feature = "boa"))]
+mod pixel_slot_tests {
+    use super::*;
+
+    fn text(runtime: &mut JsRuntime, body: &str) -> String {
+        match runtime.evaluate_with_host(body).unwrap() {
+            JsValue::String(s) => s,
+            other => panic!("{body} evaluated to {other:?}"),
+        }
+    }
+
+    /// `pixelsOut` makes the realm's own `Uint8ClampedArray` of exactly the
+    /// length asked for, from the slot when the slot holds that many bytes,
+    /// and empties the slot; it takes a whole number in range and nothing
+    /// else, whatever the page did to the global or its prototype.
+    #[test]
+    fn pixels_out_hands_the_slots_bytes_once_as_the_realms_own_array() {
+        let mut runtime = JsRuntime::new().unwrap();
+        let slot = runtime.pixel_slot();
+        runtime
+            .evaluate_script(
+                "var Real = Uint8ClampedArray, ran = 0; Uint8ClampedArray = function () { ran++; }; \
+                 Real.prototype.constructor = function () { ran++; }; \
+                 Object.defineProperty(Real, Symbol.species, { get: function () { ran++; return Array; } });",
+            )
+            .unwrap();
+        slot.put(vec![1, 2, 3, 250]);
+        assert_eq!(
+            text(&mut runtime, "var a = __rk.pixelsOut(4, false); return [a instanceof Real, Object.getPrototypeOf(a) === Real.prototype, a[0], a[1], a[2], a[3], a.length, ran].join();"),
+            "true,true,1,2,3,250,4,0"
+        );
+        assert!(slot.take().is_none(), "the slot is emptied");
+        // Nothing left, another length, or `fresh`: zeros, and the slot is emptied.
+        assert_eq!(text(&mut runtime, "var a = __rk.pixelsOut(4, false); return [a[0], a[3], a.length].join();"), "0,0,4");
+        slot.put(vec![9; 8]);
+        assert_eq!(text(&mut runtime, "var a = __rk.pixelsOut(4, false); return [a[0], a.length].join();"), "0,4");
+        assert!(slot.take().is_none());
+        slot.put(vec![9; 4]);
+        assert_eq!(text(&mut runtime, "var a = __rk.pixelsOut(4, true); return [a[0], a.length].join();"), "0,4");
+        assert!(slot.take().is_none());
+        assert_eq!(text(&mut runtime, "return String(__rk.pixelsOut(0, true).length);"), "0");
+        for bad in ["-1", "1.5", "NaN", "Infinity", "'4'", "{ valueOf: function () { ran++; return 4; } }", "undefined", "16384 * 16384 * 4 + 1"] {
+            slot.put(vec![9; 4]);
+            assert_eq!(
+                text(&mut runtime, &format!("try {{ __rk.pixelsOut({bad}, false); return 'made'; }} catch (e) {{ return e.name + ' ' + ran; }}")),
+                "RangeError 0",
+                "{bad}"
+            );
+            assert!(slot.take().is_none(), "{bad}: the slot is emptied");
+        }
+    }
+
+    /// `pixelsIn` answers for a `Uint8ClampedArray` on a live buffer only,
+    /// reads no property of what it is given, and leaves a copy of exactly
+    /// the array's own bytes in the slot when asked to.
+    #[test]
+    fn pixels_in_reads_a_clamped_arrays_own_bytes_and_nothing_else() {
+        let mut runtime = JsRuntime::new().unwrap();
+        let slot = runtime.pixel_slot();
+        runtime
+            .evaluate_script(
+                "var ran = 0, proto = Object.getPrototypeOf(Uint8ClampedArray.prototype); \
+                 ['length', 'byteLength', 'byteOffset', 'buffer'].forEach(function (k) { Object.defineProperty(proto, k, { get: function () { ran++; return 1; }, configurable: true }); }); \
+                 var whole = new Uint8ClampedArray([5, 6, 7, 8]), base = new ArrayBuffer(8), part = new Uint8ClampedArray(base, 2, 4); \
+                 new Uint8Array(base).set([0, 1, 2, 3, 4, 5, 6, 7]);",
+            )
+            .unwrap();
+        assert_eq!(text(&mut runtime, "return [__rk.pixelsIn(whole, false), ran].join();"), "4,0");
+        assert!(slot.take().is_none(), "nothing is kept unless asked");
+        assert_eq!(text(&mut runtime, "return [__rk.pixelsIn(whole, true), ran].join();"), "4,0");
+        assert_eq!(slot.take(), Some(vec![5, 6, 7, 8]));
+        assert_eq!(text(&mut runtime, "return [__rk.pixelsIn(part, true), ran].join();"), "4,0");
+        assert_eq!(slot.take(), Some(vec![2, 3, 4, 5]), "a view's own part of its buffer");
+        for other in [
+            "new Uint8Array(4)", "new Int8Array(4)", "new ArrayBuffer(4)", "new DataView(new ArrayBuffer(4))", "[1, 2, 3, 4]", "'abcd'", "4", "null", "undefined",
+            "Object.create(whole)", "new Proxy(whole, {})", "{ length: 4, get buffer() { ran++; return whole.buffer; } }",
+        ] {
+            assert_eq!(text(&mut runtime, &format!("return [__rk.pixelsIn({other}, true), ran].join();")), "-2,0", "{other}");
+            assert!(slot.take().is_none(), "{other}");
+        }
+        assert_eq!(
+            text(&mut runtime, "var left = new ArrayBuffer(4), gone = new Uint8ClampedArray(left); left.transfer(); return [__rk.pixelsIn(gone, true), ran].join();"),
+            "-1,0"
+        );
+        assert!(slot.take().is_none());
     }
 }

@@ -1,0 +1,75 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "chrome": "143.0.7499.4 (grid_flexible_row_log.mjs); Chrome for Testing 148.0.7778.216 checked separately",
+ "cases": [
+  {
+   "name": "a-fit-content-track-grows-to-its-max-content-beside-an-fr-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) 1fr\"><div id=i0 class=w><span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:240:10 i1:240:0:760:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-fit-content-track-stops-at-its-argument-beside-an-fr-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) 1fr\"><div id=i0 class=w><span></span> <span></span> <span></span> <span></span> <span></span> <span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:20 i0:0:0:300:20 i1:300:0:700:20 after:0:20:1280:18"
+  },
+  {
+   "name": "a-fit-content-track-beside-a-fixed-track-is-its-content",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) 100px\"><div id=i0 style=\"min-height:10px\"><div style=\"width:100px;height:10px\"></div></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:100:10 i1:100:0:100:10 after:0:10:1280:18"
+  },
+  {
+   "name": "two-fit-content-tracks-share-a-short-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:300px;grid-template-columns:fit-content(300px) fit-content(300px)\"><div id=i0 class=w><span></span> <span></span> <span></span> <span></span></div><div id=i1 class=w><span></span> <span></span> <span></span> <span></span></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:300:20 i0:0:0:150:20 i1:150:0:150:20 after:0:20:1280:18"
+  },
+  {
+   "name": "a-fit-content-track-with-a-gap-beside-two-fr-tracks",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;column-gap:20px;grid-template-columns:1fr fit-content(200px) 1fr\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 class=w><span></span> <span></span> <span></span> <span></span></div><div id=i2 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:20 i0:0:0:380:20 i1:400:0:200:20 i2:620:0:380:20 after:0:20:1280:18"
+  },
+  {
+   "name": "a-float-grid-with-a-fit-content-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;float:left;grid-template-columns:fit-content(300px) 100px\"><div id=i0 class=w><span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:340:10 i0:0:0:240:10 i1:240:0:100:10 after:0:0:1280:18"
+  },
+  {
+   "name": "a-header-spanning-two-fit-content-columns-beside-an-fr-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) fit-content(300px) 1fr\"><div id=i0 class=w style=\"grid-column:1 / 3\"><span></span> <span></span> <span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:360:10 i1:360:0:640:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-header-spanning-two-fit-content-columns-alone",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) fit-content(300px)\"><div id=i0 class=w style=\"grid-column:1 / 3\"><span></span> <span></span> <span></span> <span></span> <span></span> <span></span></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:360:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-header-spanning-fit-content-columns-with-unequal-arguments",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(100px) fit-content(300px) 1fr\"><div id=i0 class=w style=\"grid-column:1 / 3\"><span></span> <span></span> <span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:360:10 i1:360:0:640:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-header-spanning-fit-content-columns-one-with-its-own-item",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) fit-content(300px) 1fr\"><div id=i0 class=w style=\"grid-column:1 / 3\"><span></span> <span></span> <span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div><div id=i2 class=w><span></span> <span></span></div><div id=i3 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:20 i0:0:0:360:10 i1:360:0:640:10 i2:0:10:240:10 i3:240:10:120:10 after:0:20:1280:18"
+  },
+  {
+   "name": "a-header-spanning-a-fit-content-and-a-fixed-column",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) 100px 1fr\"><div id=i0 class=w style=\"grid-column:1 / 3\"><span></span> <span></span> <span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div><div id=i2 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:20 i0:0:0:360:10 i1:360:0:640:10 i2:0:10:260:10 after:0:20:1280:18"
+  },
+  {
+   "name": "a-header-spanning-a-fit-content-and-an-auto-column",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) auto 1fr\"><div id=i0 class=w style=\"grid-column:1 / 3\"><span></span> <span></span> <span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div><div id=i2 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:20 i0:0:0:360:10 i1:360:0:640:10 i2:0:10:0:10 after:0:20:1280:18"
+  },
+  {
+   "name": "a-header-spanning-a-fit-content-and-an-fr-column",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) 1fr 100px\"><div id=i0 class=w style=\"grid-column:1 / 3\"><span></span> <span></span> <span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div><div id=i2 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:20 i0:0:0:900:10 i1:900:0:100:10 i2:0:10:0:10 after:0:20:1280:18"
+  }
+ ]
+}

@@ -274,6 +274,10 @@ impl Eval {
         let source_text = SourceText::new(source);
         let spanned_source_text = SpannedSourceText::new_source_only(source_text);
 
+        // HIWAVE PATCH (error-detail): code made at run time carries the
+        // flag of the code that made it.
+        let _detail = crate::vm::ErrorDetailScope::enter(context.vm.frame().code_block.error_detail());
+        // END HIWAVE PATCH
         let mut compiler = ByteCompiler::new(
             js_string!("<eval>"),
             body.strict(),

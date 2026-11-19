@@ -1,0 +1,55 @@
+{
+ "browser": "148.0.7778.216",
+ "framed": {
+  "svg": {
+   "natural": "100x100",
+   "after_fill": 25,
+   "after_image": 900
+  },
+  "png": {
+   "natural": "100x100",
+   "after_fill": 25,
+   "after_image": 900
+  },
+  "other_origin": {
+   "natural": "100x100",
+   "draw": "ok",
+   "getImageData": "SecurityError",
+   "toDataURL": "SecurityError",
+   "through_a_canvas": "SecurityError",
+   "a_clean_canvas_beside_it": "ok"
+  },
+  "redirect_same_to_same": "ok",
+  "redirect_same_to_other": "SecurityError",
+  "redirect_other_to_same": "SecurityError"
+ },
+ "top": {
+  "svg": {
+   "natural": "100x100",
+   "after_fill": 25,
+   "after_image": 900
+  },
+  "png": {
+   "natural": "100x100",
+   "after_fill": 25,
+   "after_image": 900
+  },
+  "other_origin": {
+   "natural": "100x100",
+   "draw": "ok",
+   "getImageData": "SecurityError",
+   "toDataURL": "SecurityError",
+   "through_a_canvas": "SecurityError",
+   "a_clean_canvas_beside_it": "ok"
+  },
+  "redirect_same_to_same": "ok",
+  "redirect_same_to_other": "SecurityError",
+  "redirect_other_to_same": "SecurityError"
+ },
+ "blank": {
+  "about_blank": "read 900 origin http://127.0.0.1:<port>",
+  "no_src": "read 900 origin http://127.0.0.1:<port>",
+  "srcdoc": "read 900 origin http://127.0.0.1:<port>",
+  "page_origin": "http://127.0.0.1:<port>"
+ }
+}

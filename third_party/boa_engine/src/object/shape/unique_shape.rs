@@ -147,9 +147,14 @@ impl UniqueShape {
         if slot.attributes.width_match(key.attributes) {
             slot.attributes = key.attributes;
             property_table.keys[index].1.attributes = key.attributes;
-            // TODO: invalidate the pointer.
+            // HIWAVE PATCH (ic-holder): upstream kept this shape ("TODO: invalidate the pointer"),
+            // so an inline cache keyed on it kept writing a property that `Object.freeze` or
+            // `writable: false` had just made read-only, and kept a stale accessor kind. A new
+            // shape, as the paths below already make, makes every entry keyed on this one miss.
+            let property_table = std::mem::take(&mut *property_table);
+            let prototype = self.inner.prototype.borrow_mut().take();
             return ChangeTransition {
-                shape: self.clone().into(),
+                shape: Self::new(prototype, property_table).into(),
                 action: ChangeTransitionAction::Nothing,
             };
         }

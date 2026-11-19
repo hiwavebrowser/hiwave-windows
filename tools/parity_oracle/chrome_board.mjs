@@ -163,10 +163,14 @@ async function main() {
   const height = Number(heightArg);
   const actions = readActions(actionsArg);
 
-  const browser = await chromium.launch(getDeterministicLaunchOptions());
+  // The board's oracle is the pinned Chrome for Testing (PARITY_CHROME_PATH),
+  // never Playwright's bundled Chromium: an unset pin is an error here.
+  const launch = getDeterministicLaunchOptions({ requirePinned: true });
+  const browser = await chromium.launch(launch);
   const record = {
     status: 'ok',
     browser: browser.version(),
+    browser_path: launch.executablePath,
     viewport: { width, height },
     page_errors: [],
     console_errors: [],

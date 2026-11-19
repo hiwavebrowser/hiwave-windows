@@ -1,0 +1,81 @@
+{
+ "timers": [
+  [
+   "m",
+   [
+    "micro",
+    "t0",
+    "i1",
+    "i2",
+    "t20",
+    "args:xy"
+   ]
+  ]
+ ],
+ "imp": [
+  [
+   "m",
+   [
+    "lib-ran",
+    42,
+    "string",
+    null,
+    "missing:NetworkError"
+   ]
+  ]
+ ],
+ "throws": [
+  [
+   "m",
+   "up"
+  ],
+  [
+   "e",
+   "Uncaught Error: boom",
+   "string",
+   "number",
+   true,
+   false
+  ]
+ ],
+ "throwsnow": [
+  [
+   "m",
+   "before"
+  ],
+  [
+   "e",
+   "Uncaught TypeError: top-level",
+   "string",
+   "number",
+   true,
+   false
+  ]
+ ],
+ "syntax": [
+  [
+   "e",
+   "Uncaught SyntaxError: Unexpected token '='",
+   "string",
+   "number",
+   true,
+   false
+  ]
+ ],
+ "nofile": [
+  [
+   "e",
+   null,
+   "undefined",
+   "undefined",
+   false,
+   false
+  ]
+ ],
+ "selferr": [
+  [
+   "m",
+   "ok"
+  ]
+ ]
+}

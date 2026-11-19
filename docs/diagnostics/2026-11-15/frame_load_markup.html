@@ -1,0 +1,39 @@
+<!doctype html><html><head><meta charset="utf-8"><title>frame load probe: markup frames and replaced handlers</title>
+<script>
+// Which `load` events an iframe's handlers hear, for frames in the markup and for a handler replaced
+// after the insertion. Each entry is what the frame showed when the handler ran ("blank" or the file).
+var out = { cases: {} };
+function heard(name) {
+  var list = out.cases[name] = out.cases[name] || [];
+  return function (ev) { var w = ev.target.contentWindow; list.push(w ? String(w.location.href).replace(/^.*\//, "").replace("about:", "") : "no window"); };
+}
+function mark(name, ev) { heard(name)(ev); }
+["scanThenOnloadThenSrc", "scanThenListenerOnly", "attrNoSrc", "attrSrc", "attrSrcdoc", "replacedBefore", "replacedAfter", "attrThenReplaced", "removedAfterInsertion"]
+  .forEach(function (n) { out.cases[n] = []; });
+</script></head><body>
+<iframe id="ms"></iframe>
+<script>var ms = document.getElementById("ms"); ms.onload = heard("scanThenOnloadThenSrc"); ms.src = "frame_load_child.html";</script>
+<iframe id="ml"></iframe>
+<script>document.getElementById("ml").addEventListener("load", heard("scanThenListenerOnly"));</script>
+<iframe id="an" onload="mark('attrNoSrc', event)"></iframe>
+<iframe id="as" onload="mark('attrSrc', event)" src="frame_load_child.html"></iframe>
+<iframe id="ad" onload="mark('attrSrcdoc', event)" srcdoc="<p>doc</p>"></iframe>
+<iframe id="ar" onload="mark('attrThenReplaced', event)"></iframe>
+<script>document.getElementById("ar").onload = heard("attrThenReplaced");</script>
+<script>
+// a handler set before the insertion, replaced after it; never navigated
+var f = document.createElement("iframe");
+f.onload = heard("replacedBefore");
+document.body.appendChild(f);
+f.onload = heard("replacedAfter");
+// a listener added before the insertion and removed right after it; never navigated
+var g = document.createElement("iframe"), gone = heard("removedAfterInsertion");
+g.addEventListener("load", gone);
+document.body.appendChild(g);
+g.removeEventListener("load", gone);
+setTimeout(function () {
+  window.__out = JSON.stringify(out);
+  console.log("PROBE " + window.__out);
+}, 1500);
+</script>
+</body></html>

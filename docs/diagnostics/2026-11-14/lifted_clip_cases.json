@@ -1,0 +1,150 @@
+{
+ "opacity_overflow_hidden_rel_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden'><div style='position:relative'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "transform_overflow_hidden_rel_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);transform:translateX(0);overflow:hidden'><div style='position:relative'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "root_overflow_hidden_rel_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);overflow:hidden'><div style='position:relative'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_overflow_auto_rel_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:auto;scrollbar-width:none'><div style='position:relative'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_overflow_scroll_rel_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:scroll;scrollbar-width:none'><div style='position:relative'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_clip_path_rel_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;clip-path:inset(0)'><div style='position:relative'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "root_clip_path_rel_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);clip-path:inset(0)'><div style='position:relative'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_border_radius_rel_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden;border-radius:50px'><div style='position:relative'><div id=r style='position:absolute;left:0;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  3,
+  3
+ ],
+ "root_border_radius_rel_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);overflow:hidden;border-radius:50px'><div style='position:relative'><div id=r style='position:absolute;left:0;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  3,
+  3
+ ],
+ "opacity_overflow_hidden_positioned_clipper": [
+  "<div style='opacity:.99'><div id=c style='width:100px;height:100px;background:rgb(0,0,255);position:relative;overflow:hidden'><div style='position:relative'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_rel_outside_overflow_hidden": [
+  "<div style='opacity:.99;position:relative'><div id=c style='width:100px;height:100px;background:rgb(0,0,255);overflow:hidden'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "root_rel_outside_overflow_hidden": [
+  "<div style='position:relative'><div id=c style='width:100px;height:100px;background:rgb(0,0,255);overflow:hidden'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_rel_outside_overflow_hidden_rel_between": [
+  "<div style='opacity:.99;position:relative'><div id=c style='width:100px;height:100px;background:rgb(0,0,255);overflow:hidden'><div style='position:static'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_rel_outside_clip_path": [
+  "<div style='opacity:.99;position:relative'><div id=c style='width:100px;height:100px;background:rgb(0,0,255);clip-path:inset(0)'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_overflow_hidden_abs_in_abs": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden;position:relative'><div style='position:absolute;left:0;top:0'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_overflow_hidden_rel_inside_border_area": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden;border:20px solid rgb(0,0,255)'><div style='position:relative'><div id=r style='position:absolute;left:-20px;top:-20px;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  5,
+  5
+ ],
+ "root_overflow_hidden_rel_inside_border_area": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);overflow:hidden;border:20px solid rgb(0,0,255)'><div style='position:relative'><div id=r style='position:absolute;left:-20px;top:-20px;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  5,
+  5
+ ],
+ "opacity_overflow_hidden_fixed_inside": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden'><div style='position:relative'><div id=r style='position:fixed;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_overflow_hidden_rel_opacity_between": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden'><div style='position:relative'><div style='opacity:.99'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div></div>",
+  175,
+  25
+ ],
+ "root_overflow_hidden_rel_opacity_between": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);overflow:hidden'><div style='position:relative'><div style='opacity:.99'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_rel_outside_overflow_hidden_opacity_between": [
+  "<div style='opacity:.99;position:relative'><div id=c style='width:100px;height:100px;background:rgb(0,0,255);overflow:hidden'><div style='opacity:.99'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_overflow_auto_scrolled_rel_opacity_between": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:auto;scrollbar-width:none'><div style='position:relative;height:300px'><div style='opacity:.99'><div id=r style='position:absolute;left:0;top:40px;width:50px;height:20px;background:rgb(255,0,0)'></div></div></div></div>",
+  25,
+  15,
+  [
+   "c",
+   30
+  ]
+ ],
+ "opacity_overflow_auto_scrolled_rel_abs": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:auto;scrollbar-width:none'><div style='position:relative;height:300px'><div id=r style='position:absolute;left:0;top:40px;width:50px;height:20px;background:rgb(255,0,0)'></div></div></div>",
+  25,
+  15,
+  [
+   "c",
+   30
+  ]
+ ],
+ "opacity_overflow_hidden_transform_holds_abs": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden'><div style='transform:translateX(0)'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_overflow_hidden_filter_holds_abs": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden'><div style='filter:grayscale(0)'><div id=r style='position:absolute;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_overflow_hidden_transform_holds_fixed": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden'><div style='transform:translateX(0)'><div id=r style='position:fixed;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "opacity_overflow_hidden_filter_holds_fixed": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);opacity:.99;overflow:hidden'><div style='filter:grayscale(0)'><div id=r style='position:fixed;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div>",
+  175,
+  25
+ ],
+ "root_overflow_hidden_rel_transform_holds_fixed": [
+  "<div id=c style='width:100px;height:100px;background:rgb(0,0,255);overflow:hidden'><div style='position:relative'><div style='transform:translateX(0)'><div id=r style='position:fixed;left:150px;top:0;width:50px;height:50px;background:rgb(255,0,0)'></div></div></div></div>",
+  175,
+  25
+ ]
+}

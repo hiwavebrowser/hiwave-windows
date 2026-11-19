@@ -207,6 +207,11 @@ macro_rules! js_error {
 pub struct JsError {
     inner: Repr,
     pub(crate) backtrace: Option<Backtrace>,
+    // HIWAVE PATCH (error-detail): the error-detail flag of the code that
+    // was running where this was thrown; `None` until the VM raises it.
+    // See PATCHES.md.
+    pub(crate) detail_withheld: Option<bool>,
+    // END HIWAVE PATCH
 }
 
 impl Eq for JsError {}
@@ -426,6 +431,7 @@ impl JsError {
         Self {
             inner: Repr::Native(Box::new(err)),
             backtrace: None,
+            detail_withheld: None, // HIWAVE PATCH (error-detail)
         }
     }
 
@@ -473,6 +479,7 @@ impl JsError {
         Self {
             inner: Repr::Opaque(value),
             backtrace,
+            detail_withheld: None, // HIWAVE PATCH (error-detail)
         }
     }
 
@@ -503,6 +510,39 @@ impl JsError {
     /// assert!(error.into_opaque(context).is_err());
     /// ```
     pub fn into_opaque(self, context: &mut Context) -> JsResult<JsValue> {
+        // HIWAVE PATCH (error-detail): the flag does not travel in a value;
+        // the VM notes it beside the value this becomes (a `catch`, a
+        // rejection), for whoever is handed that value next.
+        let detail = self.detail_withheld;
+        let value = self.into_opaque_inner(context)?;
+        if let Some(withheld) = detail {
+            context.vm.error_detail_note = Some((value.clone(), withheld));
+        }
+        Ok(value)
+    }
+
+    /// The error-detail flag of the code that was running where this was
+    /// thrown; `None` for an error the VM has not raised.
+    #[must_use]
+    pub fn detail_withheld(&self) -> Option<bool> {
+        self.detail_withheld
+    }
+    // END HIWAVE PATCH
+
+    /// This error with `withheld` as its answer if the VM gave it none: for
+    /// a host that compiles or runs text for a script whose answer it
+    /// knows, when the text fails before any of its code ran.
+    #[must_use]
+    pub fn or_detail_withheld(mut self, withheld: bool) -> Self {
+        if self.detail_withheld.is_none() {
+            self.detail_withheld = Some(withheld);
+        }
+        self
+    }
+    // END HIWAVE PATCH
+
+    // HIWAVE PATCH (error-detail)
+    fn into_opaque_inner(self, context: &mut Context) -> JsResult<JsValue> {
         match self.inner {
             Repr::Native(e) => {
                 let obj = e.into_opaque(context);
@@ -850,6 +890,7 @@ impl From<JsNativeError> for JsError {
         Self {
             inner: Repr::Native(Box::new(error)),
             backtrace: None,
+            detail_withheld: None, // HIWAVE PATCH (error-detail)
         }
     }
 }
@@ -859,6 +900,7 @@ impl From<EngineError> for JsError {
         Self {
             inner: Repr::Engine(value),
             backtrace: None,
+            detail_withheld: None, // HIWAVE PATCH (error-detail)
         }
     }
 }
@@ -1414,6 +1456,11 @@ impl JsNativeError {
 impl From<boa_parser::Error> for JsNativeError {
     #[cfg_attr(feature = "native-backtrace", track_caller)]
     fn from(err: boa_parser::Error) -> Self {
+        // HIWAVE PATCH (native recursion): a source nested past the native stack is a RangeError,
+        // as in V8, not a SyntaxError.
+        if err.is_stack_overflow() {
+            return Self::range().with_message("Maximum call stack size exceeded");
+        }
         Self::syntax().with_message(err.to_string())
     }
 }

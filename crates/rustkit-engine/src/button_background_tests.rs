@@ -22,17 +22,27 @@ fn button_backgrounds(html: &str) -> Vec<(String, Color)> {
         Engine::new_page(EngineConfig::default(), None, Arc::new(AtomicU64::new(0))).expect("engine");
     let view = engine.create_page_view(Bounds::new(0, 0, 600, 400)).expect("page view");
     engine.load_html(view, html).expect("load");
-    engine.views[&view]
-        .display_list
-        .as_ref()
-        .expect("display list")
-        .commands
-        .iter()
-        .filter_map(|c| match c {
-            DisplayCommand::Button { label, background_color, .. } => Some((label.clone(), *background_color)),
-            _ => None,
-        })
-        .collect()
+    // The background a button paints is the box's own (`render_background`,
+    // a fill at the button's rect before its `Button` command); the
+    // command itself paints none since CB1b, so a rounded or image
+    // background is not covered by a square re-fill. No fill: transparent.
+    let commands = &engine.views[&view].display_list.as_ref().expect("display list").commands;
+    let mut out = Vec::new();
+    for (i, c) in commands.iter().enumerate() {
+        if let DisplayCommand::Button { label, rect, background_color, .. } = c {
+            assert_eq!(background_color.a, 0.0, "the Button command re-fills {label:?}");
+            let same = |r: &rustkit_layout::Rect| {
+                (r.x, r.y, r.width, r.height) == (rect.x, rect.y, rect.width, rect.height)
+            };
+            let fill = commands[..i].iter().rev().find_map(|p| match p {
+                DisplayCommand::SolidColor(color, r) if same(r) => Some(*color),
+                DisplayCommand::RoundedRect { color, rect: r, .. } if same(r) => Some(*color),
+                _ => None,
+            });
+            out.push((label.clone(), fill.unwrap_or(Color::TRANSPARENT)));
+        }
+    }
+    out
 }
 
 fn background_of(list: &[(String, Color)], label: &str) -> Color {

@@ -71,7 +71,10 @@ fn the_frame_moves_before_the_page_hears_the_scroll() {
     let t0 = Instant::now();
     assert!(engine.scroll_view(view, 0.0, -120.0).unwrap());
     let took = t0.elapsed();
-    assert!(took >= Duration::from_millis(300), "the listener ran inside the call: {took:?}");
+    // The listener spins on `Date.now()`, a millisecond clock, for 300 ms: it can leave up to a millisecond
+    // early by this test's nanosecond `Instant` (seen at 299.9 ms once the engine got faster), so the bound
+    // is the listener's hold less that tick, not the hold itself.
+    assert!(took >= Duration::from_millis(299), "the listener ran inside the call: {took:?}");
     assert_eq!(read(&mut engine, view, "__heard"), "1", "the page heard the scroll once");
 
     let f = frame(&engine, view);

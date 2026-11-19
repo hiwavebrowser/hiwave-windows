@@ -1,0 +1,24 @@
+Windows CI: rustkit-js tests::a_deep_setter_chain_and_call_fit_the_default_recursion_limit fails on
+the hosted runner with "RangeError: Maximum call stack size exceeded". The test runs 400 setter links
+on an 8 MB thread but never sets the thread's native stack budget, so the turn gets Boa's 1 MiB
+default; a non-incremental debug build (CI sets CARGO_INCREMENTAL=0) has larger frames and 400 links
+do not fit. Reproduced locally with CARGO_INCREMENTAL=0. The test now gives its thread the budget
+spawn_script_thread gives a script thread (half its stack). Upstream should take the same fix.
+
+Remove when upstream takes it.
+
+diff --git a/crates/rustkit-js/src/lib.rs b/crates/rustkit-js/src/lib.rs
+index 8b289815..e15dfd0d 100644
+--- a/crates/rustkit-js/src/lib.rs
++++ b/crates/rustkit-js/src/lib.rs
+@@ -3592,6 +3592,10 @@ mod tests {
+             .name("setter-depth".into())
+             .stack_size(8 * 1024 * 1024)
+             .spawn(|| {
++                // The budget a script thread gives itself (half its stack, as
++                // `spawn_script_thread`): without it the turn gets Boa's 1 MiB, which 400
++                // links overflow in a non-incremental debug build (CI).
++                set_thread_native_stack_budget(Some(4 * 1024 * 1024));
+                 let mut runtime = JsRuntime::new().unwrap();
+                 let setters = runtime
+                     .evaluate_script(

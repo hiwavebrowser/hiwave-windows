@@ -38,14 +38,14 @@ fn an_animation_paint_mark_is_not_beyond_the_layer_and_not_a_layout_write() {
 #[test]
 fn a_script_or_embedder_mark_is_beyond_the_layer() {
     let dirty = DirtyMark::default();
-    dirty.mark(DomDirty::Style, "style");
+    dirty.mark(DomDirty::Style, "style", crate::Logged::Yes);
     assert!(dirty.beyond_animation_layer());
     assert_eq!(dirty.get(), DomDirty::Style);
     assert_eq!(dirty.cause(), Some("style"));
 
     let dirty = DirtyMark::default();
     dirty.mark_animation_layer(DomDirty::Layout, "animation");
-    dirty.mark(DomDirty::Layout, "attribute");
+    dirty.mark(DomDirty::Layout, "attribute", crate::Logged::Yes);
     assert!(dirty.beyond_animation_layer());
     // The first write since the layout is the cause.
     assert_eq!(dirty.cause(), Some("animation"));
@@ -54,7 +54,7 @@ fn a_script_or_embedder_mark_is_beyond_the_layer() {
 #[test]
 fn take_clears_the_beyond_flag_with_the_bucket() {
     let dirty = DirtyMark::default();
-    dirty.mark(DomDirty::Style, "class");
+    dirty.mark(DomDirty::Style, "class", crate::Logged::Yes);
     assert_eq!(dirty.take(), DomDirty::Style);
     assert_eq!(dirty.get(), DomDirty::Clean);
     assert!(!dirty.beyond_animation_layer());

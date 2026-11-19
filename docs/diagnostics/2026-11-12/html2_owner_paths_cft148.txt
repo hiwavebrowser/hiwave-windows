@@ -1,0 +1,15 @@
+# HTML2 R1: a node's document is carried on data writes, createElementNS, contextual fragments and template clones;
+# raw text is for HTML elements only. Chrome for Testing 148.0.7778.216, headless: window.report() of html2_owner_paths.html.
+attribute set on another document's noscript: <noscript title="t">&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+attribute set on a detached noscript of another document: <noscript a="1" b="2">&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+text data set under another document's noscript: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+createElementNS on another document: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+createElementNS on the page: <noscript></noscript><img src=x onerror=1>&</noscript>
+contextual fragment in another document: <noscript><b>x</b></noscript> children=1 owner=true
+  then text set: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript>
+contextual fragment in the page: <noscript><b>x</b></noscript> children=1
+clone of a template, its content: <noscript>&lt;/noscript&gt;&lt;img src=x onerror=1&gt;&amp;</noscript> owner page=false same as original=true
+svg style: <style>a&lt;b&gt;&amp;</style>
+html style: <style>a<b>&</style>
+svg script: <script>a&lt;b&gt;&amp;</script>
+mathml noscript: <noscript>a&lt;b&gt;&amp;</noscript>

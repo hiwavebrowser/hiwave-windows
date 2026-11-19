@@ -1,0 +1,54 @@
+# SET5: a text input's content width (padding: 0; border: none), Chrome for Testing 148.0.7778.216, headless 800x600.
+# window.report() of set5_input_content_width.html: per font family, the width at each font size; then by the size attribute; then by type.
+# Lines 27 on (R1 on #1102): fractional font sizes, the size attribute as written, and setting the size property.
+sizes 10 11 12 13 13.3333 14 15 16 17 18 20 24 32
+Arial: 104 124 125 145 145 146 166 166 186 187 208 250 333
+Times: 100 110 120 130 134 140 150 160 170 180 200 240 320
+Times New Roman: 104 124 125 145 145 145 165 166 186 187 208 249 333
+Helvetica: 112 123 134 145 149 156 167 178 190 201 223 267 356
+Helvetica Neue: 109 124 130 145 146 151 166 173 187 195 216 260 353
+Georgia: 105 124 127 145 145 148 166 169 187 190 210 253 336
+Menlo: 124 143 149 164 165 174 186 205 211 226 248 297 397
+Courier: 121 133 145 157 160 169 181 193 205 217 241 289 385
+Courier New: 123 142 147 163 163 172 184 203 208 224 246 294 392
+Verdana: 124 144 147 165 165 172 186 196 209 227 248 294 393
+system-ui: 110 125 132 146 146 154 167 175 187 196 214 242 316
+Lucida Grande: 127 140 152 165 169 178 190 203 215 228 253 304 405
+sans-serif: 105 124 125 145 145 146 166 166 187 188 208 250 334
+serif: 105 124 125 145 145 146 165 166 187 188 208 250 333
+monospace: 125 143 148 164 164 173 185 204 210 226 247 296 394
+size 1 2 5 10 20 40, 16px Arial: 14 22 46 86 166 326
+size 1 2 5 10 20 40, 16px Times: 8 16 40 80 160 320
+size 1 2 5 10 20 40, 16px Menlo: 15 25 55 105 205 405
+type text 16px Arial: 166
+type search 16px Arial: 166
+type password 16px Arial: 166
+type email 16px Arial: 166
+type number 16px Arial: 166
+type tel 16px Arial: 166
+type url 16px Arial: 166
+fractional 13.1 13.4 14.6 15.9 17.3, Arial: 145 145 152 166 187
+fractional 13.1 13.4 14.6 15.9 17.3, Courier New: 163 164 183 203 212
+fractional 13.1 13.4 14.6 15.9 17.3, Menlo: 164 166 185 205 214
+fractional 13.1 13.4 14.6 15.9 17.3, Times: 131 134 146 159 173
+fractional 13.1 13.4 14.6 15.9 17.3, Verdana: 165 165 186 195 212
+size attribute "10px": width 80 size 10
+size attribute " 7": width 56 size 7
+size attribute "+3": width 24 size 3
+size attribute "0": width 160 size 20
+size attribute "-1": width 160 size 20
+size attribute "2147483648": width 160 size 20
+size attribute "1e2": width 8 size 1
+size attribute "3.9": width 24 size 3
+size attribute "abc": width 160 size 20
+size attribute "": width 160 size 20
+size attribute "00012": width 96 size 12
+size = 5: attribute "5" size 5
+size = -1: attribute "20" size 20
+size = -5: attribute "20" size 20
+size = 2147483647: attribute "2147483647" size 2147483647
+size = 2147483648: attribute "20" size 20
+size = 4294967295: attribute "20" size 20
+size = 4294967296: threw IndexSizeError
+size = 3.9: attribute "3" size 3
+size = x: threw IndexSizeError

@@ -343,13 +343,30 @@ fn an_opaque_response_has_no_status_or_body() {
 fn a_full_queue_is_a_network_error_for_the_page() {
     let b = bindings();
     b.evaluate(
-        "var errors = 0, xs = []; for (var i = 0; i < 70; i++) { \
+        "var errors = 0, xs = []; for (var i = 0; i < 1030; i++) { \
              var x = new XMLHttpRequest(); x.onerror = function () { errors++; }; \
              x.open('GET', '/q' + i); x.send(); xs.push(x); }",
     )
     .unwrap();
     assert_eq!(ev(&b, "errors"), "6", "requests past the queue bound fail without leaving the page");
-    assert_eq!(b.take_net_requests().len(), 64);
+    assert_eq!(b.take_net_requests().len(), 1024);
+}
+
+/// A page that starts a few hundred requests at once (JetStream 2.2's
+/// preload: 315 `fetch()` calls in one turn) has them all asked. With a
+/// queue bound of 64 the 65th and every later one failed at once with
+/// `TypeError: Failed to fetch`; Chrome 148 answers all 320 of 320.
+#[test]
+fn a_burst_of_hundreds_of_requests_is_all_queued() {
+    let b = bindings();
+    b.evaluate(
+        "var errors = 0; for (var i = 0; i < 320; i++) { \
+             fetch('/burst' + i).catch(function () { errors++; }); }",
+    )
+    .unwrap();
+    b.evaluate("0").unwrap(); // a turn for the rejections, if any
+    assert_eq!(b.take_net_requests().len(), 320);
+    assert_eq!(ev(&b, "errors"), "0");
 }
 
 #[test]

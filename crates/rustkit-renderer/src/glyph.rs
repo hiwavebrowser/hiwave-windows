@@ -29,12 +29,10 @@ pub struct GlyphKey {
     /// .960/.200/.441/.880 -- arbitrary phases on every line -- which is the
     /// mechanism behind the bimodal text diff tail.
     ///
-    /// PRODUCTION IS FROZEN AT PHASE 0 IN THIS COMMIT, DELIBERATELY. The
-    /// rasterizer still draws a phase-0 bitmap for every phase, so emitting
-    /// multi-phase keys now would mint up to SUBPIXEL_QUANTIZE BYTE-IDENTICAL
-    /// atlas entries per glyph: more memory, more eviction pressure, and not
-    /// one pixel different. The call-site flip belongs in the same commit as
-    /// the rasterizer that can honor it.
+    /// TX3: on macOS the call sites key glyphs by the quarter phase Skia
+    /// rounds each glyph origin to (`skia_glyph_origin`), and the rasterizer
+    /// draws at it (`GlyphRasterizer::with_subpixel`); the bitmap is placed
+    /// on a whole pixel. Elsewhere it is 0.
     pub subpixel_phase: u8,
     /// Which document-registered (`@font-face`) file `font_family` resolves
     /// to, from [`GlyphKey::web_face_for`]; 0 when it is a platform font.
@@ -53,6 +51,17 @@ pub struct GlyphKey {
     /// same character takes different bitmaps under different faces (`©` in
     /// Helvetica, `©️` in Apple Color Emoji), so the face is in the key.
     pub face: FaceKey,
+    /// The mask's coverage law, from [`coverage_for`]: 0 is the undilated
+    /// outline; `1 + b` is the dilated (CoreGraphics-smoothed) mask with
+    /// Skia's pre-blend for luminance bucket `b` baked in. Glyphs of text
+    /// in different buckets are different bitmaps, as in Skia's strike
+    /// cache (the luminance colour is part of its descriptor).
+    pub coverage: u8,
+    /// An emoji SEQUENCE drawn as one glyph (EM1): the head character and
+    /// the ones layout folded into it (recorded `Ignorable` after it), else
+    /// `None`. A family and its first member are different bitmaps under
+    /// the same `codepoint`, so the cluster is in the key.
+    pub cluster: Option<std::sync::Arc<str>>,
 }
 
 /// How a [`GlyphKey`] names its face (see [`GlyphKey::face`]).
@@ -91,8 +100,126 @@ pub struct RunGlyphKey {
     pub face: u64,
     pub glyph_id: u16,
     pub font_size: u32, // Fixed-point (size * 10), as `GlyphKey`
-    /// As `GlyphKey::subpixel_phase`, and frozen at 0 for the same reason.
+    /// As `GlyphKey::subpixel_phase`.
     pub subpixel_phase: u8,
+    /// As [`GlyphKey::coverage`].
+    pub coverage: u8,
+}
+
+/// The coverage law for a text run drawn in `rgb`: what Chrome's Skia does
+/// for A8 text on macOS (Chromium 148), for this machine's CoreGraphics
+/// smoothing behaviour (`rustkit_text::macos::smooth_behavior`, Skia's
+/// one-time `SkCTFontGetSmoothBehavior` probe). See [`coverage_for_behavior`].
+pub fn coverage_for(rgb: [u8; 3], undilated: bool) -> u8 {
+    #[cfg(target_os = "macos")]
+    {
+        coverage_for_behavior(rgb, undilated, rustkit_text::macos::smooth_behavior())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (rgb, undilated);
+        0
+    }
+}
+
+/// [`coverage_for`] for a given smoothing behaviour.
+///
+/// - `None` (smoothing has no effect: turned off in System Settings):
+///   `onFilterRec` sets hinting none for everything, so every run takes the
+///   undilated outline. Returns 0.
+///
+/// - `undilated` (`-webkit-font-smoothing: antialiased`, `text-rendering:
+///   geometricPrecision`: Blink sets hinting none): the outline's coverage,
+///   no pre-blend (`SkTypeface_Mac::onFilterRec` calls `ignorePreBlend`
+///   for unhinted A8 since `SK_GAMMA_APPLY_TO_A8` is not defined on mac).
+///   Returns 0.
+/// - otherwise the smoothed mask (`SkScalerContext_Mac::generateImage`)
+///   and the mask pre-blend of the luminance colour halved ("CoreGraphics
+///   smoothed text without subpixel coverage blitting goes from a gamma of
+///   2.0 for black foreground to a gamma of 1.0 for white foreground"),
+///   canonicalised to 3 bits (`SkTMaskGamma<3,3,3>::CanonicalColor`).
+///   Returns `1 + bucket`.
+///
+/// - `Subpixel`: the same, with the luminance colour at 3/4 instead of 1/2
+///   ("goes from a gamma of 2.0 for black foreground to a gamma of ~1.4?").
+#[cfg(target_os = "macos")]
+pub fn coverage_for_behavior(
+    rgb: [u8; 3],
+    undilated: bool,
+    behavior: rustkit_text::macos::SmoothBehavior,
+) -> u8 {
+    use rustkit_text::macos::SmoothBehavior;
+    if undilated || behavior == SmoothBehavior::None {
+        return 0;
+    }
+    // SkPaintPriv::ComputeLuminanceColor: the luminance of the colour in
+    // the sRGB colour space (SK_GAMMA_SRGB), as an 8-bit gray.
+    let lin = |c: u8| srgb_to_linear(c as f32 / 255.0);
+    let y = 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2]);
+    let lum = (255.0 * linear_to_srgb(y)).round() as u32;
+    let scaled = if behavior == SmoothBehavior::Subpixel {
+        lum * 3 / 4
+    } else {
+        lum / 2
+    };
+    1 + (scaled >> 5) as u8
+}
+
+/// The luminance colour Skia uses for a paint that is not a plain colour
+/// (a gradient): `SkPaintPriv::ComputeLuminanceColor`'s 0x7F807F.
+pub const GRADIENT_TEXT_LUMINANCE: [u8; 3] = [0x7F, 0x80, 0x7F];
+
+fn srgb_to_linear(x: f32) -> f32 {
+    if x <= 0.04045 {
+        x / 12.92
+    } else {
+        ((x + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(x: f32) -> f32 {
+    if x <= 0.003_130_8 {
+        x * 12.92
+    } else {
+        1.055 * x.max(0.0).powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Skia's mask pre-blend table for coverage law `coverage` (see
+/// [`coverage_for`]), `None` for 0: `SkTMaskGamma_build_correcting_lut`
+/// with contrast 0 (onFilterRec sets it; CoreGraphics dilates for
+/// contrast), sRGB luma (SK_GAMMA_SRGB) and the bucket's canonical colour
+/// `sk_t_scale255<3>(bucket)`.
+pub fn mask_preblend(coverage: u8) -> Option<[u8; 256]> {
+    if coverage == 0 {
+        return None;
+    }
+    let b = (coverage - 1).min(7) as u32;
+    let src_i = (b << 5) | (b << 2) | (b >> 1);
+    let src = src_i as f32 / 255.0;
+    let dst = 1.0 - src;
+    let (lin_src, lin_dst) = (srgb_to_linear(src), srgb_to_linear(dst));
+    let mut table = [0u8; 256];
+    for (i, out) in table.iter_mut().enumerate() {
+        let a = i as f32 / 255.0;
+        *out = if (src - dst).abs() < 1.0 / 256.0 {
+            (255.0 * a).round() as u8
+        } else {
+            let lin_out = lin_src * a + (1.0 - a) * lin_dst;
+            let v = linear_to_srgb(lin_out);
+            (255.0 * ((v - dst) / (src - dst))).round().clamp(0.0, 255.0) as u8
+        };
+    }
+    Some(table)
+}
+
+/// `bitmap` through `coverage`'s pre-blend (unchanged for 0).
+pub fn apply_mask_preblend(bitmap: &mut [u8], coverage: u8) {
+    if let Some(table) = mask_preblend(coverage) {
+        for v in bitmap.iter_mut() {
+            *v = table[*v as usize];
+        }
+    }
 }
 
 impl RunGlyphKey {
@@ -116,8 +243,14 @@ pub fn rasterize_run_glyph(
     #[cfg(target_os = "macos")]
     {
         let font = rustkit_text::macos::face_font(key.face, shaped_size)?;
-        rustkit_text::macos::GlyphRasterizer::for_face(font, key.raster_size())
-            .rasterize_glyph_id(key.glyph_id, 0.0)
+        let mut raster = rustkit_text::macos::GlyphRasterizer::for_face(font, key.raster_size())
+            .with_dilation(key.coverage != 0)
+            .rasterize_glyph_id(
+                key.glyph_id,
+                key.subpixel_phase as f32 / SUBPIXEL_QUANTIZE as f32,
+            )?;
+        apply_mask_preblend(&mut raster.0, key.coverage);
+        Some(raster)
     }
     #[cfg(windows)]
     {
@@ -147,6 +280,26 @@ pub fn rasterize_run_glyph(
 /// cost still grows linearly. 3 is the LCD-subpixel-triad choice and belongs
 /// to a different rendering mode, not to this key.
 pub const SUBPIXEL_QUANTIZE: u8 = 4;
+
+/// Where Chrome draws a glyph whose pen is at device x `x` (TX3): the whole
+/// pixel its bitmap is placed from, and the quarter-pixel phase it is
+/// rasterized at. Skia (Chromium 148) rounds a horizontal run's glyph origin
+/// to the nearest quarter pixel: x + `kSubpixelRound` (1/8) floored to
+/// quarters (`SkGlyphPositionRoundingSpec::HalfAxisSampleFreq`, `kX` axis;
+/// `SkPackedGlyphID::kSubPixelPosLen` = 2, so 4 phases). CfT 148: a line at
+/// x + 0.125 draws as at x + 0.25, at x + 0.875 as at x + 1.
+///
+/// macOS only, where the rasterizer draws at the phase; elsewhere the pen
+/// stays where it was and the phase is 0.
+pub fn skia_glyph_origin(x: f32) -> (f32, u8) {
+    if !cfg!(target_os = "macos") {
+        return (x, 0);
+    }
+    let quarters = ((x + 0.125) * SUBPIXEL_QUANTIZE as f32).floor() as i64;
+    let whole = quarters.div_euclid(SUBPIXEL_QUANTIZE as i64);
+    let phase = quarters.rem_euclid(SUBPIXEL_QUANTIZE as i64) as u8;
+    (whole as f32, phase)
+}
 
 /// Quantize a fractional device X into a phase bucket.
 ///
@@ -436,7 +589,7 @@ impl GlyphCache {
             return entry.clone().map(|entry| (entry, true));
         }
 
-        match Self::rasterizer_for(&key).rasterize_with_face(key.codepoint, face) {
+        match Self::raster_for(&key, face) {
             Some(rustkit_text::macos::GlyphRaster::Mask(raster)) => self
                 .insert_mask(queue, &key, raster)
                 .map(|entry| (entry, false)),
@@ -473,7 +626,7 @@ impl GlyphCache {
             return entry.clone();
         }
 
-        match Self::rasterizer_for(&key).rasterize_with_face(key.codepoint, face) {
+        match Self::raster_for(&key, face) {
             Some(rustkit_text::macos::GlyphRaster::Mask(raster)) => {
                 self.insert_mask(queue, &key, raster)
             }
@@ -529,6 +682,20 @@ impl GlyphCache {
         )
     }
 
+    /// The glyph `key` names from `face`: an emoji sequence's one glyph when
+    /// the key carries a cluster (EM1) and its face forms it, else the
+    /// character's own glyph, as layout measured it.
+    #[cfg(target_os = "macos")]
+    fn raster_for(key: &GlyphKey, face: rustkit_text::GlyphFace) -> Option<rustkit_text::macos::GlyphRaster> {
+        let rasterizer = Self::rasterizer_for(key);
+        if let Some(cluster) = key.cluster.as_deref() {
+            if let Some(raster) = rasterizer.rasterize_emoji_cluster(cluster, face) {
+                return Some(raster);
+            }
+        }
+        rasterizer.rasterize_with_face(key.codepoint, face)
+    }
+
     /// The rasterizer for the key's own font (the primary face).
     #[cfg(target_os = "macos")]
     fn rasterizer_for(key: &GlyphKey) -> rustkit_text::macos::GlyphRasterizer {
@@ -543,6 +710,8 @@ impl GlyphCache {
             key.font_weight,
             key.font_style == 1,
         )
+        .with_dilation(key.coverage != 0)
+        .with_subpixel(key.subpixel_phase as f32 / SUBPIXEL_QUANTIZE as f32)
     }
 
     /// Get or rasterize a COLOR glyph (emoji) into the RGBA atlas. Returns the
@@ -759,8 +928,9 @@ impl GlyphCache {
         &mut self,
         queue: &wgpu::Queue,
         key: &GlyphKey,
-        raster: (Vec<u8>, u32, u32, f32, f32, f32),
+        mut raster: (Vec<u8>, u32, u32, f32, f32, f32),
     ) -> Option<GlyphEntry> {
+        apply_mask_preblend(&mut raster.0, key.coverage);
         let entry = self.upload_mask(queue, key, raster)?;
         self.entries.insert(key.clone(), entry.clone());
         Some(entry)
@@ -1130,6 +1300,7 @@ pub(crate) fn rasterize_char_for_test(
     weight: u16,
 ) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
     let key = GlyphKey {
+        cluster: None,
         codepoint: c,
         font_family: family.to_string(),
         font_size: (size * 10.0) as u32,
@@ -1137,6 +1308,7 @@ pub(crate) fn rasterize_char_for_test(
         font_style: 0,
         subpixel_phase: 0,
         web_face: 0,
+        coverage: 0,
         face: FaceKey::default(),
     };
     rasterize_glyph_directwrite(&key, size)
@@ -1431,6 +1603,7 @@ mod tests {
 
     fn key_at(phase: u8) -> GlyphKey {
         GlyphKey {
+            cluster: None,
             codepoint: 'a',
             font_family: "Helvetica".to_string(),
             font_size: 160,
@@ -1438,6 +1611,7 @@ mod tests {
             font_style: 0,
             subpixel_phase: phase,
             web_face: 0,
+            coverage: 0,
             face: FaceKey::default(),
         }
     }
@@ -1454,6 +1628,7 @@ mod tests {
             data: Arc::new(bytes.to_vec()),
         };
         let key = || GlyphKey {
+            cluster: None,
             web_face: GlyphKey::web_face_for("GlyphKeyLateFont, sans-serif", 400, 0),
             font_family: "GlyphKeyLateFont, sans-serif".to_string(),
             ..key_at(0)
@@ -1579,6 +1754,7 @@ mod tests {
     #[test]
     fn test_glyph_key_hash() {
         let key1 = GlyphKey {
+            cluster: None,
             subpixel_phase: 0,
             codepoint: 'A',
             font_family: "Arial".to_string(),
@@ -1586,10 +1762,12 @@ mod tests {
             font_weight: 400,
             font_style: 0,
             web_face: 0,
+            coverage: 0,
             face: FaceKey::default(),
         };
 
         let key2 = GlyphKey {
+            cluster: None,
             subpixel_phase: 0,
             codepoint: 'A',
             font_family: "Arial".to_string(),
@@ -1597,6 +1775,7 @@ mod tests {
             font_weight: 400,
             font_style: 0,
             web_face: 0,
+            coverage: 0,
             face: FaceKey::default(),
         };
 
@@ -1606,6 +1785,7 @@ mod tests {
     #[test]
     fn test_glyph_key_different() {
         let key1 = GlyphKey {
+            cluster: None,
             subpixel_phase: 0,
             codepoint: 'A',
             font_family: "Arial".to_string(),
@@ -1613,10 +1793,12 @@ mod tests {
             font_weight: 400,
             font_style: 0,
             web_face: 0,
+            coverage: 0,
             face: FaceKey::default(),
         };
 
         let key2 = GlyphKey {
+            cluster: None,
             subpixel_phase: 0,
             codepoint: 'B',
             font_family: "Arial".to_string(),
@@ -1624,6 +1806,7 @@ mod tests {
             font_weight: 400,
             font_style: 0,
             web_face: 0,
+            coverage: 0,
             face: FaceKey::default(),
         };
 

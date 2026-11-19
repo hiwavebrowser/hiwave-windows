@@ -624,19 +624,9 @@ impl JsObject {
         // 2. Assert: Type(hint) is String and its value is either "string" or "number".
         debug_assert!(hint == PreferredType::String || hint == PreferredType::Number);
 
-        // Diverge from the spec here to make sure we aren't going to overflow the stack by converting
-        // a recursive structure
-        // We can follow v8 & SpiderMonkey's lead and return a default value for the hint in this situation
-        // (see https://repl.it/repls/IvoryCircularCertification#index.js)
-        let recursion_limiter = RecursionLimiter::new(self.as_ref());
-        if recursion_limiter.live {
-            // we're in a recursive object, bail
-            return Ok(match hint {
-                PreferredType::Number => JsValue::new(0),
-                PreferredType::String => JsValue::new(js_string!()),
-                PreferredType::Default => unreachable!("checked type hint in step 2"),
-            });
-        }
+        // HIWAVE PATCH (cyclic to-primitive): upstream answered the hint's default (0 or "") for an
+        // object already being converted. V8 does not: a user `toString` that converts its own
+        // object recurses to a RangeError, and arrays are guarded in `join` (builtins/array).
 
         // 3. If hint is "string", then
         //    a. Let methodNames be « "toString", "valueOf" ».

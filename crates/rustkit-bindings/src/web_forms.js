@@ -61,10 +61,12 @@
     // script or the user sets it (the dirty checkedness flag).
     var checks = new WeakMap();
     function radioGroup(el) {
+        // With no form owner the group is the radio's tree (HTML
+        // §4.10.5.1.16): the document, a shadow tree, or a detached one.
         var name = el.getAttribute('name'), form = el.form;
-        var scope = form || (el.isConnected ? el.ownerDocument : null);
-        if (!name || !scope) return [];
-        return Array.prototype.filter.call(scope.getElementsByTagName('input'), function (o) {
+        var scope = form || el.getRootNode();
+        if (!name || !scope || scope === el) return [];
+        return Array.prototype.filter.call(scope.querySelectorAll('input'), function (o) {
             return o !== el && o.type === 'radio' && o.getAttribute('name') === name && o.form === form;
         });
     }
@@ -74,12 +76,19 @@
         checks.set(el, v);
         noteChecked(el, v);
     }
-    accessor(Input, 'checked', function () {
-        return checks.has(this) ? checks.get(this) : this.hasAttribute('checked');
-    }, function (v) {
-        setChecked(this, !!v);
-        if (v && this.type === 'radio') radioGroup(this).forEach(function (o) { setChecked(o, false); });
-    });
+    // The checkedness itself. The engine's own changes (a click's
+    // activation, a label, a radio group) go through these two, never
+    // through the `checked` accessor below: that one is script's, and a
+    // page may have wrapped it (React's value tracker does, and takes a
+    // write it sees for a state it already knows).
+    function isChecked(el) {
+        return checks.has(el) ? checks.get(el) : el.hasAttribute('checked');
+    }
+    function check(el, v) {
+        setChecked(el, !!v);
+        if (v && el.type === 'radio') radioGroup(el).forEach(function (o) { setChecked(o, false); });
+    }
+    accessor(Input, 'checked', function () { return isChecked(this); }, function (v) { check(this, v); });
 
     // ---- activation behaviour of a click (HTML §4.10.5.1.15 checkbox,
     // §4.10.5.1.16 radio button, §4.10.4 label, §4.11.2 summary). dom.rs's
@@ -98,16 +107,39 @@
         }
         return null;
     }
-    function fire(el, type) {
-        el.dispatchEvent(new g.Event(type, { bubbles: true }));
+    // The engine's own events, click and reset. `Event` is taken now:
+    // a page that replaces `window.Event` later does not build them, and a
+    // page that replaces `click`, `reset` or `dispatchEvent` on a control,
+    // a form or a prototype does not stand in for the engine's.
+    var EventCtor = g.Event, dispatch = internals.dispatch, clickNow = internals.click, resetText = internals.reset;
+    // `input` and `change` after a click's activation: trusted, whoever
+    // made the click (Chrome 148: also after script's `click()`).
+    // What the engine adds to its own event: an own property, defined
+    // with built-ins taken now and a descriptor that inherits nothing.
+    var defineOwn = Object.defineProperty, objCreate = Object.create;
+    function own(o, k, v, open) {
+        var d = objCreate(null);
+        d.value = v; d.enumerable = true; d.writable = !!open; d.configurable = !!open;
+        defineOwn(o, k, d);
     }
-    if (internals.setActivation) internals.setActivation(function (target) {
+    function fire(el, type, init) {
+        var e = __rk.make('Event', type, init || { bubbles: true });
+        __rk.trust(e);
+        dispatch(el, e);
+    }
+    if (internals.setActivation) internals.setActivation(function (target, event) {
         var el = activationTarget(target);
         if (!el) return null;
         if (el.localName === 'label') {
             return function (ok) {
                 var c = ok ? el.control : null;
-                if (c && !c.hasAttribute('disabled')) c.click();
+                // The labeled control is focused, then clicked (Chrome for
+                // Testing 148: `focus` at the control before its `click`).
+                // The click is the engine's, trusted when the label's was.
+                if (c && !c.hasAttribute('disabled')) {
+                    if (typeof c.focus === 'function') c.focus();
+                    clickNow(c, !!(event && event.isTrusted));
+                }
             };
         }
         if (el.localName === 'summary') {
@@ -122,21 +154,21 @@
             return function (ok) {
                 var form = ok ? el.closest('form') : null;
                 if (!form) return;
-                if (isSubmitButton(el)) submit(form, el); else form.reset();
+                if (isSubmitButton(el)) submit(form, el); else resetAll(form);
             };
         }
         // Legacy-pre-activation: the control is already in its new state
         // when the click's listeners run, and a cancelled click undoes it.
-        var was = el.checked, radio = el.type === 'radio';
-        var before = radio ? radioGroup(el).filter(function (o) { return o.checked; })[0] : null;
-        el.checked = radio ? true : !was;
+        var was = isChecked(el), radio = el.type === 'radio';
+        var before = radio ? radioGroup(el).filter(isChecked)[0] : null;
+        check(el, radio ? true : !was);
         return function (ok) {
             if (!ok) {
-                el.checked = was;
-                if (before) before.checked = true;
+                check(el, was);
+                if (before) check(before, true);
                 return;
             }
-            if (el.checked === was || !el.isConnected) return;
+            if (isChecked(el) === was || !el.isConnected) return;
             fire(el, 'input');
             fire(el, 'change');
         };
@@ -211,12 +243,8 @@
         if (!o || o.disabled || (group && group.hasAttribute('disabled'))) return false;
         if (sel.multiple || sel.selectedIndex === index) return false;
         pick(sel, function (x) { return x === o; });
-        var input = new g.Event('input', { bubbles: true, composed: true });
-        input.isTrusted = true;
-        sel.dispatchEvent(input);
-        var change = new g.Event('change', { bubbles: true });
-        change.isTrusted = true;
-        sel.dispatchEvent(change);
+        fire(sel, 'input', { bubbles: true, composed: true });
+        fire(sel, 'change');
         return true;
     });
     getter(Select, 'options', function () { return collection(optionsOf(this)); });
@@ -359,9 +387,12 @@
         if (!form.isConnected) return;
         var noValidate = form.noValidate || (submitter !== null && submitter.hasAttribute('formnovalidate'));
         if (!noValidate && !validate(form)) return;
-        var e = new g.Event('submit', { bubbles: true, cancelable: true });
-        Object.defineProperty(e, 'submitter', { value: submitter, enumerable: true });
-        if (form.dispatchEvent(e)) noteSubmit(form, submitter);
+        // The engine's event (trusted, as Chrome's is whoever asked for the
+        // submission), dispatched as the engine dispatches.
+        var e = __rk.make('Event', 'submit', { bubbles: true, cancelable: true });
+        own(e, 'submitter', submitter);
+        __rk.trust(e);
+        if (dispatch(form, e)) noteSubmit(form, submitter);
     }
     // Implicit submission (HTML §4.10.21.2): Enter in a text field clicks
     // the form's default button, its first submit button. A form with none
@@ -395,20 +426,19 @@
     };
     // Reset also restores checkedness and selectedness. The dom.rs reset
     // fires the cancelable `reset` event; its answer decides.
-    var textReset = Form.reset;
-    Form.reset = function () {
-        var form = this, ok = true, dispatch = this.dispatchEvent;
-        this.dispatchEvent = function (e) { ok = dispatch.call(form, e); return ok; };
-        try { textReset.call(this); } finally { delete this.dispatchEvent; }
-        if (!ok) return;
-        descendants(this, /^(input|select)$/).forEach(function (el) {
+    // `resetAll` is the reset itself: `form.reset()` calls it, and so does
+    // a reset button's activation (not through the form's `reset` property).
+    function resetAll(form) {
+        if (!resetText(form)) return;
+        descendants(form, /^(input|select)$/).forEach(function (el) {
             if (el.localName === 'input') {
                 if (checks.delete(el)) noteChecked(el, null);
                 return;
             }
             optionsOf(el).forEach(function (o) { if (picked.delete(o)) noteChecked(o, null); });
         });
-    };
+    }
+    Form.reset = function reset() { resetAll(this); };
 
     // ---- details (HTML §4.11.1, §4.11.2): `open` is the attribute; the
     // engine renders a closed details as its summary alone. Only its first
@@ -427,10 +457,11 @@
         if (was === open) return;
         details.toggleAttribute('open', open);
         Promise.resolve().then(function () {
-            var e = new g.Event('toggle');
-            e.oldState = was ? 'open' : 'closed';
-            e.newState = open ? 'open' : 'closed';
-            details.dispatchEvent(e);
+            var e = __rk.make('Event', 'toggle');
+            own(e, 'oldState', was ? 'open' : 'closed', true);
+            own(e, 'newState', open ? 'open' : 'closed', true);
+            __rk.trust(e);
+            dispatch(details, e);
         });
     }
     if (typeof g.HTMLDetailsElement === 'function') {
@@ -439,12 +470,18 @@
         reflectString(g.HTMLDetailsElement.prototype, 'name', 'name');
     }
 
-    // ---- img size (HTML §4.8.4.3): the attributes, 0 when absent; there
-    // is no layout box to measure here.
+    // ---- img size (HTML §4.8.4.3): the attribute when there is one, else
+    // the image's own size once loaded, else 0. Chrome answers the rendered
+    // box, which needs a layout; the same number for an image CSS does not
+    // size. Read here without one: a page's load handlers read it for every
+    // card after writing a style, and the engine's forced layout of a large
+    // page is far dearer than Chrome's (E54, a recorded search page: 22 such
+    // reads were 15.7 s).
     ['width', 'height'].forEach(function (k) {
         accessor(Img, k, function () {
             var n = parseInt(this.getAttribute(k), 10);
-            return n >= 0 ? n : 0;
+            if (n >= 0) return n;
+            return (k === 'width' ? this.naturalWidth : this.naturalHeight) || 0;
         }, function (v) { this.setAttribute(k, String(v >>> 0)); });
     });
     // img.src: the `src` attribute (whatever loads an img loads this one),

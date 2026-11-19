@@ -460,3 +460,60 @@ setTimeout(function () {
         page.log()
     );
 }
+
+/// `<script src="blob:...">`: the script is the blob's text (STRESS1 row
+/// 13; JetStream 2.2 loads every benchmark this way). It was sent to the
+/// network as a `blob:` URL and failed. Chrome 148: the script runs and the
+/// element hears `load`; a revoked URL hears `error`.
+#[test]
+fn an_inserted_script_whose_src_is_a_blob_url_runs_the_blobs_text() {
+    let page = "<html><body><p id=p>x</p><script>
+window.heard = [];
+function add(url, name) {
+  var s = document.createElement('script');
+  s.src = url;
+  s.onload = function () { heard.push(name + ':load'); };
+  s.onerror = function () { heard.push(name + ':error'); };
+  document.head.appendChild(s);
+}
+var live = URL.createObjectURL(new Blob(['window.fromBlob = 7;'], { type: 'text/javascript' }));
+var gone = URL.createObjectURL(new Blob(['window.fromGone = 1;'], { type: 'text/javascript' }));
+URL.revokeObjectURL(gone);
+add(live, 'live');
+add(gone, 'gone');
+</script></body></html>";
+    let mut page = Page::load(EngineConfig::default(), vec![("/", "text/html", page.to_string())]);
+    page.turns_until("window.heard.length > 1", Duration::from_secs(5), 3);
+    assert_eq!(
+        page.js("window.heard.slice().sort().join() + ' fromBlob=' + window.fromBlob + ' fromGone=' + window.fromGone"),
+        r#"String("gone:error,live:load fromBlob=7 fromGone=undefined")"#,
+        "{}",
+        page.log()
+    );
+}
+
+/// A chain of twelve `fetch()` calls, each started when the one before is
+/// answered, begun by a script of the load (STRESS1 row 14). With the live
+/// loop behind the load, as in the app, every link is answered. The load's
+/// network step runs a fixed number of rounds and failed whatever was still
+/// asked when they ran out: the ninth link got `TypeError: Failed to fetch`
+/// and the page went on to the tenth. Chrome 148: twelve answers.
+#[test]
+fn a_fetch_chain_longer_than_the_loads_rounds_is_finished_by_the_live_loop() {
+    let page = "<html><body><p id=p>x</p><script>
+window.chain = [];
+window.done = false;
+(async function () {
+  for (var i = 1; i <= 12; i++) {
+    try { var r = await fetch('/link?n=' + i); chain.push(await r.text()); }
+    catch (e) { chain.push(i + ':' + e.name); }
+  }
+  window.done = true;
+})();
+</script></body></html>";
+    let config = EngineConfig { post_load_requests_live: true, ..EngineConfig::default() };
+    let mut page = Page::load(config, vec![("/", "text/html", page.to_string())]);
+    page.turns_until("window.done", Duration::from_secs(8), 2);
+    let want: Vec<String> = (1..=12).map(|n| format!("/link?n={n}")).collect();
+    assert_eq!(page.js("window.chain.join()"), format!("String({:?})", want.join(",")), "{}", page.log());
+}

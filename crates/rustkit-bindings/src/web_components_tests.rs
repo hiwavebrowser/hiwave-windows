@@ -181,6 +181,45 @@ fn attributes_report_only_the_observed_ones() {
     assert_eq!(ev(&b, "log.join()"), "a:null>1,a:1>2,b:null>x,a:2>null,b:x>null,b:null>");
 }
 
+// Chrome 148 (Chrome for Testing 148.0.7778.216) answers for the same steps, pinned.
+// Every writer of an attribute reacts: the native fast paths (classList, id, className)
+// and the generic ones alike.
+#[test]
+fn every_attribute_writer_reaches_attribute_changed_callback() {
+    let b = bound(PAGE);
+    b.evaluate(
+        "class XQ extends HTMLElement { static get observedAttributes() { return ['class', 'id', 'title']; } \
+             attributeChangedCallback(n, o, v) { log.push(n + ':' + o + '>' + v); } } \
+         customElements.define('x-q', XQ); var e = new XQ(); var out = []; \
+         function step(name, f) { log.length = 0; f(); out.push(name + '=' + log.join(';')); } \
+         step('cl.add', function () { e.classList.add('on'); }); \
+         step('cl.add-present', function () { e.classList.add('on'); }); \
+         step('cl.remove-absent-token', function () { e.classList.remove('zz'); }); \
+         step('cl.toggle-nochange', function () { e.classList.toggle('on', true); }); \
+         step('cl.toggle-off', function () { e.classList.toggle('on'); }); \
+         step('cl.replace', function () { e.classList.add('a'); log.length = 0; e.classList.replace('a', 'b'); }); \
+         step('className', function () { e.className = 'k'; }); \
+         step('id', function () { e.id = 'i1'; }); \
+         step('id-null', function () { e.id = null; }); \
+         step('removeAttribute-id', function () { e.removeAttribute('id'); }); \
+         step('cl.value', function () { e.classList.value = 'v'; }); \
+         step('title-setAttribute', function () { e.setAttribute('title', 't'); }); \
+         step('setAttribute-upper', function () { e.setAttribute('TITLE', 'u'); }); \
+         step('toggleAttribute', function () { e.toggleAttribute('title'); }); \
+         var f = new XQ(); log.length = 0; f.classList.remove('x'); out.push('fresh-remove=' + log.join(';')); \
+         f.classList.add(); out.push('fresh-add-noargs=' + log.join(';')); \
+         globalThis.__out = out.join('|');",
+    )
+    .unwrap();
+    assert_eq!(
+        ev(&b, "__out"),
+        "cl.add=class:null>on|cl.add-present=class:on>on|cl.remove-absent-token=class:on>on|cl.toggle-nochange=|\
+         cl.toggle-off=class:on>|cl.replace=class:a>b|className=class:b>k|id=id:null>i1|id-null=id:i1>null|\
+         removeAttribute-id=id:null>null|cl.value=class:k>v|title-setAttribute=title:null>t|\
+         setAttribute-upper=title:t>u|toggleAttribute=title:u>null|fresh-remove=|fresh-add-noargs=class:null>"
+    );
+}
+
 #[test]
 fn a_throwing_or_wrong_constructor_is_reported_and_isolated() {
     let b = bound("<html><body><x-g id=bad></x-g><x-g id=good></x-g></body></html>");

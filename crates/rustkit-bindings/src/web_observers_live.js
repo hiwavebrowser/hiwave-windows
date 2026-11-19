@@ -5,7 +5,7 @@
 // images, infinite scroll, impression tracking, responsive widgets) never
 // appeared.
 //
-// Delivery: `__rkObserversTick()` computes every observer's records from the
+// Delivery: `__rk.observersTick()` computes every observer's records from the
 // geometry as it stands and calls the callbacks. It runs from a timer after
 // the first observe() (the initial notification) unless script has written to
 // the DOM since the last layout, and the engine runs it after a layout and
@@ -55,7 +55,7 @@
             // the geometry is stale, and an element inserted since has no box
             // at all (it would read as an empty rectangle at the origin, "in
             // view"). The engine reports after the layout the write is owed.
-            if (typeof g.__rustkit_dom_dirty === 'function' && g.__rustkit_dom_dirty()) return;
+            if (typeof __rk.domDirty === 'function' && __rk.domDirty()) return;
             tick();
         }, 0);
     }
@@ -245,5 +245,5 @@
         }
         return observers.length;
     }
-    Object.defineProperty(g, '__rkObserversTick', { value: tick, configurable: true, writable: true, enumerable: false });
+    __rk.observersTick = tick;
 })(typeof globalThis === 'object' ? globalThis : this);

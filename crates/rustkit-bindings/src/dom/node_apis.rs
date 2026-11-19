@@ -79,6 +79,6 @@ pub(super) fn install(runtime: &mut JsRuntime, host: &SharedDomHost) -> Result<(
             }
         }),
     )?;
-    runtime.evaluate_script(include_str!("node_apis.js"))?;
+    runtime.evaluate_with_host(include_str!("node_apis.js"))?;
     Ok(())
 }

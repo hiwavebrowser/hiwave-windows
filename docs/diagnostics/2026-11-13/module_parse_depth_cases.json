@@ -1,0 +1,8 @@
+{
+ "module_nested_array_source": "'export default typeof ' + '['.repeat(200000) + ']'.repeat(200000) + ';'",
+ "module_nested_parens": "'export default typeof ' + '('.repeat(200000) + '1' + ')'.repeat(200000) + ';'",
+ "module_nested_blocks": "'{'.repeat(200000) + '}'.repeat(200000) + ' export default 1;'",
+ "module_nested_functions": "'export default typeof ' + '(function(){'.repeat(200000) + '})'.repeat(200000) + ';'",
+ "module_nested_template": "'export default typeof ' + '`' + '${`'.repeat(200000) + '`}'.repeat(200000) + '`' + ';'",
+ "module_shallow_ok": "'export default typeof ' + '['.repeat(10) + ']'.repeat(10) + ';'"
+}

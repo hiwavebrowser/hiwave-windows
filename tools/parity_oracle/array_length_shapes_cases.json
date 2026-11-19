@@ -1,0 +1,80 @@
+{
+ "cases": [
+  {
+   "name": "subclass_after_fake",
+   "js": "(function(){function reset(a){a.length=0};class Q extends Array{};var f=Object.create(Q.prototype);Object.defineProperty(f,'length',{value:2,writable:true});reset(f);reset(f);var q=new Q();q.push(1,2);reset(q);return JSON.stringify([f.length,q.length,q[0],Array.isArray(f)])})()",
+   "chrome": "[0,0,null,false]"
+  },
+  {
+   "name": "subclass_loop",
+   "js": "(function(){function reset(a){a.length=0};class Q extends Array{};var q=new Q(),r='';for(var i=0;i<4;i++){q.push(i,i);reset(q);r+=q.length+':'+q[0]+',';}return r})()",
+   "chrome": "0:undefined,0:undefined,0:undefined,0:undefined,"
+  },
+  {
+   "name": "object_create_array_proto",
+   "js": "(function(){function reset(a){a.length=0};var p=[];var o=Object.create(p);o.length=3;reset(o);reset(o);var a=[1,2,3];reset(a);reset(a);return JSON.stringify([o.length,Object.hasOwn(o,'length'),p.length,a.length,a[0]])})()",
+   "chrome": "[0,true,0,0,null]"
+  },
+  {
+   "name": "object_create_then_array_site",
+   "js": "(function(){function reset(a){a.length=0};var o=Object.create(Array.prototype);Object.defineProperty(o,'length',{value:1,writable:true});for(var i=0;i<3;i++)reset(o);var a=[1,2,3];reset(a);a.push(9);return JSON.stringify([a.length,a[0],a[1]])})()",
+   "chrome": "[1,9,null]"
+  },
+  {
+   "name": "increment_length",
+   "js": "(function(){var q=[1,2,3],r='';for(var i=0;i<3;i++){q.length++;r+=q.length+(1 in q?'y':'n');q.length-=2;r+=q.length+JSON.stringify(q)+',';}return r})()",
+   "chrome": "4y2[1,2],3y1[1],2n0[],"
+  },
+  {
+   "name": "plus_eq_length",
+   "js": "(function(){var q=[1,2,3,4,5],r='';for(var i=0;i<3;i++){q.length+=-1;r+=q.length+':'+q[q.length]+',';}return r})()",
+   "chrome": "4:undefined,3:undefined,2:undefined,"
+  },
+  {
+   "name": "sloppy_frozen",
+   "js": "(function(){var q=[1,2,3],r='';for(var i=0;i<3;i++){if(i==1)Object.freeze(q);q.length=i;r+=q.length+JSON.stringify(q)+',';}return r})()",
+   "chrome": "0[],0[],0[],"
+  },
+  {
+   "name": "sloppy_sealed",
+   "js": "(function(){var q=[1,2,3],r='';Object.seal(q);for(var i=0;i<3;i++){q.length=i;r+=q.length+JSON.stringify(q)+',';}return r})()",
+   "chrome": "3[1,2,3],3[1,2,3],3[1,2,3],"
+  },
+  {
+   "name": "nonwritable_length",
+   "js": "(function(){var q=[1,2,3],r='';for(var i=0;i<3;i++){if(i==1)Object.defineProperty(q,'length',{writable:false});q.length=0;r+=q.length+',';}return r})()",
+   "chrome": "0,0,0,"
+  },
+  {
+   "name": "nonwritable_strict",
+   "js": "(function(){'use strict';var q=[1,2,3],r='';for(var i=0;i<3;i++){if(i==1)Object.defineProperty(q,'length',{writable:false});try{q.length=0;r+='ok'}catch(e){r+=e.name}r+=q.length+',';}return r})()",
+   "chrome": "ok0,TypeError0,TypeError0,"
+  },
+  {
+   "name": "nonconfig_element",
+   "js": "(function(){var q=[1,2,3],r='';for(var i=0;i<2;i++){q.length=3;Object.defineProperty(q,1,{value:'x',configurable:false});q.length=0;r+=q.length+JSON.stringify(q)+',';}return r})()",
+   "chrome": "2[1,\"x\"],2[1,\"x\"],"
+  },
+  {
+   "name": "length_object_value",
+   "js": "(function(){var q=[1,2],r='';for(var i=0;i<3;i++){try{q.length={valueOf(){q.push(7);return 1}};r+=q.length+JSON.stringify(q)}catch(e){r+=e.name}r+=',';}return r})()",
+   "chrome": "1[1],1[1],1[1],"
+  },
+  {
+   "name": "length_object_then_push",
+   "js": "(function(){var q=[1,2],r='';var n=0;for(var i=0;i<3;i++){q.length={valueOf(){n++;return 1}};q.push(5);r+=q.length+JSON.stringify(q)+n+',';}return r})()",
+   "chrome": "2[1,5]2,2[1,5]4,2[1,5]6,"
+  },
+  {
+   "name": "arraylike_length_object",
+   "js": "(function(){var o={0:'a',1:'b'};o.length={valueOf(){o.z=1;o[0]='c';return 2}};return Array.prototype.join.call(o,'-')+o.z})()",
+   "chrome": "c-b1"
+  },
+  {
+   "name": "subclass_length_object",
+   "js": "(function(){function setl(a,v){a.length=v};class Q extends Array{};var f=Object.create(Q.prototype);Object.defineProperty(f,'length',{value:2,writable:true});setl(f,1);setl(f,1);var q=new Q();q.push(1,2,3);var r='';try{setl(q,{valueOf(){q[5]=9;return 1}});q.push(4);r=q.length+JSON.stringify(q)}catch(e){r=e.name}return r})()",
+   "chrome": "2[1,4]"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

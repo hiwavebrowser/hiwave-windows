@@ -1,0 +1,43 @@
+<!doctype html><html><head></head><body><div id="host"></div><template id="t"><noscript>T</noscript></template>
+<script>
+window.report = function () {
+  var out = [], TEXT = '</noscript><img src=x onerror=1>&';
+  var inert = new DOMParser().parseFromString('<body></body>', 'text/html');
+  var made = document.implementation.createHTMLDocument('');
+  function ns(doc) { var n = doc.createElement('noscript'); n.textContent = TEXT; return n; }
+  function line(label, n) { out.push(label + ': ' + n.outerHTML); }
+  // Made by each document, detached.
+  line('page, detached', ns(document));
+  line('DOMParser doc, detached', ns(inert));
+  line('createHTMLDocument doc, detached', ns(made));
+  line('template content doc, detached', ns(document.getElementById('t').content.ownerDocument));
+  // Under a detached parent element, a fragment, a shadow root.
+  var d = document.createElement('div'); d.appendChild(ns(document)); out.push('page, under a detached div: ' + d.innerHTML);
+  var f = document.createDocumentFragment(); var fd = document.createElement('div'); f.appendChild(fd); fd.appendChild(ns(document)); out.push('page, in a fragment: ' + fd.innerHTML);
+  var di = inert.createElement('div'); di.appendChild(ns(inert)); out.push('DOMParser doc, under a detached div: ' + di.innerHTML);
+  // adoptNode: the node moves to the adopting document.
+  line('DOMParser node adopted by page, detached', document.adoptNode(ns(inert)));
+  line('page node adopted by DOMParser doc, detached', inert.adoptNode(ns(document)));
+  // importNode: a copy owned by the importing document.
+  line('DOMParser node imported by page', document.importNode(ns(inert), true));
+  line('page node imported by DOMParser doc', inert.importNode(ns(document), true));
+  // cloneNode: the copy keeps the original's document.
+  line('page node cloned', ns(document).cloneNode(true));
+  line('DOMParser node cloned', ns(inert).cloneNode(true));
+  // Appended across documents (implicit adoption).
+  var h = document.getElementById('host'); var x = ns(inert); h.appendChild(x); line('DOMParser node appended into page', x);
+  var y = ns(document); inert.body.appendChild(y); line('page node appended into DOMParser doc', y);
+  inert.body.removeChild(y); line('page node appended into DOMParser doc then removed', y);
+  h.removeChild(x); line('DOMParser node appended into page then removed', x);
+  // innerHTML parsed by a detached element of each document.
+  var pd = document.createElement('div'); pd.innerHTML = '<noscript><b>x</b></noscript>'; out.push('page detached div innerHTML set: ' + pd.innerHTML);
+  var id = inert.createElement('div'); id.innerHTML = '<noscript><b>x</b></noscript>'; out.push('DOMParser detached div innerHTML set: ' + id.innerHTML);
+  // Template content and a clone of it.
+  var tc = document.getElementById('t').content; var tn = tc.querySelector('noscript'); tn.textContent = TEXT; line('template content', tn);
+  var cl = tc.cloneNode(true).querySelector('noscript'); line('template content cloned', cl);
+  var im = document.importNode(tc, true).querySelector('noscript'); line('template content imported by page', im);
+  // ownerDocument, to show which document owns each.
+  out.push('owner: ' + [ns(inert).ownerDocument === inert, document.adoptNode(ns(inert)).ownerDocument === document, document.importNode(ns(inert), true).ownerDocument === document, ns(inert).cloneNode(true).ownerDocument === inert, tn.ownerDocument === document].join(' '));
+  return out.join('\n');
+};
+</script></body></html>

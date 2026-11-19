@@ -121,6 +121,22 @@ pub struct Compositor {
 }
 
 impl Compositor {
+    #[cfg(feature = "test-support")]
+    /// A compositor that shares this one's GPU instance, adapter, device and queue
+    /// and has its own empty surface and headless-texture maps. For tests: building
+    /// a device costs ~0.15 s and used to be paid by every engine a test builds.
+    pub fn share_device(&self) -> Self {
+        Self {
+            instance: self.instance.clone(),
+            adapter: self.adapter.clone(),
+            device: Arc::clone(&self.device),
+            queue: Arc::clone(&self.queue),
+            surfaces: RwLock::new(HashMap::new()),
+            headless_textures: RwLock::new(HashMap::new()),
+            config: self.config.clone(),
+        }
+    }
+
     /// Create a new compositor with default configuration.
     pub fn new() -> Result<Self, CompositorError> {
         Self::with_config(CompositorConfig::default())
@@ -166,6 +182,8 @@ impl Compositor {
         .ok_or_else(|| CompositorError::DeviceCreation("No suitable GPU adapter found (tried hardware and software fallback)".into()))?;
 
         info!(adapter = ?adapter.get_info().name, "GPU adapter selected");
+        // A software adapter waits for each submission (see `rustkit_renderer::settle_submission`).
+        rustkit_renderer::set_settle_submissions(adapter.get_info().device_type == wgpu::DeviceType::Cpu);
 
         // Create device and queue
         let (device, queue) = pollster::block_on(async {
@@ -455,7 +473,8 @@ impl Compositor {
                 });
             }
 
-            self.queue.submit(std::iter::once(encoder.finish()));
+            let index = self.queue.submit(std::iter::once(encoder.finish()));
+            rustkit_renderer::settle_submission(&self.device, index);
 
             trace!(?view_id, "Rendered solid color to headless texture");
             return Ok(());
@@ -501,7 +520,8 @@ impl Compositor {
             });
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let index = self.queue.submit(std::iter::once(encoder.finish()));
+        rustkit_renderer::settle_submission(&self.device, index);
         output.present();
 
         trace!(?view_id, "Rendered solid color");
@@ -680,7 +700,8 @@ impl Compositor {
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let index = self.queue.submit(std::iter::once(encoder.finish()));
+        rustkit_renderer::settle_submission(&self.device, index);
         let slice = staging.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -828,7 +849,8 @@ impl Compositor {
             },
         );
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let index = self.queue.submit(std::iter::once(encoder.finish()));
+        rustkit_renderer::settle_submission(&self.device, index);
 
         // Map and read the buffer
         let buffer_slice = staging_buffer.slice(..);
@@ -979,7 +1001,8 @@ impl Compositor {
             },
         );
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let index = self.queue.submit(std::iter::once(encoder.finish()));
+        rustkit_renderer::settle_submission(&self.device, index);
 
         // Map and read the buffer
         let buffer_slice = staging_buffer.slice(..);
@@ -1078,6 +1101,41 @@ mod tests {
     fn new_compositor_with(config: CompositorConfig) -> Result<Compositor, CompositorError> {
         let _gpu_init = gpu_init();
         Compositor::with_config(config)
+    }
+
+    /// On a software adapter every submission is waited for before the call returns (see
+    /// `rustkit_renderer::settle_submission`, Windows row WARP-ACCUMULATION). Each queue submit in the compositor, the
+    /// renderer and the canvas keeps its index and settles it in the next statement.
+    #[test]
+    fn every_submit_settles_on_a_software_adapter() {
+        let marker = ["fn every_submit_settles", "_on_a_software_adapter"].concat();
+        for (file, source) in [
+            ("rustkit-compositor/src/lib.rs", include_str!("lib.rs")),
+            ("rustkit-renderer/src/lib.rs", include_str!("../../rustkit-renderer/src/lib.rs")),
+            ("rustkit-renderer/src/canvas_gpu.rs", include_str!("../../rustkit-renderer/src/canvas_gpu.rs")),
+        ] {
+            let source = source.replace("\r\n", "\n");
+            let code = source.split(marker.as_str()).next().unwrap_or("");
+            let mut submits = 0;
+            for (at, _) in code.match_indices(".submit(") {
+                // A queue's submit (`queue.submit(` or `.queue` then `.submit(` on the next line).
+                if !code[..at].trim_end().ends_with("queue") {
+                    continue;
+                }
+                submits += 1;
+                let start = code[..at].rfind(|c| c == ';' || c == '{' || c == '}').map_or(0, |i| i + 1);
+                let end = at + code[at..].find(';').expect("statement end");
+                let statement = code[start..end].trim();
+                assert!(statement.starts_with("let index ="), "{file}: a submit's index is not kept: {statement}");
+                let next = code[end + 1..].trim_start();
+                assert!(
+                    next.starts_with("settle_submission(&") || next.starts_with("crate::settle_submission(&")
+                        || next.starts_with("rustkit_renderer::settle_submission(&"),
+                    "{file}: a submit is not settled: {statement}"
+                );
+            }
+            assert!(submits > 0, "{file} has no queue submits; update this pin");
+        }
     }
 
     #[test]

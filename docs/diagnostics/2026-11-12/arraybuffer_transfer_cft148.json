@@ -1,0 +1,20 @@
+{
+ "shapes": "function,function,function,0,0",
+ "transfer_same_length": "0,true,4,false,1,2,3,4,false",
+ "transfer_grow": "5,1,2,0,0,0",
+ "transfer_shrink": "2,1,2",
+ "transfer_zero": "true,0,false",
+ "view_after_transfer": "0,0,0,true,true",
+ "detached_twice": "TypeError",
+ "slice_detached": "TypeError",
+ "new_view_on_detached": "TypeError",
+ "byteLength_detached": "0,0,false",
+ "resizable_transfer": "true,16,4,true",
+ "resizable_to_fixed": "false,4,4",
+ "fixed_to_fixed": "false,6",
+ "non_buffer_this": "TypeError",
+ "bad_length": "RangeError",
+ "dataview_after": "TypeError",
+ "dataview_props_after": "TypeError",
+ "structured_detached_flag": "0,"
+}

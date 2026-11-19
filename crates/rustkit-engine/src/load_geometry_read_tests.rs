@@ -167,3 +167,53 @@ fn a_chart_sized_from_a_resize_observer_frame_callback_gets_its_container_on_the
         "Chromium 143 at 800x600"
     );
 }
+
+/// CH2.E10b (report x6; docs/diagnostics/2026-11-09/ch2_e10b_canvas_container_size.html):
+/// canvases sized from one query of a 40px-high relative parent, the way Chart.js 4.4's
+/// getMaximumSize does, at three moments: at parse time, in a microtask after
+/// DOMContentLoaded, and by clientWidth/Height and getComputedStyle. Chrome 143 at 800x600:
+/// every canvas 800x40.
+#[test]
+fn canvases_sized_from_a_parent_query_get_the_parent_at_load_with_no_pump() {
+    let page = "<!doctype html><html><head><style>body{margin:0}.c{position:relative;height:40px;margin-bottom:4px}\
+        canvas{display:block;background:#08f}</style></head><body>\
+        <div class=c><canvas id=p></canvas></div><div class=c><canvas id=a></canvas></div>\
+        <div class=c><canvas id=b></canvas></div><div class=c><canvas id=g></canvas></div>\
+        <div id=out>x</div><script>\
+        function size(id,f){var c=document.getElementById(id),w=f(c.parentNode);c.style.width=w[0]+'px';c.style.height=w[1]+'px';c.width=w[0];c.height=w[1];}\
+        function rect(p){var r=p.getBoundingClientRect();return[r.width,r.height];}\
+        size('p',rect);\
+        document.addEventListener('DOMContentLoaded',function(){Promise.resolve().then(function(){\
+          size('a',rect);size('b',function(p){return[p.clientWidth,p.clientHeight];});\
+          size('g',function(p){var s=getComputedStyle(p);return[parseFloat(s.width),parseFloat(s.height)];});\
+          var v=['p','a','b','g'].map(function(i){var c=document.getElementById(i);return i+'='+c.width+'x'+c.height;});\
+          document.getElementById('out').textContent='R:'+v.join(' ');});});\
+        </script></body></html>";
+    let (mut engine, view) = load_html(page);
+    assert_eq!(out(&mut engine, view), "R:p=800x40 a=800x40 b=800x40 g=800x40");
+}
+
+/// The real Chart.js 4.4 the app ships, with report.html's container CSS, built at parse time and
+/// in a microtask after DOMContentLoaded, canvases read at the end of the load with no pump.
+#[test]
+fn real_chart_js_sizes_its_canvases_from_the_container_at_load() {
+    const CHART: &str = include_str!("../../hiwave-app/src/ui/chart.umd.min.js");
+    let page = format!("<!doctype html><html><head><style>body{{margin:0;padding:20px}}\
+        .chart-container{{position:relative;height:300px;width:100%}}</style></head><body>\
+        <div class=chart-container><canvas id=activityChart></canvas></div>\
+        <div class=chart-container><canvas id=protectionChart></canvas></div>\
+        <div id=out>x</div><script>{CHART}</script><script>\
+        function mk(id){{return new Chart(document.getElementById(id).getContext('2d'),{{type:'line',\
+          data:{{labels:['a','b'],datasets:[{{data:[1,2]}}]}},options:{{responsive:true,maintainAspectRatio:false,animation:false}}}});}}\
+        mk('activityChart');\
+        document.addEventListener('DOMContentLoaded',function(){{Promise.resolve().then(function(){{mk('protectionChart');\
+          var v=['activityChart','protectionChart'].map(function(i){{var c=document.getElementById(i);return i+'='+c.width+'x'+c.height+'/'+c.style.width+'x'+c.style.height;}});\
+          document.getElementById('out').textContent='R:'+v.join(' ');}});}});\
+        </script></body></html>");
+    let (mut engine, view) = load_html(&page);
+    // 800 wide minus the body's 20px padding each side, 300 high, at parse time and in the microtask.
+    assert_eq!(
+        out(&mut engine, view),
+        "R:activityChart=760x300/760pxx300px protectionChart=760x300/760pxx300px"
+    );
+}

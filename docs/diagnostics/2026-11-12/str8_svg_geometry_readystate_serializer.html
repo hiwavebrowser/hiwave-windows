@@ -1,0 +1,104 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>STR-8 / STR-11: SVG geometry, readyState, XMLSerializer, FileReader</title>
+<script>
+var seen = [];
+seen.push('classic:' + document.readyState);
+document.addEventListener('readystatechange', function () { seen.push('rsc:' + document.readyState); });
+document.addEventListener('DOMContentLoaded', function () { seen.push('dcl:' + document.readyState); });
+window.addEventListener('load', function () { seen.push('load:' + document.readyState); });
+</script>
+<script type="module">seen.push('module:' + document.readyState);</script>
+<script defer src="str8_defer.js"></script>
+</head><body>
+<svg id="root" width="300" height="200" viewBox="0 0 300 200">
+  <rect id="g_rect" x="5" y="6" width="30" height="20"/>
+  <rect id="g_rrect" x="5" y="6" width="30" height="20" rx="4"/>
+  <circle id="g_circle" cx="50" cy="60" r="10"/>
+  <ellipse id="g_ellipse" cx="80" cy="60" rx="20" ry="10"/>
+  <line id="g_line" x1="10" y1="100" x2="40" y2="140"/>
+  <polyline id="g_polyline" points="100,10 130,10 130,50"/>
+  <polygon id="g_polygon" points="150,10 180,10 180,50"/>
+  <path id="g_path_lines" d="M10 150 L 110 150 L 110 190"/>
+  <path id="g_path_closed" d="M200 100 h 30 v 40 z"/>
+  <path id="g_path_cubic" d="M10 10 C 20 20, 40 20, 50 10"/>
+  <path id="g_path_quad" d="M10 80 Q 30 40 50 80 T 90 80"/>
+  <path id="g_path_arc" d="M200 150 A 20 10 0 0 1 240 150"/>
+  <path id="g_path_two" d="M0 0 L 10 0 M 20 0 L 20 30"/>
+  <path id="g_path_empty" d=""/>
+  <rect id="g_rect_tf" x="0" y="0" width="10" height="10" transform="translate(100 100) scale(2)"/>
+  <g id="g_group"><rect x="250" y="10" width="10" height="10"/><rect x="270" y="30" width="10" height="20" transform="translate(5 5)"/></g>
+  <g id="g_group_empty"></g>
+</svg>
+<div id="ser_div" class="a&quot;b" title="x&lt;y">t &amp; u<br><span>s</span><!--c--></div>
+<script>
+// Everything below is read by the test (and by the Chrome probe) through
+// window.report(), after load and after the FileReader events have fired.
+var GEOM = ['g_rect','g_rrect','g_circle','g_ellipse','g_line','g_polyline','g_polygon','g_path_lines','g_path_closed','g_path_cubic','g_path_quad','g_path_arc','g_path_two','g_path_empty','g_rect_tf','g_group','g_group_empty','root'];
+function r2(n) { return Math.round(n * 100) / 100; }
+function attempt(f) { try { return f(); } catch (e) { return 'THROWS ' + e.name; } }
+var fr = [];
+function readers() {
+    if (typeof FileReader !== 'function') { fr.push('FileReader ' + typeof FileReader); return; }
+    var blob = new Blob(['héllo ', 'w'], { type: 'text/plain' });
+    var a = new FileReader();
+    fr.push('initial:' + a.readyState + ':' + a.result + ':' + a.error);
+    fr.push('consts:' + FileReader.EMPTY + FileReader.LOADING + FileReader.DONE + a.DONE);
+    ['loadstart', 'progress', 'load', 'loadend', 'error', 'abort'].forEach(function (t) {
+        a.addEventListener(t, function (e) { fr.push('text ' + t + ':' + a.readyState + ':' + (typeof a.result) + ':' + (e.target === a) + ':' + e.lengthComputable + ':' + e.loaded + '/' + e.total); });
+    });
+    a.onload = function () { fr.push('text result:' + a.result); };
+    a.readAsText(blob);
+    fr.push('after call:' + a.readyState + ':' + a.result);
+    fr.push('second read:' + attempt(function () { a.readAsText(blob); return 'ok'; }));
+    var b = new FileReader();
+    b.onloadend = function () { fr.push('dataurl:' + b.result); };
+    b.readAsDataURL(blob);
+    var c = new FileReader();
+    c.onload = function () { fr.push('buffer:' + (c.result instanceof ArrayBuffer) + ':' + c.result.byteLength + ':' + Array.prototype.join.call(new Uint8Array(c.result), ',')); };
+    c.readAsArrayBuffer(blob);
+    var d = new FileReader();
+    d.onabort = function () { fr.push('abort event:' + d.readyState + ':' + d.result); };
+    d.onload = function () { fr.push('aborted read loaded'); };
+    d.onloadend = function () { fr.push('abort loadend:' + d.readyState); };
+    d.readAsText(blob);
+    d.abort();
+    fr.push('after abort:' + d.readyState + ':' + d.result);
+    fr.push('not a blob:' + attempt(function () { new FileReader().readAsText('x'); return 'ok'; }));
+}
+readers();
+window.report = function () {
+    var out = [];
+    out.push('readyState ' + seen.join(' '));
+    GEOM.forEach(function (id) {
+        var el = document.getElementById(id);
+        out.push('bbox ' + id + ' ' + attempt(function () { var b = el.getBBox(); return [r2(b.x), r2(b.y), r2(b.width), r2(b.height)].join(' '); }));
+    });
+    GEOM.forEach(function (id) {
+        var el = document.getElementById(id);
+        out.push('length ' + id + ' ' + attempt(function () { return r2(el.getTotalLength()); }));
+    });
+    ['g_line', 'g_path_lines', 'g_path_two', 'g_rect', 'g_circle'].forEach(function (id) {
+        var el = document.getElementById(id);
+        [0, 25, 1000, -5].forEach(function (at) {
+            out.push('point ' + id + ' ' + at + ' ' + attempt(function () { var p = el.getPointAtLength(at); return r2(p.x) + ' ' + r2(p.y); }));
+        });
+    });
+    out.push('bbox type ' + attempt(function () { var b = document.getElementById('g_rect').getBBox(); return Object.prototype.toString.call(b) + ' ' + (typeof SVGRect) + ' ' + (b instanceof DOMRect); }));
+    out.push('inherit ' + attempt(function () { return [typeof SVGGraphicsElement, typeof SVGGeometryElement, typeof SVGPathElement, document.getElementById('g_path_lines') instanceof SVGGeometryElement, document.getElementById('g_group') instanceof SVGGraphicsElement, document.getElementById('g_group') instanceof SVGGeometryElement, 'getTotalLength' in document.getElementById('g_group'), 'getBBox' in document.getElementById('ser_div')].join(' '); }));
+    out.push('xs typeof ' + typeof XMLSerializer);
+    var xs = attempt(function () { return new XMLSerializer(); });
+    function ser(label, node) { out.push('xs ' + label + ' ' + attempt(function () { return xs.serializeToString(node()); })); }
+    ser('div', function () { return document.getElementById('ser_div'); });
+    ser('text', function () { return document.createTextNode('a<b>&"c'); });
+    ser('comment', function () { return document.createComment('x'); });
+    ser('svg rect', function () { return document.getElementById('g_rect'); });
+    ser('svg group', function () { return document.getElementById('g_group_empty'); });
+    ser('fragment', function () { var f = document.createDocumentFragment(); f.appendChild(document.createElement('b')); f.appendChild(document.createTextNode('z')); return f; });
+    ser('detached', function () { var e = document.createElement('input'); e.setAttribute('value', "a'b\"c\n"); return e; });
+    ser('template doc', function () { return new DOMParser().parseFromString('<p>x', 'text/html'); });
+    ser('not a node', function () { return {}; });
+    fr.forEach(function (l) { out.push('fr ' + l); });
+    return out.join('\n');
+};
+</script>
+</body></html>

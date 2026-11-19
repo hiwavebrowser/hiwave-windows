@@ -330,6 +330,8 @@ impl Document {
             return Ok(existing);
         }
         let root = self.create_node(NodeType::DocumentFragment);
+        // A shadow root is in its host's document.
+        root.set_owner(host.owner_document_id());
         *root.shadow.borrow_mut() = Some(ShadowLink::Host(Rc::downgrade(host), init, declarative));
         *host.shadow.borrow_mut() = Some(ShadowLink::Root(root.clone()));
         self.shadow_roots.set(self.shadow_roots.get() + 1);

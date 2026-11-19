@@ -1070,7 +1070,9 @@ impl JsValue {
 
             // We also inline the call to `to_string`, removing the
             // double match against `self.variant()`.
-            JsVariant::Float64(float) => Ok(JsString::from(float).into()),
+            // HIWAVE PATCH (js-perf1): a whole-number double in the array-index range is the index
+            // itself; going through its string and parsing that back cost an allocation per read.
+            JsVariant::Float64(float) => Ok(PropertyKey::from_f64_key(float)),
             JsVariant::Undefined => Ok(js_string!("undefined").into()),
             JsVariant::Null => Ok(js_string!("null").into()),
             JsVariant::Boolean(true) => Ok(js_string!("true").into()),

@@ -26,6 +26,7 @@ use boa_gc::{Finalize, Trace};
 use boa_macros::{js_str, utf16};
 use boa_parser::lexer::regex::RegExpFlags;
 use regress::{Flags, Range, Regex};
+use std::{cell::RefCell, rc::Rc};
 use std::str::FromStr;
 
 use super::{BuiltInBuilder, BuiltInConstructor, IntrinsicObject};
@@ -35,13 +36,76 @@ pub(crate) use regexp_string_iterator::RegExpStringIterator;
 #[cfg(test)]
 mod tests;
 
+/// HIWAVE PATCH (regex-literal-cache): per code block, the compiled record of each regex literal
+/// it has evaluated, keyed by the literal's pattern and flags constant indexes.
+pub(crate) type LiteralCache = RefCell<Vec<(u32, u32, RegExp)>>;
+
+// HIWAVE PATCH (regex-input-copy): `regress` matches UCS-2 or UTF-16, not Latin-1, so a Latin-1
+// input is copied to UCS-2 for the matcher. Copying it for every match made a global match over a long
+// string quadratic (each step copied the whole input). The last copy is kept, with the string it came
+// from (so its storage cannot be reused while the copy is kept), and reused while the same string is
+// matched; a different string replaces it, so at most one copy is alive per thread. Short inputs are
+// copied each time: that costs nothing. The kept pair would pin a page's string after the page drops
+// it, so the host releases it when a script turn ends (`release_kept_input`), and an input longer than
+// `KEEP_UP_TO` is never kept (copied for each match, as before; the turn budget stops a long loop of
+// them): what a thread can hold is bounded on paths that arm no turn too.
+thread_local! {
+    static LATIN1_INPUT: RefCell<Option<(JsString, Rc<[u16]>)>> =
+        const { RefCell::new(None) };
+}
+
+/// How many UCS-2 code units this thread keeps for a Latin-1 regexp input (see `LATIN1_INPUT`); 0 when
+/// none is kept. For tests.
+#[doc(hidden)]
+#[must_use]
+pub fn kept_input_units() -> usize {
+    LATIN1_INPUT.with(|cell| cell.borrow().as_ref().map_or(0, |(_, units)| units.len()))
+}
+
+/// Drop the UCS-2 copy of a Latin-1 regexp input this thread keeps, and the string it holds (see
+/// `LATIN1_INPUT`). The host calls it when a script turn ends.
+pub fn release_kept_input() {
+    let kept = LATIN1_INPUT.with(|cell| cell.borrow_mut().take());
+    drop(kept);
+}
+
+/// The UCS-2 code units of `input`, a Latin-1 string (see `LATIN1_INPUT`).
+fn latin1_as_ucs2(input: &JsString) -> Rc<[u16]> {
+    const KEEP_FROM: usize = 256;
+    const KEEP_UP_TO: usize = 1 << 24;
+    let same_storage = |a: &JsString, b: &JsString| match (a.as_str().variant(), b.as_str().variant()) {
+        (JsStrVariant::Latin1(x), JsStrVariant::Latin1(y)) => x.as_ptr() == y.as_ptr() && x.len() == y.len(),
+        _ => false,
+    };
+    if input.len() < KEEP_FROM {
+        return input.to_vec().into();
+    }
+    if input.len() > KEEP_UP_TO {
+        // A different string: what was kept goes, as it would if this one were kept.
+        release_kept_input();
+        return input.to_vec().into();
+    }
+    LATIN1_INPUT.with(|cell| {
+        let mut kept = cell.borrow_mut();
+        if let Some((string, units)) = kept.as_ref()
+            && same_storage(string, input)
+        {
+            return units.clone();
+        }
+        let units: Rc<[u16]> = input.to_vec().into();
+        *kept = Some((input.clone(), units.clone()));
+        units
+    })
+}
+
 /// The internal representation of a `RegExp` object.
 #[derive(Debug, Clone, Trace, Finalize, JsData)]
 // Safety: `RegExp` does not contain any objects which needs to be traced, so this is safe.
 #[boa_gc(unsafe_empty_trace)]
 pub struct RegExp {
-    /// Regex matcher.
-    matcher: Regex,
+    /// Regex matcher. HIWAVE PATCH (regex-literal-cache): shared, so every evaluation of one regex
+    /// literal uses the matcher its code block compiled once.
+    matcher: Rc<Regex>,
     flags: RegExpFlags,
     original_source: JsString,
     original_flags: JsString,
@@ -355,6 +419,8 @@ impl RegExp {
         let full_unicode =
             flags.contains(RegExpFlags::UNICODE) || flags.contains(RegExpFlags::UNICODE_SETS);
 
+        // HIWAVE PATCH (regex-literal-cache): counted, so a test can see how often a pattern compiles.
+        crate::vm::stats::count_regexp_compile();
         let matcher = if full_unicode {
             // Unicode mode (u/v flag) OR pattern has named groups:
             // compile as full Unicode codepoints.
@@ -394,11 +460,45 @@ impl RegExp {
         // 20. Set obj.[[RegExpRecord]] to rer.
         // 21. Set obj.[[RegExpMatcher]] to CompilePattern of parseResult with argument rer.
         Ok(RegExp {
-            matcher,
+            matcher: Rc::new(matcher),
             flags,
             original_source: p,
             original_flags: f,
         })
+    }
+
+    /// HIWAVE PATCH (regex-literal-cache): the object for one evaluation of a regex literal. The
+    /// pattern is compiled the first time the literal is evaluated in its code block and the record
+    /// (matcher, flags, source text) is kept in `cache`; every evaluation makes its own object, with
+    /// its own identity and its own `lastIndex`, from that record. `key` is the literal's pattern
+    /// and flags constant indexes, which identify it within the code block.
+    pub(crate) fn from_literal(
+        cache: &LiteralCache,
+        key: (u32, u32),
+        pattern: &JsString,
+        flags: &JsString,
+        context: &mut Context,
+    ) -> JsResult<JsValue> {
+        let cached = cache
+            .borrow()
+            .iter()
+            .find(|(p, f, _)| (*p, *f) == key)
+            .map(|(_, _, regexp)| regexp.clone());
+        let regexp = if let Some(regexp) = cached {
+            regexp
+        } else {
+            // Converting strings runs no script, so nothing here can re-enter the cache.
+            let regexp =
+                Self::compile_native_regexp(&pattern.clone().into(), &flags.clone().into(), context)?;
+            cache.borrow_mut().push((key.0, key.1, regexp.clone()));
+            regexp
+        };
+        let obj = context
+            .intrinsics()
+            .templates()
+            .regexp()
+            .create(regexp, vec![0.into()]);
+        Ok(obj.into())
     }
 
     /// `RegExpInitialize ( obj, pattern, flags )`
@@ -1160,7 +1260,10 @@ impl RegExp {
         let r: Option<regress::Match> = match (full_unicode, input.as_str().variant()) {
             (true | false, JsStrVariant::Latin1(_)) => {
                 // TODO: Currently regress does not support latin1 encoding.
-                let input = input.to_vec();
+                // HIWAVE PATCH (regex-input-copy): the UCS-2 copy of the input is made once and
+                // reused while the same string is matched again (each step of a global match, or a
+                // page's own `exec` loop), not once per match.
+                let input = latin1_as_ucs2(&input);
 
                 // NOTE: We can use the faster ucs2 variant since there will never be two byte unicode.
                 matcher.find_from_ucs2(&input, last_index as usize).next()
@@ -1692,7 +1795,10 @@ impl RegExp {
         // 17. Return the string-concatenation of accumulatedResult and the substring of S from nextSourcePosition.
 
         // 13. Let accumulatedResult be the empty String.
-        let mut accumulated_result = vec![];
+        // HIWAVE PATCH (string-length): shared pieces; a result over the limit is refused after every
+        // match's steps have run (Chrome 148 calls every replacer first), and is never built.
+        let mut accumulated_result = string::Pieces::deferred();
+        let mut too_long = false;
 
         // 14. Let nextSourcePosition be 0.
         let mut next_source_position = 0;
@@ -1778,7 +1884,9 @@ impl RegExp {
                     }
 
                     // ii. Let replacement be ? GetSubstitution(matched, S, position, captures, namedCaptures, replaceValue).
-                    string::get_substitution(
+                    // HIWAVE PATCH (string-length): a substitution over the limit is refused after the
+                    // remaining matches' steps, as Chrome 148 does.
+                    match string::get_substitution(
                         &matched,
                         &s,
                         position,
@@ -1786,7 +1894,13 @@ impl RegExp {
                         &named_captures,
                         replace_value,
                         context,
-                    )?
+                    )? {
+                        Some(replacement) => replacement,
+                        None => {
+                            too_long = true;
+                            js_string!()
+                        }
+                    }
                 }
             };
 
@@ -1798,8 +1912,8 @@ impl RegExp {
                 //    In such cases, the corresponding substitution is ignored.
 
                 // ii. Set accumulatedResult to the string-concatenation of accumulatedResult, the substring of S from nextSourcePosition to position, and replacement.
-                accumulated_result.extend(s.get_expect(next_source_position..position).iter());
-                accumulated_result.extend(replacement.iter());
+                accumulated_result.string(s.get_expect(next_source_position..position))?;
+                accumulated_result.string(replacement)?;
 
                 // iii. Set nextSourcePosition to position + matchLength.
                 next_source_position = position + match_length;
@@ -1807,16 +1921,14 @@ impl RegExp {
         }
 
         // 16. If nextSourcePosition ≥ lengthS, return accumulatedResult.
-        if next_source_position >= length_s {
-            return Ok(js_string!(&accumulated_result[..]).into());
-        }
-
         // 17. Return the string-concatenation of accumulatedResult and the substring of S from nextSourcePosition.
-        Ok(js_string!(
-            &JsString::from(&accumulated_result[..]),
-            &s.get_expect(next_source_position..)
-        )
-        .into())
+        if next_source_position < length_s {
+            accumulated_result.string(s.get_expect(next_source_position..))?;
+        }
+        match accumulated_result.finish() {
+            Some(result) if !too_long => Ok(result.into()),
+            _ => Err(string::String::invalid_length()),
+        }
     }
 
     /// `RegExp.prototype[ @@search ]( string )`

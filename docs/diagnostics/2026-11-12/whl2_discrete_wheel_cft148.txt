@@ -1,0 +1,8 @@
+# WHL2: discrete wheels are not held by the wheel before them.
+# Chrome for Testing 148.0.7778.216, headless 800x600, whl2_discrete_wheel.html:
+# one wheel (deltaY 100) over the page at (50, 300), then two over the fixed
+# inner scroller at (450, 50), sent through Playwright's mouse.wheel and
+# through CDP Input.dispatchMouseEvent with no wait at all. These wheels carry
+# no gesture phase. Every run, whatever the gap after the first wheel
+# (measured: the two scroller wheels 18 to 532 ms after it), ended the same:
+scrollY=100 scroller=200

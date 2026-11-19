@@ -100,9 +100,9 @@ fn container_query_answers_with_the_laid_out_width_not_the_style_width() {
     // k1: flex shrinks 500 -> 300. k2: 100% of 600 shrinks to 400 beside a
     // 200px sidebar. k3: 100% of the positioned 200px box, not of the 600px
     // parent. k4: 100% of the 200px grid column. k5: flex-shrink:0 keeps
-    // 300, so Chromium gives 15, but since HOLD 3 the walk knows widths of
-    // plain blocks only and a flex item is unknown: the query is false.
-    assert_eq!(heights, ["0", "0", "0", "0", "0"]);
+    // 300, so Chromium gives 15. Since CQ1 a flex item answers with its
+    // laid-out width (it was a fail-safe false after HOLD 3).
+    assert_eq!(heights, ["0", "0", "0", "0", "15"]);
 }
 
 /// #782 HOLD 2 (Atlas #843) and HOLD 3 (Atlas #847, review 5634168311):
@@ -303,7 +303,8 @@ fn container_query_sees_floats_in_inline_boxes_and_pseudos_and_abs_percent_paddi
 ///   (200 -> 30) and min-height (10 -> 30; 200 -> 40, min wins).
 /// - k19-k21 (fix 4): `max-width: none` / `max-height: none` after a
 ///   500px / 30px limit removes it (800px wide, 200px tall).
-const R2_PAGE: &str = include_str!("../../../docs/diagnostics/2026-10-26/css_container_query_r2.html");
+const R2_PAGE: &str =
+    include_str!("../../../docs/diagnostics/2026-10-26/css_container_query_r2.html");
 
 #[test]
 fn container_query_r2_unknown_parts_min_max_height_and_none_limits() {
@@ -355,4 +356,431 @@ const NITS_PAGE: &str =
 fn container_query_nits_name_split_and_context_roots() {
     let heights = offset_heights(NITS_PAGE, 800, 600, 9);
     assert_eq!(heights, ["0", "12", "0", "14", "14", "14", "0", "14", "14"]);
+}
+
+const CQ1_PAGE: &str =
+    include_str!("../../../docs/diagnostics/2026-11-11/css_container_query_cq1.html");
+
+/// CQ1, reduced from a real-site page whose card row is a named
+/// `@container gridrow (width >= 42rem)`: the container sits in a column
+/// flex item of a grid item of a flexed `<main>`, so the style-time
+/// estimate had no width and every query under it was false; the row
+/// stayed one column. Chromium answers with the laid-out content box
+/// (Chrome for Testing 148.0.7778.216 at 1280 x 800: `#c1` 692 wide, `#c2`
+/// a `flex: 1` item 700 wide):
+/// k1 named, 692 >= 672; k2 named, 692 < 896; k3 unnamed, the nearest
+/// container (`#c1`); k4 named, past a nearer container of another name;
+/// k5 that nearer 100px container; k6 past an element with the name but no
+/// `container-type`; k7 a named container that is itself a flex item.
+#[test]
+fn named_container_query_answers_with_the_laid_out_size_of_flex_and_grid_items() {
+    let heights = offset_heights(CQ1_PAGE, 1280, 800, 7);
+    assert_eq!(heights, ["11", "0", "13", "14", "0", "16", "17"]);
+}
+
+/// CQ1: a container query is answered again when its container resizes.
+/// The same page at 1280 x 800, then the view resized to 900: Chromium has
+/// `#c1` 312 wide, so only k7 (the 700px flex item) still holds.
+#[test]
+fn container_query_is_answered_again_when_the_container_resizes() {
+    let server = serve_routes(vec![("/", "text/html", CQ1_PAGE.to_string())]);
+    let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+    let view = engine
+        .create_headless_view(Bounds {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800,
+        })
+        .expect("view");
+    let url = Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(engine.load_url(view, url)).expect("load_url");
+    let read = |engine: &mut Engine| -> Vec<String> {
+        (1..=7)
+            .map(|k| {
+                let expr = format!("String(document.getElementById('k{k}').offsetHeight)");
+                let value = engine.execute_script(view, &expr).unwrap();
+                value
+                    .strip_prefix("String(\"")
+                    .and_then(|v| v.strip_suffix("\")"))
+                    .unwrap_or(&value)
+                    .to_string()
+            })
+            .collect()
+    };
+    assert_eq!(read(&mut engine), ["11", "0", "13", "14", "0", "16", "17"]);
+    engine
+        .resize_view(
+            view,
+            Bounds {
+                x: 0,
+                y: 0,
+                width: 900,
+                height: 800,
+            },
+        )
+        .expect("resize");
+    assert_eq!(read(&mut engine), ["0", "0", "0", "0", "0", "0", "17"]);
+}
+
+const CONTENT_SIZED_PAGE: &str =
+    include_str!("../../../docs/diagnostics/2026-11-11/css_container_query_content_sized.html");
+
+/// #1070 R1 MED 2: `container-type: inline-size` applies inline-size
+/// containment, so a container whose width comes from its contents is
+/// sized as if empty. Chrome for Testing 148.0.7778.216 gives each
+/// `padding: 0 5px` container around a 300px child a width of 10, so
+/// `(min-width: 200px)` is false in all four: a `flex: 0 0 auto` item, an
+/// `inline-block`, `width: fit-content`, and a block in a float.
+/// rustkit-layout lays them out 310 wide, so its measurement must not
+/// answer the query.
+#[test]
+fn container_query_on_a_content_sized_container_is_false() {
+    let heights = offset_heights(CONTENT_SIZED_PAGE, 1280, 800, 4);
+    assert_eq!(heights, ["0", "0", "0", "0"]);
+}
+
+/// #1070 R1 MED 1: an `inline-size` container's height answers no query,
+/// so a write that only grows it costs the builds the same write costs on
+/// the page without its `@container` rule, and no measured pass. It cost
+/// one more each time (the height counted as a moved size, and the
+/// measured pass ran again).
+#[test]
+fn a_height_change_inside_an_inline_size_container_takes_no_extra_pass() {
+    let page = |rule: &str| {
+        format!(
+            r#"<!DOCTYPE html><html><head><style>
+body {{ margin: 0 }} .c {{ container-type: inline-size; width: 400px }}
+{rule}
+</style></head><body><div class="c"><div id="k"></div><div id="grow" style="height: 10px"></div></div></body></html>"#
+        )
+    };
+    // The builds three height writes cost, and the measured passes.
+    let cost = |html: String| -> (u32, u32) {
+        let server = serve_routes(vec![("/", "text/html", html)]);
+        let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+        let view = engine
+            .create_headless_view(Bounds {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+            })
+            .expect("view");
+        let url = Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(engine.load_url(view, url)).expect("load_url");
+        let counts = |engine: &Engine| {
+            let lay = &engine.views[&view].lay;
+            (lay.layout_builds.get(), lay.container_passes.get())
+        };
+        let before = counts(&engine);
+        for h in [20, 30, 40] {
+            engine
+                .execute_script(
+                    view,
+                    &format!(
+                        "document.getElementById('grow').style.height = '{h}px'; \
+                         String(document.getElementById('k').offsetHeight)"
+                    ),
+                )
+                .unwrap();
+        }
+        let after = counts(&engine);
+        (after.0 - before.0, after.1 - before.1)
+    };
+    let with_rule = cost(page(
+        "@container (min-width: 300px) { #k { height: 11px } }",
+    ));
+    let without = cost(page(""));
+    assert_eq!(
+        with_rule,
+        (without.0, 0),
+        "builds and measured passes, against {without:?}"
+    );
+}
+
+const AUTO_MINIMUM_PAGE: &str =
+    include_str!("../../../docs/diagnostics/2026-11-11/css_container_query_auto_minimum.html");
+
+/// #1070 R1 MED (review 5861798552): inline-size containment contains a
+/// container's automatic minimum too. Two `flex: 1` containers in a 200px
+/// row, one holding a 300px box, and the same in a `1fr 1fr` grid: Chrome
+/// for Testing 148.0.7778.216 makes all four 100 wide, so `(min-width:
+/// 150px)` holds in none. Without containment the engine floors the item
+/// holding the 300px box at its content (300, and 0 for its sibling).
+#[test]
+fn a_containers_automatic_minimum_is_contained() {
+    let heights = offset_heights(AUTO_MINIMUM_PAGE, 1280, 800, 4);
+    assert_eq!(heights, ["0", "0", "0", "0"]);
+}
+
+const CONTAINED_INTRINSIC_PAGE: &str = include_str!(
+    "../../../docs/diagnostics/2026-11-11/css_container_query_contained_intrinsic.html"
+);
+
+/// CQ2: inline-size containment in intrinsic sizing. A `container-type:
+/// inline-size; padding: 0 5px` container around a 300px child contributes
+/// only its padding and border to its min- and max-content width, so the
+/// four content-sized shapes (a `flex: 0 0 auto` item, an `inline-block`,
+/// `width: fit-content`, a block in a float) are 10 wide (Chrome for Testing
+/// 148.0.7778.216), not 310. Their content box is 0, so `(max-width: 1px)`
+/// holds: Chrome gives z1..z4 7. The float's container (z4) is trusted
+/// since CQ3.
+#[test]
+fn a_size_containers_intrinsic_width_ignores_its_contents() {
+    let server = serve_routes(vec![(
+        "/",
+        "text/html",
+        CONTAINED_INTRINSIC_PAGE.to_string(),
+    )]);
+    let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+    let view = engine
+        .create_headless_view(Bounds {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800,
+        })
+        .expect("view");
+    let url = Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(engine.load_url(view, url)).expect("load_url");
+    let got = engine
+        .execute_script(
+            view,
+            "[1,2,3,4].map(function (i) { return document.getElementById('c' + i).offsetWidth + '/' \
+             + document.getElementById('k' + i).offsetHeight + '/' \
+             + document.getElementById('z' + i).offsetHeight; }).join(' ')",
+        )
+        .unwrap();
+    assert!(
+        got.contains("10/0/7 10/0/7 10/0/7 10/0/7"),
+        "width/k/z per container, Chrome 10/0/7 each: {got}"
+    );
+}
+
+/// Loads `html` at 1280 x 800; returns the boxes layout visited for the
+/// load, the measured re-passes it took, and `#k`'s height.
+fn load_cost(html: String) -> (u64, u32, String) {
+    let server = serve_routes(vec![("/", "text/html", html)]);
+    let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+    let view = engine
+        .create_headless_view(Bounds {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800,
+        })
+        .expect("view");
+    let url = Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let before = rustkit_layout::layout_visits();
+    rt.block_on(engine.load_url(view, url)).expect("load_url");
+    let visits = rustkit_layout::layout_visits() - before;
+    let passes = engine.views[&view].lay.container_passes.get();
+    let k = engine
+        .execute_script(view, "String(document.getElementById('k').offsetHeight)")
+        .unwrap();
+    (visits, passes, k)
+}
+
+/// CQ3 (batch 62: first-layout time rose with #1070's re-passes): a
+/// measured size that changes no query's answer costs no second build and
+/// layout. The container is a `flex: 1` item (700 wide, which the
+/// style-time estimate cannot know, so the first build answers false).
+/// `(min-width: 2000px)` is false at 700 too: the load visits exactly the
+/// boxes the same page without the rule visits. `(min-width: 150px)` turns
+/// true at 700, so that page takes its one re-pass and `#k` gets its 10px.
+#[test]
+fn a_measured_size_that_changes_no_answer_costs_no_re_pass() {
+    let page = |rule: &str| {
+        format!(
+            r#"<!DOCTYPE html><html><head><style>
+body {{ margin: 0 }} .row {{ display: flex; width: 800px }} .pad {{ width: 100px; flex: none }}
+.c {{ flex: 1; container-type: inline-size }}
+{rule}
+</style></head><body><div class="row"><div class="pad"></div><div class="c"><div id="k"></div><p>text</p></div></div></body></html>"#
+        )
+    };
+    let (plain_visits, plain_passes, _) = load_cost(page(""));
+    let (same_visits, same_passes, same_k) = load_cost(page(
+        "@container (min-width: 2000px) { #k { height: 10px } }",
+    ));
+    let (_, flip_passes, flip_k) = load_cost(page(
+        "@container (min-width: 150px) { #k { height: 10px } }",
+    ));
+    assert_eq!(plain_passes, 0);
+    assert_eq!(
+        (same_passes, same_visits, same_k.contains("\"0\")")),
+        (0, plain_visits, true),
+        "an answer that stays false: no re-pass, the visits of the page without the rule"
+    );
+    assert_eq!(
+        (flip_passes, flip_k.contains("10")),
+        (1, true),
+        "an answer that flips: one re-pass"
+    );
+}
+
+const INLINE_AND_TABLE_PAGE: &str =
+    include_str!("../../../docs/diagnostics/2026-11-11/css_container_query_inline_and_table.html");
+
+/// #1081 R1 HIGH and MED: size containment does not apply to a non-atomic
+/// inline box or to a table box (css-contain-2 §3.1), so such a container
+/// is sized by its contents and answers no size query. Chrome for Testing
+/// 148.0.7778.216:
+/// - a `<span style="container-type: inline-size">` around a 100px box
+///   leaves its inline-block, float, flex-item and grid-item wrapper 100
+///   wide (w1..w4); containing the span collapsed each wrapper to 0;
+/// - the span as a direct flex item (w5) or grid item (w6) is blockified,
+///   so it IS contained: 0 wide around the same 100px box;
+/// - `(min-width: 1px)` is false in a span (k1), a `display: table` box
+///   with or without a width (k2, k3), an `inline-table` (k6) and a
+///   table cell (k7), and true in a 300px inline-block (k4) and a block
+///   (k5).
+#[test]
+fn an_inline_or_table_container_is_not_contained_and_answers_no_query() {
+    let server = serve_routes(vec![("/", "text/html", INLINE_AND_TABLE_PAGE.to_string())]);
+    let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+    let view = engine
+        .create_headless_view(Bounds {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800,
+        })
+        .expect("view");
+    let url = Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(engine.load_url(view, url)).expect("load_url");
+    let got = engine
+        .execute_script(
+            view,
+            "['w1','w2','w3','w4','w5','w6','k1','k2','k3','k4','k5','k6','k7'].map(function (id) { \
+             return id + '=' + Math.round(document.getElementById(id).getBoundingClientRect().width); }).join(' ')",
+        )
+        .unwrap();
+    // The second line of the recorded Chrome output
+    // (`css_container_query_inline_and_table_probe.cjs`).
+    let chrome = include_str!(
+        "../../../docs/diagnostics/2026-11-11/css_container_query_inline_and_table.chrome148.txt"
+    )
+    .lines()
+    .nth(1)
+    .expect("the recorded widths");
+    assert_eq!(
+        got.strip_prefix("String(\"")
+            .and_then(|v| v.strip_suffix("\")"))
+            .unwrap_or(&got),
+        chrome
+    );
+}
+
+/// #1081 delta R1: the wiring that tells the walk a build replays memoized
+/// styles (`container_query::note_replaying`, called from the build with
+/// `StyleMemoBuild::replays`). With the style memo armed, the first
+/// relayout records and the second, with the same key, replays: the view
+/// counts the replaying build (`ViewLayout::container_replays`), and the
+/// query's answer is unchanged by it.
+#[test]
+fn a_build_that_replays_memoized_styles_is_flagged_to_the_walk() {
+    let page = r#"<!DOCTYPE html><html><head><style>
+body { margin: 0 } .c { container-type: inline-size; width: 400px }
+@container (min-width: 300px) { #k1 { height: 11px } }
+</style></head><body><div class="c"><div id="k1"></div></div></body></html>"#;
+    let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+    let view = engine
+        .create_headless_view(Bounds {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        })
+        .expect("view");
+    engine.load_html(view, page).expect("load_html");
+    let before = engine.views[&view].lay.container_replays.get();
+    {
+        let _memo = StyleMemoScope::arm_with(RestyleMode::Reuse).expect("armed");
+        engine.relayout(view).expect("recording relayout");
+        assert_eq!(
+            engine.views[&view].lay.container_replays.get(),
+            before,
+            "the recording build is not a replay"
+        );
+        engine.relayout(view).expect("replaying relayout");
+    }
+    assert_eq!(
+        engine.views[&view].lay.container_replays.get(),
+        before + 1,
+        "the replaying build was flagged to the walk"
+    );
+    let k = engine
+        .execute_script(view, "String(document.getElementById('k1').offsetHeight)")
+        .unwrap();
+    assert!(k.contains("11"), "the query still holds: {k}");
+}
+
+const IN_FLOAT_PAGE: &str =
+    include_str!("../../../docs/diagnostics/2026-11-13/css_container_query_in_float.html");
+
+/// CQ3 leftover (#1081 "Not done"): a size container in or beside a float
+/// answers with its laid-out width. Twelve shapes: a container under an
+/// auto-width float (contained, so 10 / 8 wide), under a length, percentage
+/// or `max-width` float, beside a float in a new formatting context, and a
+/// float that is itself the container. Each `.q` is as tall as the number of
+/// eight `min-width` thresholds (1..500px) its container meets. Chrome for
+/// Testing 148.0.7778.216 gives the expected string (width:count), apart
+/// from the two containers beside a float (see the assertion).
+#[test]
+fn a_container_in_or_beside_a_float_answers_with_its_width() {
+    let server = serve_routes(vec![("/", "text/html", IN_FLOAT_PAGE.to_string())]);
+    let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+    let view = engine
+        .create_headless_view(Bounds {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800,
+        })
+        .expect("view");
+    let url = Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(engine.load_url(view, url)).expect("load_url");
+    let got = engine
+        .execute_script(
+            view,
+            "(function(){var o=[];for(var i=1;i<=12;i++){var c=document.getElementById('c'+i);\
+             o.push('c'+i+':'+c.offsetWidth+':'+c.querySelector('.q').offsetHeight);}\
+             return o.join(' ');})()",
+        )
+        .unwrap();
+    // Chrome: c10 1080:8 and c11 550:8. Both sit beside a float, which stays
+    // on the fail-safe (count 0): c11 is laid out 640 wide here, not 550.
+    assert!(
+        got.contains(
+            "c1:10:0 c2:250:5 c3:220:5 c4:384:7 c5:140:3 c6:238:5 c7:280:6 c8:300:6 \
+             c9:8:0 c10:1080:0 c11:640:0 c12:180:4"
+        ),
+        "width:thresholds met per container (Chrome 148, c10/c11 fail-safe): {got}"
+    );
 }

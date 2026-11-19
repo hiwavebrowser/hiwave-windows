@@ -1,0 +1,12 @@
+<!DOCTYPE html><html><head><style>
+body { margin: 0 }
+.row { display: flex; width: 200px }
+.row > .c { flex: 1; container-type: inline-size }
+.grid { display: grid; grid-template-columns: 1fr 1fr; width: 200px }
+.grid > .c { container-type: inline-size }
+.wide { width: 300px; height: 10px }
+@container (min-width: 150px) { .k { height: 10px } }
+</style></head><body>
+<div class="row"><div id="c1" class="c"><div class="wide"></div><div id="k1" class="k"></div></div><div id="c2" class="c"><div id="k2" class="k"></div></div></div>
+<div class="grid"><div id="c3" class="c"><div class="wide"></div><div id="k3" class="k"></div></div><div id="c4" class="c"><div id="k4" class="k"></div></div></div>
+</body></html>

@@ -1797,48 +1797,7 @@ impl SvgPolygon {
 
 // ==================== SVG Path ====================
 
-/// Path command.
-#[derive(Debug, Clone, Copy)]
-pub enum PathCommand {
-    /// Move to (absolute).
-    MoveTo(f32, f32),
-    /// Move to (relative).
-    MoveToRel(f32, f32),
-    /// Line to (absolute).
-    LineTo(f32, f32),
-    /// Line to (relative).
-    LineToRel(f32, f32),
-    /// Horizontal line (absolute).
-    HorizontalTo(f32),
-    /// Horizontal line (relative).
-    HorizontalToRel(f32),
-    /// Vertical line (absolute).
-    VerticalTo(f32),
-    /// Vertical line (relative).
-    VerticalToRel(f32),
-    /// Cubic bezier (absolute).
-    CubicTo(f32, f32, f32, f32, f32, f32),
-    /// Cubic bezier (relative).
-    CubicToRel(f32, f32, f32, f32, f32, f32),
-    /// Smooth cubic bezier (absolute).
-    SmoothCubicTo(f32, f32, f32, f32),
-    /// Smooth cubic bezier (relative).
-    SmoothCubicToRel(f32, f32, f32, f32),
-    /// Quadratic bezier (absolute).
-    QuadTo(f32, f32, f32, f32),
-    /// Quadratic bezier (relative).
-    QuadToRel(f32, f32, f32, f32),
-    /// Smooth quadratic bezier (absolute).
-    SmoothQuadTo(f32, f32),
-    /// Smooth quadratic bezier (relative).
-    SmoothQuadToRel(f32, f32),
-    /// Arc (absolute).
-    ArcTo(f32, f32, f32, bool, bool, f32, f32),
-    /// Arc (relative).
-    ArcToRel(f32, f32, f32, bool, bool, f32, f32),
-    /// Close path.
-    Close,
-}
+pub use rustkit_layout::path_data::PathCommand;
 
 /// Path element (<path>).
 #[derive(Debug, Clone, Default)]
@@ -1851,181 +1810,7 @@ pub struct SvgPath {
 impl SvgPath {
     /// Parse path data string.
     pub fn parse(d: &str) -> Vec<PathCommand> {
-        let mut commands = Vec::new();
-        let mut chars = d.chars().peekable();
-        let mut current_cmd = ' ';
-
-        while let Some(&c) = chars.peek() {
-            if c.is_whitespace() || c == ',' {
-                chars.next();
-                continue;
-            }
-
-            if c.is_alphabetic() {
-                current_cmd = c;
-                chars.next();
-                
-                // Handle commands that don't take arguments immediately
-                if current_cmd == 'Z' || current_cmd == 'z' {
-                    commands.push(PathCommand::Close);
-                }
-                continue;
-            }
-
-            match current_cmd {
-                'M' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::MoveTo(x, y));
-                        current_cmd = 'L'; // Subsequent coordinates are lines
-                    }
-                }
-                'm' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::MoveToRel(x, y));
-                        current_cmd = 'l';
-                    }
-                }
-                'L' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::LineTo(x, y));
-                    }
-                }
-                'l' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::LineToRel(x, y));
-                    }
-                }
-                'H' => {
-                    if let Some(x) = parse_number(&mut chars) {
-                        commands.push(PathCommand::HorizontalTo(x));
-                    }
-                }
-                'h' => {
-                    if let Some(x) = parse_number(&mut chars) {
-                        commands.push(PathCommand::HorizontalToRel(x));
-                    }
-                }
-                'V' => {
-                    if let Some(y) = parse_number(&mut chars) {
-                        commands.push(PathCommand::VerticalTo(y));
-                    }
-                }
-                'v' => {
-                    if let Some(y) = parse_number(&mut chars) {
-                        commands.push(PathCommand::VerticalToRel(y));
-                    }
-                }
-                'C' => {
-                    if let (Some(x1), Some(y1), Some(x2), Some(y2), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::CubicTo(x1, y1, x2, y2, x, y));
-                    }
-                }
-                'c' => {
-                    if let (Some(x1), Some(y1), Some(x2), Some(y2), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::CubicToRel(x1, y1, x2, y2, x, y));
-                    }
-                }
-                'S' => {
-                    if let (Some(x2), Some(y2), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::SmoothCubicTo(x2, y2, x, y));
-                    }
-                }
-                's' => {
-                    if let (Some(x2), Some(y2), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::SmoothCubicToRel(x2, y2, x, y));
-                    }
-                }
-                'Q' => {
-                    if let (Some(x1), Some(y1), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::QuadTo(x1, y1, x, y));
-                    }
-                }
-                'q' => {
-                    if let (Some(x1), Some(y1), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::QuadToRel(x1, y1, x, y));
-                    }
-                }
-                'T' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::SmoothQuadTo(x, y));
-                    }
-                }
-                't' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::SmoothQuadToRel(x, y));
-                    }
-                }
-                'A' => {
-                    if let (Some(rx), Some(ry), Some(angle), Some(large_arc), Some(sweep), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_flag(&mut chars),
-                        parse_flag(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::ArcTo(rx, ry, angle, large_arc, sweep, x, y));
-                    }
-                }
-                'a' => {
-                    if let (Some(rx), Some(ry), Some(angle), Some(large_arc), Some(sweep), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_flag(&mut chars),
-                        parse_flag(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::ArcToRel(rx, ry, angle, large_arc, sweep, x, y));
-                    }
-                }
-                'Z' | 'z' => {
-                    commands.push(PathCommand::Close);
-                    chars.next();
-                }
-                _ => {
-                    chars.next();
-                }
-            }
-        }
-
-        commands
+        rustkit_layout::path_data::parse(d)
     }
 
     /// Convert path to line segments, flattening curves to
@@ -2040,192 +1825,7 @@ impl SvgPath {
     /// point of it strays more than `tolerance` (in the path's own units)
     /// from the flattened outline.
     pub fn to_line_segments_within(&self, tolerance: f32) -> Vec<Vec<(f32, f32)>> {
-        let mut segments = Vec::new();
-        let mut current_segment = Vec::new();
-        let mut current_pos = (0.0_f32, 0.0_f32);
-        let mut start_pos = (0.0_f32, 0.0_f32);
-        // The previous segment's second control point, for S/s (after C/S)
-        // and T/t (after Q/T) to reflect. Any other command clears both.
-        let mut last_cubic = None::<(f32, f32)>;
-        let mut last_quad = None::<(f32, f32)>;
-
-        for cmd in &self.commands {
-            match cmd {
-                PathCommand::MoveTo(x, y) => {
-                    if !current_segment.is_empty() {
-                        segments.push(std::mem::take(&mut current_segment));
-                    }
-                    current_pos = (*x, *y);
-                    start_pos = current_pos;
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::MoveToRel(dx, dy) => {
-                    if !current_segment.is_empty() {
-                        segments.push(std::mem::take(&mut current_segment));
-                    }
-                    current_pos = (current_pos.0 + dx, current_pos.1 + dy);
-                    start_pos = current_pos;
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::LineTo(x, y) => {
-                    current_pos = (*x, *y);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::LineToRel(dx, dy) => {
-                    current_pos = (current_pos.0 + dx, current_pos.1 + dy);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::HorizontalTo(x) => {
-                    current_pos = (*x, current_pos.1);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::HorizontalToRel(dx) => {
-                    current_pos = (current_pos.0 + dx, current_pos.1);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::VerticalTo(y) => {
-                    current_pos = (current_pos.0, *y);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::VerticalToRel(dy) => {
-                    current_pos = (current_pos.0, current_pos.1 + dy);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::CubicTo(x1, y1, x2, y2, x, y) => {
-                    let points = cubic_bezier_points(
-                        current_pos,
-                        (*x1, *y1),
-                        (*x2, *y2),
-                        (*x, *y),
-                        tolerance,
-                    );
-                    current_segment.extend(points);
-                    current_pos = (*x, *y);
-                    last_cubic = Some((*x2, *y2));
-                    last_quad = None;
-                }
-                PathCommand::CubicToRel(dx1, dy1, dx2, dy2, dx, dy) => {
-                    let (x1, y1) = (current_pos.0 + dx1, current_pos.1 + dy1);
-                    let (x2, y2) = (current_pos.0 + dx2, current_pos.1 + dy2);
-                    let (x, y) = (current_pos.0 + dx, current_pos.1 + dy);
-                    let points =
-                        cubic_bezier_points(current_pos, (x1, y1), (x2, y2), (x, y), tolerance);
-                    current_segment.extend(points);
-                    current_pos = (x, y);
-                    last_cubic = Some((x2, y2));
-                    last_quad = None;
-                }
-                PathCommand::QuadTo(x1, y1, x, y) => {
-                    let points = quad_bezier_points(current_pos, (*x1, *y1), (*x, *y), tolerance);
-                    current_segment.extend(points);
-                    current_pos = (*x, *y);
-                    last_quad = Some((*x1, *y1));
-                    last_cubic = None;
-                }
-                PathCommand::QuadToRel(dx1, dy1, dx, dy) => {
-                    let (x1, y1) = (current_pos.0 + dx1, current_pos.1 + dy1);
-                    let (x, y) = (current_pos.0 + dx, current_pos.1 + dy);
-                    let points = quad_bezier_points(current_pos, (x1, y1), (x, y), tolerance);
-                    current_segment.extend(points);
-                    current_pos = (x, y);
-                    last_quad = Some((x1, y1));
-                    last_cubic = None;
-                }
-                PathCommand::Close => {
-                    if current_pos != start_pos {
-                        current_segment.push(start_pos);
-                    }
-                    current_pos = start_pos;
-                    if !current_segment.is_empty() {
-                        segments.push(std::mem::take(&mut current_segment));
-                    }
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                // S/s and T/t: the first control point is the reflection of
-                // the previous segment's (SVG 1.1 §8.3.6, §8.3.7), or the
-                // current point when the previous command wasn't the same kind.
-                PathCommand::SmoothCubicTo(..) | PathCommand::SmoothCubicToRel(..) => {
-                    let (x2, y2, x, y) = match cmd {
-                        PathCommand::SmoothCubicTo(x2, y2, x, y) => (*x2, *y2, *x, *y),
-                        PathCommand::SmoothCubicToRel(dx2, dy2, dx, dy) => (
-                            current_pos.0 + dx2,
-                            current_pos.1 + dy2,
-                            current_pos.0 + dx,
-                            current_pos.1 + dy,
-                        ),
-                        _ => unreachable!(),
-                    };
-                    let c1 = reflect(last_cubic, current_pos);
-                    current_segment.extend(cubic_bezier_points(
-                        current_pos,
-                        c1,
-                        (x2, y2),
-                        (x, y),
-                        tolerance,
-                    ));
-                    current_pos = (x, y);
-                    last_cubic = Some((x2, y2));
-                    last_quad = None;
-                }
-                PathCommand::SmoothQuadTo(..) | PathCommand::SmoothQuadToRel(..) => {
-                    let (x, y) = match cmd {
-                        PathCommand::SmoothQuadTo(x, y) => (*x, *y),
-                        PathCommand::SmoothQuadToRel(dx, dy) => (current_pos.0 + dx, current_pos.1 + dy),
-                        _ => unreachable!(),
-                    };
-                    let c1 = reflect(last_quad, current_pos);
-                    current_segment.extend(quad_bezier_points(current_pos, c1, (x, y), tolerance));
-                    current_pos = (x, y);
-                    last_quad = Some(c1);
-                    last_cubic = None;
-                }
-                PathCommand::ArcTo(..) | PathCommand::ArcToRel(..) => {
-                    let (rx, ry, angle, large_arc, sweep, x, y) = match cmd {
-                        PathCommand::ArcTo(rx, ry, a, l, s, x, y) => (*rx, *ry, *a, *l, *s, *x, *y),
-                        PathCommand::ArcToRel(rx, ry, a, l, s, dx, dy) => {
-                            (*rx, *ry, *a, *l, *s, current_pos.0 + dx, current_pos.1 + dy)
-                        }
-                        _ => unreachable!(),
-                    };
-                    current_segment.extend(arc_points(
-                        current_pos,
-                        rx,
-                        ry,
-                        angle,
-                        large_arc,
-                        sweep,
-                        (x, y),
-                        tolerance,
-                    ));
-                    current_pos = (x, y);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-            }
-        }
-
-        if !current_segment.is_empty() {
-            segments.push(current_segment);
-        }
-
-        segments
+        rustkit_layout::path_data::flatten(&self.commands, tolerance)
     }
 
     /// Render the path.
@@ -2373,6 +1973,7 @@ impl SvgText {
                 ascent: Some(0.0),
                 run: None,
                 faces: None,
+                undilated: false,
             });
         }
     }
@@ -2617,239 +2218,11 @@ fn instantiate_use(u: &SvgUse, ctx: &mut UseContext, viewport: (f32, f32)) -> Op
 
 // ==================== Helper Functions ====================
 
-/// Parse a number from character iterator.
-fn parse_number<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) -> Option<f32> {
-    // Skip whitespace and commas
-    while chars.peek().is_some_and(|c| c.is_whitespace() || *c == ',') {
-        chars.next();
-    }
-
-    let mut s = String::new();
-    let mut has_dot = false;
-    let mut has_exp = false;
-
-    // Handle sign
-    if chars.peek().is_some_and(|c| *c == '-' || *c == '+') {
-        s.push(chars.next().unwrap());
-    }
-
-    while let Some(&c) = chars.peek() {
-        if c.is_ascii_digit() {
-            s.push(chars.next().unwrap());
-        } else if c == '.' && !has_dot {
-            has_dot = true;
-            s.push(chars.next().unwrap());
-        } else if (c == 'e' || c == 'E') && !has_exp {
-            has_exp = true;
-            s.push(chars.next().unwrap());
-            if chars.peek().is_some_and(|c| *c == '-' || *c == '+') {
-                s.push(chars.next().unwrap());
-            }
-        } else {
-            break;
-        }
-    }
-
-    if s.is_empty() || s == "-" || s == "+" {
-        None
-    } else {
-        s.parse().ok()
-    }
-}
-
-/// Parse a flag (0 or 1).
-fn parse_flag<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) -> Option<bool> {
-    while chars.peek().is_some_and(|c| c.is_whitespace() || *c == ',') {
-        chars.next();
-    }
-
-    match chars.next() {
-        Some('0') => Some(false),
-        Some('1') => Some(true),
-        _ => None,
-    }
-}
-
 /// How far, in CSS pixels, a flattened curve may stray from the true one.
 /// The polygon sits inside its curve, so this is ink lost on every convex
 /// edge: 0.1 keeps a 16 px icon dot within 3% of its area, and is 0.2
 /// physical px on a 2x display (this crate doesn't see the scale factor).
 const FLATTEN_TOLERANCE_PX: f32 = 0.1;
-
-/// The most line segments one curve or arc flattens to, however big it's drawn.
-const MAX_CURVE_STEPS: usize = 256;
-
-/// Steps that keep a Bézier of degree `degree` within `tolerance` of its
-/// chords, from the largest second difference of its control points
-/// (Wang's formula: n = sqrt(degree * (degree - 1) / 8 * dd / tolerance)).
-/// A NaN or infinite input (a degenerate transform) falls to one step.
-fn bezier_steps(degree: f32, dd: f32, tolerance: f32) -> usize {
-    let n = (degree * (degree - 1.0) / 8.0 * dd / tolerance)
-        .sqrt()
-        .ceil();
-    if n.is_finite() {
-        (n as usize).clamp(1, MAX_CURVE_STEPS)
-    } else if n.is_nan() {
-        1
-    } else {
-        MAX_CURVE_STEPS
-    }
-}
-
-/// The length of `a - 2b + c`.
-fn second_difference(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
-    (a.0 - 2.0 * b.0 + c.0).hypot(a.1 - 2.0 * b.1 + c.1)
-}
-
-/// Generate points along a cubic bezier curve, within `tolerance` of it.
-fn cubic_bezier_points(
-    p0: (f32, f32),
-    p1: (f32, f32),
-    p2: (f32, f32),
-    p3: (f32, f32),
-    tolerance: f32,
-) -> Vec<(f32, f32)> {
-    let dd = second_difference(p0, p1, p2).max(second_difference(p1, p2, p3));
-    let segments = bezier_steps(3.0, dd, tolerance);
-    let mut points = Vec::with_capacity(segments);
-    
-    for i in 1..=segments {
-        let t = i as f32 / segments as f32;
-        let t2 = t * t;
-        let t3 = t2 * t;
-        let mt = 1.0 - t;
-        let mt2 = mt * mt;
-        let mt3 = mt2 * mt;
-
-        let x = mt3 * p0.0 + 3.0 * mt2 * t * p1.0 + 3.0 * mt * t2 * p2.0 + t3 * p3.0;
-        let y = mt3 * p0.1 + 3.0 * mt2 * t * p1.1 + 3.0 * mt * t2 * p2.1 + t3 * p3.1;
-
-        points.push((x, y));
-    }
-
-    points
-}
-
-/// The reflection of `control` about `about`; `about` itself when there is no
-/// control to reflect (S/T after a command of another kind).
-fn reflect(control: Option<(f32, f32)>, about: (f32, f32)) -> (f32, f32) {
-    match control {
-        Some((cx, cy)) => (2.0 * about.0 - cx, 2.0 * about.1 - cy),
-        None => about,
-    }
-}
-
-/// Points along an SVG elliptical arc from `p0` to `p1`, excluding `p0` and
-/// ending exactly on `p1` (SVG 1.1 appendix F.6: endpoint to center
-/// parameterization, with out-of-range radii scaled up and a zero radius
-/// meaning a straight line).
-fn arc_points(
-    p0: (f32, f32),
-    rx: f32,
-    ry: f32,
-    x_axis_rotation_deg: f32,
-    large_arc: bool,
-    sweep: bool,
-    p1: (f32, f32),
-    tolerance: f32,
-) -> Vec<(f32, f32)> {
-    if p0 == p1 {
-        return Vec::new();
-    }
-    let (mut rx, mut ry) = (f64::from(rx.abs()), f64::from(ry.abs()));
-    if rx == 0.0 || ry == 0.0 {
-        return vec![p1];
-    }
-    let (x0, y0) = (f64::from(p0.0), f64::from(p0.1));
-    let (x1, y1) = (f64::from(p1.0), f64::from(p1.1));
-    let phi = f64::from(x_axis_rotation_deg).to_radians();
-    let (sin_phi, cos_phi) = phi.sin_cos();
-
-    // F.6.5.1: the midpoint in the ellipse's rotated frame.
-    let (hx, hy) = ((x0 - x1) / 2.0, (y0 - y1) / 2.0);
-    let xp = cos_phi * hx + sin_phi * hy;
-    let yp = -sin_phi * hx + cos_phi * hy;
-
-    // F.6.6.2: radii too small to span the endpoints are scaled up.
-    let lambda = (xp * xp) / (rx * rx) + (yp * yp) / (ry * ry);
-    if lambda > 1.0 {
-        let k = lambda.sqrt();
-        rx *= k;
-        ry *= k;
-    }
-
-    // F.6.5.2: the center in the rotated frame.
-    let num = rx * rx * ry * ry - rx * rx * yp * yp - ry * ry * xp * xp;
-    let den = rx * rx * yp * yp + ry * ry * xp * xp;
-    let mut coef = if den == 0.0 { 0.0 } else { (num / den).max(0.0).sqrt() };
-    if large_arc == sweep {
-        coef = -coef;
-    }
-    let cxp = coef * rx * yp / ry;
-    let cyp = -coef * ry * xp / rx;
-
-    // F.6.5.3: back to user space.
-    let cx = cos_phi * cxp - sin_phi * cyp + (x0 + x1) / 2.0;
-    let cy = sin_phi * cxp + cos_phi * cyp + (y0 + y1) / 2.0;
-
-    // F.6.5.5-6: start angle and sweep.
-    let angle = |ux: f64, uy: f64, vx: f64, vy: f64| (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
-    let (ux, uy) = ((xp - cxp) / rx, (yp - cyp) / ry);
-    let (vx, vy) = ((-xp - cxp) / rx, (-yp - cyp) / ry);
-    let theta1 = angle(1.0, 0.0, ux, uy);
-    let mut delta = angle(ux, uy, vx, vy);
-    if !sweep && delta > 0.0 {
-        delta -= std::f64::consts::TAU;
-    } else if sweep && delta < 0.0 {
-        delta += std::f64::consts::TAU;
-    }
-
-    // Each step's chord sags r * (1 - cos(step / 2)) from the arc; keep
-    // that within `tolerance` of the larger radius.
-    let sag = (f64::from(tolerance) / rx.max(ry)).min(1.0);
-    let step = 2.0 * (1.0 - sag).acos();
-    let steps = (delta.abs() / step).ceil();
-    let steps = if steps.is_finite() {
-        (steps as usize).clamp(2, MAX_CURVE_STEPS)
-    } else if steps.is_nan() {
-        2
-    } else {
-        MAX_CURVE_STEPS
-    };
-    let mut points = Vec::with_capacity(steps);
-    for i in 1..steps {
-        let (sin_t, cos_t) = (theta1 + delta * i as f64 / steps as f64).sin_cos();
-        points.push((
-            (cx + rx * cos_phi * cos_t - ry * sin_phi * sin_t) as f32,
-            (cy + rx * sin_phi * cos_t + ry * cos_phi * sin_t) as f32,
-        ));
-    }
-    points.push(p1);
-    points
-}
-
-/// Generate points along a quadratic bezier curve, within `tolerance` of it.
-fn quad_bezier_points(
-    p0: (f32, f32),
-    p1: (f32, f32),
-    p2: (f32, f32),
-    tolerance: f32,
-) -> Vec<(f32, f32)> {
-    let segments = bezier_steps(2.0, second_difference(p0, p1, p2), tolerance);
-    let mut points = Vec::with_capacity(segments);
-    
-    for i in 1..=segments {
-        let t = i as f32 / segments as f32;
-        let mt = 1.0 - t;
-
-        let x = mt * mt * p0.0 + 2.0 * mt * t * p1.0 + t * t * p2.0;
-        let y = mt * mt * p0.1 + 2.0 * mt * t * p1.1 + t * t * p2.1;
-
-        points.push((x, y));
-    }
-
-    points
-}
 
 /// Extract attribute value from XML tag.
 fn extract_attr(tag: &str, name: &str) -> Option<String> {
@@ -4490,5 +3863,198 @@ mod tests {
         let svg = r#"<svg viewBox="0 0 100 100"><rect x="10" y="10" width="80" height="80" fill="red"/></svg>"#;
         let doc = SvgDocument::parse(svg).unwrap();
         assert!(doc.view_box.is_some());
+    }
+}
+
+// ==================== Path list (canvas drawImage) ====================
+
+/// One painted shape of an SVG document as a path list: its outline in
+/// device pixels (flattened finely enough that a rasterizer cannot tell it
+/// from the curves) and how it is filled and stroked. For painters that
+/// rasterize the document themselves, such as a canvas's `drawImage` of an
+/// SVG image (STR-7 slice 3), which Chrome rasterizes at the drawn size.
+#[derive(Debug, Clone)]
+pub struct SvgPaintPath {
+    /// Each subpath's points and whether it is closed.
+    pub contours: Vec<(Vec<(f32, f32)>, bool)>,
+    pub even_odd: bool,
+    /// The solid fill, its opacities applied.
+    pub fill: Option<Color>,
+    pub stroke: Option<SvgPaintStroke>,
+}
+
+/// A path list entry's stroke, in device pixels.
+#[derive(Debug, Clone, Copy)]
+pub struct SvgPaintStroke {
+    pub color: Color,
+    pub width: f32,
+    pub cap: LineCap,
+    pub join: LineJoin,
+    pub miter_limit: f32,
+}
+
+/// The flattening tolerance of a path list, in device pixels.
+const PATH_LIST_TOLERANCE_PX: f32 = 0.05;
+
+impl SvgDocument {
+    /// The document as a path list for the rect `(x, y, width, height)`,
+    /// placed as `render` places it. Painted in document order. Not
+    /// included: gradient paint, text, dashes, `<use>`, clipping by a
+    /// nested viewport.
+    pub fn path_list(&self, x: f32, y: f32, width: f32, height: f32, current_color: Color) -> Vec<SvgPaintPath> {
+        if let Some(sized) = self.for_viewport(width, height) {
+            return sized.path_list(x, y, width, height, current_color);
+        }
+        let transform = if let Some(vb) = &self.view_box {
+            let (sx, sy) = (width / vb.width, height / vb.height);
+            let (sx, sy) = if self.stretch { (sx, sy) } else { (sx.min(sy), sx.min(sy)) };
+            Transform2D::identity().translate(x - vb.min_x * sx, y - vb.min_y * sy).scale(sx, sy)
+        } else {
+            Transform2D::identity().translate(x, y)
+        };
+        let base = SvgStyle { current_color, ..SvgStyle::default() };
+        let mut out = Vec::new();
+        self.root.path_list(&transform, &base, &mut out);
+        out
+    }
+}
+
+/// `n` points around an ellipse, closed.
+fn ellipse_points(cx: f32, cy: f32, rx: f32, ry: f32, scale: f32) -> Vec<(f32, f32)> {
+    let r = rx.max(ry) * scale;
+    // Chord error r(1 - cos(pi/n)) under the tolerance.
+    let n = ((PI / (1.0 - PATH_LIST_TOLERANCE_PX / r.max(PATH_LIST_TOLERANCE_PX * 2.0)).acos()).ceil() as usize).clamp(8, 1024);
+    (0..n)
+        .map(|i| {
+            let a = i as f32 / n as f32 * 2.0 * PI;
+            (cx + rx * a.cos(), cy + ry * a.sin())
+        })
+        .collect()
+}
+
+/// A rounded rect's outline (radii already clamped), closed.
+fn round_rect_points(x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32, scale: f32) -> Vec<(f32, f32)> {
+    if rx <= 0.0 || ry <= 0.0 {
+        return vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+    }
+    let quarter = ellipse_points(0.0, 0.0, rx, ry, scale);
+    let q = quarter.len() / 4;
+    let mut pts = Vec::new();
+    // Corners clockwise from the top right; each a quarter of the ellipse.
+    for (corner, (cx, cy)) in [(3, (x + w - rx, y + ry)), (0, (x + w - rx, y + h - ry)), (1, (x + rx, y + h - ry)), (2, (x + rx, y + ry))] {
+        for i in 0..=q {
+            let (px, py) = quarter[(corner * q + i) % quarter.len()];
+            pts.push((cx + px, cy + py));
+        }
+    }
+    pts
+}
+
+impl SvgElement {
+    fn path_list(&self, parent: &Transform2D, parent_style: &SvgStyle, out: &mut Vec<SvgPaintPath>) {
+        let (own, style) = match self {
+            SvgElement::Group(g) => (&g.transform, &g.style),
+            SvgElement::Rect(e) => (&e.transform, &e.style),
+            SvgElement::Circle(e) => (&e.transform, &e.style),
+            SvgElement::Ellipse(e) => (&e.transform, &e.style),
+            SvgElement::Line(e) => (&e.transform, &e.style),
+            SvgElement::Polyline(e) => (&e.transform, &e.style),
+            SvgElement::Polygon(e) => (&e.transform, &e.style),
+            SvgElement::Path(e) => (&e.transform, &e.style),
+            SvgElement::Text(_) | SvgElement::Use(_) => return,
+        };
+        let t = parent.multiply(own);
+        let mut style = style.clone();
+        style.inherit_from(parent_style);
+        if !style.visibility {
+            return;
+        }
+        let scale = t.max_scale().max(1e-6);
+        let contours: Vec<(Vec<(f32, f32)>, bool)> = match self {
+            SvgElement::Group(g) => {
+                for child in &g.children {
+                    child.path_list(&t, &style, out);
+                }
+                return;
+            }
+            SvgElement::Rect(r) => {
+                if r.width <= 0.0 || r.height <= 0.0 {
+                    return;
+                }
+                let (rx, ry) = match (r.rx > 0.0, r.ry > 0.0) {
+                    (true, true) => (r.rx, r.ry),
+                    (true, false) => (r.rx, r.rx),
+                    (false, true) => (r.ry, r.ry),
+                    _ => (0.0, 0.0),
+                };
+                let (rx, ry) = (rx.min(r.width / 2.0), ry.min(r.height / 2.0));
+                vec![(round_rect_points(r.x, r.y, r.width, r.height, rx, ry, scale), true)]
+            }
+            SvgElement::Circle(c) if c.r > 0.0 => vec![(ellipse_points(c.cx, c.cy, c.r, c.r, scale), true)],
+            SvgElement::Ellipse(e) if e.rx > 0.0 && e.ry > 0.0 => vec![(ellipse_points(e.cx, e.cy, e.rx, e.ry, scale), true)],
+            SvgElement::Line(l) => vec![(vec![(l.x1, l.y1), (l.x2, l.y2)], false)],
+            SvgElement::Polyline(p) => vec![(p.points.clone(), false)],
+            SvgElement::Polygon(p) => vec![(p.points.clone(), true)],
+            SvgElement::Path(p) => {
+                // A subpath is closed when it ends with a closepath (the
+                // flattener returns to its start point).
+                let closes: Vec<bool> = {
+                    let mut v = Vec::new();
+                    let mut open = false;
+                    for c in &p.commands {
+                        match c {
+                            PathCommand::MoveTo(..) | PathCommand::MoveToRel(..) => {
+                                if open {
+                                    v.push(false);
+                                }
+                                open = true;
+                            }
+                            PathCommand::Close => {
+                                if open {
+                                    v.push(true);
+                                    open = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if open {
+                        v.push(false);
+                    }
+                    v
+                };
+                p.to_line_segments_within(PATH_LIST_TOLERANCE_PX / scale)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, pts)| (pts, closes.get(i).copied().unwrap_or(false)))
+                    .collect()
+            }
+            _ => return,
+        };
+        let contours: Vec<(Vec<(f32, f32)>, bool)> = contours
+            .into_iter()
+            .filter(|(pts, _)| pts.len() >= 2)
+            .map(|(pts, closed)| (pts.iter().map(|&(x, y)| t.apply(x, y)).collect(), closed))
+            .collect();
+        if contours.is_empty() {
+            return;
+        }
+        let open_shape = matches!(self, SvgElement::Line(_) | SvgElement::Polyline(_));
+        let fill = if open_shape && matches!(self, SvgElement::Line(_)) {
+            None
+        } else {
+            style.fill_color().map(|c| Color { a: (c.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0), ..c })
+        };
+        let stroke = style.stroke_color().filter(|_| style.stroke_width > 0.0).map(|c| SvgPaintStroke {
+            color: Color { a: (c.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0), ..c },
+            width: style.stroke_width * scale,
+            cap: style.stroke_linecap,
+            join: style.stroke_linejoin,
+            miter_limit: style.stroke_miterlimit,
+        });
+        if fill.is_none() && stroke.is_none() {
+            return;
+        }
+        out.push(SvgPaintPath { contours, even_odd: style.fill_rule == FillRule::EvenOdd, fill, stroke });
     }
 }

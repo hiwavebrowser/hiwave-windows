@@ -334,7 +334,7 @@ fn html_attribute_parsers() {
     assert_eq!(html_legacy_color("ffcc00"), "#ffcc00");
     assert_eq!(html_legacy_color("red"), "red");
     assert_eq!(html_legacy_color("#abc"), "#abc");
-    let mut attrs = HashMap::new();
+    let mut attrs = rustkit_dom::AttrMap::new();
     attrs.insert("border".to_string(), String::new());
     assert_eq!(table_border_attribute(&attrs), Some(1), "<table border>");
     attrs.insert("border".to_string(), "0".to_string());

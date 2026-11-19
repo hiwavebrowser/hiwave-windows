@@ -1,5 +1,5 @@
 use crate::{
-    Context, JsBigInt, JsResult, JsValue, JsVariant,
+    Context, JsBigInt, JsResult, JsString, JsValue, JsVariant,
     builtins::{
         Number,
         number::{f64_to_int32, f64_to_uint32},
@@ -24,15 +24,16 @@ impl JsValue {
             (JsVariant::BigInt(x), JsVariant::BigInt(y)) => Self::new(JsBigInt::add(&x, &y)),
 
             // String concat
-            (JsVariant::String(x), JsVariant::String(y)) => Self::from(js_string!(&x, &y)),
+            // HIWAVE PATCH (string-length): a result over the limit is refused, as in Chrome.
+            (JsVariant::String(x), JsVariant::String(y)) => Self::from(concat_checked(&x, &y)?),
 
             // Slow path:
             (_, _) => {
                 let x = self.to_primitive(context, PreferredType::Default)?;
                 let y = other.to_primitive(context, PreferredType::Default)?;
                 match (x.variant(), y.variant()) {
-                    (JsVariant::String(x), _) => Self::from(js_string!(&x, &y.to_string(context)?)),
-                    (_, JsVariant::String(y)) => Self::from(js_string!(&x.to_string(context)?, &y)),
+                    (JsVariant::String(x), _) => Self::from(concat_checked(&x, &y.to_string(context)?)?),
+                    (_, JsVariant::String(y)) => Self::from(concat_checked(&x.to_string(context)?, &y)?),
                     (_, _) => {
                         match (x.to_numeric(context)?, y.to_numeric(context)?) {
                             (Numeric::Number(x), Numeric::Number(y)) => Self::new(x + y),
@@ -924,4 +925,11 @@ impl From<bool> for AbstractRelation {
     fn from(value: bool) -> Self {
         if value { Self::True } else { Self::False }
     }
+}
+
+/// HIWAVE PATCH (string-length): the string-concatenation of `x` and `y`, refused with Chrome's
+/// `RangeError: Invalid string length` if it would pass the maximum string length.
+fn concat_checked(x: &JsString, y: &JsString) -> JsResult<JsString> {
+    crate::builtins::string::String::check_length(x.len() as u64 + y.len() as u64)?;
+    Ok(js_string!(x, y))
 }

@@ -1,0 +1,59 @@
+{
+ "sameOriginRelative": {
+  "threw": false
+ },
+ "sameOriginAbsolute": {
+  "threw": false
+ },
+ "otherPort": {
+  "threw": true,
+  "name": "SecurityError",
+  "code": 18,
+  "isDOMException": true,
+  "message": "Failed to construct 'Worker': Script at 'http://127.0.0.1:OTHER/w.js' cannot be accessed from origin 'http://127.0.0.1:MAIN'."
+ },
+ "otherPortWithCors": {
+  "threw": true,
+  "name": "SecurityError",
+  "code": 18,
+  "isDOMException": true,
+  "message": "Failed to construct 'Worker': Script at 'http://127.0.0.1:OTHER/cors.js' cannot be accessed from origin 'http://127.0.0.1:MAIN'."
+ },
+ "otherHost": {
+  "threw": true,
+  "name": "SecurityError",
+  "code": 18,
+  "isDOMException": true,
+  "message": "Failed to construct 'Worker': Script at 'http://localhost:MAIN/w.js' cannot be accessed from origin 'http://127.0.0.1:MAIN'."
+ },
+ "otherScheme": {
+  "threw": true,
+  "name": "SecurityError",
+  "code": 18,
+  "isDOMException": true,
+  "message": "Failed to construct 'Worker': Script at 'https://127.0.0.1:MAIN/w.js' cannot be accessed from origin 'http://127.0.0.1:MAIN'."
+ },
+ "dataUrl": {
+  "threw": false
+ },
+ "javascriptUrl": {
+  "threw": true,
+  "name": "SecurityError",
+  "code": 18,
+  "isDOMException": true,
+  "message": "Failed to construct 'Worker': Script at 'javascript:postMessage(1)' cannot be accessed from origin 'http://127.0.0.1:MAIN'."
+ },
+ "malformed": {
+  "threw": true,
+  "name": "SyntaxError",
+  "code": 12,
+  "isDOMException": true,
+  "message": "Failed to construct 'Worker': 'http://' is not a valid URL."
+ },
+ "emptyString": {
+  "threw": false
+ },
+ "blobSameOrigin": {
+  "threw": false
+ }
+}

@@ -69,9 +69,46 @@ fn meta_script_and_img_reflect() {
     assert_eq!(ev(&b, "var m = document.getElementById('m'); [m.name, m.content, m.httpEquiv].join()"), "viewport,width=device-width,refresh");
     assert_eq!(ev(&b, "var s = document.getElementById('s'); [s.type, s.async, s.defer, s.noModule, String(s.crossOrigin), s.src].join()"), "module,true,false,true,null,https://example.test/app.js");
     assert_eq!(ev(&b, "s.defer = true; s.async = false; [s.hasAttribute('defer'), s.hasAttribute('async')].join()"), "true,false");
-    assert_eq!(ev(&b, "var i = document.getElementById('i'); [i.alt, i.loading, i.decoding, i.currentSrc, i.complete, i.naturalWidth, i.naturalHeight].join()"), "cat,lazy,auto,https://example.test/pic.png,false,0,0");
+    assert_eq!(ev(&b, "var i = document.getElementById('i'); [i.alt, i.loading, i.decoding, i.currentSrc, i.complete, i.naturalWidth, i.naturalHeight].join()"), "cat,lazy,auto,,false,0,0");
     assert_eq!(ev(&b, "var i2 = document.getElementById('i2'); [i2.complete, i2.currentSrc === '', i2.loading].join()"), "true,true,eager");
     assert_eq!(ev(&b, "i.alt = 'dog'; [i.getAttribute('alt'), typeof i.decode].join()"), "dog,function");
+}
+
+/// E54: an image reads as in flight until the engine reports it, with the
+/// event: then `complete`, the image's own size and the URL that loaded,
+/// until `src` moves on. A `src` script writes is the engine's to take,
+/// the same value again and an element outside the document included.
+#[test]
+fn img_reads_what_the_engine_reported_with_its_load() {
+    let b = bound();
+    assert!(b.take_image_writes().is_empty(), "the parser's attributes are not script writes");
+    let read = "[i.complete, i.naturalWidth, i.naturalHeight, i.currentSrc, i.width, heard.join('+')].join()";
+    ev(&b, "var i = document.getElementById('i'), heard = []; i.onload = function (e) { heard.push('load:' + e.isTrusted + ':' + e.bubbles + ':' + i.complete + ':' + i.naturalWidth); }; \
+        i.addEventListener('error', function () { heard.push('error:' + i.complete); }); i.src = '/pic.png'; 0");
+    let writes = b.take_image_writes();
+    assert_eq!(writes.len(), 1, "the same value written again is a write");
+    assert!(b.take_image_writes().is_empty(), "taken once");
+    let node = writes[0];
+    assert_eq!(ev(&b, read), "false,0,0,,0,");
+    ev(&b, "var d = []; i.decode().then(function () { d.push('resolved'); }, function (e) { d.push('rejected:' + e.name); }); 0");
+    b.fire_image_load(node, 40, 30, "https://example.test/pic.png").unwrap();
+    assert_eq!(ev(&b, read), "true,40,30,https://example.test/pic.png,40,load:true:false:true:40");
+    assert_eq!(ev(&b, "d.join()"), "resolved");
+    // A new `src`: in flight again.
+    ev(&b, "i.src = '/gone.png'; 0");
+    assert_eq!(b.take_image_writes(), [node]);
+    assert_eq!(ev(&b, "[i.complete, i.naturalWidth, i.currentSrc].join()"), "false,0,");
+    b.fire_image_error(node).unwrap();
+    assert_eq!(ev(&b, "[i.complete, i.naturalWidth, i.currentSrc, heard.slice(1).join('+')].join()"), "true,0,https://example.test/gone.png,error:true");
+    assert_eq!(ev(&b, "var r = []; i.decode().then(function () { r.push('resolved'); }, function (e) { r.push('rejected:' + e.name); }); 0"), "0");
+    assert_eq!(ev(&b, "r.join()"), "rejected:EncodingError");
+    // An image that is in no document is reported the same way.
+    ev(&b, "var n = new Image(); n.src = '/pre.png'; var c = document.createElement('img'); c.setAttribute('srcset', '/a.png 2x'); 0");
+    let outside = b.take_image_writes();
+    assert_eq!(outside.len(), 2);
+    assert!(!outside.contains(&node));
+    assert_eq!(ev(&b, "document.createElement('img').complete"), "true", "no image named");
+    assert_eq!(ev(&b, "c.complete"), "false", "srcset names one");
 }
 
 #[test]

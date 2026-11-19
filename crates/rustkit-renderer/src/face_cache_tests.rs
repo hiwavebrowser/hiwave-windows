@@ -79,6 +79,7 @@ fn text(s: &str, x: f32) -> DisplayCommand {
         ascent: None,
         run: None,
         faces: None,
+        undilated: false,
     }
 }
 

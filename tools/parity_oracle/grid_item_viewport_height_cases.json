@@ -1,0 +1,80 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "chrome": "143.0.7499.4 (grid_flexible_row_log.mjs); Chrome for Testing 148.0.7778.216 checked separately",
+ "cases": [
+  {
+   "name": "a-sticky-100vh-grid-pane-beside-a-taller-column",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr;width:1200px\"><div id=a style=\"position:sticky;top:0;height:100vh\"></div><div id=tall style=\"height:3000px\"></div></div></body></html>",
+   "chrome_boxes": "g:0:0:1200:3000 a:0:0:600:800 tall:600:0:600:3000"
+  },
+  {
+   "name": "a-100vh-grid-item-beside-a-taller-column",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr;width:1200px\"><div id=a style=\"height:100vh\"></div><div id=tall style=\"height:3000px\"></div></div></body></html>",
+   "chrome_boxes": "g:0:0:1200:3000 a:0:0:600:800 tall:600:0:600:3000"
+  },
+  {
+   "name": "a-50vh-grid-item-beside-a-taller-column",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr;width:1200px\"><div id=a style=\"height:50vh\"></div><div id=tall style=\"height:3000px\"></div></div></body></html>",
+   "chrome_boxes": "g:0:0:1200:3000 a:0:0:600:400 tall:600:0:600:3000"
+  },
+  {
+   "name": "a-100vh-grid-item-with-a-percent-child",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr;width:1200px\"><div id=a style=\"height:100vh;overflow:hidden\"><div id=b style=\"height:100%\"></div></div><div id=tall style=\"height:3000px\"></div></div></body></html>",
+   "chrome_boxes": "g:0:0:1200:3000 a:0:0:600:800 b:0:0:600:800 tall:600:0:600:3000"
+  },
+  {
+   "name": "a-20rem-grid-item-beside-a-taller-column",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr;width:1200px\"><div id=a style=\"height:20rem\"></div><div id=tall style=\"height:3000px\"></div></div></body></html>",
+   "chrome_boxes": "g:0:0:1200:3000 a:0:0:600:320 tall:600:0:600:3000"
+  },
+  {
+   "name": "a-min-of-vh-and-px-grid-item-beside-a-taller-column",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr;width:1200px\"><div id=a style=\"height:min(100vh, 500px)\"></div><div id=tall style=\"height:3000px\"></div></div></body></html>",
+   "chrome_boxes": "g:0:0:1200:3000 a:0:0:600:500 tall:600:0:600:3000"
+  },
+  {
+   "name": "a-px-grid-item-beside-a-taller-column",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr;width:1200px\"><div id=a style=\"height:800px\"></div><div id=tall style=\"height:3000px\"></div></div></body></html>",
+   "chrome_boxes": "g:0:0:1200:3000 a:0:0:600:800 tall:600:0:600:3000"
+  },
+  {
+   "name": "a-lone-min-of-vh-and-px-grid-item",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;width:600px\"><div id=a style=\"height:min(100vh, 500px)\"></div></div><div id=after style=\"height:10px\"></div></body></html>",
+   "chrome_boxes": "g:0:0:600:500 a:0:0:600:500 after:0:500:1280:10"
+  },
+  {
+   "name": "a-lone-clamp-grid-item",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;width:600px\"><div id=a style=\"height:clamp(100px, 50vh, 600px)\"></div></div><div id=after style=\"height:10px\"></div></body></html>",
+   "chrome_boxes": "g:0:0:600:400 a:0:0:600:400 after:0:400:1280:10"
+  },
+  {
+   "name": "a-lone-max-of-vh-and-px-grid-item",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;width:600px\"><div id=a style=\"height:max(10vh, 120px)\"></div></div><div id=after style=\"height:10px\"></div></body></html>",
+   "chrome_boxes": "g:0:0:600:120 a:0:0:600:120 after:0:120:1280:10"
+  },
+  {
+   "name": "a-lone-zero-height-grid-item",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;width:600px\"><div id=a style=\"height:0\"></div></div><div id=after style=\"height:10px\"></div></body></html>",
+   "chrome_boxes": "g:0:0:600:0 a:0:0:600:0 after:0:0:1280:10"
+  },
+  {
+   "name": "a-lone-20rem-grid-item",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;width:600px\"><div id=a style=\"height:20rem\"></div></div><div id=after style=\"height:10px\"></div></body></html>",
+   "chrome_boxes": "g:0:0:600:320 a:0:0:600:320 after:0:320:1280:10"
+  },
+  {
+   "name": "a-min-height-clamp-grid-item-beside-a-short-one",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;grid-template-columns:1fr 1fr;width:600px\"><div id=a style=\"min-height:clamp(100px, 25vh, 300px)\"></div><div id=b style=\"height:50px\"></div></div><div id=after style=\"height:10px\"></div></body></html>",
+   "chrome_boxes": "g:0:0:600:200 a:0:0:300:200 b:300:0:300:50 after:0:200:1280:10"
+  },
+  {
+   "name": "a-max-height-min-grid-item-with-tall-content",
+   "html": "<!doctype html><html><head><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;width:600px\"><div id=a style=\"max-height:min(50vh, 150px);overflow:hidden\"><div style=\"height:400px\"></div></div></div><div id=after style=\"height:10px\"></div></body></html>",
+   "chrome_boxes": "g:0:0:600:150 a:0:0:600:150 after:0:150:1280:10"
+  }
+ ]
+}

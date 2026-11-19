@@ -1,0 +1,155 @@
+{
+ "cases": [
+  {
+   "name": "atlas_shape",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[],r='';q.push('a');r+=take(q);q.push('b');r+=take(q);q.push('c');return r+'|'+JSON.stringify([q.length,q[0],q[1],0 in q])})()",
+   "chrome": "ab|[1,\"c\",null,true]"
+  },
+  {
+   "name": "atlas_take_c",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[],r='';q.push('a');r+=take(q);q.push('b');r+=take(q);q.push('c');r+=take(q);q.push('d');r+=take(q);return r+'|'+JSON.stringify([q.length,q[0],q[1],0 in q])})()",
+   "chrome": "abcd|[0,null,null,false]"
+  },
+  {
+   "name": "loop_10",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[],r='';for(var i=0;i<10;i++){q.push(i);q.push(i+'x');r+=take(q)+',';}return r})()",
+   "chrome": "00x,11x,22x,33x,44x,55x,66x,77x,88x,99x,"
+  },
+  {
+   "name": "twice_in_row",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[1,2,3];q.length=0;q.length=0;q.push('a');q.push('b');return JSON.stringify([q.length,q[0],q[1],0 in q])})()",
+   "chrome": "[2,\"a\",\"b\",true]"
+  },
+  {
+   "name": "shift",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[],r='';for(var i=0;i<6;i++){q.push(i);q.push(i*2);r+=q.shift()+'/'+q.shift()+',';q.length=0;}return r+JSON.stringify([q.length,q[0],q[1],0 in q])})()",
+   "chrome": "0/0,1/2,2/4,3/6,4/8,5/10,[0,null,null,false]"
+  },
+  {
+   "name": "shift_drain",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[],r='';for(var i=0;i<6;i++){q.push(i);q.push(i+1);while(q.length)r+=q.shift();r+=',';q.length=0;}return r})()",
+   "chrome": "01,12,23,34,45,56,"
+  },
+  {
+   "name": "index_assign",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[],r='';for(var i=0;i<5;i++){q[0]=i;q[1]=i+1;r+=q[0]+''+q[1]+q.length+',';q.length=0;}return r})()",
+   "chrome": "012,122,232,342,452,"
+  },
+  {
+   "name": "index_after_trunc",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[1,2,3,4];q.length=1;q.push(9);q.length=0;q.push(7);q.push(8);return JSON.stringify([q.length,q[0],q[1],0 in q])})()",
+   "chrome": "[2,7,8,true]"
+  },
+  {
+   "name": "holey",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[];q[3]=1;q.length=0;q.push('a');q.length=0;q.push('b');q.push('c');return JSON.stringify([q.length,q[0],q[1],0 in q])})()",
+   "chrome": "[2,\"b\",\"c\",true]"
+  },
+  {
+   "name": "holey2",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[,1,,2];var r='';for(var i=0;i<4;i++){q.length=0;q.push(i);q[2]=i;r+=JSON.stringify(q)+';';}return r})()",
+   "chrome": "[0,null,0];[1,null,1];[2,null,2];[3,null,3];"
+  },
+  {
+   "name": "closure",
+   "js": "(function(){function take(q){var o=[];for(var i=0;i<q.length;i++)o.push(q[i]);q.length=0;return o.join('')};var q=[];function push(x){q.push(x)}function drain(){var s=take(q);return s}var r='';push('a');r+=drain();push('b');r+=drain();push('c');r+=drain();push('d');push('e');r+=drain();return r+'|'+JSON.stringify([q.length,q[0],q[1],0 in q])})()",
+   "chrome": "abcde|[0,null,null,false]"
+  },
+  {
+   "name": "closure_let",
+   "js": "(function(){let q=[];const push=x=>q.push(x);const drain=()=>{const s=q.join('');q.length=0;return s};let r='';for(let i=0;i<5;i++){push('a'+i);push('b'+i);r+=drain()+',';}return r+q.length})()",
+   "chrome": "a0b0,a1b1,a2b2,a3b3,a4b4,0"
+  },
+  {
+   "name": "for_of_drain",
+   "js": "(function(){var q=[],r='';for(var k=0;k<5;k++){q.push(k,k+1);var items=q.slice();q.length=0;for(var x of items)r+=x;r+=',';}return r})()",
+   "chrome": "01,12,23,34,45,"
+  },
+  {
+   "name": "for_of_live",
+   "js": "(function(){var q=[],r='';for(var k=0;k<4;k++){q.push(k,k+10);for(var x of q)r+=x+' ';q.length=0;r+=',';}return r})()",
+   "chrome": "0 10 ,1 11 ,2 12 ,3 13 ,"
+  },
+  {
+   "name": "splice_vs_len",
+   "js": "(function(){var q=[],r='';for(var k=0;k<4;k++){q.push(k);q.push(k);q.splice(0);q.push('z'+k);r+=q.join('')+q.length+',';q.length=0;}return r})()",
+   "chrome": "z01,z11,z21,z31,"
+  },
+  {
+   "name": "len_to_1_then_0",
+   "js": "(function(){var q=[1,2,3];q.length=1;q.length=0;q.push('a');q.push('b');q.length=0;q.push('c');return JSON.stringify([q.length,q[0],q])})()",
+   "chrome": "[1,\"c\",[\"c\"]]"
+  },
+  {
+   "name": "pop_after_reset",
+   "js": "(function(){var q=[],r='';for(var k=0;k<5;k++){q.push(k,k+1,k+2);r+=q.pop();q.length=0;q.push('p');r+=q.pop()+q.length+',';}return r})()",
+   "chrome": "2p0,3p0,4p0,5p0,6p0,"
+  },
+  {
+   "name": "unshift_after_reset",
+   "js": "(function(){var q=[],r='';for(var k=0;k<4;k++){q.unshift(k);q.unshift(k+1);r+=q.join('')+',';q.length=0;}return r})()",
+   "chrome": "10,21,32,43,"
+  },
+  {
+   "name": "length_grow",
+   "js": "(function(){var q=[1,2];q.length=0;q.length=3;q.push('x');q.length=0;q.push('y');return JSON.stringify([q.length,q[0],q,1 in q])})()",
+   "chrome": "[1,\"y\",[\"y\"],false]"
+  },
+  {
+   "name": "reqs_chain",
+   "js": "(function(){var queue=[],done=[];function enq(x){queue.push(x)}function pump(){var items=queue;var n=items.length;for(var i=0;i<n;i++){done.push(items[i]);if(items[i]<5)enq(items[i]+1)}queue.length=0}enq(0);for(var t=0;t<8;t++)pump();return done.join(',')+'|'+queue.length})()",
+   "chrome": "0|0"
+  },
+  {
+   "name": "reqs_chain_copy",
+   "js": "(function(){var queue=[],done=[];function enq(x){queue.push(x)}function pump(){var items=queue.slice();queue.length=0;for(var i=0;i<items.length;i++){done.push(items[i]);if(items[i]<5)enq(items[i]+1)}}enq(0);for(var t=0;t<8;t++)pump();return done.join(',')+'|'+queue.length})()",
+   "chrome": "0,1,2,3,4,5|0"
+  },
+  {
+   "name": "objects",
+   "js": "(function(){var q=[],r='';for(var k=0;k<5;k++){q.push({v:k});var o=q[0];r+=(o&&o.v)+',';q.length=0;}return r})()",
+   "chrome": "0,1,2,3,4,"
+  },
+  {
+   "name": "length_eq_in_loop_cond",
+   "js": "(function(){var q=[],r='';for(var k=0;k<5;k++){q.push(k);q.push(k);var i=0;while(i<q.length){r+=q[i];i++;}q.length=0;r+=q[0]+',';}return r})()",
+   "chrome": "00undefined,11undefined,22undefined,33undefined,44undefined,"
+  },
+  {
+   "name": "float_elems",
+   "js": "(function(){var q=[],r='';for(var k=0;k<5;k++){q.push(k+0.5);r+=q[0]+',';q.length=0;}return r})()",
+   "chrome": "0.5,1.5,2.5,3.5,4.5,"
+  },
+  {
+   "name": "mixed_kinds",
+   "js": "(function(){var q=[],r='';var vs=[1,'s',1.5,{},null];for(var k=0;k<5;k++){q.push(vs[k]);q.push(k);r+=String(q[0])+q[1]+',';q.length=0;}return r})()",
+   "chrome": "10,s1,1.52,[object Object]3,null4,"
+  },
+  {
+   "name": "range_error_every_time",
+   "js": "(function(){var q=[1,2],r='';for(var i=0;i<3;i++){try{q.length=-1;r+='ok'}catch(e){r+=e.name}r+=q.length+',';}return r})()",
+   "chrome": "RangeError2,RangeError2,RangeError2,"
+  },
+  {
+   "name": "string_length_converted",
+   "js": "(function(){var q=[1,2,3,4],r='';var ls=['3','2',1.0,'0'];for(var i=0;i<4;i++){q.length=ls[i];r+=typeof q.length+q.length+JSON.stringify(q)+',';}return r})()",
+   "chrome": "number3[1,2,3],number2[1,2],number1[1],number0[],"
+  },
+  {
+   "name": "grow_then_shrink_loop",
+   "js": "(function(){var q=[],r='';var ls=[3,1,4,0,2];for(var i=0;i<5;i++){q.length=ls[i];q[0]='x';r+=q.length+':'+JSON.stringify(q)+',';}return r})()",
+   "chrome": "3:[\"x\",null,null],1:[\"x\"],4:[\"x\",null,null,null],1:[\"x\"],2:[\"x\",null],"
+  },
+  {
+   "name": "frozen_length",
+   "js": "(function(){'use strict';var q=[1,2,3],r='';for(var i=0;i<3;i++){if(i==1)Object.freeze(q);try{q.length=0;r+='ok'}catch(e){r+=e.name}r+=q.length+',';}return r})()",
+   "chrome": "ok0,TypeError0,TypeError0,"
+  },
+  {
+   "name": "two_arrays_one_site",
+   "js": "(function(){function reset(a){a.length=0}var a=[1,2],b=[3,4,5];reset(a);reset(b);reset(a);a.push(9);b.push(8);return JSON.stringify([a,b])})()",
+   "chrome": "[[9],[8]]"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

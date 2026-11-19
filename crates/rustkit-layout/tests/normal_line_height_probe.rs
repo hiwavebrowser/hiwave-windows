@@ -19,7 +19,7 @@
 //!
 //! cargo test -p rustkit-layout --test normal_line_height_probe -- --nocapture
 
-// This probe measures Core Text faces (-apple-system, SF Pro) against Chrome-on-macOS
+// This probe measures Core Text faces (system-ui, SF Pro) against Chrome-on-macOS
 // rects; on other platforms the families do not exist and the table is meaningless.
 #![cfg(target_os = "macos")]
 
@@ -29,14 +29,14 @@ use rustkit_layout::measure_text_advanced;
 /// (font-family, font-size, Chrome's resolved normal line-height in px)
 /// Chrome column from scripts/probe_normal_lineheight.py on baselines/chrome-148.
 const CHROME: &[(&str, f32, f32)] = &[
-    ("-apple-system", 14.0, 17.0),
-    ("-apple-system", 14.4, 17.0),
-    ("-apple-system", 12.8, 15.0),
-    ("-apple-system", 13.0, 16.0),
-    ("-apple-system", 16.0, 18.0),
-    ("-apple-system", 15.2, 18.0),
-    ("-apple-system", 12.0, 15.0),
-    ("-apple-system", 11.0, 13.0),
+    ("-apple-system, BlinkMacSystemFont", 14.0, 17.0),
+    ("-apple-system, BlinkMacSystemFont", 14.4, 17.0),
+    ("-apple-system, BlinkMacSystemFont", 12.8, 15.0),
+    ("-apple-system, BlinkMacSystemFont", 13.0, 16.0),
+    ("-apple-system, BlinkMacSystemFont", 16.0, 18.0),
+    ("-apple-system, BlinkMacSystemFont", 15.2, 18.0),
+    ("-apple-system, BlinkMacSystemFont", 12.0, 15.0),
+    ("-apple-system, BlinkMacSystemFont", 11.0, 13.0),
     ("system-ui", 16.0, 18.0),
     ("system-ui", 14.4, 17.0),
     ("system-ui", 12.48, 15.0),

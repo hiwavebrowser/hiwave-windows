@@ -12,8 +12,9 @@
 // have it (web_forms.js and the DOM layer own the form controls, `a.href`
 // and `script.src`).
 //
-// Honest limits: `img.complete` is true only for an image with no `src`, and
-// `naturalWidth/Height` are 0 (the engine does not publish decoded sizes);
+// Honest limits: `img.complete`, `naturalWidth/Height` and `currentSrc` read
+// what the engine reported of the image when it fired `load` or `error`
+// at the element, so an image reads as in flight until its event;
 // `iframe.contentWindow/contentDocument` are null; `link.sheet` stays as the
 // CSSOM layer has it.
 (function (g) {
@@ -228,13 +229,50 @@
         enm(I, 'decoding', 'decoding', ['sync', 'async', 'auto'], 'auto');
         enm(I, 'referrerPolicy', 'referrerpolicy', ['', 'no-referrer', 'no-referrer-when-downgrade', 'same-origin', 'origin', 'strict-origin', 'origin-when-cross-origin', 'strict-origin-when-cross-origin', 'unsafe-url'], '', '');
         enm(I, 'fetchPriority', 'fetchpriority', ['high', 'low', 'auto'], 'auto');
-        def(I, 'currentSrc', function () { var v = this.getAttribute('src'); return v === null ? '' : resolve(v); });
-        def(I, 'complete', function () { var v = this.getAttribute('src'); return v === null || v === ''; });
-        def(I, 'naturalWidth', function () { return 0; });
-        def(I, 'naturalHeight', function () { return 0; });
+        // What the engine reported of the image this `src`/`srcset` names
+        // (`__rk.imageLoaded` / `__rk.imageFailed`, dom.rs): the
+        // loaded mark `[src, srcset, width, height, url]`, or whether the
+        // load failed. Neither while the image is in flight.
+        function loaded(img) { return __rk.imageLoadedFor ? __rk.imageLoadedFor(img) : null; }
+        function failed(img) {
+            var mark = __rk.imageFailedFor ? __rk.imageFailedFor(img) : null;
+            return !!mark && mark[0] === img.getAttribute('src') && mark[1] === img.getAttribute('srcset');
+        }
+        // No image is named: nothing to wait for (HTML §4.8.4.3).
+        function sourceless(img) { return !img.getAttribute('src') && !img.getAttribute('srcset'); }
+        // The URL that loaded (with `srcset`, the candidate the engine
+        // chose) or failed; empty while the image is in flight, as in Chrome.
+        def(I, 'currentSrc', function () {
+            var mark = loaded(this);
+            if (mark) return mark[4];
+            var v = this.getAttribute('src');
+            return v && failed(this) ? resolve(v) : '';
+        });
+        // True for an image that is in, one whose load failed (a broken
+        // image is complete with a naturalWidth of 0), and one that names
+        // no image; false while the image is in flight.
+        def(I, 'complete', function () { return sourceless(this) || !!loaded(this) || failed(this); });
+        def(I, 'naturalWidth', function () { var mark = loaded(this); return mark ? mark[2] : 0; });
+        def(I, 'naturalHeight', function () { var mark = loaded(this); return mark ? mark[3] : 0; });
         def(I, 'x', function () { return this.getBoundingClientRect().x; });
         def(I, 'y', function () { return this.getBoundingClientRect().y; });
-        method(I, 'decode', function decode() { return Promise.resolve(); });
+        // decode(): settles with the image. Resolved once it is in, or once
+        // the engine gave up on it; rejected with an EncodingError when it
+        // failed, names no image, or its `src` changed meanwhile (Chrome 148).
+        method(I, 'decode', function decode() {
+            var img = this;
+            return new Promise(function (settled, rejected) {
+                var broken = function () {
+                    var E = g.DOMException;
+                    rejected(E ? new E('The source image cannot be decoded.', 'EncodingError') : new Error('The source image cannot be decoded.'));
+                };
+                if (loaded(img)) return settled();
+                if (sourceless(img) || failed(img)) return broken();
+                // The image's own event settles it (dom.rs), and so does the
+                // engine giving up on it; a `src` change rejects it.
+                if (__rk.decodeWait) __rk.decodeWait(img, settled, function () { broken(); });
+            });
+        });
     }
     function method(proto, name, fn) {
         if (!proto || has(proto, name)) return;
