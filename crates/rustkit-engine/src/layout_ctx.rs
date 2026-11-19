@@ -616,6 +616,9 @@ pub(crate) struct ViewLayout {
     /// is shared, and another view's pass must not evict what this one
     /// paints.
     pub(crate) svg_transient_keys: RefCell<Vec<String>>,
+    /// MEDIA-AVF: each video's display size once its metadata is in, by raw NodeId:
+    /// what its replaced box is built at (`media.rs`).
+    pub(crate) media_sizes: RefCell<HashMap<usize, (u32, u32)>>,
     /// This view's running CSS transitions and the values they compare
     /// against, read and advanced by every build (`animations.rs`).
     pub(crate) animations: RefCell<crate::animations::Animations>,

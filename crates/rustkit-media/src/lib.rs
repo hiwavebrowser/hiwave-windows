@@ -5,7 +5,7 @@
 //! ## Features
 //!
 //! - **HTMLMediaElement**: Base interface for audio/video
-//! - **Audio playback**: Via rodio audio backend
+//! - **Audio playback**: AVPlayer outputs its own audio (MEDIA-AVF)
 //! - **Video rendering**: Frame extraction for display
 //! - **Media controls**: Play, pause, seek, volume
 //! - **Media events**: play, pause, ended, timeupdate, etc.
@@ -20,13 +20,70 @@
 //! ```text
 //! HTMLMediaElement (base)
 //!     ├── HTMLAudioElement
-//!     │      └── AudioPlayer (rodio)
+//!     │      └── AudioPlayer (AVPlayer, MEDIA-AVF)
 //!     └── HTMLVideoElement
 //!            └── VideoDecoder (TODO)
 //! ```
 
 #[cfg(target_os = "macos")]
 pub mod avf;
+/// Off macOS there is no AVFoundation: nothing plays, every probe fails.
+#[cfg(not(target_os = "macos"))]
+pub mod avf {
+    use std::sync::Arc;
+
+    pub fn is_playable_extended_mime_type(_mime: &str) -> bool {
+        false
+    }
+
+    pub const CHUNK: u64 = 1 << 20;
+
+    #[derive(Default)]
+    pub struct MediaSource;
+
+    impl MediaSource {
+        pub fn new() -> Arc<MediaSource> {
+            Arc::new(MediaSource)
+        }
+        pub fn set_info(&self, _content_type: Option<String>, _total: u64) {}
+        pub fn add(&self, _start: u64, _bytes: bytes::Bytes) {}
+        pub fn fail(&self) {}
+        pub fn failed(&self) -> bool {
+            true
+        }
+        pub fn take_wants(&self, _sequential_budget: u64) -> Vec<(u64, u64)> {
+            Vec::new()
+        }
+        pub fn held(&self) -> usize {
+            0
+        }
+        pub fn total(&self) -> Option<u64> {
+            None
+        }
+        pub fn complete(&self) -> bool {
+            false
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum ProbeState {
+        Pending,
+        Ready { duration: f64, video: Option<(f64, f64)>, audio: bool },
+        Failed,
+    }
+
+    pub struct Probe;
+
+    impl Probe {
+        pub fn start(_source: Arc<MediaSource>) -> Probe {
+            Probe
+        }
+        pub fn bytes_changed(&self) {}
+        pub fn poll(&mut self) -> ProbeState {
+            ProbeState::Failed
+        }
+    }
+}
 
 use hashbrown::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -568,17 +625,13 @@ impl Default for HTMLMediaElement {
 
 // ==================== Audio Player ====================
 
-/// Audio player using rodio.
+/// Audio player (AVPlayer through `avf` as MEDIA-AVF wires it).
 pub struct AudioPlayer {
     /// Media element state.
     pub element: HTMLMediaElement,
     
     /// Event receiver.
     event_rx: mpsc::UnboundedReceiver<MediaEvent>,
-    
-    // TODO: Add rodio stream/sink when audio feature is fully implemented
-    // _stream: Option<rodio::OutputStream>,
-    // sink: Option<rodio::Sink>,
 }
 
 impl AudioPlayer {

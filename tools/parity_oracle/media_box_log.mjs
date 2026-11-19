@@ -27,6 +27,13 @@ const CASES = [
   ['video border 5px padding 3px', '<video id=m style="border:5px solid;padding:3px"></video>'],
   ['audio', '<audio id=m></audio>'],
   ['audio controls', '<audio id=m controls></audio>'],
+  // #1332 R1: the UA hides an <audio> without controls whatever the author says.
+  ['audio style display:block', '<audio id=m style="display:block"></audio>'],
+  ['audio sheet display:inline-block', '<style>audio{display:inline-block}</style><audio id=m></audio>'],
+  ['audio style display:block !important', '<audio id=m style="display:block !important"></audio>'],
+  // #1332 R1: a page overriding the UA's object-fit.
+  ['video style object-fit:cover', '<video id=m style="object-fit:cover"></video>'],
+  ['video sheet object-fit:fill', '<style>video{object-fit:fill}</style><video id=m></video>'],
 ];
 
 const browser = await chromium.launch({

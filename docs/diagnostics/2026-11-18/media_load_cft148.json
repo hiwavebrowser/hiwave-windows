@@ -1,0 +1,340 @@
+{
+  "chrome": "148.0.7778.216",
+  "events_watched": [
+    "loadstart",
+    "progress",
+    "suspend",
+    "abort",
+    "error",
+    "emptied",
+    "stalled",
+    "loadedmetadata",
+    "loadeddata",
+    "canplay",
+    "canplaythrough",
+    "durationchange",
+    "resize",
+    "waiting"
+  ],
+  "cases": [
+    {
+      "label": "video src preload=auto",
+      "markup": "<video id=m src=/color-steps.mp4 preload=auto></video>",
+      "events": [
+        "loadstart:rs0:ns2",
+        "progress:rs0:ns1",
+        "suspend:rs0:ns1",
+        "durationchange:rs1:ns1",
+        "resize:rs1:ns1",
+        "loadedmetadata:rs1:ns1",
+        "loadeddata:rs4:ns1",
+        "canplay:rs4:ns1",
+        "canplaythrough:rs4:ns1"
+      ],
+      "readyState": 4,
+      "networkState": 1,
+      "error": null,
+      "currentSrc": "/color-steps.mp4",
+      "duration": 2,
+      "videoWidth": 64,
+      "videoHeight": 48,
+      "paused": true,
+      "ended": false,
+      "seeking": false,
+      "currentTime": 0,
+      "buffered": [
+        [
+          0,
+          2
+        ]
+      ],
+      "seekable": [
+        [
+          0,
+          2
+        ]
+      ],
+      "preload": "auto",
+      "width": 64,
+      "height": 48
+    },
+    {
+      "label": "video src default preload",
+      "markup": "<video id=m src=/color-steps.mp4></video>",
+      "events": [
+        "loadstart:rs0:ns2",
+        "progress:rs0:ns1",
+        "suspend:rs0:ns1",
+        "durationchange:rs4:ns1",
+        "resize:rs4:ns1",
+        "loadedmetadata:rs4:ns1",
+        "loadeddata:rs4:ns1",
+        "canplay:rs4:ns1",
+        "canplaythrough:rs4:ns1"
+      ],
+      "readyState": 4,
+      "networkState": 1,
+      "error": null,
+      "currentSrc": "/color-steps.mp4",
+      "duration": 2,
+      "videoWidth": 64,
+      "videoHeight": 48,
+      "paused": true,
+      "ended": false,
+      "seeking": false,
+      "currentTime": 0,
+      "buffered": [
+        [
+          0,
+          2
+        ]
+      ],
+      "seekable": [
+        [
+          0,
+          2
+        ]
+      ],
+      "preload": "metadata",
+      "width": 64,
+      "height": 48
+    },
+    {
+      "label": "video src preload=none",
+      "markup": "<video id=m src=/color-steps.mp4 preload=none></video>",
+      "events": [
+        "loadstart:rs0:ns1",
+        "suspend:rs0:ns1"
+      ],
+      "readyState": 0,
+      "networkState": 1,
+      "error": null,
+      "currentSrc": "/color-steps.mp4",
+      "duration": "NaN",
+      "videoWidth": 0,
+      "videoHeight": 0,
+      "paused": true,
+      "ended": false,
+      "seeking": false,
+      "currentTime": 0,
+      "buffered": [],
+      "seekable": [],
+      "preload": "none",
+      "width": 300,
+      "height": 150
+    },
+    {
+      "label": "video width=100 after metadata",
+      "markup": "<video id=m width=100 src=/color-steps.mp4 preload=auto></video>",
+      "events": [
+        "loadstart:rs0:ns2",
+        "progress:rs0:ns1",
+        "suspend:rs0:ns1",
+        "durationchange:rs1:ns1",
+        "resize:rs1:ns1",
+        "loadedmetadata:rs1:ns1",
+        "loadeddata:rs4:ns1",
+        "canplay:rs4:ns1",
+        "canplaythrough:rs4:ns1"
+      ],
+      "readyState": 4,
+      "networkState": 1,
+      "error": null,
+      "currentSrc": "/color-steps.mp4",
+      "duration": 2,
+      "videoWidth": 64,
+      "videoHeight": 48,
+      "paused": true,
+      "ended": false,
+      "seeking": false,
+      "currentTime": 0,
+      "buffered": [
+        [
+          0,
+          2
+        ]
+      ],
+      "seekable": [
+        [
+          0,
+          2
+        ]
+      ],
+      "preload": "auto",
+      "width": 100,
+      "height": 75
+    },
+    {
+      "label": "video 32x24 after metadata",
+      "markup": "<video id=m src=/size-32x24.mp4 preload=auto></video>",
+      "events": [
+        "loadstart:rs0:ns2",
+        "progress:rs0:ns1",
+        "suspend:rs0:ns1",
+        "durationchange:rs1:ns1",
+        "resize:rs1:ns1",
+        "loadedmetadata:rs1:ns1",
+        "loadeddata:rs4:ns1",
+        "canplay:rs4:ns1",
+        "canplaythrough:rs4:ns1"
+      ],
+      "readyState": 4,
+      "networkState": 1,
+      "error": null,
+      "currentSrc": "/size-32x24.mp4",
+      "duration": 0.066667,
+      "videoWidth": 32,
+      "videoHeight": 24,
+      "paused": true,
+      "ended": true,
+      "seeking": false,
+      "currentTime": 0,
+      "buffered": [
+        [
+          0,
+          0.066667
+        ]
+      ],
+      "seekable": [
+        [
+          0,
+          0.066667
+        ]
+      ],
+      "preload": "auto",
+      "width": 32,
+      "height": 24
+    },
+    {
+      "label": "video source selection",
+      "markup": "<video id=m preload=auto><source src=/a.mp4 type=\"video/x-unknown\"><source src=/color-steps.mp4 type=\"video/mp4\"></video>",
+      "events": [
+        "loadstart:rs0:ns2",
+        "progress:rs0:ns1",
+        "suspend:rs0:ns1",
+        "durationchange:rs1:ns1",
+        "resize:rs1:ns1",
+        "loadedmetadata:rs1:ns1",
+        "loadeddata:rs4:ns1",
+        "canplay:rs4:ns1",
+        "canplaythrough:rs4:ns1"
+      ],
+      "readyState": 4,
+      "networkState": 1,
+      "error": null,
+      "currentSrc": "/color-steps.mp4",
+      "duration": 2,
+      "videoWidth": 64,
+      "videoHeight": 48,
+      "paused": true,
+      "ended": false,
+      "seeking": false,
+      "currentTime": 0,
+      "buffered": [
+        [
+          0,
+          2
+        ]
+      ],
+      "seekable": [
+        [
+          0,
+          2
+        ]
+      ],
+      "preload": "auto",
+      "width": 64,
+      "height": 48
+    },
+    {
+      "label": "video 404",
+      "markup": "<video id=m src=/missing.mp4 preload=auto></video>",
+      "events": [
+        "loadstart:rs0:ns2",
+        "error:rs0:ns3"
+      ],
+      "readyState": 0,
+      "networkState": 3,
+      "error": 4,
+      "currentSrc": "/missing.mp4",
+      "duration": "NaN",
+      "videoWidth": 0,
+      "videoHeight": 0,
+      "paused": true,
+      "ended": false,
+      "seeking": false,
+      "currentTime": 0,
+      "buffered": [],
+      "seekable": [],
+      "preload": "auto",
+      "width": 300,
+      "height": 150
+    },
+    {
+      "label": "video not media",
+      "markup": "<video id=m src=/not-media.mp4 preload=auto></video>",
+      "events": [
+        "loadstart:rs0:ns2",
+        "progress:rs0:ns1",
+        "suspend:rs0:ns1",
+        "error:rs0:ns3"
+      ],
+      "readyState": 0,
+      "networkState": 3,
+      "error": 4,
+      "currentSrc": "/not-media.mp4",
+      "duration": "NaN",
+      "videoWidth": 0,
+      "videoHeight": 0,
+      "paused": true,
+      "ended": false,
+      "seeking": false,
+      "currentTime": 0,
+      "buffered": [],
+      "seekable": [],
+      "preload": "auto",
+      "width": 300,
+      "height": 150
+    },
+    {
+      "label": "audio src preload=auto",
+      "markup": "<audio id=m src=/color-steps.mp4 preload=auto controls></audio>",
+      "events": [
+        "loadstart:rs0:ns2",
+        "progress:rs0:ns1",
+        "suspend:rs0:ns1",
+        "durationchange:rs1:ns1",
+        "loadedmetadata:rs1:ns1",
+        "loadeddata:rs4:ns1",
+        "canplay:rs4:ns1",
+        "canplaythrough:rs4:ns1"
+      ],
+      "readyState": 4,
+      "networkState": 1,
+      "error": null,
+      "currentSrc": "/color-steps.mp4",
+      "duration": 2,
+      "videoWidth": null,
+      "videoHeight": null,
+      "paused": true,
+      "ended": false,
+      "seeking": false,
+      "currentTime": 0,
+      "buffered": [
+        [
+          0,
+          2
+        ]
+      ],
+      "seekable": [
+        [
+          0,
+          2
+        ]
+      ],
+      "preload": "auto",
+      "width": 300,
+      "height": 54
+    }
+  ]
+}

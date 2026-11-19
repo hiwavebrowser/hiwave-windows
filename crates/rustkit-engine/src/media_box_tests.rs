@@ -135,3 +135,19 @@ fn an_audio_without_controls_is_not_displayed() {
 fn an_audio_with_controls_is_an_inline_300_by_54_box() {
     check("audio controls");
 }
+
+/// #1332 R1: Chrome's UA rule hides an `<audio>` without `controls` over any author
+/// `display` (`audio:not([controls]) { display: none !important }`).
+#[test]
+fn an_audio_without_controls_stays_hidden_under_an_author_display() {
+    check("audio style display:block");
+    check("audio sheet display:inline-block");
+    check("audio style display:block !important");
+}
+
+/// #1332 R1: the UA's `object-fit: contain` is an ordinary declaration a page overrides.
+#[test]
+fn a_page_overrides_the_videos_object_fit() {
+    check("video style object-fit:cover");
+    check("video sheet object-fit:fill");
+}

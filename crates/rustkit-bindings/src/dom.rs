@@ -3452,25 +3452,85 @@ const WRAPPERS_JS: &str = r#"
             }
             elementProtos[tag] = made[name].prototype;
         });
-        // There is no media playback here, and a page must be able to find
-        // that out the way it asks: a media element is one with nothing to
-        // play. Without the methods the question itself threw (github.com's
-        // `video.load()` in an effect). Canvas contexts are web_canvas.js's,
-        // which takes this way to a canvas's node from the host object.
+        // Canvas contexts are web_canvas.js's, which takes this way to a canvas's node
+        // from the host object.
         __rk.canvasSlot = function (el) { var s = slotOf(el); return [s.gen, s.id]; };
+        // MEDIA-AVF M1.2: the media element's state is the engine's, pushed with each
+        // event (`__rk.mediaEvent` below) and read here; `load()` and `canPlayType()`
+        // ask the engine (`__rk.mediaCall`, web_media.rs). Playing, pausing and seeking
+        // come in later steps: `play()` still rejects and `pause()` does nothing.
         var media = HTMLMediaElement.prototype;
         ['HAVE_NOTHING', 'HAVE_METADATA', 'HAVE_CURRENT_DATA', 'HAVE_FUTURE_DATA', 'HAVE_ENOUGH_DATA'].forEach(function (k, i) {
             HTMLMediaElement[k] = media[k] = i;
         });
-        media.load = function load() {};
+        ['NETWORK_EMPTY', 'NETWORK_IDLE', 'NETWORK_LOADING', 'NETWORK_NO_SOURCE'].forEach(function (k, i) {
+            HTMLMediaElement[k] = media[k] = i;
+        });
+        function mstate(el) { slotOf(el); return mediaStates.get(el) || MEDIA_INITIAL; }
+        function getter(proto, name, read, write) {
+            Object.defineProperty(proto, name, { get: read, set: write, enumerable: true, configurable: true });
+        }
+        media.load = function load() { var s = slotOf(this); __rk.mediaCall(s.gen, s.id, 'load'); };
         media.pause = function pause() {};
-        media.canPlayType = function canPlayType() { return ''; };
+        media.canPlayType = function canPlayType(type) {
+            if (arguments.length < 1) throw new TypeError("Failed to execute 'canPlayType' on 'HTMLMediaElement': 1 argument required, but only 0 present.");
+            return __rk.mediaCall(0, 0, 'canPlayType', String(type));
+        };
         media.play = function play() {
             return Promise.reject(new g.DOMException('The element has no supported sources.', 'NotSupportedError'));
         };
-        [['paused', true], ['ended', false], ['readyState', 0], ['currentTime', 0], ['duration', NaN], ['error', null]].forEach(function (p) {
-            Object.defineProperty(media, p[0], { value: p[1], writable: true, enumerable: true, configurable: true });
+        getter(media, 'src', function () {
+            var v = this.getAttribute('src');
+            if (v === null) return '';
+            try { return new g.URL(v, document.baseURI).href; } catch (_) { return v; }
+        }, function (v) { this.setAttribute('src', String(v)); });
+        getter(media, 'preload', function () {
+            var v = this.getAttribute('preload');
+            if (v === null) return 'metadata';
+            v = v.toLowerCase();
+            return v === '' ? 'auto' : (v === 'none' || v === 'metadata' || v === 'auto') ? v : 'metadata';
+        }, function (v) { this.setAttribute('preload', String(v)); });
+        getter(media, 'readyState', function () { return mstate(this).rs; });
+        getter(media, 'networkState', function () { return mstate(this).ns; });
+        getter(media, 'duration', function () { var d = mstate(this).duration; return d === null ? NaN : d; });
+        getter(media, 'currentSrc', function () { return mstate(this).src; });
+        getter(media, 'paused', function () { return true; });
+        getter(media, 'ended', function () { return false; });
+        getter(media, 'seeking', function () { return false; });
+        getter(media, 'currentTime', function () { return 0; }, function () {});
+        getter(media, 'error', function () {
+            var st = mstate(this);
+            if (st.error === null) return null;
+            if (!st.errorObject) {
+                st.errorObject = Object.create(MediaError.prototype);
+                Object.defineProperty(st.errorObject, 'code', { value: st.error, enumerable: true });
+                Object.defineProperty(st.errorObject, 'message', { value: '', enumerable: true });
+            }
+            return st.errorObject;
         });
+        // HTML §4.8.11.7: TimeRanges, read-only and not constructible.
+        var TimeRanges = iface('TimeRanges');
+        var rangesOf = new WeakMap();
+        function ranges(list) {
+            var r = Object.create(TimeRanges.prototype);
+            rangesOf.set(r, list.slice());
+            return r;
+        }
+        function rangeAt(r, i, end) {
+            var list = rangesOf.get(r);
+            if (!list) throw new TypeError('Illegal invocation');
+            i = Number(i) >>> 0;
+            if (i >= list.length) throw new g.DOMException("The index provided (" + i + ") is greater than or equal to the maximum bound (" + list.length + ").", 'IndexSizeError');
+            return list[i][end ? 1 : 0];
+        }
+        getter(TimeRanges.prototype, 'length', function () { var l = rangesOf.get(this); if (!l) throw new TypeError('Illegal invocation'); return l.length; });
+        TimeRanges.prototype.start = function start(i) { return rangeAt(this, i, false); };
+        TimeRanges.prototype.end = function end(i) { return rangeAt(this, i, true); };
+        getter(media, 'buffered', function () { return ranges(mstate(this).buffered); });
+        getter(media, 'seekable', function () { return ranges(mstate(this).seekable); });
+        var video = made.HTMLVideoElement.prototype;
+        getter(video, 'videoWidth', function () { return mstate(this).w; });
+        getter(video, 'videoHeight', function () { return mstate(this).h; });
         // HTML §4.8.11. `MediaError` is the interface `video.error` would be,
         // and pages compare against the code constants. There is no playback
         // here, so the constructor stays illegal and `error` stays null.
@@ -6651,6 +6711,21 @@ const WRAPPERS_JS: &str = r#"
     // are one step, so a handler never runs for an image that reads as
     // still loading.
     var loadedImages = new WeakMap();
+    // MEDIA-AVF M1.2: each media element's state as the engine last pushed it, read
+    // by the HTMLMediaElement getters. `__rk.mediaEvent(id, type, state)` sets it (when
+    // `state` is given, as JSON) and then fires `type` (when given): trusted, at the
+    // element only, so a handler reads the state as of its own event.
+    var MEDIA_INITIAL = { rs: 0, ns: 0, duration: null, src: '', error: null, w: 0, h: 0, buffered: [], seekable: [] };
+    var mediaStates = new WeakMap();
+    __rk.mediaEvent = function (id, type, state) {
+        var target = typeof id === 'number' ? wrap(id) : null;
+        if (!target) return;
+        if (state) mediaStates.set(target, JSON.parse(state));
+        if (!type) return;
+        var ev = make('Event', type);
+        trust(ev);
+        dispatchTo(target, ev);
+    };
     __rk.imageLoaded = function (id, width, height, url) {
         var target = typeof id === 'number' ? wrap(id) : null;
         if (!target) return;

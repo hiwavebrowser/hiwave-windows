@@ -110,6 +110,56 @@
       "height": 54,
       "display": "inline",
       "object_fit": "fill"
+    },
+    {
+      "label": "audio style display:block",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><audio id=m style=\"display:block\"></audio></div>",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0,
+      "display": "none",
+      "object_fit": "fill"
+    },
+    {
+      "label": "audio sheet display:inline-block",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><style>audio{display:inline-block}</style><audio id=m></audio></div>",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0,
+      "display": "none",
+      "object_fit": "fill"
+    },
+    {
+      "label": "audio style display:block !important",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><audio id=m style=\"display:block !important\"></audio></div>",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0,
+      "display": "none",
+      "object_fit": "fill"
+    },
+    {
+      "label": "video style object-fit:cover",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m style=\"object-fit:cover\"></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 300,
+      "height": 150,
+      "display": "inline",
+      "object_fit": "cover"
+    },
+    {
+      "label": "video sheet object-fit:fill",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><style>video{object-fit:fill}</style><video id=m></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 300,
+      "height": 150,
+      "display": "inline",
+      "object_fit": "fill"
     }
   ]
 }

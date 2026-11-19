@@ -960,6 +960,54 @@ pub fn collapse_whitespace(text: &str, white_space: WhiteSpace) -> String {
     }
 }
 
+/// The face a family chain resolves to on Windows, for measuring (shaping) and for painting a
+/// per-character glyph alike: for each family in order, a face the document registered via
+/// `@font-face` (it outranks the system, as on macOS), then the system collection, where a name
+/// Windows substitutes ("Times" is Times New Roman) resolves to its substitute. Returns the face,
+/// the family that resolved and the face's PostScript name; `None` when no family in the chain
+/// resolves (the caller's own last resort applies).
+#[cfg(windows)]
+pub fn resolve_windows_face(
+    chain: &FontFamilyChain,
+    weight: FontWeight,
+    style: FontStyle,
+    stretch: FontStretch,
+) -> Option<(rustkit_text::FontFace, String, String)> {
+    let collection = RkFontCollection::system().ok()?;
+    resolve_windows_face_in(&collection, chain, weight, style, stretch)
+}
+
+#[cfg(windows)]
+fn resolve_windows_face_in(
+    collection: &RkFontCollection,
+    chain: &FontFamilyChain,
+    weight: FontWeight,
+    style: FontStyle,
+    stretch: FontStretch,
+) -> Option<(rustkit_text::FontFace, String, String)> {
+    let dw_weight = RkFontWeight::from_u32(weight.0 as u32);
+    let dw_style = match style {
+        FontStyle::Normal => RkFontStyle::Normal,
+        FontStyle::Italic => RkFontStyle::Italic,
+        FontStyle::Oblique => RkFontStyle::Oblique,
+    };
+    let dw_stretch = RkFontStretch::from_u32(stretch.to_dwrite_value());
+    for family_name in chain.all_families() {
+        if let Some(face) = rustkit_text::web_font_face(family_name, weight.0, style == FontStyle::Italic) {
+            let postscript_name = face.postscript_name();
+            return Some((face, family_name.to_string(), postscript_name));
+        }
+        if let Ok(Some(family)) = collection.font_family_by_name(family_name) {
+            if let Ok(font) = family.first_matching_font(dw_weight, dw_stretch, dw_style) {
+                if let Ok(face) = font.create_font_face() {
+                    return Some((face, family_name.to_string(), font.postscript_name()));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Font cache for reusing font objects.
 #[derive(Default)]
 pub struct FontCache {
@@ -1304,36 +1352,15 @@ impl TextShaper {
         let collection =
             RkFontCollection::system().map_err(|e| TextError::DirectWriteError(e.to_string()))?;
 
-        // Find first available font in chain: for each family, a face the document registered
-        // via @font-face first (it outranks the system, as on macOS), then the system collection.
+        // The first family in the chain that resolves (`resolve_windows_face`, which paint uses
+        // too, so the glyphs drawn are the face measured here).
         let mut font_family_name = font_chain.primary.clone();
-        let mut found_font: Option<(rustkit_text::FontFace, String)> = None;
-
-        for family_name in font_chain.all_families() {
-            if let Some(face) = rustkit_text::web_font_face(family_name, weight.0, style == FontStyle::Italic) {
-                font_family_name = family_name.to_string();
-                let postscript_name = face.postscript_name();
-                found_font = Some((face, postscript_name));
-                break;
-            }
-            if let Ok(Some(family)) = collection.font_family_by_name(family_name) {
-                let dw_weight = RkFontWeight::from_u32(weight.0 as u32);
-                let dw_style = match style {
-                    FontStyle::Normal => RkFontStyle::Normal,
-                    FontStyle::Italic => RkFontStyle::Italic,
-                    FontStyle::Oblique => RkFontStyle::Oblique,
-                };
-                let dw_stretch = RkFontStretch::from_u32(stretch.to_dwrite_value());
-
-                if let Ok(font) = family.first_matching_font(dw_weight, dw_stretch, dw_style) {
-                    if let Ok(face) = font.create_font_face() {
-                        font_family_name = family_name.to_string();
-                        found_font = Some((face, font.postscript_name()));
-                        break;
-                    }
-                }
-            }
-        }
+        let found_font = resolve_windows_face_in(&collection, font_chain, weight, style, stretch).map(
+            |(face, family, postscript_name)| {
+                font_family_name = family;
+                (face, postscript_name)
+            },
+        );
 
         // If we found a font, use DirectWrite for accurate shaping
         if let Some((face, postscript_name)) = found_font {

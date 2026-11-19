@@ -663,6 +663,17 @@ impl ResourceLoader {
 
     /// Fetch a URL.
     pub async fn fetch(&self, request: Request) -> Result<Response, NetError> {
+        self.fetch_limited(request, None).await
+    }
+
+    /// [`fetch`](Self::fetch), refusing a response body larger than `max_body` bytes
+    /// (after decoding) with [`rustkit_http::HttpError::BodyTooLarge`]: for a caller
+    /// that must not hold an unbounded body (media, whose server may ignore `Range`).
+    pub async fn fetch_capped(&self, request: Request, max_body: usize) -> Result<Response, NetError> {
+        self.fetch_limited(request, Some(max_body)).await
+    }
+
+    async fn fetch_limited(&self, request: Request, max_body: Option<usize>) -> Result<Response, NetError> {
         // A subresource (anything with a document referrer that is not itself
         // the navigation) may not reach private addresses on behalf of a
         // public page, on any redirect hop. Navigations and referrer-less
@@ -677,7 +688,7 @@ impl ResourceLoader {
             },
         };
         let cookies = sends_cookies(&request);
-        if matches!(policy, rustkit_http::AddressPolicy::Any) && cookies {
+        if matches!(policy, rustkit_http::AddressPolicy::Any) && cookies && max_body.is_none() {
             return self.fetch_with(request, &self.client, true).await;
         }
         // The shared cache is keyed by URL alone and would answer a private
@@ -686,6 +697,9 @@ impl ResourceLoader {
         let mut client = self.client.clone().with_address_policy(policy);
         if !cookies {
             client = client.with_cookies(None);
+        }
+        if let Some(max) = max_body {
+            client = client.with_max_body(max);
         }
         self.fetch_with(request, &client, use_cache).await
     }
