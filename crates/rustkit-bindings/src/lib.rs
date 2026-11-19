@@ -186,6 +186,7 @@ mod host_object_tests;
 #[cfg(test)]
 mod bookkeeping_paths_tests;
 mod web_canvas;
+mod web_media;
 mod worker_host;
 #[cfg(test)]
 mod web_canvas_tests;
@@ -204,6 +205,7 @@ pub use dom::{
 };
 pub mod events;
 pub use rustkit_canvas as canvas;
+pub use web_media::MediaCanPlay;
 pub use web_canvas::{CanvasImageLoader, CanvasSnapshot, CanvasSource, CanvasTextExtent, CanvasTextMeasurer};
 
 pub use events::{
@@ -518,7 +520,7 @@ pub(crate) const HOST_SLOTS: &[&str] = &[
     "fireRejection", "fireTextInput", "fireTransition", "fireWheel", "followLink", "fragmentNavigation", "hasCtor", "historyReset",
     "imageFailed", "imageFailedFor", "imageGaveUp", "imageLoaded", "imageLoadedFor", "imageWritten",
     "implicitSubmit", "inlineStyleParses", "isDispatching", "keepCtor", "keepFinish", "likelySubtags", "locationHashSync",
-    "locationSync", "make", "markEdited", "matchMediaTagged", "mediaChanges", "net", "newTextEvent", "nextTimer",
+    "locationSync", "make", "markEdited", "matchMediaTagged", "mediaCall", "mediaChanges", "mediaEvent", "net", "newTextEvent", "nextTimer",
     "now", "observersTick", "perfNow", "pickOption", "realTop", "runTimers", "runTimersFramed", "scrollToFragment",
     "scrollToLocationFragment", "setAdoptedStyles", "setCurrentScript", "setDetClock", "setFocus", "setGridStamps", "setOneRound", "setSelection",
     "setSheetDisabled", "sheetGeneration", "styleNative", "takeEdited", "takeFocus", "takeSelection", "testRealMs", "timeOrigin", "timelineNow", "treeTurn", "trust", "turnFrameAt", "userEdit",
@@ -1864,6 +1866,8 @@ pub struct DomBindings {
     edit: Rc<dom::editing::EditContext>,
     /// Canvas 2D contexts and what they drew (see `web_canvas`).
     canvases: web_canvas::SharedCanvases,
+    /// What script asked of media elements (see `web_media`).
+    media: web_media::SharedMedia,
     /// Stops this page's workers when it goes away (see `worker_host`).
     workers: worker_host::Guard,
 }
@@ -2174,6 +2178,9 @@ impl DomBindings {
         // recorded by rustkit-canvas for the engine to paint (web_canvas.js).
         let canvases = web_canvas::SharedCanvases::default();
         web_canvas::install(&mut *runtime, &canvases, &dom_host, !lazy)?;
+        // HTMLMediaElement's engine side: load() and canPlayType() (web_media.rs, MEDIA-AVF).
+        let media = web_media::SharedMedia::default();
+        web_media::install(&mut *runtime, &media, &dom_host)?;
         // IntersectionObserver and ResizeObserver that report, over the geometry and
         // scroll state (web_observers_live.js); replace the inert stubs.
         runtime.evaluate_with_host(include_str!("web_observers_live.js"))?;
@@ -2232,6 +2239,7 @@ impl DomBindings {
             scroll,
             edit,
             canvases,
+            media,
             workers,
         })
     }
@@ -2252,6 +2260,28 @@ impl DomBindings {
     /// the engine paints again when it did.
     pub fn take_canvas_painted(&self) -> bool {
         self.canvases.borrow_mut().take_painted()
+    }
+
+    /// MEDIA-AVF: the media elements whose `load()` script called since the last call.
+    pub fn take_media_loads(&self) -> Vec<usize> {
+        std::mem::take(&mut self.media.borrow_mut().loads)
+    }
+
+    /// MEDIA-AVF: what answers `canPlayType` (the engine's AVFoundation check).
+    pub fn set_media_can_play(&self, can_play: Option<MediaCanPlay>) {
+        self.media.borrow_mut().can_play = can_play;
+    }
+
+    /// MEDIA-AVF: set media element `node`'s state to `state` (JSON, when given) and
+    /// then fire `event` (when given) at it, trusted. The state is what its getters read
+    /// (dom.rs `__rk.mediaEvent`).
+    pub fn fire_media_event(&self, node: usize, event: Option<&str>, state: Option<&str>) -> Result<(), BindingError> {
+        let event = event.unwrap_or("");
+        let state = state.unwrap_or("");
+        self.runtime
+            .borrow_mut()
+            .evaluate_host_turn(&format!("return __rk.mediaEvent({node}, __a[0] || null, __a[1] || null);"), &[event, state])?;
+        Ok(())
     }
 
     /// The text shaper `measureText` and canvas text use (the engine's).

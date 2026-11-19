@@ -219,11 +219,19 @@ where
         }
 
         // `ComputedPropertyContains`: https://tc39.es/ecma262/#sec-static-semantics-computedpropertycontains
+        //
+        // HIWAVE PATCH (class-element-eval): `DirectEval` is not a spec symbol but Boa's question
+        // "must the scopes around this node keep their bindings in environments?". A direct eval in
+        // a method, accessor, field initializer or static block reads the bindings around the class
+        // as one in a nested function does, so it answers yes, as a nested function's
+        // `contains_direct_eval` does. Before, class elements answered no, and a binding of the
+        // enclosing scope kept in a register was looked up in an environment that was not there.
         fn visit_class_element(&mut self, node: &'ast ClassElement) -> ControlFlow<Self::BreakTy> {
+            let direct_eval = self.0 == ContainsSymbol::DirectEval;
             match node {
                 ClassElement::MethodDefinition(m) => {
-                    if self.0 == ContainsSymbol::DirectEval {
-                        return ControlFlow::Continue(());
+                    if direct_eval {
+                        self.visit_contains_eval(m.contains_direct_eval)?;
                     }
 
                     if let ClassElementName::PropertyName(name) = m.name() {
@@ -233,8 +241,20 @@ where
                     }
                 }
                 ClassElement::FieldDefinition(field)
-                | ClassElement::StaticFieldDefinition(field) => field.name.visit_with(self),
-                _ => ControlFlow::Continue(()),
+                | ClassElement::StaticFieldDefinition(field) => {
+                    field.name.visit_with(self)?;
+                    match &field.initializer {
+                        Some(init) if direct_eval => init.visit_with(self),
+                        _ => ControlFlow::Continue(()),
+                    }
+                }
+                ClassElement::PrivateFieldDefinition(field)
+                | ClassElement::PrivateStaticFieldDefinition(field) => match &field.initializer {
+                    Some(init) if direct_eval => init.visit_with(self),
+                    _ => ControlFlow::Continue(()),
+                },
+                ClassElement::StaticBlock(block) if direct_eval => block.statements().visit_with(self),
+                ClassElement::StaticBlock(_) => ControlFlow::Continue(()),
             }
         }
 

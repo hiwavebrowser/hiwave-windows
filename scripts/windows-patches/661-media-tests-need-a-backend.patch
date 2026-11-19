@@ -1,0 +1,119 @@
+Windows: 14 rustkit-engine media tests (media_fetch_tests, media_load_tests) need a media backend to
+fetch and read media: MEDIA-AVF plays media through AVFoundation, which exists on macOS only, so here
+canPlayType answers "" and no metadata fetch starts. They are ignored on Windows with that reason (the
+Windows media backend row). media_box_tests (no media needed) run and pass.
+
+Remove when Windows has a media backend.
+
+--- a/crates/rustkit-engine/src/media_fetch_tests.rs
++++ b/crates/rustkit-engine/src/media_fetch_tests.rs
+@@ -200,6 +200,7 @@ fn padded_fixture() -> Vec<u8> {
+ 
+ /// Every media request carries `Range`.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn media_is_fetched_by_range() {
+     let server = serve_media(vec![
+         (
+@@ -223,6 +224,7 @@ fn media_is_fetched_by_range() {
+ /// The metadata of a resource with 8 MB it does not need is read from a few ranges: the
+ /// header, and the `moov` atom at the end by a seek. Not the resource.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn the_metadata_fetches_only_what_it_reads() {
+     let big = padded_fixture();
+     let total = big.len();
+@@ -260,6 +262,7 @@ fn the_metadata_fetches_only_what_it_reads() {
+ /// A server that ignores `Range` answers with the whole body: past the cap, the fetch is
+ /// refused and the element errors with MEDIA_ERR_NETWORK.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn a_whole_body_past_the_cap_is_a_network_error() {
+     media::CAP_FOR_TESTS.with(|c| c.set(Some(4096)));
+     let server = serve_media(vec![
+@@ -290,6 +293,7 @@ fn a_whole_body_past_the_cap_is_a_network_error() {
+ 
+ /// Within the cap, a server that ignores `Range` still works: its 200 is the resource.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn a_server_that_ignores_range_still_loads() {
+     let server = serve_media(vec![
+         (
+@@ -330,6 +334,7 @@ fn wait_for_fetch(engine: &mut Engine, view: EngineViewId, rt: &tokio::runtime::
+ 
+ /// Removing a `<video>` mid-fetch drops its request and its bytes.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn removing_a_video_cancels_its_fetch_and_frees_its_bytes() {
+     let server = serve_media(vec![
+         (
+@@ -363,6 +368,7 @@ fn removing_a_video_cancels_its_fetch_and_frees_its_bytes() {
+ 
+ /// A new `src` drops the old resource's request; the new one loads.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn a_new_src_cancels_the_old_fetch() {
+     let server = serve_media(vec![
+         (
+--- a/crates/rustkit-engine/src/media_load_tests.rs
++++ b/crates/rustkit-engine/src/media_load_tests.rs
+@@ -180,11 +180,13 @@ fn check_except(label: &str, event_states: bool, skip: &[&str]) {
+ }
+ 
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn a_video_with_preload_auto_loads_its_metadata() {
+     check("video src preload=auto", true);
+ }
+ 
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn a_video_with_the_default_preload_loads_its_metadata() {
+     check("video src default preload", false);
+ }
+@@ -196,6 +198,7 @@ fn a_video_with_preload_none_waits() {
+ 
+ /// The box takes the video's ratio once the metadata is in: 100x75.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn a_videos_box_takes_its_ratio_after_metadata() {
+     check("video width=100 after metadata", true);
+ }
+@@ -205,6 +208,7 @@ fn a_videos_box_takes_its_ratio_after_metadata() {
+ /// 1/15 s (what Chrome reports, 0.066667), an artifact of how AVAssetWriter writes a
+ /// single frame rather than a behaviour to match.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn a_small_videos_box_takes_its_size() {
+     check_except(
+         "video 32x24 after metadata",
+@@ -215,6 +219,7 @@ fn a_small_videos_box_takes_its_size() {
+ 
+ /// A `<source>` whose type canPlayType rejects is skipped.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn source_selection_skips_a_type_that_cannot_play() {
+     check("video source selection", true);
+ }
+@@ -225,11 +230,13 @@ fn a_404_is_an_error() {
+ }
+ 
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn bytes_that_are_not_media_are_an_error() {
+     check("video not media", true);
+ }
+ 
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn an_audio_element_loads_its_metadata() {
+     check("audio src preload=auto", true);
+ }
+@@ -237,6 +244,7 @@ fn an_audio_element_loads_its_metadata() {
+ /// Chrome 148's canPlayType answers (media_codecs_cft148.json) where AVFoundation
+ /// agrees; where it does not, RustKit's own answer and why.
+ #[test]
++#[cfg_attr(windows, ignore = "Windows media backend row: MEDIA-AVF plays media through AVFoundation (macOS only); Windows has no backend yet")]
+ fn can_play_type_answers() {
+     let receipt: serde_json::Value = serde_json::from_str(include_str!(
+         "../../../docs/diagnostics/2026-11-18/media_codecs_cft148.json"

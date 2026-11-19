@@ -15,7 +15,7 @@ fn author_svg_strokes(html: &str) -> Vec<(u8, u8, u8)> {
     let document = Rc::new(Document::parse_html(html).expect("parse"));
     let engine = Engine::new(EngineConfig::default()).expect("engine");
     engine.cache_svg_paint_styles(&document, EngineViewId::new(), Some((800.0, 600.0)));
-    engine.lctx.cache_inline_svgs(&document);
+    engine.lctx.cache_inline_svgs(&document, None);
     let mut out = Vec::new();
     for svg in document.get_elements_by_tag_name_shadow_including("svg") {
         let key = Engine::inline_svg_key(&engine.lctx.inline_svg_markup_styled(&svg));

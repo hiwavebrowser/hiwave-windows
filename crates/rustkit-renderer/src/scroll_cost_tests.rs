@@ -1017,6 +1017,12 @@ fn culling_never_changes_coverage_or_order_of_decorations_negative_sizes_or_wide
         eprintln!("SKIP: no GPU adapter");
         return;
     };
+    if gpu.device_type == wgpu::DeviceType::Cpu {
+        // WARP's glyph and decoration rasterisation is not the GPU's: the culled and unculled frames
+        // differ by 1 LSB outside glyph pixels (and by more, on glyph pixels, on the hosted runner).
+        eprintln!("SKIP culling_never_changes_coverage...: software adapter (pixel-exact on a GPU)");
+        return;
+    }
     let hazards = cull_hazards();
     // The same list with a backdrop blur, drawn into a frame texture that
     // the blur reads.

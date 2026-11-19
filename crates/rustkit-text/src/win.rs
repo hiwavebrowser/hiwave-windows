@@ -61,7 +61,19 @@ impl FontCollection {
         })
     }
 
+    /// The family named `name`, or the family Windows substitutes for it (`family_substitute`:
+    /// "Times" is Times New Roman, "Helvetica" Arial), as Chrome on Windows resolves it.
     pub fn font_family_by_name(&self, name: &str) -> Result<Option<FontFamily>, TextBackendError> {
+        if let Some(family) = self.font_family_by_exact_name(name)? {
+            return Ok(Some(family));
+        }
+        match family_substitute(name) {
+            Some(substitute) if !substitute.eq_ignore_ascii_case(name) => self.font_family_by_exact_name(&substitute),
+            _ => Ok(None),
+        }
+    }
+
+    fn font_family_by_exact_name(&self, name: &str) -> Result<Option<FontFamily>, TextBackendError> {
         let name_w = to_wide_null(name);
         let mut index: u32 = 0;
         let mut exists = BOOL(0);
@@ -139,7 +151,50 @@ impl Font {
     }
 }
 
+/// The face the current document registered for `family` (`@font-face`, this thread's
+/// `webfonts` set) closest to `weight` and `italic`, or `None` when it registered none. A
+/// document's face outranks every system lookup, as on macOS.
+pub fn web_font_face(family: &str, weight: u16, italic: bool) -> Option<FontFace> {
+    crate::webfonts::lookup(family, weight, italic).map(|face| FontFace { face })
+}
+
 impl FontFace {
+    /// A face from the raw DirectWrite face (a rasteriser that resolved its own).
+    pub fn from_raw(face: IDWriteFontFace) -> Self {
+        FontFace { face }
+    }
+
+    /// The face's PostScript name ("Ahem"), read from the face itself (a document's web face has
+    /// no system `Font` to ask), or an empty string when it carries none.
+    pub fn postscript_name(&self) -> String {
+        use windows::core::Interface;
+        unsafe {
+            let Ok(face3) = self.face.cast::<IDWriteFontFace3>() else {
+                return String::new();
+            };
+            let mut strings: Option<IDWriteLocalizedStrings> = None;
+            let mut exists = BOOL(0);
+            if face3
+                .GetInformationalStrings(DWRITE_INFORMATIONAL_STRING_POSTSCRIPT_NAME, &mut strings, &mut exists)
+                .is_err()
+                || !exists.as_bool()
+            {
+                return String::new();
+            }
+            let Some(strings) = strings else {
+                return String::new();
+            };
+            let Ok(len) = strings.GetStringLength(0) else {
+                return String::new();
+            };
+            let mut buf = vec![0u16; len as usize + 1];
+            if strings.GetString(0, &mut buf).is_err() {
+                return String::new();
+            }
+            String::from_utf16_lossy(&buf[..len as usize])
+        }
+    }
+
     /// The DirectWrite face itself, for a rasterizer that draws with it.
     pub fn raw(&self) -> &IDWriteFontFace {
         &self.face
@@ -274,4 +329,108 @@ pub fn intern_face(face: &FontFace) -> u64 {
 /// Windows counterpart of `macos::face_font`.
 pub fn face_by_id(id: u64) -> Option<FontFace> {
     face_table::with(|faces| faces.get(&id).cloned())
+}
+
+/// The family Windows substitutes for `name` (HKLM `...\Windows NT\CurrentVersion\FontSubstitutes`:
+/// "Times" -> "Times New Roman", "Helvetica" -> "Arial"), which Chrome on Windows also consults for a
+/// family the system collection does not have. `None` when Windows names no substitute. The key's
+/// few dozen entries are read once, at first use, into a fixed map: what pages ask about adds
+/// nothing to it.
+pub fn family_substitute(name: &str) -> Option<String> {
+    substitutes().get(&name.trim().to_ascii_lowercase()).cloned()
+}
+
+fn substitutes() -> &'static std::collections::HashMap<String, String> {
+    static TABLE: OnceLock<std::collections::HashMap<String, String>> = OnceLock::new();
+    TABLE.get_or_init(read_substitutes)
+}
+
+/// Every entry of the FontSubstitutes key: lower-cased name -> family (a `,charset` suffix dropped;
+/// an empty value names nothing and is left out).
+fn read_substitutes() -> std::collections::HashMap<String, String> {
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ,
+    };
+    let mut table = std::collections::HashMap::new();
+    let subkey = to_wide_null(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\FontSubstitutes");
+    let mut key = HKEY::default();
+    if unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(subkey.as_ptr()), None, KEY_READ, &mut key) }.is_err() {
+        return table;
+    }
+    // A bound on entries read, so a damaged key cannot keep this loop going.
+    for index in 0..4096u32 {
+        let mut name = [0u16; 256];
+        let mut name_len = name.len() as u32;
+        let mut data = [0u16; 256];
+        let mut data_len = std::mem::size_of_val(&data) as u32;
+        let mut kind = 0u32;
+        let status = unsafe {
+            RegEnumValueW(
+                key,
+                index,
+                Some(windows::core::PWSTR(name.as_mut_ptr())),
+                &mut name_len,
+                None,
+                Some(&mut kind),
+                Some(data.as_mut_ptr().cast()),
+                Some(&mut data_len),
+            )
+        };
+        if status.is_err() {
+            // ERROR_NO_MORE_ITEMS ends the list; a value too long for the buffers is skipped by
+            // the same stop, which only drops entries past it (none are that long).
+            break;
+        }
+        if kind != REG_SZ.0 {
+            continue;
+        }
+        let name = String::from_utf16_lossy(&name[..(name_len as usize).min(name.len())]);
+        let chars = (data_len as usize / 2).min(data.len());
+        let value = String::from_utf16_lossy(&data[..chars]);
+        let family = value.trim_end_matches('\0').split(',').next().unwrap_or("").trim().to_string();
+        if !family.is_empty() {
+            table.insert(name.trim().to_ascii_lowercase(), family);
+        }
+    }
+    unsafe {
+        let _ = RegCloseKey(key);
+    }
+    table
+}
+
+#[cfg(test)]
+mod family_substitute_tests {
+    use super::*;
+
+    fn postscript_of(name: &str) -> Option<String> {
+        let collection = FontCollection::system().expect("the system collection");
+        let family = collection.font_family_by_name(name).expect("lookup")?;
+        let font = family
+            .first_matching_font(FontWeight(400), FontStretch(5), FontStyle::Normal)
+            .expect("a font");
+        Some(font.postscript_name())
+    }
+
+    /// Windows names the classic families by substitution (FontSubstitutes): "Times" is Times New
+    /// Roman and "Helvetica" Arial, as Chrome on Windows resolves them. DirectWrite's collection
+    /// alone knows neither name, so text fell back to Segoe UI.
+    #[test]
+    fn the_classic_family_names_resolve_by_windows_substitution() {
+        assert_eq!(postscript_of("Times").as_deref(), Some("TimesNewRomanPSMT"));
+        assert_eq!(postscript_of("helvetica").as_deref(), Some("ArialMT"));
+        assert_eq!(postscript_of("Times New Roman").as_deref(), Some("TimesNewRomanPSMT"));
+        assert_eq!(postscript_of("NoSuchFamilyAnywhere"), None);
+    }
+
+    /// The table is the registry key's entries, read once: names pages ask about add nothing.
+    #[test]
+    fn asking_about_many_names_does_not_grow_the_substitute_table() {
+        let before = substitutes().len();
+        assert!(before > 0 && before < 4096, "{before} entries");
+        for i in 0..1000 {
+            assert_eq!(family_substitute(&format!("NoSuchFamily{i}")), None);
+        }
+        assert_eq!(family_substitute("TIMES").as_deref(), Some("Times New Roman"));
+        assert_eq!(substitutes().len(), before);
+    }
 }

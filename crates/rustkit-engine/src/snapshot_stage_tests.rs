@@ -197,7 +197,8 @@ fn snapshot_stage_measure() {
 /// Each element's lazily formatted style is the row set the whole-page
 /// snapshot built for it: boxes, an element split over lines, boxless
 /// elements (`display: contents`, `display: none`), custom properties
-/// (own and inherited) and pseudo-elements.
+/// (own and inherited), pseudo-elements, and inline svg content's `fill`
+/// and `stroke` (the `<rect>` has no box: those rows alone).
 #[test]
 fn lazily_formatted_styles_equal_the_whole_page_snapshot() {
     let page = "<html><head><style>:root{--a:1px;font-size:12px} body{margin:0} .c{display:contents;color:red}\
@@ -210,7 +211,15 @@ fn lazily_formatted_styles_equal_the_whole_page_snapshot() {
     let state = &engine.views[&view];
     let layout = state.layout.clone().expect("laid out");
     let root = root_element_id(state);
-    let eager = geometry_with_root(&layout, root, &state.lay.boxless_styles.borrow(), &state.lay.pseudo_styles.borrow()).1;
+    let svg_paint = state.lay.svg_paint.borrow().clone();
+    let eager = geometry_with_root(
+        &layout,
+        root,
+        &state.lay.boxless_styles.borrow(),
+        &state.lay.pseudo_styles.borrow(),
+        svg_paint.as_deref(),
+    )
+    .1;
     let lazy_layout = layout.clone();
     let lazy = computed_lines_source(move || Some(lazy_layout.clone()), root, state.lay.clone());
     assert!(eager.len() >= 12, "{} elements", eager.len());

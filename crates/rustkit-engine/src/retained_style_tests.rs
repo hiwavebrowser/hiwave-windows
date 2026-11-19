@@ -41,6 +41,10 @@ fn load(page: &str) -> (Engine, EngineViewId, crate::script_net_tests::Server) {
         .expect("view");
     let url = Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap();
     rt().block_on(engine.load_url(view, url)).expect("load_url");
+    // The page's writes start now (`page`): the load runs as many frames as its time allows.
+    engine
+        .execute_script(view, "window.WRITES = true")
+        .expect("start the writes");
     (engine, view, server)
 }
 
@@ -49,11 +53,13 @@ fn frame(engine: &mut Engine, view: EngineViewId) {
 }
 
 /// `body` with an animation-frame loop that runs `write` (with `n` the frame number) each frame
-/// until `window.STOP`. The load itself runs a few hundred frames, so `n` starts large.
+/// from the first frame after the load (`load` sets `window.WRITES`) until `window.STOP`. The load
+/// runs as many frames as its time allows, so a loop that counted them would start each run at
+/// another point of its writes.
 fn page(style: &str, body: &str, write: &str) -> String {
     format!(
         "<!doctype html><style>body{{margin:0;font:14px sans-serif}}{style}</style>{body}\
-         <script>var n = 0; requestAnimationFrame(function f() {{ n++; if (!window.STOP) {{ {write} }} requestAnimationFrame(f); }});</script>"
+         <script>var n = 0; requestAnimationFrame(function f() {{ if (window.WRITES) {{ n++; if (!window.STOP) {{ {write} }} }} requestAnimationFrame(f); }});</script>"
     )
 }
 
@@ -110,6 +116,14 @@ struct Run {
 fn run(page: &str, frames: usize, mode: RetainedStyles) -> Run {
     set_retained_styles_for_test(Some(mode));
     let (mut engine, view, _server) = load(page);
+    // The arms are compared frame by frame, so each must start from the same point of the page's
+    // writes: none written during the load, whose frame count follows the machine's speed (300 idle,
+    // 193 to 204 under load), and the first written in the first frame measured.
+    assert_eq!(
+        engine.execute_script(view, "String(n)").expect("n"),
+        "String(\"0\")",
+        "the page wrote during the load"
+    );
     let (mut lists, mut cascades, mut built) = (Vec::new(), 0, 0);
     let spliced = splices_for_test().0;
     for i in 0..frames {
@@ -316,11 +330,14 @@ fn a_running_transition_on_an_inherited_property_reaches_the_children() {
     assert_replays_match_a_fresh_cascade("transition", &transition_page(), None);
 }
 
+/// The class flips every four frames, first at the fourth: the frames before it write only the
+/// width, so the first measured frames can splice (a class flip from a full build starts a
+/// transition, and a running transition is a full build).
 fn transition_page() -> String {
     page(
         "#p{color:rgb(0,0,255);transition:color 2s linear} #p.on{color:rgb(255,0,0)} #w{width:10px}",
         "<div id=p><span id=s>x<em id=e>y</em></span></div><div id=w></div>",
-        "document.getElementById('p').className = n % 8 < 4 ? 'on' : ''; \
+        "document.getElementById('p').className = n % 8 >= 4 ? 'on' : ''; \
          document.getElementById('w').style.width = (10 + n % 50) + 'px';",
     )
 }
@@ -507,6 +524,201 @@ fn an_insert_and_a_removal_among_block_siblings_splice() {
     );
 }
 
+/// BOXES-DIFF (board report.html, `#error-container` emptied by `innerHTML = ''`): a written element
+/// whose box a full build drops (an empty block with nothing visible about it) is not spliced in. The
+/// restyle build kept the root's box before its parent's build decides to keep it, so the splice put
+/// a box where a full build has none.
+#[test]
+fn a_written_empty_block_a_full_build_drops_is_not_spliced_in() {
+    assert_same_as_a_full_build(
+        "written empty block",
+        &page(
+            "#u>.h{height:10px}",
+            "<div id=u><div class=h id=a></div><div id=e></div><div class=h id=b></div></div>",
+            "document.getElementById('e').setAttribute('data-n', n); \
+             document.getElementById('b').style.width = (n % 50 + 10) + 'px';",
+        ),
+        Some(true),
+    );
+}
+
+/// The same, from both sides: the written element is emptied and filled in turn, so its box goes
+/// and comes, as a full build drops and keeps it.
+#[test]
+fn a_written_block_emptied_and_filled_matches_a_full_build() {
+    assert_same_as_a_full_build(
+        "block emptied and filled",
+        &page(
+            "#u>.h{height:10px}",
+            "<div id=u><div class=h id=a></div><div id=e></div><div class=h id=b></div></div>",
+            "document.getElementById('e').innerHTML = n % 2 ? '<p>error</p>' : '';",
+        ),
+        None,
+    );
+}
+
+/// BOXES-DIFF item 1 (the board's element-number-only differences): a full build numbers a box a
+/// parent then drops, here a `display: contents` wrapper, so its later elements' numbers have a gap a
+/// splice cannot know of. With the box tree kept, a full build numbers in tree order as a splice
+/// does: the written element after the wrapper has one number either way.
+#[test]
+fn an_element_after_a_contents_wrapper_has_one_number_spliced_or_built() {
+    assert_same_as_a_full_build(
+        "after a contents wrapper",
+        &page(
+            "#u .h{height:10px}",
+            "<div id=u><div style=\"display:contents\"><div class=h id=a></div></div><div class=h id=b></div></div>",
+            "document.getElementById('b').style.width = (n % 50 + 10) + 'px';",
+        ),
+        Some(true),
+    );
+}
+
+/// BOXES-DIFF R1 (a): the element numbers a splice gives (and a full build now gives with the box tree
+/// kept) are read between builds by the intrinsic-size cache and the layout memo, and the tree-reuse
+/// memo (on by default) keeps the numbers of the build it snapshots. Whatever the numbering, what a page
+/// sees must not move: after each frame, the border boxes and what is hit at their centres, for
+/// elements after a `display: contents` wrapper, in a grid whose columns are sized by their content,
+/// are the same with the box tree kept as with a full build.
+#[test]
+fn elements_after_a_contents_wrapper_read_and_hit_alike_spliced_or_built() {
+    let page = page(
+        "#g{display:grid;grid-template-columns:auto auto;width:400px} .w{display:contents} \
+         #g div{height:12px;background-color:rgb(0,0,200)}",
+        "<div id=g><div class=w><div id=a>aa</div><div id=b>bbbbbb</div></div><div id=c>c</div><div id=d>dddd</div></div>\
+         <div id=after style=\"height:10px\"></div>",
+        "document.getElementById('c').textContent = 'c'.repeat(1 + n % 7); \
+         document.getElementById('after').style.width = (n % 50 + 10) + 'px';",
+    );
+    let read = "(function () { return ['a', 'b', 'c', 'd', 'after'].map(function (id) { \
+                var r = document.getElementById(id).getBoundingClientRect(); \
+                var e = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); \
+                return id + ':' + [r.x, r.y, r.width, r.height].join(',') + '>' + (e ? e.id || e.tagName : 'none'); }).join(' '); })()";
+    let mut runs = Vec::new();
+    for mode in [RetainedStyles::Off, RetainedStyles::Boxes] {
+        set_retained_styles_for_test(Some(mode));
+        let (mut engine, view, _server) = load(&page);
+        let spliced = splices_for_test().0;
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            frame(&mut engine, view);
+            seen.push(engine.execute_script(view, read).expect("read"));
+        }
+        runs.push((seen, splices_for_test().0 - spliced));
+        set_retained_styles_for_test(None);
+    }
+    assert!(runs[1].1 > 0, "the kept-boxes run spliced (last miss {:?})", splices_for_test().1);
+    for (i, (a, b)) in runs[0].0.iter().zip(&runs[1].0).enumerate() {
+        assert_eq!(a, b, "frame {i}: a full build vs kept boxes");
+    }
+}
+
+/// BOXES-DIFF receipt (head 765d73a3): one live-site capture of two had an image box 150x150 in the
+/// splice and 184x184 in the full build, the same URL. The kept tree holds an image's natural size as
+/// of its build; an image can reach the cache before its own relayout (`ImageLoaded`, a full build)
+/// runs, and a script relayout in between spliced the stale box beside the written one. Here the
+/// image lands in the cache between the kept build and the script write, with no relayout of its own.
+#[test]
+fn an_image_that_arrived_since_the_kept_build_is_not_spliced_stale() {
+    const PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196,
+        137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 218, 99, 252, 207, 192, 80, 15, 0, 4, 133, 1, 128, 132, 169, 140, 33, 0, 0,
+        0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    set_retained_styles_for_test(Some(RetainedStyles::BoxesVerify));
+    let (mut engine, view, server) = load(
+        "<!doctype html><style>body{margin:0} .h{height:10px}</style>\
+         <div id=u><div class=h id=a></div><img id=im src=\"/late.png\"><div class=h id=b></div></div>",
+    );
+    let write = |engine: &mut Engine, width: u32| {
+        engine
+            .execute_script(view, &format!("document.getElementById('b').style.width = '{width}px'"))
+            .expect("write");
+    };
+    // The kept tree: a full build, then a splice, with the image not in the cache.
+    for width in [20, 30] {
+        write(&mut engine, width);
+        frame(&mut engine, view);
+    }
+    let (mismatches, spliced) = (splice_mismatches_for_test(), splices_for_test().0);
+    // Not vacuous: the frames before the image did splice, so the kept tree was there to go stale.
+    assert!(spliced > 0, "the frames before the image spliced (last miss {:?})", splices_for_test().1);
+    // The image arrives; no relayout of its own runs before the next script write.
+    let url = Url::parse(&format!("http://127.0.0.1:{}/late.png", server.port)).unwrap();
+    engine.lctx.image_manager.insert_fetched(&url, Some("image/png"), PNG).expect("the PNG decodes");
+    write(&mut engine, 40);
+    frame(&mut engine, view);
+    let (now, miss) = splices_for_test();
+    set_retained_styles_for_test(None);
+    assert_eq!(
+        splice_mismatches_for_test() - mismatches,
+        0,
+        "a splice kept the image's size from before it arrived (spliced {}, last miss {miss:?})",
+        now - spliced
+    );
+}
+
+/// The #1304 follow-up (batch 108's receipt, the microsoft capture again, 1 of 2): the same stale
+/// 150x150 image box, from an SVG image. Its natural size comes from the SVG cache, not the raster
+/// cache the kept tree's image check followed, so its arrival did not refuse the splice. The SVG
+/// arrives as fetched SVGs do (`keep_fetched_images`), and, as in the race the capture hit, the
+/// script write comes before the image's own relayout runs.
+#[test]
+fn an_svg_image_that_arrived_since_the_kept_build_is_not_spliced_stale() {
+    const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="184" height="184"><rect width="184" height="184" fill="blue"/></svg>"#;
+    set_retained_styles_for_test(Some(RetainedStyles::BoxesVerify));
+    let (mut engine, view, server) = load(
+        "<!doctype html><style>body{margin:0} .h{height:10px}</style>\
+         <div id=u><div class=h id=a></div><img id=im src=\"/late.svg\"><div class=h id=b></div></div>",
+    );
+    let write = |engine: &mut Engine, width: u32| {
+        engine
+            .execute_script(view, &format!("document.getElementById('b').style.width = '{width}px'"))
+            .expect("write");
+    };
+    // The kept tree: a full build, then a splice, with the SVG not in.
+    for width in [20, 30] {
+        write(&mut engine, width);
+        frame(&mut engine, view);
+    }
+    let (mismatches, spliced) = (splice_mismatches_for_test(), splices_for_test().0);
+    assert!(spliced > 0, "the frames before the image spliced (last miss {:?})", splices_for_test().1);
+    // The SVG arrives; the image's own relayout has not run before the next script write.
+    let url = format!("http://127.0.0.1:{}/late.svg", server.port);
+    let doc = rustkit_svg::SvgDocument::parse(SVG).expect("the SVG parses");
+    engine.keep_fetched_images(
+        view,
+        FetchedImages { loaded: 0, svgs: vec![(url, doc)], failed: Vec::new(), gave_up: Vec::new(), offscreen: 0 },
+    );
+    engine.views[&view].lay.loaded_images.borrow_mut().due = false;
+    write(&mut engine, 40);
+    frame(&mut engine, view);
+    let (now, miss) = splices_for_test();
+    set_retained_styles_for_test(None);
+    assert_eq!(
+        splice_mismatches_for_test() - mismatches,
+        0,
+        "a splice kept the SVG image's size from before it arrived (spliced {}, last miss {miss:?})",
+        now - spliced
+    );
+}
+
+/// A written inline holding only a block is a culled inline: a full build makes it a block box
+/// (`rebox_culled_inline`) before its parent keeps it. The splice's box for it must be that box.
+#[test]
+fn a_written_culled_inline_matches_a_full_build() {
+    assert_same_as_a_full_build(
+        "written culled inline",
+        &page(
+            "#u>.h{height:10px} #s>div{height:12px}",
+            "<div id=u><div class=h id=a></div><span id=s><div id=in>in</div></span><div class=h id=b></div></div>",
+            "document.getElementById('s').setAttribute('data-n', n); \
+             document.getElementById('in').style.width = (n % 50 + 10) + 'px';",
+        ),
+        None,
+    );
+}
+
 /// #1247 R1 item 1: a list item that is shown or hidden renumbers the items after it, and the dirty
 /// set never marks them (a counter is not a selector). A box that comes or goes among list items is
 /// not spliced. (RustKit draws no list markers and no `counter()` yet, so the display lists agree
@@ -669,7 +881,6 @@ fn a_tune_frame_that_reads_geometry_builds_the_document_once() {
 }
 
 #[test]
-#[cfg_attr(windows, ignore = "flaky on a loaded runner: the arms start at different writes; fixed upstream by hiwave-macos #1339, which needs #1304")]
 fn tiles_written_then_read_keep_a_full_builds_boxes() {
     assert_same_as_a_full_cascade("tiles then read", &tiles(200, 10, TUNE_THEN_READ));
 }
@@ -715,5 +926,46 @@ fn a_stretch_without_script_relayouts_lets_the_styles_go() {
         held(&engine) > 200,
         "script relayouts keep them again: {}",
         held(&engine)
+    );
+}
+
+/// BOXES-DIFF: the tune frames above, from fixed points of the tune (the frame counter `n` decides
+/// which tiles come and go; it runs during the load, so the test above meets a different point each
+/// run). A tile coming or going is a miss for the paint-only path, and two in a row start its
+/// cooldown, which let the kept box tree go: the next relayout found `no kept tree` and built the
+/// page (1,002 elements). With the box tree kept, the cooldown keeps it. Which points build the page
+/// also depends on which tiles the load left shown, so this takes five: on develop a sweep of the
+/// points 0 to 39 built the page from 35, and a run of this test from 7; with the fix the sweep kept
+/// the tree from every point.
+#[test]
+fn a_paint_only_miss_cooldown_keeps_the_box_tree() {
+    let mut built_the_page = Vec::new();
+    for start in [7, 11, 12, 25, 35] {
+        set_retained_styles_for_test(Some(RetainedStyles::Boxes));
+        let (mut engine, view, _server) = load(&tiles(1_000, 10, TUNE));
+        engine
+            .execute_script(view, &format!("n = {start}"))
+            .expect("n");
+        for _ in 0..3 {
+            frame(&mut engine, view);
+        }
+        let mut per_frame = Vec::new();
+        for _ in 0..5 {
+            let before = built_elements_for_test();
+            frame(&mut engine, view);
+            per_frame.push(built_elements_for_test() - before);
+        }
+        set_retained_styles_for_test(None);
+        if !per_frame.iter().all(|&b| b > 0 && b <= 20) {
+            built_the_page.push(format!(
+                "from n = {start}: {per_frame:?} (last miss {:?})",
+                splices_for_test().1
+            ));
+        }
+    }
+    assert!(
+        built_the_page.is_empty(),
+        "elements built per frame (3 tiles written of 1,000):\n{}",
+        built_the_page.join("\n")
     );
 }

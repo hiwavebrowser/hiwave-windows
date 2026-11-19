@@ -11,10 +11,8 @@ license = "AGPL-3.0-or-later"
 rustkit-dom = { path = "../rustkit-dom" }
 rustkit-common = { path = "../rustkit-common" }
 
-# Audio playback
-rodio = { version = "0.19", default-features = false, features = ["wav", "mp3", "vorbis", "flac"] }
-
 # Core
+bytes = "1"
 thiserror = "1.0"
 tracing = "0.1"
 url = "2.5"
@@ -24,6 +22,34 @@ tokio = { version = "1.42", features = ["sync", "time"] }
 
 # Collections
 hashbrown = "0.14"
+
+# MEDIA-AVF (docs/design/MEDIA_AVF.md §2, approved 2026-11-18): AVFoundation through the
+# objc2 bindings. Only the features the design calls are enabled. AVPlayer outputs its own
+# audio, so the unused `rodio` dependency is gone.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSObject", "NSURL", "NSArray", "NSData", "NSValue", "NSError"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "CMTime"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "dispatch2",
+    "AVAsset",
+    "AVAssetTrack",
+    "AVAsynchronousKeyValueLoading",
+    "AVMediaFormat",
+    "AVAssetResourceLoader",
+    "AVPlayer",
+    "AVPlayerItem",
+    "AVPlayerItemOutput",
+    "AVTime",
+    "objc2-core-foundation",
+    "objc2-core-media",
+    "objc2-core-video",
+] }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

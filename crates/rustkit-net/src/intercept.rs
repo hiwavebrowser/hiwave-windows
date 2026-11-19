@@ -134,6 +134,7 @@ pub enum RuleAction {
 
 /// Request interceptor with configurable rules.
 pub struct RequestInterceptor {
+    allowed_origin: Option<url::Origin>,
     rules: Vec<InterceptRule>,
     default_action: InterceptAction,
     handlers: Vec<Arc<dyn InterceptHandler>>,
@@ -143,10 +144,20 @@ impl RequestInterceptor {
     /// Create a new interceptor.
     pub fn new() -> Self {
         Self {
+            allowed_origin: None,
             rules: Vec::new(),
             default_action: InterceptAction::Allow,
             handlers: Vec::new(),
         }
+    }
+
+    /// Restrict original requests before transport URL rewriting.
+    pub fn restrict_origin(&mut self, origin: url::Origin) {
+        self.allowed_origin = Some(origin);
+    }
+
+    pub(crate) fn permits_origin(&self, url: &Url) -> bool {
+        self.allowed_origin.as_ref().is_none_or(|origin| *origin == url.origin())
     }
 
     /// Set the default action for non-matching requests.

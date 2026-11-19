@@ -26,6 +26,9 @@ rustkit-net = { path = "../rustkit-net" }
 rustkit-http = { path = "../rustkit-http" }
 rustkit-image = { path = "../rustkit-image" }
 rustkit-svg = { path = "../rustkit-svg" }
+# MEDIA-AVF: <video> / <audio> (wired from M1 step 2; step 1 adds the dependency and
+# its notices).
+rustkit-media = { path = "../rustkit-media" }
 rustkit-renderer = { path = "../rustkit-renderer" }
 # The presenter names the texture a frame is drawn into
 wgpu = "24"

@@ -120,7 +120,6 @@ fn dark(pixels: &[u8]) -> usize {
 /// frame, in the page's web font, whether or not the other view painted
 /// a frame in between; and the frames are still painted without a layout.
 #[test]
-#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
 fn static_text_keeps_its_web_font_across_paint_only_frames_when_another_view_paints() {
     let (mut engine, page, other, _server) = two_views();
     let first = first_line_pixels(&engine, page);
@@ -154,7 +153,6 @@ fn static_text_keeps_its_web_font_across_paint_only_frames_when_another_view_pai
 /// A wheel over a scroller builds the list again over the same boxes: its
 /// text stays in the page's web font after the other view painted.
 #[test]
-#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
 fn an_element_scroll_keeps_the_web_font_when_another_view_painted() {
     let (mut engine, page, other, _server) = two_views();
     rt().block_on(engine.pump_live(other, 16));
@@ -223,7 +221,6 @@ fn assert_weighted_faces(lines: &[(String, String, f32)], when: &str) {
 /// Bold and regular lines keep their own web faces and widths on every
 /// frame while another thread keeps installing a different site's faces.
 #[test]
-#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
 fn web_faces_hold_while_another_thread_installs_its_own() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -279,7 +276,6 @@ fn web_faces_hold_while_another_thread_installs_its_own() {
 /// partition painting its own web font between this page's paint-only and
 /// full frames leaves the bold and regular faces alone.
 #[test]
-#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
 fn web_faces_hold_by_weight_when_another_view_on_the_thread_paints() {
     let server = serve_byte_routes(vec![
         ("/", "text/html", WEIGHTED.as_bytes().to_vec()),
@@ -329,7 +325,6 @@ body { margin: 20px; font: 20px/20px E56Ahem, Helvetica; background: white; colo
 </style></head><body><p style="margin:0">XXXXX &#x1F600;</p></body></html>"#;
 
 #[test]
-#[cfg_attr(windows, ignore = "Windows parity row (web fonts): DirectWrite shapes in the system face, not the page's installed web face")]
 fn a_committed_frame_draws_its_web_font_on_a_thread_that_did_not_install_it() {
     let server = serve_byte_routes(vec![
         ("/", "text/html", PER_CHAR.as_bytes().to_vec()),

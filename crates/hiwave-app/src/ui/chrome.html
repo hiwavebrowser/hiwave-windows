@@ -638,6 +638,7 @@
         }
 
         .right-panel-header button {
+            letter-spacing: 0;
             border: none;
             background: transparent;
             color: var(--text-muted);
@@ -2950,6 +2951,8 @@
         }
 
         .find-modal {
+            width: 376px;
+            max-width: 100%;
             display: flex;
             align-items: center;
             gap: 8px;
@@ -2961,7 +2964,8 @@
         }
 
         .find-modal-input {
-            width: 180px;
+            flex: 1;
+            min-width: 0;
             border: none;
             background: transparent;
             color: var(--text-primary);
@@ -3013,6 +3017,7 @@
         }
 
         .find-modal-close {
+            flex: none;
             width: 24px;
             height: 24px;
             display: flex;
@@ -3035,6 +3040,9 @@
 
         .find-modal-hint-left,
         .find-modal-hint-right {
+            display: flex;
+            align-items: center;
+            gap: 3px;
             font-size: 11px;
             color: var(--text-muted);
             opacity: 0.7;
@@ -3508,6 +3516,9 @@
 
         /* Focus mode keyboard shortcut hint */
         .focus-hint {
+            display: flex;
+            align-items: center;
+            gap: 4px;
             position: fixed;
             bottom: 20px;
             left: 50%;
@@ -3958,7 +3969,7 @@
     <!-- Find Modal (compact command palette style) -->
     <div class="find-modal-overlay" id="findModal" aria-hidden="true">
         <div class="find-modal-container">
-            <span class="find-modal-hint-left"><kbd>&#x21E7;Enter</kbd> prev</span>
+            <span class="find-modal-hint-left"><kbd>Shift+Enter</kbd> prev</span>
             <div class="find-modal">
                 <input type="search" class="find-modal-input" id="findInput" placeholder="Find on page..." autocomplete="off" spellcheck="false">
                 <span class="find-modal-count" id="findCount">0/0</span>

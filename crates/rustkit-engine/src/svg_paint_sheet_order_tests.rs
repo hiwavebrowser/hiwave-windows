@@ -40,7 +40,7 @@ fn svg_fills(head: &str) -> Vec<(u8, u8, u8)> {
     rt.block_on(engine.load_url(view, url)).expect("load_url");
     let document = engine.views[&view].document.clone().expect("document");
     engine.cache_svg_paint_styles(&document, view, Some((800.0, 600.0)));
-    engine.lctx.cache_inline_svgs(&document);
+    engine.lctx.cache_inline_svgs(&document, None);
     let mut out = Vec::new();
     for svg in document.get_elements_by_tag_name("svg") {
         let key = Engine::inline_svg_key(&engine.lctx.inline_svg_markup_styled(&svg));

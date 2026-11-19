@@ -4178,6 +4178,9 @@ pub fn parse_color(value: &str) -> Option<Color> {
 
     // rgb() / rgba() / hsl() / hsla(), comma or space syntax
     let lower = value.to_ascii_lowercase();
+    if lower.starts_with("hwb(") {
+        return color_fn::parse_hwb(&lower);
+    }
     if lower.starts_with("rgb") || lower.starts_with("hsl") {
         return color_fn::parse_color_function(&lower);
     }

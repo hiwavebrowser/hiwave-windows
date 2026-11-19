@@ -3,7 +3,7 @@
 //! Implements a simplified HTML5 tree construction algorithm with
 //! insertion modes and error recovery.
 
-use crate::tokenizer::Token;
+use crate::tokenizer::{Token, Tokenizer};
 use crate::{ParseResult, TreeSink};
 use tracing::trace;
 
@@ -779,6 +779,12 @@ impl<S: TreeSink> TreeBuilder<S> {
         for token in tokens {
             self.process_token(token)?;
         }
+        Ok(self.sink)
+    }
+
+    pub(super) fn parse(mut self, html: &str, scripting: bool) -> ParseResult<S> {
+        self.scripting = scripting;
+        Tokenizer::new(html).for_each_token(scripting, |token| self.process_token(token))?;
         Ok(self.sink)
     }
 

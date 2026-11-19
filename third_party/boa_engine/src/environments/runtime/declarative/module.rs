@@ -59,14 +59,17 @@ impl ModuleEnvironment {
 
     /// Get the binding value from the environment by it's index.
     ///
+    /// HIWAVE PATCH (eval-var-per-call): `None` for a slot past this environment's end, as for an
+    /// uninitialized one.
+    ///
     /// # Panics
     ///
-    /// Panics if the binding value is out of range or not initialized.
+    /// Panics if an indirect binding's target does not exist (linking ensures it does).
     #[track_caller]
     pub(crate) fn get(&self, index: u32) -> Option<JsValue> {
         let bindings = self.bindings.borrow();
 
-        match &bindings[index as usize] {
+        match bindings.get(index as usize)? {
             BindingType::Direct(v) => v.clone(),
             BindingType::Indirect(IndirectBinding { module, accessor }) => {
                 let env = module.environment()?;
@@ -95,14 +98,20 @@ impl ModuleEnvironment {
 
     /// Sets the binding value from the environment by index.
     ///
+    /// HIWAVE PATCH (eval-var-per-call): a slot past this environment's end is added first.
+    ///
     /// # Panics
     ///
-    /// Panics if the binding value is out of range.
+    /// Panics if the binding is an indirect reference to another module's environment.
     #[track_caller]
     pub(crate) fn set(&self, index: u32, value: JsValue) {
         let mut bindings = self.bindings.borrow_mut();
+        let i = index as usize;
+        if i >= bindings.len() {
+            bindings.resize_with(i + 1, || BindingType::Direct(None));
+        }
 
-        match &mut bindings[index as usize] {
+        match &mut bindings[i] {
             BindingType::Direct(v) => *v = Some(value),
             BindingType::Indirect(_) => {
                 panic!("cannot modify indirect references to other environments")

@@ -1184,6 +1184,82 @@ fn estimate_glyph_size(ch: char, font_size: f32) -> (u32, u32) {
     (width.max(1), height.max(1))
 }
 
+/// The DirectWrite face a per-character glyph draws with: a document web face for its family
+/// list first, then the system collection.
+#[cfg(windows)]
+unsafe fn directwrite_face_for(factory: &IDWriteFactory, key: &GlyphKey) -> Option<IDWriteFontFace> {
+    use windows::core::PCWSTR;
+    unsafe {
+        // The face layout measured this family list with (`resolve_windows_face`: web face,
+        // then the system collection with Windows' substitutes, family by family); the old
+        // ladder below only when no family in the list resolves.
+        let chain = rustkit_layout::FontFamilyChain::from_css_value(&key.font_family);
+        let style = if key.font_style == 1 { rustkit_css::FontStyle::Italic } else { rustkit_css::FontStyle::Normal };
+        let resolved = rustkit_layout::text::resolve_windows_face(
+            &chain,
+            rustkit_css::FontWeight(key.font_weight),
+            style,
+            rustkit_css::FontStretch::Normal,
+        );
+        let web_face = resolved.map(|(face, _, _)| face.raw().clone());
+        match web_face {
+            Some(face) => Some(face),
+            None => {
+            let mut collection: Option<IDWriteFontCollection> = None;
+            if factory.GetSystemFontCollection(&mut collection, false).is_err() {
+                return None;
+            }
+            let collection = collection?;
+
+            // Family lookup with the same fallback ladder the Windows tree used.
+            let family_wide: Vec<u16> =
+                key.font_family.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut index: u32 = 0;
+            let mut exists = windows::core::BOOL(0);
+            let direct = !key.font_family.is_empty()
+                && collection
+                    .FindFamilyName(PCWSTR(family_wide.as_ptr()), &mut index, &mut exists)
+                    .is_ok()
+                && exists.as_bool();
+            if !direct {
+                // The family Windows substitutes for the name ("Times" is Times New Roman), as in
+                // shaping, ahead of the fallback ladder.
+                let substitute = rustkit_text::family_substitute(&key.font_family);
+                let mut found = false;
+                for fallback in substitute.iter().map(String::as_str).chain(["Segoe UI", "Arial", "Tahoma"]) {
+                    let fb_wide: Vec<u16> =
+                        fallback.encode_utf16().chain(std::iter::once(0)).collect();
+                    if collection
+                        .FindFamilyName(PCWSTR(fb_wide.as_ptr()), &mut index, &mut exists)
+                        .is_ok()
+                        && exists.as_bool()
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return None;
+                }
+            }
+
+            let family = collection.GetFontFamily(index).ok()?;
+            let dw_weight = DWRITE_FONT_WEIGHT(key.font_weight as i32);
+            let dw_stretch = DWRITE_FONT_STRETCH(5); // Normal
+            let dw_style = if key.font_style == 1 {
+                DWRITE_FONT_STYLE_ITALIC
+            } else {
+                DWRITE_FONT_STYLE_NORMAL
+            };
+            let font = family
+                .GetFirstMatchingFont(dw_weight, dw_stretch, dw_style)
+                .ok()?;
+            font.CreateFontFace().ok()
+            }
+        }
+    }
+}
+
 /// Rasterize one glyph with DirectWrite into an 8-bit coverage bitmap.
 ///
 /// Returns `(bitmap, width, height, advance, bearing_x, bearing_y)` in the
@@ -1208,7 +1284,6 @@ fn rasterize_glyph_directwrite(
     key: &GlyphKey,
     font_size: f32,
 ) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
-    use windows::core::PCWSTR;
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
     unsafe {
@@ -1224,53 +1299,7 @@ fn rasterize_glyph_directwrite(
                 }
             };
 
-        let mut collection: Option<IDWriteFontCollection> = None;
-        if factory.GetSystemFontCollection(&mut collection, false).is_err() {
-            return None;
-        }
-        let collection = collection?;
-
-        // Family lookup with the same fallback ladder the Windows tree used.
-        let family_wide: Vec<u16> =
-            key.font_family.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut index: u32 = 0;
-        let mut exists = windows::core::BOOL(0);
-        let direct = !key.font_family.is_empty()
-            && collection
-                .FindFamilyName(PCWSTR(family_wide.as_ptr()), &mut index, &mut exists)
-                .is_ok()
-            && exists.as_bool();
-        if !direct {
-            let mut found = false;
-            for fallback in ["Segoe UI", "Arial", "Tahoma"] {
-                let fb_wide: Vec<u16> =
-                    fallback.encode_utf16().chain(std::iter::once(0)).collect();
-                if collection
-                    .FindFamilyName(PCWSTR(fb_wide.as_ptr()), &mut index, &mut exists)
-                    .is_ok()
-                    && exists.as_bool()
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                return None;
-            }
-        }
-
-        let family = collection.GetFontFamily(index).ok()?;
-        let dw_weight = DWRITE_FONT_WEIGHT(key.font_weight as i32);
-        let dw_stretch = DWRITE_FONT_STRETCH(5); // Normal
-        let dw_style = if key.font_style == 1 {
-            DWRITE_FONT_STYLE_ITALIC
-        } else {
-            DWRITE_FONT_STYLE_NORMAL
-        };
-        let font = family
-            .GetFirstMatchingFont(dw_weight, dw_stretch, dw_style)
-            .ok()?;
-        let face = font.CreateFontFace().ok()?;
+        let face = directwrite_face_for(&factory, key)?;
 
         let codepoint = key.codepoint as u32;
         let mut glyph_indices = [0u16; 1];
@@ -1822,5 +1851,33 @@ mod tests {
         let (narrow_w, _) = estimate_glyph_size('i', 16.0);
         let (wide_w, _) = estimate_glyph_size('M', 16.0);
         assert!(narrow_w < wide_w);
+    }
+
+    /// One family LIST, one face: what layout measures a run with and what a per-character glyph
+    /// of that run paints with must be the same face, or the painted glyphs do not fill the
+    /// measured width. The glyph key carries the whole CSS list.
+    #[cfg(windows)]
+    #[test]
+    fn layout_and_paint_resolve_a_family_list_to_the_same_face() {
+        use rustkit_css::{FontStretch, FontStyle, FontWeight};
+        let factory: IDWriteFactory =
+            unsafe { DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) }.expect("factory");
+        for list in ["Times, serif", "NoSuchFamilyAtAll, Georgia, serif", "Helvetica, sans-serif", "Georgia"] {
+            let shaped = rustkit_layout::TextShaper::new()
+                .shape(
+                    "Abc",
+                    &rustkit_layout::FontFamilyChain::from_css_value(list),
+                    FontWeight(400),
+                    FontStyle::Normal,
+                    FontStretch::Normal,
+                    16.0,
+                )
+                .expect("shaped");
+            let measured = shaped.face.expect("a recorded face").postscript_name;
+            let key = GlyphKey { font_family: list.to_string(), ..key_at(0) };
+            let painted = unsafe { directwrite_face_for(&factory, &key) }
+                .map(|face| rustkit_text::FontFace::from_raw(face).postscript_name());
+            assert_eq!(painted.as_deref(), Some(measured.as_str()), "`{list}`: measured with {measured}, painted with {painted:?}");
+        }
     }
 }

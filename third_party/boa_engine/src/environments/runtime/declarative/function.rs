@@ -20,10 +20,17 @@ pub(crate) struct FunctionEnvironment {
 
 impl FunctionEnvironment {
     /// Creates a new `FunctionEnvironment`.
-    pub(crate) fn new(bindings_count: u32, slots: FunctionSlots, scope: Scope) -> Self {
+    ///
+    /// HIWAVE PATCH (eval-var-per-call): the bindings from `compiled_count` on were added to the
+    /// shared scope by other calls' direct evals: they start as eval-added (deletable), as
+    /// `extend_from_compile` marks them, so `holds_binding` does not take them for this call's.
+    pub(crate) fn new(bindings_count: u32, compiled_count: u32, slots: FunctionSlots, scope: Scope) -> Self {
+        let compiled = (compiled_count as usize).min(bindings_count as usize);
+        let mut deletable = vec![false; bindings_count as usize];
+        deletable[compiled..].fill(true);
         Self {
             bindings: GcRefCell::new(vec![None; bindings_count as usize]),
-            deletable_bindings: RefCell::new(vec![false; bindings_count as usize]),
+            deletable_bindings: RefCell::new(deletable),
             deleted_bindings: RefCell::new(vec![false; bindings_count as usize]),
             slots: Box::new(slots),
             scope,
@@ -42,22 +49,29 @@ impl FunctionEnvironment {
 
     /// Gets the binding value from the environment by it's index.
     ///
-    /// # Panics
-    ///
-    /// Panics if the binding value is out of range or not initialized.
-    #[track_caller]
+    /// HIWAVE PATCH (eval-var-per-call): `None` for a slot past this environment's end as for an
+    /// uninitialized one. An environment created before another call's direct eval grew the shared
+    /// scope is shorter than the indices code compiled after the growth uses.
     pub(crate) fn get(&self, index: u32) -> Option<JsValue> {
-        self.bindings.borrow()[index as usize].clone()
+        self.bindings.borrow().get(index as usize).cloned().flatten()
     }
 
     /// Sets the binding value from the environment by index.
     ///
-    /// # Panics
-    ///
-    /// Panics if the binding value is out of range.
-    #[track_caller]
+    /// HIWAVE PATCH (eval-var-per-call): a slot past this environment's end (see `get`) is added first,
+    /// marked eval-added (deletable) as `extend_from_compile` marks the slots it adds.
     pub(crate) fn set(&self, index: u32, value: JsValue) {
-        self.bindings.borrow_mut()[index as usize] = Some(value);
+        let i = index as usize;
+        let mut bindings = self.bindings.borrow_mut();
+        if i >= bindings.len() {
+            let old_len = bindings.len();
+            bindings.resize(i + 1, None);
+            let mut deletable = self.deletable_bindings.borrow_mut();
+            deletable.resize(i + 1, false);
+            deletable[old_len..].fill(true);
+            self.deleted_bindings.borrow_mut().resize(i + 1, false);
+        }
+        bindings[i] = Some(value);
     }
 
     pub(crate) fn extend_from_compile(&self) {
@@ -78,6 +92,21 @@ impl FunctionEnvironment {
         self.deleted_bindings
             .borrow_mut()
             .resize(compile_bindings_len, false);
+    }
+
+    /// HIWAVE PATCH (eval-var-per-call): whether this call's environment holds the binding at `index` of
+    /// the shared scope. A binding the function was compiled with is always held (it may still be
+    /// uninitialized). One a direct eval added is held only when this call's eval declared it, which
+    /// initializes it: a slot past this environment's end, or one `extend_from_compile` added
+    /// uninitialized for another call's name, is not held.
+    pub(crate) fn holds_binding(&self, index: u32) -> bool {
+        let i = index as usize;
+        let bindings = self.bindings.borrow();
+        let Some(slot) = bindings.get(i) else {
+            return false;
+        };
+        let added = self.deletable_bindings.borrow().get(i).copied().unwrap_or(false);
+        !added || slot.is_some()
     }
 
     pub(crate) fn is_deleted_binding(&self, index: u32) -> bool {

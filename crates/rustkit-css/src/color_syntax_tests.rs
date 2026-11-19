@@ -182,3 +182,12 @@ fn math_function_channels_resolve() {
         ("rgb(min(10%, 5) 0 0)", None),
     ]);
 }
+
+#[test]
+fn hwb_mixes_whiteness_and_blackness_before_quantizing() {
+    assert_eq!(crate::parse_color("hwb(120 30% 50% / 50%)"), Some(crate::Color::new(77, 128, 77, 0.5)));
+    assert_eq!(crate::parse_color("hwb(150 20% 10%)"), Some(crate::Color::from_rgb(51, 230, 140)));
+    assert_eq!(crate::parse_color("hwb(45 40% 80%)"), Some(crate::Color::from_rgb(85, 85, 85)));
+    assert_eq!(crate::parse_color("hwb(120 120% 40%)"), Some(crate::Color::from_rgb(191, 191, 191)));
+    assert_eq!(crate::parse_color("hwb(120, 30%, 50%)"), None);
+}

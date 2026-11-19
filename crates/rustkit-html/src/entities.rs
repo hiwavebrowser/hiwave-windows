@@ -1,441 +1,151 @@
-//! HTML entity decoding.
-//!
-//! Provides decoding for HTML5 named character references.
-//! Covers the most commonly used entities in web content.
+//! HTML character references in data, RCDATA, and attribute values.
+
+mod named;
 
 use std::collections::HashMap;
 
 lazy_static::lazy_static! {
-    /// Named HTML entities lookup table.
-    /// Covers commonly used entities plus special characters.
-    static ref ENTITIES: HashMap<&'static str, &'static str> = {
-        let mut m = HashMap::new();
-
-        // ==================== BASIC REQUIRED ENTITIES ====================
-        m.insert("lt", "<");
-        m.insert("gt", ">");
-        m.insert("amp", "&");
-        m.insert("quot", "\"");
-        m.insert("apos", "'");
-
-        // ==================== WHITESPACE & SPECIAL ====================
-        m.insert("nbsp", "\u{00A0}");   // Non-breaking space
-        m.insert("ensp", "\u{2002}");   // En space
-        m.insert("emsp", "\u{2003}");   // Em space
-        m.insert("thinsp", "\u{2009}"); // Thin space
-        m.insert("zwnj", "\u{200C}");   // Zero-width non-joiner
-        m.insert("zwj", "\u{200D}");    // Zero-width joiner
-        m.insert("lrm", "\u{200E}");    // Left-to-right mark
-        m.insert("rlm", "\u{200F}");    // Right-to-left mark
-        m.insert("shy", "\u{00AD}");    // Soft hyphen
-
-        // ==================== PUNCTUATION ====================
-        m.insert("ndash", "–");         // En dash
-        m.insert("mdash", "—");         // Em dash
-        m.insert("lsquo", "\u{2018}");  // Left single quote
-        m.insert("rsquo", "\u{2019}");  // Right single quote
-        m.insert("sbquo", "\u{201A}");  // Single low-9 quote
-        m.insert("ldquo", "\u{201C}");  // Left double quote
-        m.insert("rdquo", "\u{201D}");  // Right double quote
-        m.insert("bdquo", "\u{201E}");  // Double low-9 quote
-        m.insert("lsaquo", "\u{2039}"); // Left single angle quote
-        m.insert("rsaquo", "\u{203A}"); // Right single angle quote
-        m.insert("laquo", "«");         // Left double angle quote
-        m.insert("raquo", "»");         // Right double angle quote
-        m.insert("hellip", "…");        // Horizontal ellipsis
-        m.insert("bull", "•");          // Bullet
-        m.insert("middot", "·");        // Middle dot
-        m.insert("prime", "′");         // Prime
-        m.insert("Prime", "″");         // Double prime
-        m.insert("oline", "‾");         // Overline
-        m.insert("frasl", "⁄");         // Fraction slash
-
-        // ==================== SYMBOLS & MARKS ====================
-        m.insert("copy", "©");
-        m.insert("reg", "®");
-        m.insert("trade", "™");
-        m.insert("dagger", "†");
-        m.insert("Dagger", "‡");
-        m.insert("permil", "‰");
-        m.insert("loz", "◊");           // Lozenge
-        m.insert("spades", "♠");
-        m.insert("clubs", "♣");
-        m.insert("hearts", "♥");
-        m.insert("diams", "♦");
-        m.insert("check", "✓");
-        m.insert("cross", "✗");
-        m.insert("star", "☆");
-        m.insert("starf", "★");
-
-        // ==================== CURRENCY ====================
-        m.insert("cent", "¢");
-        m.insert("pound", "£");
-        m.insert("curren", "¤");
-        m.insert("yen", "¥");
-        m.insert("euro", "€");
-        m.insert("fnof", "ƒ");          // Florin
-
-        // ==================== MATHEMATICAL ====================
-        m.insert("times", "×");
-        m.insert("divide", "÷");
-        m.insert("plusmn", "±");
-        m.insert("minus", "−");
-        m.insert("lowast", "∗");        // Asterisk operator
-        m.insert("radic", "√");         // Square root
-        m.insert("prop", "∝");          // Proportional to
-        m.insert("infin", "∞");
-        m.insert("ang", "∠");           // Angle
-        m.insert("and", "∧");           // Logical and
-        m.insert("or", "∨");            // Logical or
-        m.insert("cap", "∩");           // Intersection
-        m.insert("cup", "∪");           // Union
-        m.insert("int", "∫");           // Integral
-        m.insert("there4", "∴");        // Therefore
-        m.insert("sim", "∼");           // Tilde operator
-        m.insert("cong", "≅");          // Approximately equal
-        m.insert("asymp", "≈");         // Almost equal
-        m.insert("ne", "≠");            // Not equal
-        m.insert("equiv", "≡");         // Identical
-        m.insert("le", "≤");            // Less than or equal
-        m.insert("ge", "≥");            // Greater than or equal
-        m.insert("sub", "⊂");           // Subset
-        m.insert("sup", "⊃");           // Superset
-        m.insert("nsub", "⊄");          // Not subset
-        m.insert("sube", "⊆");          // Subset or equal
-        m.insert("supe", "⊇");          // Superset or equal
-        m.insert("oplus", "⊕");         // Circled plus
-        m.insert("otimes", "⊗");        // Circled times
-        m.insert("perp", "⊥");          // Perpendicular
-        m.insert("sdot", "⋅");          // Dot operator
-        m.insert("sum", "∑");           // Summation
-        m.insert("prod", "∏");          // Product
-        m.insert("part", "∂");          // Partial differential
-        m.insert("nabla", "∇");         // Nabla
-        m.insert("exist", "∃");         // There exists
-        m.insert("forall", "∀");        // For all
-        m.insert("empty", "∅");         // Empty set
-        m.insert("isin", "∈");          // Element of
-        m.insert("notin", "∉");         // Not element of
-        m.insert("ni", "∋");            // Contains as member
-
-        // ==================== FRACTIONS & SUPERSCRIPTS ====================
-        m.insert("frac14", "¼");
-        m.insert("frac12", "½");
-        m.insert("frac34", "¾");
-        m.insert("frac13", "⅓");
-        m.insert("frac23", "⅔");
-        m.insert("frac15", "⅕");
-        m.insert("frac25", "⅖");
-        m.insert("frac35", "⅗");
-        m.insert("frac45", "⅘");
-        m.insert("frac16", "⅙");
-        m.insert("frac56", "⅚");
-        m.insert("frac18", "⅛");
-        m.insert("frac38", "⅜");
-        m.insert("frac58", "⅝");
-        m.insert("frac78", "⅞");
-        m.insert("sup1", "¹");
-        m.insert("sup2", "²");
-        m.insert("sup3", "³");
-        m.insert("ordf", "ª");          // Feminine ordinal
-        m.insert("ordm", "º");          // Masculine ordinal
-
-        // ==================== LATIN EXTENDED ====================
-        // Acute accents
-        m.insert("Aacute", "Á");
-        m.insert("aacute", "á");
-        m.insert("Eacute", "É");
-        m.insert("eacute", "é");
-        m.insert("Iacute", "Í");
-        m.insert("iacute", "í");
-        m.insert("Oacute", "Ó");
-        m.insert("oacute", "ó");
-        m.insert("Uacute", "Ú");
-        m.insert("uacute", "ú");
-        m.insert("Yacute", "Ý");
-        m.insert("yacute", "ý");
-
-        // Grave accents
-        m.insert("Agrave", "À");
-        m.insert("agrave", "à");
-        m.insert("Egrave", "È");
-        m.insert("egrave", "è");
-        m.insert("Igrave", "Ì");
-        m.insert("igrave", "ì");
-        m.insert("Ograve", "Ò");
-        m.insert("ograve", "ò");
-        m.insert("Ugrave", "Ù");
-        m.insert("ugrave", "ù");
-
-        // Circumflex accents
-        m.insert("Acirc", "Â");
-        m.insert("acirc", "â");
-        m.insert("Ecirc", "Ê");
-        m.insert("ecirc", "ê");
-        m.insert("Icirc", "Î");
-        m.insert("icirc", "î");
-        m.insert("Ocirc", "Ô");
-        m.insert("ocirc", "ô");
-        m.insert("Ucirc", "Û");
-        m.insert("ucirc", "û");
-
-        // Tilde
-        m.insert("Atilde", "Ã");
-        m.insert("atilde", "ã");
-        m.insert("Ntilde", "Ñ");
-        m.insert("ntilde", "ñ");
-        m.insert("Otilde", "Õ");
-        m.insert("otilde", "õ");
-
-        // Umlaut (diaeresis)
-        m.insert("Auml", "Ä");
-        m.insert("auml", "ä");
-        m.insert("Euml", "Ë");
-        m.insert("euml", "ë");
-        m.insert("Iuml", "Ï");
-        m.insert("iuml", "ï");
-        m.insert("Ouml", "Ö");
-        m.insert("ouml", "ö");
-        m.insert("Uuml", "Ü");
-        m.insert("uuml", "ü");
-        m.insert("yuml", "ÿ");
-        m.insert("Yuml", "Ÿ");
-
-        // Ring
-        m.insert("Aring", "Å");
-        m.insert("aring", "å");
-
-        // Ligatures and special
-        m.insert("AElig", "Æ");
-        m.insert("aelig", "æ");
-        m.insert("OElig", "Œ");
-        m.insert("oelig", "œ");
-        m.insert("Ccedil", "Ç");
-        m.insert("ccedil", "ç");
-        m.insert("Oslash", "Ø");
-        m.insert("oslash", "ø");
-        m.insert("szlig", "ß");
-        m.insert("ETH", "Ð");
-        m.insert("eth", "ð");
-        m.insert("THORN", "Þ");
-        m.insert("thorn", "þ");
-        m.insert("Scaron", "Š");
-        m.insert("scaron", "š");
-
-        // ==================== GREEK ALPHABET ====================
-        m.insert("Alpha", "Α");
-        m.insert("alpha", "α");
-        m.insert("Beta", "Β");
-        m.insert("beta", "β");
-        m.insert("Gamma", "Γ");
-        m.insert("gamma", "γ");
-        m.insert("Delta", "Δ");
-        m.insert("delta", "δ");
-        m.insert("Epsilon", "Ε");
-        m.insert("epsilon", "ε");
-        m.insert("Zeta", "Ζ");
-        m.insert("zeta", "ζ");
-        m.insert("Eta", "Η");
-        m.insert("eta", "η");
-        m.insert("Theta", "Θ");
-        m.insert("theta", "θ");
-        m.insert("thetasym", "ϑ");
-        m.insert("Iota", "Ι");
-        m.insert("iota", "ι");
-        m.insert("Kappa", "Κ");
-        m.insert("kappa", "κ");
-        m.insert("Lambda", "Λ");
-        m.insert("lambda", "λ");
-        m.insert("Mu", "Μ");
-        m.insert("mu", "μ");
-        m.insert("Nu", "Ν");
-        m.insert("nu", "ν");
-        m.insert("Xi", "Ξ");
-        m.insert("xi", "ξ");
-        m.insert("Omicron", "Ο");
-        m.insert("omicron", "ο");
-        m.insert("Pi", "Π");
-        m.insert("pi", "π");
-        m.insert("piv", "ϖ");           // Pi symbol
-        m.insert("Rho", "Ρ");
-        m.insert("rho", "ρ");
-        m.insert("Sigma", "Σ");
-        m.insert("sigma", "σ");
-        m.insert("sigmaf", "ς");        // Final sigma
-        m.insert("Tau", "Τ");
-        m.insert("tau", "τ");
-        m.insert("Upsilon", "Υ");
-        m.insert("upsilon", "υ");
-        m.insert("upsih", "ϒ");         // Upsilon with hook
-        m.insert("Phi", "Φ");
-        m.insert("phi", "φ");
-        m.insert("Chi", "Χ");
-        m.insert("chi", "χ");
-        m.insert("Psi", "Ψ");
-        m.insert("psi", "ψ");
-        m.insert("Omega", "Ω");
-        m.insert("omega", "ω");
-
-        // ==================== ARROWS ====================
-        m.insert("larr", "←");          // Left arrow
-        m.insert("uarr", "↑");          // Up arrow
-        m.insert("rarr", "→");          // Right arrow
-        m.insert("darr", "↓");          // Down arrow
-        m.insert("harr", "↔");          // Left-right arrow
-        m.insert("crarr", "↵");         // Carriage return arrow
-        m.insert("lArr", "⇐");          // Left double arrow
-        m.insert("uArr", "⇑");          // Up double arrow
-        m.insert("rArr", "⇒");          // Right double arrow
-        m.insert("dArr", "⇓");          // Down double arrow
-        m.insert("hArr", "⇔");          // Left-right double arrow
-
-        // ==================== MISCELLANEOUS SYMBOLS ====================
-        m.insert("deg", "°");
-        m.insert("micro", "µ");
-        m.insert("para", "¶");
-        m.insert("sect", "§");
-        m.insert("brvbar", "¦");
-        m.insert("not", "¬");
-        m.insert("macr", "¯");
-        m.insert("acute", "´");
-        m.insert("cedil", "¸");
-        m.insert("uml", "¨");
-        m.insert("circ", "ˆ");          // Modifier circumflex
-        m.insert("tilde", "˜");         // Small tilde
-        m.insert("iexcl", "¡");         // Inverted exclamation
-        m.insert("iquest", "¿");        // Inverted question
-        m.insert("alefsym", "ℵ");       // Alef symbol
-        m.insert("weierp", "℘");        // Weierstrass p
-        m.insert("image", "ℑ");         // Imaginary part
-        m.insert("real", "ℜ");          // Real part
-
-        m
-    };
+    static ref NAMES: HashMap<&'static [u8], &'static str> =
+        named::NAMES.iter().copied().collect();
 }
 
-/// Decode HTML entities in a string.
-pub fn decode(input: &str) -> String {
+/// Decode references in a text or RCDATA string.
+pub fn decode(mut input: &str) -> String {
     let mut result = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '&' {
-            // Try to parse an entity
-            let mut entity = String::new();
-            let mut found_end = false;
-
-            // Look ahead for entity content
-            while let Some(&next_ch) = chars.peek() {
-                if next_ch == ';' {
-                    chars.next(); // consume ';'
-                    found_end = true;
-                    break;
-                } else if next_ch.is_alphanumeric() || next_ch == '#' {
-                    entity.push(next_ch);
-                    chars.next();
-                } else {
-                    // Invalid entity character
-                    break;
-                }
-
-                // Limit entity length to prevent DoS
-                if entity.len() > 32 {
-                    break;
-                }
-            }
-
-            if found_end && !entity.is_empty() {
-                if entity.starts_with('#') {
-                    // Numeric entity
-                    if let Some(decoded) = decode_numeric(&entity[1..]) {
-                        result.push_str(&decoded);
-                        continue;
-                    }
-                } else {
-                    // Named entity
-                    if let Some(&decoded) = ENTITIES.get(entity.as_str()) {
-                        result.push_str(decoded);
-                        continue;
-                    }
-                }
-            }
-
-            // If we couldn't decode, output the original
-            result.push('&');
-            result.push_str(&entity);
-            if found_end {
-                result.push(';');
-            }
-        } else {
-            result.push(ch);
-        }
+    while let Some((literal, rest)) = input.split_once('&') {
+        result.push_str(literal);
+        let mut numeric = [0; 4];
+        let (consumed, value) = reference(rest.chars(), false, &mut numeric);
+        result.push_str(value);
+        input = &rest[consumed..];
     }
-
+    result.push_str(input);
     result
 }
 
-fn decode_numeric(num_str: &str) -> Option<String> {
-    let (radix, digits) = if num_str.starts_with('x') || num_str.starts_with('X') {
-        (16, &num_str[1..])
-    } else {
-        (10, num_str)
-    };
-
-    let code_point = u32::from_str_radix(digits, radix).ok()?;
-
-    // Handle replacement characters per HTML5 spec
-    let replacement = match code_point {
-        // Null character
-        0x00 => Some('\u{FFFD}'),
-        // Surrogate range (invalid in UTF-8)
-        0xD800..=0xDFFF => Some('\u{FFFD}'),
-        // Non-characters
-        0xFFFE | 0xFFFF => Some('\u{FFFD}'),
-        // Beyond Unicode range
-        n if n > 0x10FFFF => Some('\u{FFFD}'),
-        // C0 control characters (except whitespace)
-        0x01..=0x08 | 0x0B | 0x0E..=0x1F | 0x7F => None, // Just map to char
-        // C1 control characters - Windows-1252 mappings
-        0x80 => Some('€'),
-        0x82 => Some('‚'),
-        0x83 => Some('ƒ'),
-        0x84 => Some('„'),
-        0x85 => Some('…'),
-        0x86 => Some('†'),
-        0x87 => Some('‡'),
-        0x88 => Some('ˆ'),
-        0x89 => Some('‰'),
-        0x8A => Some('Š'),
-        0x8B => Some('‹'),
-        0x8C => Some('Œ'),
-        0x8E => Some('Ž'),
-        0x91 => Some('\u{2018}'), // '
-        0x92 => Some('\u{2019}'), // '
-        0x93 => Some('\u{201C}'), // "
-        0x94 => Some('\u{201D}'), // "
-        0x95 => Some('•'),
-        0x96 => Some('–'),
-        0x97 => Some('—'),
-        0x98 => Some('˜'),
-        0x99 => Some('™'),
-        0x9A => Some('š'),
-        0x9B => Some('›'),
-        0x9C => Some('œ'),
-        0x9E => Some('ž'),
-        0x9F => Some('Ÿ'),
-        _ => None,
-    };
-
-    if let Some(ch) = replacement {
-        return Some(ch.to_string());
+/// Input starts just after '&'. Only ASCII characters can be consumed, so
+/// the count is valid for both a UTF-8 string and the tokenizer's char slice.
+pub(super) fn reference(
+    input: impl Iterator<Item = char>,
+    in_attribute: bool,
+    numeric: &mut [u8; 4],
+) -> (usize, &str) {
+    let mut input = input.peekable();
+    if input.next_if_eq(&'#').is_some() {
+        let hex = input.next_if(|c| matches!(c, 'x' | 'X')).is_some();
+        let radix = if hex { 16 } else { 10 };
+        let mut digits = 0;
+        let mut code_point = 0u32;
+        while let Some(digit) = input.peek().and_then(|c| c.to_digit(radix)) {
+            input.next();
+            digits += 1;
+            code_point = code_point.saturating_mul(radix).saturating_add(digit);
+        }
+        if digits == 0 {
+            return (0, "&");
+        }
+        let consumed =
+            1 + usize::from(hex) + digits + usize::from(input.next_if_eq(&';').is_some());
+        return (consumed, numeric_character(code_point).encode_utf8(numeric));
     }
 
-    char::from_u32(code_point).map(|c| c.to_string())
+    // Try the whole terminated name first. Only the legacy spellings can
+    // match a shorter prefix, and none requires unbounded lookahead.
+    let mut name = [0; named::MAX_NAME];
+    let mut len = 0;
+    while len < name.len() - 1 {
+        let Some(ch) = input.next_if(char::is_ascii_alphanumeric) else {
+            break;
+        };
+        name[len] = ch as u8;
+        len += 1;
+    }
+    if len == 0 {
+        return (0, "&");
+    }
+    if input.peek() == Some(&';') {
+        name[len] = b';';
+        if let Some(&value) = NAMES.get(&name[..=len]) {
+            return (len + 1, value);
+        }
+    }
+    for matched in (1..=len.min(named::MAX_LEGACY)).rev() {
+        if let Some(&value) = NAMES.get(&name[..matched]) {
+            if in_attribute && (matched < len || input.peek() == Some(&'=')) {
+                return (0, "&");
+            }
+            return (matched, value);
+        }
+    }
+    (0, "&")
+}
+
+fn numeric_character(code_point: u32) -> char {
+    match code_point {
+        0 => '\u{fffd}',
+        0x80 => '€',
+        0x82 => '‚',
+        0x83 => 'ƒ',
+        0x84 => '„',
+        0x85 => '…',
+        0x86 => '†',
+        0x87 => '‡',
+        0x88 => 'ˆ',
+        0x89 => '‰',
+        0x8A => 'Š',
+        0x8B => '‹',
+        0x8C => 'Œ',
+        0x8E => 'Ž',
+        0x91 => '\u{2018}', // '
+        0x92 => '\u{2019}', // '
+        0x93 => '\u{201C}', // "
+        0x94 => '\u{201D}', // "
+        0x95 => '•',
+        0x96 => '–',
+        0x97 => '—',
+        0x98 => '˜',
+        0x99 => '™',
+        0x9A => 'š',
+        0x9B => '›',
+        0x9C => 'œ',
+        0x9E => 'ž',
+        0x9F => 'Ÿ',
+        _ => char::from_u32(code_point).unwrap_or('\u{fffd}'),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_whatwg_spelling_decodes_and_consumes_exactly_the_match() {
+        assert_eq!(named::NAMES.len(), 2231);
+        for &(name, expected) in named::NAMES {
+            let name = std::str::from_utf8(name).unwrap();
+            let mut numeric = [0; 4];
+            for in_attribute in [false, true] {
+                assert_eq!(
+                    reference(name.chars(), in_attribute, &mut numeric),
+                    (name.len(), expected),
+                    "{name}"
+                );
+            }
+            if !name.ends_with(';') {
+                let followed = format!("{name}0");
+                assert_eq!(
+                    reference(followed.chars(), false, &mut numeric),
+                    (name.len(), expected),
+                    "{followed}"
+                );
+                assert_eq!(
+                    reference(followed.chars(), true, &mut numeric),
+                    (0, "&"),
+                    "{followed}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_decode_basic_entities() {
@@ -471,7 +181,8 @@ mod tests {
 
     #[test]
     fn test_decode_incomplete_entity() {
-        assert_eq!(decode("&lt"), "&lt");
+        assert_eq!(decode("&lt"), "<");
+        assert_eq!(decode("&l"), "&l");
         assert_eq!(decode("&"), "&");
     }
 
@@ -518,10 +229,10 @@ mod tests {
 
     #[test]
     fn test_decode_quotes() {
-        assert_eq!(decode("&ldquo;"), "\u{201C}");  // "
-        assert_eq!(decode("&rdquo;"), "\u{201D}");  // "
-        assert_eq!(decode("&lsquo;"), "\u{2018}");  // '
-        assert_eq!(decode("&rsquo;"), "\u{2019}");  // '
+        assert_eq!(decode("&ldquo;"), "\u{201C}"); // "
+        assert_eq!(decode("&rdquo;"), "\u{201D}"); // "
+        assert_eq!(decode("&lsquo;"), "\u{2018}"); // '
+        assert_eq!(decode("&rsquo;"), "\u{2019}"); // '
     }
 
     #[test]
@@ -529,9 +240,9 @@ mod tests {
         // €
         assert_eq!(decode("&#128;"), "€");
         // Smart quotes
-        assert_eq!(decode("&#147;"), "\u{201C}");  // "
-        assert_eq!(decode("&#148;"), "\u{201D}");  // "
-        // Em dash
+        assert_eq!(decode("&#147;"), "\u{201C}"); // "
+        assert_eq!(decode("&#148;"), "\u{201D}"); // "
+                                                  // Em dash
         assert_eq!(decode("&#151;"), "—");
     }
 

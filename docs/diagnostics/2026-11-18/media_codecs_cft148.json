@@ -1,0 +1,76 @@
+{
+  "chrome": "148.0.7778.216",
+  "fixture": "fixtures/media/color-steps.mp4",
+  "h264": true,
+  "aac": true,
+  "can": {
+    "video/mp4": {
+      "canPlayType": "maybe",
+      "isTypeSupported": false
+    },
+    "video/mp4; codecs=\"avc1.42E01E\"": {
+      "canPlayType": "probably",
+      "isTypeSupported": true
+    },
+    "video/mp4; codecs=\"avc1.42E01E, mp4a.40.2\"": {
+      "canPlayType": "probably",
+      "isTypeSupported": true
+    },
+    "video/mp4; codecs=\"hvc1.1.6.L93.B0\"": {
+      "canPlayType": "probably",
+      "isTypeSupported": true
+    },
+    "video/mp4; codecs=\"av01.0.04M.08\"": {
+      "canPlayType": "probably",
+      "isTypeSupported": true
+    },
+    "video/webm": {
+      "canPlayType": "maybe",
+      "isTypeSupported": false
+    },
+    "video/webm; codecs=\"vp9\"": {
+      "canPlayType": "probably",
+      "isTypeSupported": true
+    },
+    "video/webm; codecs=\"vp9, opus\"": {
+      "canPlayType": "probably",
+      "isTypeSupported": true
+    },
+    "audio/mp4; codecs=\"mp4a.40.2\"": {
+      "canPlayType": "probably",
+      "isTypeSupported": true
+    },
+    "audio/mpeg": {
+      "canPlayType": "probably",
+      "isTypeSupported": true
+    },
+    "application/vnd.apple.mpegurl": {
+      "canPlayType": "maybe",
+      "isTypeSupported": false
+    },
+    "video/x-unknown": {
+      "canPlayType": "",
+      "isTypeSupported": false
+    }
+  },
+  "events": [
+    "loadstart:rs0:ns2",
+    "durationchange:rs1:ns1",
+    "loadedmetadata:rs1:ns1",
+    "loadeddata:rs4:ns1",
+    "canplay:rs4:ns1",
+    "canplaythrough:rs4:ns1"
+  ],
+  "meta": {
+    "error": null,
+    "duration": 2,
+    "videoWidth": 64,
+    "videoHeight": 48,
+    "readyState": 4
+  },
+  "decoded": {
+    "audio": 3410,
+    "video": 1709
+  },
+  "frame_at_055_centre": "235,0,246,255"
+}

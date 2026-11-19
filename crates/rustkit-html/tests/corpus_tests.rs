@@ -112,6 +112,29 @@ fn test_simple_page() {
 }
 
 #[test]
+fn document_and_fragment_events_match_collected_tokens() {
+    use rustkit_html::{parse_fragment_scripted, parse_scripted, tokenizer, tree_builder, FragmentContext};
+
+    let html = format!(
+        "<title>{}</title><table><tr><td>{}</td></tr></table><noscript><b>x</b></noscript><!--tail-->",
+        "λ".repeat(255),
+        "x&amp;&unknown;".repeat(73),
+    );
+    for scripting in [false, true] {
+        let tokens = tokenizer::tokenize_scripted(&html, scripting).unwrap();
+        let doc = parse_scripted(&html, TestSink::new(), scripting).unwrap();
+        let collected = tree_builder::build_tree_scripted(tokens.clone(), TestSink::new(), scripting).unwrap();
+        assert_eq!(doc.events, collected.events);
+
+        let fragment = parse_fragment_scripted(&html, TestSink::new(), "div", scripting).unwrap();
+        let collected = tree_builder::build_tree_fragment_scripted(
+            tokens, TestSink::new(), FragmentContext::new("div"), scripting,
+        ).unwrap();
+        assert_eq!(fragment.events, collected.events);
+    }
+}
+
+#[test]
 fn test_malformed_nesting() {
     let html = "<div><span><p></div></span></p>";
     let sink = TestSink::new();

@@ -174,6 +174,7 @@ where
                         false,
                     )
                     .parse(cursor, interner)?;
+                    refuse_using_in_clause(&statement_list, token.span().start())?;
 
                     cases.push(statement::Case::new(cond, statement_list));
                 }
@@ -198,6 +199,7 @@ where
                         false,
                     )
                     .parse(cursor, interner)?;
+                    refuse_using_in_clause(&statement_list, token.span().start())?;
 
                     cases.push(statement::Case::default(statement_list));
 
@@ -217,4 +219,32 @@ where
 
         Ok(cases.into_boxed_slice())
     }
+}
+
+/// HIWAVE PATCH (using-bindings): it is a Syntax Error if the StatementList of a CaseClause or
+/// DefaultClause directly holds a UsingDeclaration or an AwaitUsingDeclaration (Explicit Resource
+/// Management), as Chrome 148 reports. Inside a block in the clause it is allowed.
+fn refuse_using_in_clause(
+    statement_list: &boa_ast::StatementList,
+    position: boa_ast::Position,
+) -> ParseResult<()> {
+    let holds_using = statement_list.statements().iter().any(|item| {
+        matches!(
+            item,
+            boa_ast::StatementListItem::Declaration(d) if matches!(
+                **d,
+                boa_ast::Declaration::Lexical(
+                    boa_ast::declaration::LexicalDeclaration::Using(_)
+                        | boa_ast::declaration::LexicalDeclaration::AwaitUsing(_)
+                )
+            )
+        )
+    });
+    if holds_using {
+        return Err(Error::general(
+            "a using declaration is not allowed directly in a switch case",
+            position,
+        ));
+    }
+    Ok(())
 }

@@ -36,6 +36,10 @@ struct Args {
     #[arg(long)]
     url: Option<String>,
 
+    /// Collect a WPT completion record from the loopback test server.
+    #[arg(long, requires = "url", conflicts_with_all = ["shield", "replay_proxy", "prelude_url"])]
+    wpt: bool,
+
     /// Hard wall-clock limit for the whole capture, in milliseconds. On
     /// expiry the process prints a `timeout` result and exits 3.
     #[arg(long, default_value = "30000")]
@@ -923,6 +927,7 @@ fn main() {
         .expect("failed to spawn capture worker thread");
     let mut result = match handler.join() {
         Ok(r) => r,
+        Err(_) if args.wpt => std::process::exit(4),
         Err(_) => CaptureResult::new(&args).failed("error", "worker thread panicked".to_string()),
     };
     result.elapsed_ms = Some(started.elapsed().as_millis() as u64);
@@ -1053,7 +1058,19 @@ fn capture(args: &Args, sink: Option<&CollectingSink>, inspector: &mut Option<Ar
         .javascript_enabled(
             url.is_some() || args.actions.is_some() || args.run_inline_scripts || args.live_ms.is_some(),
         );
-    if let Some(interceptor) = shield_interceptor(args) {
+    if args.wpt {
+        let origin = match &url {
+            Some(u) if u.scheme() == "http" && u.host_str() == Some("127.0.0.1") => u.origin(),
+            _ => return result.failed("error", "WPT requires a loopback HTTP URL".into()),
+        };
+        let mut interceptor = rustkit_net::RequestInterceptor::new();
+        interceptor.set_default_action(rustkit_net::InterceptAction::Block);
+        interceptor.allow(rustkit_net::intercept::UrlPattern::prefix(
+            &format!("{}/", origin.ascii_serialization()),
+        ));
+        interceptor.restrict_origin(origin);
+        builder = builder.request_interceptor(interceptor);
+    } else if let Some(interceptor) = shield_interceptor(args) {
         builder = builder.request_interceptor(interceptor);
     }
     let engine_result = builder.build();
@@ -1130,6 +1147,24 @@ fn capture(args: &Args, sink: Option<&CollectingSink>, inspector: &mut Option<Ar
                 "error",
                 format!("Failed to load URL: NavigationError(\"HTTP error\") (HTTP {status}; the engine rendered its body)"),
             );
+        }
+        if args.wpt {
+            if engine.execute_script(view_id, "typeof add_completion_callback").ok().as_deref() != Some("String(\"function\")") {
+                return result.failed("error", "WPT harness unavailable".into());
+            }
+            let mut clock = rustkit_engine::LiveClock::new(Instant::now());
+            loop {
+                match engine.execute_script(view_id, "globalThis.__hiwaveWptResult") {
+                    Ok(value) if value.starts_with("String(\"") && value.ends_with("\")") => {
+                        println!("WPT_ENCODED {}", &value[8..value.len() - 2]);
+                        return result;
+                    }
+                    Err(err) => return result.failed("error", format!("WPT result read failed: {err}")),
+                    _ => {}
+                }
+                rt.block_on(engine.pump_live_real(view_id, clock.turn(Instant::now())));
+                std::thread::sleep(Duration::from_millis(4));
+            }
         }
         // With no live window the page gets the reference's settle time after the load: virtual steps in a
         // stepped capture, a real live phase when animations run on the real clock.
@@ -2358,7 +2393,7 @@ fn capture_config(args: &Args, replay_proxy: Option<Url>) -> EngineConfig {
         config.live_turn_budget_ms = budget;
     }
     config.interrupt_scripts_at_budget = args.interrupt_scripts;
-    config.post_load_requests_live = args.post_load_live;
+    config.post_load_requests_live = args.post_load_live || args.wpt;
     if args.animations {
         config.disable_animations = false;
     }
@@ -2371,7 +2406,13 @@ fn capture_config(args: &Args, replay_proxy: Option<Url>) -> EngineConfig {
     // timeline is on the grid; frame callbacks' timestamps and performance.now() flow as in a
     // --live-ms run.
     config.grid_frame_stamps = args.live_ms.is_none();
-    config.replay_proxy = replay_proxy;
+    // The replay transport restricts sockets (including redirects) to this
+    // loopback endpoint. The WPT interceptor also checks the requested origin.
+    config.replay_proxy = if args.wpt {
+        args.url.as_ref().and_then(|raw| Url::parse(raw).ok())
+    } else {
+        replay_proxy
+    };
     config.inspector.keep_url_query = args.event_log_keep_query;
     config.inspector.keep_console_text = args.event_log_console_text;
     config.inspector.keep_error_text = args.event_log_error_text;

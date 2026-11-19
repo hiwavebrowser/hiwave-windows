@@ -7,7 +7,7 @@ use crate::entities;
 use crate::{ParseError, ParseResult};
 
 /// A start tag's attributes, in source order. A name written twice keeps
-/// its first value and the later ones are dropped (HTML §13.2.5.33).
+/// its first value and the later ones are dropped (HTML Â§13.2.5.33).
 ///
 /// A list searched in order, which is fastest for the handful a tag has;
 /// past `NAME_SET_FROM` attributes the names are also kept in a set, so a
@@ -157,7 +157,7 @@ pub struct Tokenizer {
     return_state: Option<State>,
     /// The name of the last emitted start tag (for RAWTEXT/RCDATA/ScriptData end tag matching)
     last_start_tag_name: String,
-    /// The scripting flag (HTML §13.2.3.5): with it on, `<noscript>` holds
+    /// The scripting flag (HTML Â§13.2.3.5): with it on, `<noscript>` holds
     /// raw text, as `<style>` does.
     scripting: bool,
     current_tag_name: String,
@@ -264,6 +264,27 @@ impl Tokenizer {
     }
 
     pub fn tokenize(mut self) -> ParseResult<Vec<Token>> {
+        self.scan(|_| Ok(()))?;
+        Ok(self.tokens)
+    }
+
+    pub(super) fn for_each_token(
+        mut self,
+        scripting: bool,
+        mut accept: impl FnMut(Token) -> ParseResult<()>,
+    ) -> ParseResult<()> {
+        self.scripting = scripting;
+        self.scan(|tokens| tokens.drain(..).try_for_each(&mut accept))?;
+        self.tokens.into_iter().try_for_each(accept)
+    }
+
+    fn scan(
+        &mut self,
+        mut flush_batch: impl FnMut(&mut Vec<Token>) -> ParseResult<()>,
+    ) -> ParseResult<()> {
+        // A state transition can emit several tokens (e.g. an unknown entity).
+        // Hand off complete transitions and reuse the vector on the parse path.
+        const BATCH_SIZE: usize = 256;
         while self.pos < self.input.len() || self.state != State::Data {
             match self.state {
                 State::Data => self.state_data(),
@@ -305,6 +326,9 @@ impl Tokenizer {
                 State::ScriptData => self.state_script_data(),
             }
 
+            if self.tokens.len() >= BATCH_SIZE {
+                flush_batch(&mut self.tokens)?;
+            }
             // Safety check to prevent infinite loops
             if self.pos > self.input.len() + 100 {
                 return Err(ParseError::TokenizerError(
@@ -314,18 +338,14 @@ impl Tokenizer {
         }
 
         self.emit(Token::Eof);
-        Ok(self.tokens)
+        Ok(())
     }
 
     fn state_data(&mut self) {
         match self.consume() {
             Some('<') => self.state = State::TagOpen,
             Some('&') => {
-                // Decode entity in text content
-                let entity = self.consume_entity();
-                for ch in entity.chars() {
-                    self.emit(Token::Character(ch));
-                }
+                self.consume_entity();
             }
             Some(ch) => self.emit(Token::Character(ch)),
             None => {}
@@ -540,6 +560,10 @@ impl Tokenizer {
                 self.emit_current_attr();
                 self.finish_start_tag();
             }
+            Some('&') => {
+                self.state = State::AttributeValueUnquoted;
+                self.consume_entity();
+            }
             Some(ch) => {
                 self.current_attr_value.push(ch);
                 self.state = State::AttributeValueUnquoted;
@@ -558,9 +582,7 @@ impl Tokenizer {
                 self.state = State::AfterAttributeName;
             }
             Some('&') => {
-                // Decode entity
-                let entity = self.consume_entity();
-                self.current_attr_value.push_str(&entity);
+                self.consume_entity();
             }
             Some(ch) => {
                 self.current_attr_value.push(ch);
@@ -580,8 +602,7 @@ impl Tokenizer {
                 self.state = State::AfterAttributeName;
             }
             Some('&') => {
-                let entity = self.consume_entity();
-                self.current_attr_value.push_str(&entity);
+                self.consume_entity();
             }
             Some(ch) => {
                 self.current_attr_value.push(ch);
@@ -603,8 +624,7 @@ impl Tokenizer {
             }
             Some('&') => {
                 self.consume();
-                let entity = self.consume_entity();
-                self.current_attr_value.push_str(&entity);
+                self.consume_entity();
             }
             Some('>') => {
                 self.consume();
@@ -623,27 +643,20 @@ impl Tokenizer {
         }
     }
 
-    fn consume_entity(&mut self) -> String {
-        let mut entity_str = String::from("&");
-
-        while let Some(ch) = self.current_char() {
-            if ch == ';' {
-                entity_str.push(ch);
-                self.consume();
-                break;
-            } else if ch.is_alphanumeric() || ch == '#' {
-                entity_str.push(ch);
-                self.consume();
-            } else {
-                break;
-            }
-
-            if entity_str.len() > 32 {
-                break;
-            }
+    fn consume_entity(&mut self) {
+        let in_attribute = !matches!(self.state, State::Data | State::RcData);
+        let mut numeric = [0; 4];
+        let (consumed, value) = entities::reference(
+            self.input[self.pos..].iter().copied(),
+            in_attribute,
+            &mut numeric,
+        );
+        self.pos += consumed;
+        if in_attribute {
+            self.current_attr_value.push_str(value);
+        } else {
+            self.tokens.extend(value.chars().map(Token::Character));
         }
-
-        entities::decode(&entity_str)
     }
 
     fn state_markup_declaration_open(&mut self) {
@@ -1123,10 +1136,7 @@ impl Tokenizer {
         // RCDATA mode (for textarea, title)
         match self.consume() {
             Some('&') => {
-                let entity = self.consume_entity();
-                for ch in entity.chars() {
-                    self.emit(Token::Character(ch));
-                }
+                self.consume_entity();
             }
             Some('<') if self.current_char() == Some('/') => {
                 self.consume(); // '/'
@@ -1233,7 +1243,7 @@ pub fn tokenize(input: &str) -> ParseResult<Vec<Token>> {
 }
 
 /// `tokenize` with the scripting flag: when it is on, the contents of
-/// `<noscript>` are raw text (HTML §13.2.6.4.4, §13.2.6.4.7).
+/// `<noscript>` are raw text (HTML Â§13.2.6.4.4, Â§13.2.6.4.7).
 pub fn tokenize_scripted(input: &str, scripting: bool) -> ParseResult<Vec<Token>> {
     let mut tokenizer = Tokenizer::new(input);
     tokenizer.scripting = scripting;
@@ -1307,8 +1317,8 @@ mod tests {
     }
 
     /// `<?` is a bogus comment. The `?` is part of the data (HTML tokenizer:
-    /// reconsume in the bogus comment state). Lit writes `<?lit$…$>` and
-    /// matches the comment data `?lit$…$`.
+    /// reconsume in the bogus comment state). Lit writes `<?lit$â€¦$>` and
+    /// matches the comment data `?lit$â€¦$`.
     #[test]
     fn test_question_mark_bogus_comment_keeps_the_question_mark() {
         let tokens = tokenize("<?lit$1$><slot name=\"title\"></slot>").unwrap();
