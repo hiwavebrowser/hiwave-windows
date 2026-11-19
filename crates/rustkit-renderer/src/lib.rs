@@ -45,6 +45,29 @@ use hashbrown::HashMap;
 use rustkit_css::Color;
 use rustkit_layout::{BackgroundRepeat, BackgroundSize, DisplayCommand, ObjectFit, Rect};
 use std::sync::Arc;
+
+/// On a software adapter (WARP), each submission is waited for before the submitting call returns,
+/// so nothing a submission used (wgpu's internal staging buffers included) is released while the
+/// D3D12 runtime still counts it in flight. Set by the compositor when it picks a CPU adapter; off
+/// on a hardware GPU, where `settle_submission` does nothing.
+static SETTLE_SUBMISSIONS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Turn the software-adapter wait on or off (the compositor, from its adapter's device type).
+pub fn set_settle_submissions(on: bool) {
+    SETTLE_SUBMISSIONS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether submissions are waited for (a software adapter).
+pub fn settles_submissions() -> bool {
+    SETTLE_SUBMISSIONS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// After a `queue.submit`: on a software adapter, wait until that submission is done.
+pub fn settle_submission(device: &wgpu::Device, index: wgpu::SubmissionIndex) {
+    if settles_submissions() {
+        device.poll(wgpu::Maintain::WaitForSubmissionIndex(index));
+    }
+}
 use thiserror::Error;
 use wgpu::util::DeviceExt;
 
@@ -1361,15 +1384,18 @@ impl Renderer {
     fn submit(&self, encoder: wgpu::CommandEncoder) {
         let pending = lock_slot(&self.frame_encoder).take();
         self.submits.bump();
-        self.queue
+        let index = self
+            .queue
             .submit(pending.map(|e| e.finish()).into_iter().chain(std::iter::once(encoder.finish())));
+        settle_submission(&self.device, index);
     }
 
     /// Submit what the frame encoder holds, if anything.
     fn submit_frame(&self) {
         if let Some(encoder) = lock_slot(&self.frame_encoder).take() {
             self.submits.bump();
-            self.queue.submit(std::iter::once(encoder.finish()));
+            let index = self.queue.submit(std::iter::once(encoder.finish()));
+            settle_submission(&self.device, index);
         }
         // Submitted passes hold what they draw from until the GPU is done.
         lock_arena(&self.arena).clear();

@@ -51,6 +51,10 @@ rustkit-engine (38%) and rustkit-bindings (21%); `third_party/` +57k.
 - **655 (new):** seven engine tests fail on Windows on a hardware GPU and on the software adapter
   alike: six assert the page's web face (Windows shapes in the system face) and one is 1 px off
   Chromium. Each is ignored on Windows with its parity row in the reason (web fonts; dom1 1 px).
+- **656 (new):** on a software adapter only, every queue submit in the compositor, the renderer and
+  the canvas waits for its submission before returning, so nothing a submission used is released
+  while the D3D12 runtime counts it in flight. Off on a hardware GPU. A source pin keeps every
+  submit settled.
 - **CI (`scripts/collect_metrics.py`):** for the same reason, the engine's lib tests run in chunks of
   whole modules (up to 150 tests a process) instead of one process for the whole suite. The same tests
   run, serially as before. The count listed is checked against the count that ran, and the job fails

@@ -1,0 +1,203 @@
+Windows: on a software adapter (WARP: a hosted Windows runner, a GPU-less VM, remote desktop),
+wgpu 24's D3D12 backend can release one of its internal staging buffers while the D3D12 runtime
+still counts it in flight on the queue; the runtime then raises an exception that ends the
+process (the engine suite's exit 2173 on CI; details on the private exchange, row WARP-ACCUMULATION).
+
+On a software adapter only, every queue submit in the compositor, the renderer and the canvas
+now waits for that submission (Maintain::WaitForSubmissionIndex) before the call returns, so
+nothing a submission used is released while it is in flight. The compositor sets the switch
+from its adapter's device type (Cpu); on a hardware GPU the switch is off and nothing changes.
+
+Pin (local, forced WARP, the layout corpus in one process, which reliably crashed): without the
+wait, the exception at page 22 of 23; with it, 23 of 23 and ok in three runs out of three
+(about 30% slower on WARP). Source pin: rustkit-compositor
+tests::every_submit_settles_on_a_software_adapter (red on a mutant that drops one wait).
+
+Remove when the wgpu upgrade row (24 -> 30, scheduled after Nov 30) lands and the corpus runs
+in one process on WARP without it, or move it upstream if macOS wants the guard too.
+
+diff --git a/crates/rustkit-compositor/src/lib.rs b/crates/rustkit-compositor/src/lib.rs
+index 81c63c68..857d60fa 100644
+--- a/crates/rustkit-compositor/src/lib.rs
++++ b/crates/rustkit-compositor/src/lib.rs
+@@ -182,6 +182,8 @@ impl Compositor {
+         .ok_or_else(|| CompositorError::DeviceCreation("No suitable GPU adapter found (tried hardware and software fallback)".into()))?;
+ 
+         info!(adapter = ?adapter.get_info().name, "GPU adapter selected");
++        // A software adapter waits for each submission (see `rustkit_renderer::settle_submission`).
++        rustkit_renderer::set_settle_submissions(adapter.get_info().device_type == wgpu::DeviceType::Cpu);
+ 
+         // Create device and queue
+         let (device, queue) = pollster::block_on(async {
+@@ -471,7 +473,8 @@ impl Compositor {
+                 });
+             }
+ 
+-            self.queue.submit(std::iter::once(encoder.finish()));
++            let index = self.queue.submit(std::iter::once(encoder.finish()));
++            rustkit_renderer::settle_submission(&self.device, index);
+ 
+             trace!(?view_id, "Rendered solid color to headless texture");
+             return Ok(());
+@@ -517,7 +520,8 @@ impl Compositor {
+             });
+         }
+ 
+-        self.queue.submit(std::iter::once(encoder.finish()));
++        let index = self.queue.submit(std::iter::once(encoder.finish()));
++        rustkit_renderer::settle_submission(&self.device, index);
+         output.present();
+ 
+         trace!(?view_id, "Rendered solid color");
+@@ -696,7 +700,8 @@ impl Compositor {
+             },
+             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+         );
+-        self.queue.submit(std::iter::once(encoder.finish()));
++        let index = self.queue.submit(std::iter::once(encoder.finish()));
++        rustkit_renderer::settle_submission(&self.device, index);
+         let slice = staging.slice(..);
+         let (tx, rx) = std::sync::mpsc::channel();
+         slice.map_async(wgpu::MapMode::Read, move |result| {
+@@ -844,7 +849,8 @@ impl Compositor {
+             },
+         );
+ 
+-        self.queue.submit(std::iter::once(encoder.finish()));
++        let index = self.queue.submit(std::iter::once(encoder.finish()));
++        rustkit_renderer::settle_submission(&self.device, index);
+ 
+         // Map and read the buffer
+         let buffer_slice = staging_buffer.slice(..);
+@@ -995,7 +1001,8 @@ impl Compositor {
+             },
+         );
+ 
+-        self.queue.submit(std::iter::once(encoder.finish()));
++        let index = self.queue.submit(std::iter::once(encoder.finish()));
++        rustkit_renderer::settle_submission(&self.device, index);
+ 
+         // Map and read the buffer
+         let buffer_slice = staging_buffer.slice(..);
+@@ -1096,6 +1103,42 @@ mod tests {
+         Compositor::with_config(config)
+     }
+ 
++    /// On a software adapter every submission is waited for before the call returns (see
++    /// `rustkit_renderer::settle_submission`); a queue submit that skips it brings back WARP's
++    /// early release of in-flight staging buffers. Each queue submit in the compositor, the
++    /// renderer and the canvas keeps its index and settles it in the next statement.
++    #[test]
++    fn every_submit_settles_on_a_software_adapter() {
++        let marker = ["fn every_submit_settles", "_on_a_software_adapter"].concat();
++        for (file, source) in [
++            ("rustkit-compositor/src/lib.rs", include_str!("lib.rs")),
++            ("rustkit-renderer/src/lib.rs", include_str!("../../rustkit-renderer/src/lib.rs")),
++            ("rustkit-renderer/src/canvas_gpu.rs", include_str!("../../rustkit-renderer/src/canvas_gpu.rs")),
++        ] {
++            let source = source.replace("\r\n", "\n");
++            let code = source.split(marker.as_str()).next().unwrap_or("");
++            let mut submits = 0;
++            for (at, _) in code.match_indices(".submit(") {
++                // A queue's submit (`queue.submit(` or `.queue` then `.submit(` on the next line).
++                if !code[..at].trim_end().ends_with("queue") {
++                    continue;
++                }
++                submits += 1;
++                let start = code[..at].rfind(|c| c == ';' || c == '{' || c == '}').map_or(0, |i| i + 1);
++                let end = at + code[at..].find(';').expect("statement end");
++                let statement = code[start..end].trim();
++                assert!(statement.starts_with("let index ="), "{file}: a submit's index is not kept: {statement}");
++                let next = code[end + 1..].trim_start();
++                assert!(
++                    next.starts_with("settle_submission(&") || next.starts_with("crate::settle_submission(&")
++                        || next.starts_with("rustkit_renderer::settle_submission(&"),
++                    "{file}: a submit is not settled: {statement}"
++                );
++            }
++            assert!(submits > 0, "{file} has no queue submits; update this pin");
++        }
++    }
++
+     #[test]
+     fn test_compositor_config_default() {
+         let config = CompositorConfig::default();
+diff --git a/crates/rustkit-renderer/src/canvas_gpu.rs b/crates/rustkit-renderer/src/canvas_gpu.rs
+index 2407a694..3bdb958f 100644
+--- a/crates/rustkit-renderer/src/canvas_gpu.rs
++++ b/crates/rustkit-renderer/src/canvas_gpu.rs
+@@ -960,7 +960,8 @@ impl Renderer {
+             encode_fills(cg, &device, &mut encoder, t, (w, h), &draws[i..j]);
+             i = j;
+         }
+-        queue.submit(std::iter::once(encoder.finish()));
++        let index = queue.submit(std::iter::once(encoder.finish()));
++        crate::settle_submission(&device, index);
+         let validation = ready(device.pop_error_scope()).flatten();
+         let memory = ready(device.pop_error_scope()).flatten();
+         if let Some(e) = validation.or(memory) {
+@@ -995,7 +996,8 @@ impl Renderer {
+         let readback = screenshot::GpuReadbackBuffer::new(&self.device, t.width, t.height);
+         let mut encoder = self.device.create_command_encoder(&Default::default());
+         readback.copy_from_texture(&mut encoder, &t.texture);
+-        self.queue.submit(std::iter::once(encoder.finish()));
++        let index = self.queue.submit(std::iter::once(encoder.finish()));
++        crate::settle_submission(&self.device, index);
+         readback.read_data_sync(&self.device).ok()
+     }
+ 
+diff --git a/crates/rustkit-renderer/src/lib.rs b/crates/rustkit-renderer/src/lib.rs
+index 1eb2c592..4a9abda9 100644
+--- a/crates/rustkit-renderer/src/lib.rs
++++ b/crates/rustkit-renderer/src/lib.rs
+@@ -45,6 +45,29 @@ use hashbrown::HashMap;
+ use rustkit_css::Color;
+ use rustkit_layout::{BackgroundRepeat, BackgroundSize, DisplayCommand, ObjectFit, Rect};
+ use std::sync::Arc;
++
++/// On a software adapter (WARP), each submission is waited for before the submitting call returns,
++/// so nothing a submission used (wgpu's internal staging buffers included) is released while the
++/// D3D12 runtime still counts it in flight. Set by the compositor when it picks a CPU adapter; off
++/// on a hardware GPU, where `settle_submission` does nothing.
++static SETTLE_SUBMISSIONS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++
++/// Turn the software-adapter wait on or off (the compositor, from its adapter's device type).
++pub fn set_settle_submissions(on: bool) {
++    SETTLE_SUBMISSIONS.store(on, std::sync::atomic::Ordering::Relaxed);
++}
++
++/// Whether submissions are waited for (a software adapter).
++pub fn settles_submissions() -> bool {
++    SETTLE_SUBMISSIONS.load(std::sync::atomic::Ordering::Relaxed)
++}
++
++/// After a `queue.submit`: on a software adapter, wait until that submission is done.
++pub fn settle_submission(device: &wgpu::Device, index: wgpu::SubmissionIndex) {
++    if settles_submissions() {
++        device.poll(wgpu::Maintain::WaitForSubmissionIndex(index));
++    }
++}
+ use thiserror::Error;
+ use wgpu::util::DeviceExt;
+ 
+@@ -1361,15 +1384,18 @@ impl Renderer {
+     fn submit(&self, encoder: wgpu::CommandEncoder) {
+         let pending = lock_slot(&self.frame_encoder).take();
+         self.submits.bump();
+-        self.queue
++        let index = self
++            .queue
+             .submit(pending.map(|e| e.finish()).into_iter().chain(std::iter::once(encoder.finish())));
++        settle_submission(&self.device, index);
+     }
+ 
+     /// Submit what the frame encoder holds, if anything.
+     fn submit_frame(&self) {
+         if let Some(encoder) = lock_slot(&self.frame_encoder).take() {
+             self.submits.bump();
+-            self.queue.submit(std::iter::once(encoder.finish()));
++            let index = self.queue.submit(std::iter::once(encoder.finish()));
++            settle_submission(&self.device, index);
+         }
+         // Submitted passes hold what they draw from until the GPU is done.
+         lock_arena(&self.arena).clear();

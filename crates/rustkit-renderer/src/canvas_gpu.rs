@@ -960,7 +960,8 @@ impl Renderer {
             encode_fills(cg, &device, &mut encoder, t, (w, h), &draws[i..j]);
             i = j;
         }
-        queue.submit(std::iter::once(encoder.finish()));
+        let index = queue.submit(std::iter::once(encoder.finish()));
+        crate::settle_submission(&device, index);
         let validation = ready(device.pop_error_scope()).flatten();
         let memory = ready(device.pop_error_scope()).flatten();
         if let Some(e) = validation.or(memory) {
@@ -995,7 +996,8 @@ impl Renderer {
         let readback = screenshot::GpuReadbackBuffer::new(&self.device, t.width, t.height);
         let mut encoder = self.device.create_command_encoder(&Default::default());
         readback.copy_from_texture(&mut encoder, &t.texture);
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let index = self.queue.submit(std::iter::once(encoder.finish()));
+        crate::settle_submission(&self.device, index);
         readback.read_data_sync(&self.device).ok()
     }
 
