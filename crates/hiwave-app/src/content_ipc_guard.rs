@@ -43,12 +43,29 @@ pub(crate) fn analytics_allowed(message_nonce: Option<&str>) -> bool {
 }
 
 /// A URL as it may be logged: a `data:` URL (how the app loads its own pages, the report with its
-/// nonce included) is logged by size only, and anything else is cut to a sane length.
+/// nonce included) is logged by size only; anything else as scheme, host and path, without its
+/// query, fragment or userinfo (upstream CH3.A6), cut to a sane length.
 pub(crate) fn url_for_log(url: &str) -> String {
     // `get`, not a slice: byte 5 may sit inside a multi-byte character.
     if url.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:")) {
         return format!("data: URL ({} bytes)", url.len());
     }
+    let url = url.find(['?', '#']).map_or(url, |at| &url[..at]);
+    let without_userinfo;
+    let url = match url.find("://") {
+        Some(scheme_end) => {
+            let auth_start = scheme_end + 3;
+            let auth_end = url[auth_start..].find('/').map_or(url.len(), |i| auth_start + i);
+            match url[auth_start..auth_end].rfind('@') {
+                Some(at) => {
+                    without_userinfo = format!("{}{}", &url[..auth_start], &url[auth_start + at + 1..]);
+                    without_userinfo.as_str()
+                }
+                None => url,
+            }
+        }
+        None => url,
+    };
     if url.len() > 200 {
         let mut cut = 200;
         while !url.is_char_boundary(cut) {
@@ -98,6 +115,39 @@ mod tests {
         assert_eq!(url_for_log(url), url);
         assert_eq!(url_for_log("DATA:text/html,x"), "data: URL (16 bytes)");
     }
+    #[test]
+    fn a_logged_url_is_scheme_host_and_path() {
+        assert_eq!(url_for_log("https://user:pw@example.com/a/b?token=SECRET#frag"), "https://example.com/a/b");
+        assert_eq!(url_for_log("http://x.test/?q=1"), "http://x.test/");
+        assert_eq!(url_for_log("https://example.com/p#section"), "https://example.com/p");
+        assert_eq!(url_for_log("hiwave://report"), "hiwave://report");
+    }
+
+    /// No page URL goes to the log whole: every log call that formats a URL passes it through
+    /// `url_for_log` (or `page_url_for_log`, which keeps it whole only on request).
+    #[test]
+    fn no_log_call_formats_a_bare_url() {
+        for (file, source) in [("main.rs", MAIN), ("ipc/commands.rs", include_str!("ipc/commands.rs"))] {
+            let source = source.replace("\r\n", "\n");
+            let production = source.split("#[cfg(test)]" ).next().unwrap_or("");
+            let mut bare = Vec::new();
+            for mac in ["info!(", "warn!(", "debug!(", "trace!(", "error!("] {
+                for (at, _) in production.match_indices(mac) {
+                    let call = production[at..].split(");").next().unwrap_or("");
+                    // A match arm's call ends at `),` on its line.
+                    let call = call.split("),\n").next().unwrap_or(call);
+                    for arg in call.split(',').skip(1) {
+                        let arg = arg.trim().trim_start_matches('&');
+                        if ["url", "url.clone()", "u", "nav_url", "initial_url"].contains(&arg) {
+                            bare.push(call.lines().next().unwrap_or("").trim().to_string());
+                        }
+                    }
+                }
+            }
+            assert!(bare.is_empty(), "{file}: a URL is logged whole: {bare:?}");
+        }
+    }
+
     const MAIN: &str = include_str!("main.rs");
     const REPORT: &str = include_str!("ui/report.html");
 
