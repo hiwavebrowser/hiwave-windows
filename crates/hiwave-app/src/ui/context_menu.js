@@ -334,12 +334,8 @@
                     return;
                 }
 
-                // Ctrl+Shift+F or F11 - Toggle focus mode
-                if ((isCtrl && isShift && (e.key === 'f' || e.key === 'F')) || e.key === 'F11') {
-                    e.preventDefault();
-                    send('toggle_focus_mode');
-                    return;
-                }
+                // Ctrl+Shift+F / F11 (focus mode) and Ctrl+Shift+L (autofill) reach the app as real
+                // key presses (content_shortcuts.rs), not from this script.
 
                 // Ctrl+T - New tab
                 if (isCtrl && !isShift && (e.key === 't' || e.key === 'T')) {
@@ -390,12 +386,6 @@
                     return;
                 }
 
-                // Ctrl+Shift+L - Autofill
-                if (isCtrl && isShift && (e.key === 'l' || e.key === 'L')) {
-                    e.preventDefault();
-                    send('trigger_autofill');
-                    return;
-                }
 
                 // Ctrl+R or F5 - Reload
                 if ((isCtrl && !isShift && (e.key === 'r' || e.key === 'R')) || e.key === 'F5') {

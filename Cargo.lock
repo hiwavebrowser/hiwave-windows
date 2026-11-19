@@ -2652,6 +2652,7 @@ dependencies = [
  "http",
  "log",
  "muda",
+ "rand 0.8.5",
  "rfd",
  "rustkit-bindings",
  "rustkit-core",
@@ -2667,6 +2668,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "urlencoding",
+ "webview2-com",
  "windows 0.58.0",
  "wry",
 ]

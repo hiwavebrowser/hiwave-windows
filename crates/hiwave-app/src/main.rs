@@ -68,6 +68,8 @@ mod native;
 #[cfg(not(feature = "native-win32"))]
 mod ipc;
 #[cfg(not(feature = "native-win32"))]
+mod content_shortcuts;
+#[cfg(not(feature = "native-win32"))]
 mod webview;
 
 #[cfg(all(target_os = "windows", feature = "rustkit", not(feature = "native-win32")))]
@@ -1556,7 +1558,13 @@ fn main() {
                         // fill on the page's own origin; nothing is returned on this route.
                         warn!("Dropped a content-page autofill request");
                     }
-                    // Focus mode and autofill are not served from a page (the chrome serves them).
+                    // Escape exits focus mode from a page. Entering or toggling it, and autofill,
+                    // come from the chrome or a real key press (`content_shortcuts`), not a page.
+                    IpcMessage::ExitFocusMode => {
+                        info!("Exit focus mode from content WebView");
+                        let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
+                        let _ = content_proxy_ipc.send_event(UserEvent::ExitFocusMode);
+                    }
                     // UI shortcuts forwarded from content WebView
                     IpcMessage::CloseTab { id } => {
                         // The context menu closes the active tab; a page names no other tab.
@@ -1749,6 +1757,21 @@ fn main() {
     let chrome_webview: Arc<wry::WebView> = Arc::new(chrome_webview);
     let shelf_webview: Arc<wry::WebView> = Arc::new(shelf_webview);
     let content_webview: Arc<wry::WebView> = Arc::new(content_webview);
+
+    // Shortcuts pressed in a page that change what the app protects (focus mode, autofill) reach
+    // the app as real key presses (WebView2's AcceleratorKeyPressed), not as page IPC.
+    {
+        let (shortcut_proxy, shortcut_state) = (proxy.clone(), Arc::clone(&state));
+        content_shortcuts::install(&content_webview, move |shortcut| match shortcut {
+            content_shortcuts::Shortcut::ToggleFocusMode => {
+                let _ = ipc::commands::handle_message(&shortcut_state, IpcMessage::ToggleFocusMode);
+                let _ = shortcut_proxy.send_event(UserEvent::ToggleFocusMode);
+            }
+            content_shortcuts::Shortcut::TriggerAutofill => {
+                let _ = shortcut_proxy.send_event(UserEvent::TriggerAutofill);
+            }
+        });
+    }
 
     let chrome_for_events: Arc<wry::WebView> = Arc::clone(&chrome_webview);
     let shelf_for_events: Arc<wry::WebView> = Arc::clone(&shelf_webview);
@@ -3750,11 +3773,15 @@ mod content_ipc_scope_tests {
         assert!(guard < served, "the URL is checked before the tab opens: {arm}");
     }
 
-    /// A page neither starts an autofill nor turns focus mode (and its blocklist) on or off.
+    /// A page neither starts an autofill nor turns focus mode on; those shortcuts come from
+    /// real key presses, which `content_shortcuts` takes natively.
     #[test]
     fn a_page_cannot_trigger_autofill_or_change_focus_mode() {
+        let main = MAIN_RS.replace("\r\n", "\n");
+        assert!(main.contains("content_shortcuts::install(&content_webview"), "the content view's shortcuts are installed");
         let handler = content_handler();
-        for variant in ["IpcMessage::TriggerAutofill", "IpcMessage::EnterFocusMode", "IpcMessage::ExitFocusMode", "IpcMessage::ToggleFocusMode"] {
+        // Escape (`ExitFocusMode`) is still served: leaving focus mode is the page's user's choice.
+        for variant in ["IpcMessage::TriggerAutofill", "IpcMessage::EnterFocusMode", "IpcMessage::ToggleFocusMode"] {
             assert!(!handler.contains(variant), "the content view serves `{variant}`");
         }
     }
