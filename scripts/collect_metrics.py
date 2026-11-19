@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import subprocess
 import sys
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -142,6 +144,24 @@ CHUNK_TESTS = 150
 CHUNK_CHARS = 24000
 
 
+def chunk_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment for a test executable run directly: cargo's own, i.e. `base` (the process
+    environment by default) plus the `[env]` table of .cargo/config.toml for what `base` lacks.
+    Without it a test thread gets Rust's 2 MB default stack, not RUST_MIN_STACK."""
+    env = dict(os.environ if base is None else base)
+    config = Path(__file__).resolve().parent.parent / ".cargo" / "config.toml"
+    table = tomllib.loads(config.read_text(encoding="utf-8")).get("env", {}) if config.exists() else {}
+    for name, value in table.items():
+        if isinstance(value, dict):
+            if value.get("force"):
+                env[name] = str(value["value"])
+            else:
+                env.setdefault(name, str(value["value"]))
+        else:
+            env.setdefault(name, str(value))
+    return env
+
+
 def engine_executables() -> tuple[int, list[tuple[str, str]]]:
     """Build the engine's test targets as the workspace run builds them; return (exit, [(kind, exe)])."""
     proc = subprocess.run(
@@ -186,10 +206,11 @@ def run_tests() -> tuple[int, str, dict]:
     texts = [out]
     build_code, exes = engine_executables()
     info = {"listed": 0, "ran": 0, "processes": 0, "build_exit": build_code}
+    env = chunk_env()
     if build_code != 0 or not exes:
         return worst or build_code or 1, "\n".join(texts), info
     for kind, exe in exes:
-        listing = subprocess.run([exe, "--list", "--format", "terse"], cwd=ENGINE_DIR,
+        listing = subprocess.run([exe, "--list", "--format", "terse"], cwd=ENGINE_DIR, env=env,
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                  encoding="utf-8", errors="replace")
         names = [line[: -len(": test")] for line in listing.stdout.splitlines()
@@ -198,7 +219,7 @@ def run_tests() -> tuple[int, str, dict]:
         groups = chunks(names) if kind == "lib" else [[]]
         for group in groups:
             cmd = [exe, "--test-threads=1"] + (["--exact", *group] if group else [])
-            proc = subprocess.run(cmd, cwd=ENGINE_DIR, stdout=subprocess.PIPE,
+            proc = subprocess.run(cmd, cwd=ENGINE_DIR, env=env, stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                                   errors="replace")
             info["processes"] += 1

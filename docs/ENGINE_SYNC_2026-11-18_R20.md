@@ -52,6 +52,9 @@ rustkit-engine (38%) and rustkit-bindings (21%); `third_party/` +57k.
   whole modules (up to 150 tests a process) instead of one process for the whole suite. The same tests
   run, serially as before. The count listed is checked against the count that ran, and the job fails
   if they differ.
+  The executables run with cargo's environment (the `[env]` table of `.cargo/config.toml`, so
+  `RUST_MIN_STACK` is 8 MB as under `cargo test`); without it a deep layout test overflowed the
+  2 MB default stack and ended its chunk.
 - **nested_layout_matrix_tests (inline edit):** its Chromium pins and expected-failure list are
   macOS's; 21 listed cases match on Windows. The stale-list check is off on Windows; a case that newly
   differs still fails.
