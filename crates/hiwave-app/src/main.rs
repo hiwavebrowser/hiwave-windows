@@ -68,6 +68,8 @@ mod native;
 #[cfg(not(feature = "native-win32"))]
 mod ipc;
 #[cfg(not(feature = "native-win32"))]
+mod content_shortcuts;
+#[cfg(not(feature = "native-win32"))]
 mod webview;
 
 #[cfg(all(target_os = "windows", feature = "rustkit", not(feature = "native-win32")))]
@@ -1512,7 +1514,11 @@ fn main() {
                         let _ = content_proxy_ipc.send_event(UserEvent::GoForward);
                     }
                     IpcMessage::CreateTab { url } => {
-                        // Handle create tab directly
+                        // A page opens a new tab at a web URL, or the new-tab page when it names none.
+                        if !content_ipc_guard::new_tab_url_allowed(url.as_deref()) {
+                            info!("New tab from content: not served for that URL");
+                            return;
+                        }
                         let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
                         let _ = content_proxy_ipc.send_event(UserEvent::SyncTabs);
                         let _ = content_proxy_ipc.send_event(UserEvent::SyncWorkspaces);
@@ -1521,7 +1527,7 @@ fn main() {
                         }
                     }
                     IpcMessage::AddToShelf { tab_id } => {
-                        // If tab_id is "active", use the currently active tab
+                        // The context menu and Ctrl+Shift+S shelve the active tab; a page names no other tab.
                         let actual_tab_id = if tab_id == "active" {
                             if let Ok(s) = content_state_ipc.lock() {
                                 s.shell.get_active_tab().map(|t| t.id.0.to_string()).unwrap_or_default()
@@ -1529,7 +1535,8 @@ fn main() {
                                 String::new()
                             }
                         } else {
-                            tab_id.clone()
+                            info!("Shelve from content by id: not served");
+                            String::new()
                         };
 
                         if !actual_tab_id.is_empty() {
@@ -1551,21 +1558,12 @@ fn main() {
                         // fill on the page's own origin; nothing is returned on this route.
                         warn!("Dropped a content-page autofill request");
                     }
-                    // Handle focus mode from content (keyboard shortcuts)
+                    // Escape exits focus mode from a page. Entering or toggling it, and autofill,
+                    // come from the chrome or a real key press (`content_shortcuts`), not a page.
                     IpcMessage::ExitFocusMode => {
                         info!("Exit focus mode from content WebView");
                         let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
                         let _ = content_proxy_ipc.send_event(UserEvent::ExitFocusMode);
-                    }
-                    IpcMessage::ToggleFocusMode => {
-                        info!("Toggle focus mode from content WebView");
-                        let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
-                        let _ = content_proxy_ipc.send_event(UserEvent::ToggleFocusMode);
-                    }
-                    IpcMessage::EnterFocusMode => {
-                        info!("Enter focus mode from content WebView");
-                        let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
-                        let _ = content_proxy_ipc.send_event(UserEvent::EnterFocusMode);
                     }
                     // UI shortcuts forwarded from content WebView
                     IpcMessage::CloseTab { id } => {
@@ -1600,10 +1598,6 @@ fn main() {
                     IpcMessage::ActivateTabByIndex { index } => {
                         info!("Activate tab by index from content: {}", index);
                         let _ = content_proxy_ipc.send_event(UserEvent::ActivateTabByIndex { index: *index });
-                    }
-                    IpcMessage::TriggerAutofill => {
-                        info!("Trigger autofill from content");
-                        let _ = content_proxy_ipc.send_event(UserEvent::TriggerAutofill);
                     }
                     // Handle analytics and other commands that need responses sent back to content
                     IpcMessage::GetTodayStats
@@ -1763,6 +1757,21 @@ fn main() {
     let chrome_webview: Arc<wry::WebView> = Arc::new(chrome_webview);
     let shelf_webview: Arc<wry::WebView> = Arc::new(shelf_webview);
     let content_webview: Arc<wry::WebView> = Arc::new(content_webview);
+
+    // Shortcuts pressed in a page that change what the app protects (focus mode, autofill) reach
+    // the app as real key presses (WebView2's AcceleratorKeyPressed), not as page IPC.
+    {
+        let (shortcut_proxy, shortcut_state) = (proxy.clone(), Arc::clone(&state));
+        content_shortcuts::install(&content_webview, move |shortcut| match shortcut {
+            content_shortcuts::Shortcut::ToggleFocusMode => {
+                let _ = ipc::commands::handle_message(&shortcut_state, IpcMessage::ToggleFocusMode);
+                let _ = shortcut_proxy.send_event(UserEvent::ToggleFocusMode);
+            }
+            content_shortcuts::Shortcut::TriggerAutofill => {
+                let _ = shortcut_proxy.send_event(UserEvent::TriggerAutofill);
+            }
+        });
+    }
 
     let chrome_for_events: Arc<wry::WebView> = Arc::clone(&chrome_webview);
     let shelf_for_events: Arc<wry::WebView> = Arc::clone(&shelf_webview);
@@ -3736,5 +3745,44 @@ mod content_ipc_scope_tests {
         let arm = &handler[handler.find("IpcMessage::CloseTab { id } =>").expect("the close-tab arm")..];
         let arm = &arm[..arm.find("IpcMessage::Refresh").unwrap_or(arm.len())];
         assert!(!arm.contains("handle_message"), "{arm}");
+    }
+
+    /// One arm of the content handler, from its pattern to the next `IpcMessage::` pattern.
+    fn arm(pattern: &str) -> String {
+        let handler = content_handler();
+        let at = handler.find(pattern).unwrap_or_else(|| panic!("`{pattern}` is gone; update this pin"));
+        let rest = &handler[at + pattern.len()..];
+        let end = rest.find("\n                    IpcMessage::").or_else(|| rest.find("_ => {}")).unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// The context menu and Ctrl+Shift+S shelve the active tab; a page names no other tab.
+    #[test]
+    fn a_page_shelves_only_the_active_tab() {
+        let arm = arm("IpcMessage::AddToShelf { tab_id } =>");
+        assert!(!arm.contains("tab_id.clone()"), "a tab named by id is shelved: {arm}");
+    }
+
+    /// A new tab from a page (the context menu's links, images and search, and Ctrl+T) opens
+    /// only a web URL, or the new-tab page when it names none.
+    #[test]
+    fn a_page_opens_only_web_urls_in_a_new_tab() {
+        let arm = arm("IpcMessage::CreateTab { url } =>");
+        let guard = arm.find("content_ipc_guard::new_tab_url_allowed(").expect("the arm checks the URL");
+        let served = arm.find("handle_message").expect("the arm opens the tab");
+        assert!(guard < served, "the URL is checked before the tab opens: {arm}");
+    }
+
+    /// A page neither starts an autofill nor turns focus mode on; those shortcuts come from
+    /// real key presses, which `content_shortcuts` takes natively.
+    #[test]
+    fn a_page_cannot_trigger_autofill_or_change_focus_mode() {
+        let main = MAIN_RS.replace("\r\n", "\n");
+        assert!(main.contains("content_shortcuts::install(&content_webview"), "the content view's shortcuts are installed");
+        let handler = content_handler();
+        // Escape (`ExitFocusMode`) is still served: leaving focus mode is the page's user's choice.
+        for variant in ["IpcMessage::TriggerAutofill", "IpcMessage::EnterFocusMode", "IpcMessage::ToggleFocusMode"] {
+            assert!(!handler.contains(variant), "the content view serves `{variant}`");
+        }
     }
 }

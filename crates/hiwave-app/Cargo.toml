@@ -24,9 +24,9 @@ default = ["rustkit"]
 # RustKit crates LINKED IN. Does not, on its own, make RustKit paint content --
 # see the note above. Kept as the default so the engine stays compiled and
 # tested while the content site is wired up.
-rustkit = ["rustkit-engine", "rustkit-viewhost", "rustkit-net", "wry", "tao", "muda", "windows", "tokio"]
+rustkit = ["rustkit-engine", "rustkit-viewhost", "rustkit-net", "wry", "tao", "muda", "windows", "tokio", "webview2-com"]
 # WebView fallback: Uses system WebView (WebView2/WebKit) for everything
-webview-fallback = ["wry", "tao", "muda"]
+webview-fallback = ["wry", "tao", "muda", "webview2-com"]
 # Native Win32: EXPERIMENTAL - Full native Windows app without wry/tao (work in progress)
 # This uses RustKit for ALL rendering (Chrome UI, Content, Shelf)
 native-win32 = ["rustkit-engine", "rustkit-viewhost", "rustkit-bindings", "rustkit-core", "rustkit-net", "windows", "tokio"]
@@ -74,6 +74,8 @@ rustkit-bindings = { workspace = true, optional = true }
 rustkit-net = { workspace = true, optional = true }
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"], optional = true }
 tokio = { version = "1.42", features = ["rt", "time", "sync"], optional = true }
+# WebView2's controller events (the content view's shortcuts); the version wry 0.49 uses.
+webview2-com = { version = "0.35", optional = true }
 
 [dev-dependencies]
 # shield_adapter tests build rustkit_net::Request directly, whose `method`

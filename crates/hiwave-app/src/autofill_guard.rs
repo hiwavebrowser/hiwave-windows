@@ -21,7 +21,7 @@ mod tests {
         // The content IPC arm must be a log-and-drop.
         let start = MAIN.find("IpcMessage::GetCredentialsForAutofill { ref domain } => {").expect("content arm");
         let arm = &MAIN[start..];
-        let end = arm.find("// Handle focus mode from content").expect("end of the arm");
+        let end = arm.find("// Escape exits focus mode from a page.").expect("end of the arm");
         let arm = &arm[..end];
         assert!(!arm.contains("handle_message"), "the arm must not reach the vault handler:\n{arm}");
         assert!(!arm.contains("SendAutofillCredentials"), "the arm must not deliver credentials:\n{arm}");
