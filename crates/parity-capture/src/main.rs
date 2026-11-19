@@ -3585,7 +3585,10 @@ Connection: close
         assert_eq!(result.status, "ok", "{:?}", result.error);
         assert_eq!(result.settle_held_open, Some(1), "the open request is not counted");
         // The 3 s cap, the load and the stepped rest of the settle; 9 s of nominal sleeps fails it.
-        assert!(took < Duration::from_millis(6_000), "the settle's cap is not real time: the capture took {took:?}");
+        // Windows: 7.5 s. The hosted runner (a CPU rasteriser under load) took 6.02 s; 3.9 s on a GPU
+        // machine. 9 s of nominal sleeps still fails it.
+        let bound = if cfg!(windows) { 7_500 } else { 6_000 };
+        assert!(took < Duration::from_millis(bound), "the settle's cap is not real time: the capture took {took:?}");
     }
 
     /// The settle is bounded in real time as well (batch 74's A/B: github's settle took over 77 s and

@@ -65,6 +65,9 @@ rustkit-engine (38%) and rustkit-bindings (21%); `third_party/` +57k.
 - **659 (new):** rustkit-js `a_deep_setter_chain_and_call_fit_the_default_recursion_limit` sets its
   thread's native stack budget (half its 8 MB stack, as a script thread does); Boa's 1 MiB default is too
   small for 400 setter links in CI's non-incremental debug build.
+- **660 (new):** parity-capture `a_request_that_never_answers_costs_the_settle_its_cap_once_and_is_counted`
+  bounds the capture at 7.5 s on Windows (6 s elsewhere). It took 3.9 s on the RTX 4090, 5.84 to 5.89 s on
+  forced WARP here and 6.02 s on the loaded hosted runner; the 9 s of nominal sleeps it catches still fails.
 - **CI (`scripts/collect_metrics.py`):** for the same reason, the engine's lib tests run in chunks of
   whole modules (up to 150 tests a process) instead of one process for the whole suite. The same tests
   run, serially as before. The count listed is checked against the count that ran, and the job fails
