@@ -51,3 +51,14 @@ def test_failures_and_a_dead_process_are_named(capsys):
 def test_a_run_that_finished_names_no_dead_test(capsys):
     collect_metrics.name_failures("lib", "test a::x ... ok\ntest result: ok. 1 passed\n")
     assert capsys.readouterr().err == ""
+
+
+def test_a_failure_is_printed_with_its_panic_message(capsys):
+    body = (
+        "test a::fails ... FAILED\n\nfailures:\n\n---- a::fails stdout ----\n\n"
+        "thread 'a::fails' panicked at src/lib.rs:3:5:\nexpected 400, got 270\n\nfailures:\n    a::fails\n"
+    )
+    collect_metrics.name_failures("workspace", body)
+    err = capsys.readouterr().err
+    assert "workspace: FAILED a::fails" in err
+    assert "expected 400, got 270" in err

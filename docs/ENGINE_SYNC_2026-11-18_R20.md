@@ -55,6 +55,9 @@ rustkit-engine (38%) and rustkit-bindings (21%); `third_party/` +57k.
   the canvas waits for its submission before returning (row WARP-ACCUMULATION). Off on a hardware
   GPU. A source pin keeps every
   submit settled.
+- **657 (new):** `retained_style_tests::tiles_written_then_read_keep_a_full_builds_boxes` is flaky on a
+  loaded runner. Upstream's fix (hiwave-macos #1339) needs #1304, which is after this sync's base, so the
+  test is ignored on Windows until the sync brings both.
 - **CI (`scripts/collect_metrics.py`):** for the same reason, the engine's lib tests run in chunks of
   whole modules (up to 150 tests a process) instead of one process for the whole suite. The same tests
   run, serially as before. The count listed is checked against the count that ran, and the job fails

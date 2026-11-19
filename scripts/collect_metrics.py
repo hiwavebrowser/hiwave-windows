@@ -204,6 +204,11 @@ def name_failures(label: str, body: str) -> None:
     each failed test, a stack overflow's thread, and the test a process was in when it died."""
     for name in re.findall(r"^test (\S+) \.\.\. FAILED", body, re.M):
         print(f"  {label}: FAILED {name}", file=sys.stderr)
+        # Its panic message: the first lines of its captured output block.
+        block = body.split(f"---- {name} stdout ----", 1)
+        if len(block) == 2:
+            for line in [l for l in block[1].strip().splitlines() if l.strip()][:6]:
+                print(f"      {line[:300]}", file=sys.stderr)
     if "has overflowed its stack" in body:
         at = body.rfind("thread '", 0, body.index("has overflowed"))
         print(f"  {label}: " + body[at:].splitlines()[0], file=sys.stderr)

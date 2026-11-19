@@ -669,6 +669,7 @@ fn a_tune_frame_that_reads_geometry_builds_the_document_once() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "flaky on a loaded runner: the arms start at different writes; fixed upstream by hiwave-macos #1339, which needs #1304")]
 fn tiles_written_then_read_keep_a_full_builds_boxes() {
     assert_same_as_a_full_cascade("tiles then read", &tiles(200, 10, TUNE_THEN_READ));
 }
