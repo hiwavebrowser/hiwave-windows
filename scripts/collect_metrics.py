@@ -199,11 +199,26 @@ def chunks(names: list[str]) -> list[list[str]]:
     return out
 
 
+def name_failures(label: str, body: str) -> None:
+    """Print what failed in a test run's output to the job log (the output itself is not there):
+    each failed test, a stack overflow's thread, and the test a process was in when it died."""
+    for name in re.findall(r"^test (\S+) \.\.\. FAILED", body, re.M):
+        print(f"  {label}: FAILED {name}", file=sys.stderr)
+    if "has overflowed its stack" in body:
+        at = body.rfind("thread '", 0, body.index("has overflowed"))
+        print(f"  {label}: " + body[at:].splitlines()[0], file=sys.stderr)
+    started = re.findall(r"^test (\S+) \.\.\. ?(.*)$", body, re.M)
+    if started and not started[-1][1].strip():
+        print(f"  {label}: the process ended during {started[-1][0]}", file=sys.stderr)
+
+
 def run_tests() -> tuple[int, str, dict]:
     code, out = run(["cargo", "test", "--workspace", "--exclude", ENGINE, "--",
                      "--test-threads=1"])
     worst = code
     texts = [out]
+    if code != 0:
+        name_failures("workspace", out)
     build_code, exes = engine_executables()
     info = {"listed": 0, "ran": 0, "processes": 0, "build_exit": build_code}
     env = chunk_env()
@@ -232,15 +247,12 @@ def run_tests() -> tuple[int, str, dict]:
                 print(f"engine chunk failed (exit {proc.returncode}): {kind}, "
                       f"{len(group) or 'all'} tests from {group[0] if group else exe}",
                       file=sys.stderr)
-                # Name what failed: the chunk's own output is not otherwise in the job log.
-                for name in re.findall(r"^test (\S+) \.\.\. FAILED", body, re.M):
-                    print(f"  FAILED {name}", file=sys.stderr)
-                if "has overflowed its stack" in body:
-                    print("  " + body[body.rfind("thread '", 0, body.index("has overflowed")):].splitlines()[0],
-                          file=sys.stderr)
+                name_failures(kind, body)
                 worst = worst or proc.returncode
     doc_code, doc_out = run(["cargo", "test", "-p", ENGINE, "--features", "headless", "--doc"])
     texts.append(doc_out)
+    if doc_code != 0:
+        name_failures("doc", doc_out)
     worst = worst or doc_code
     if info["ran"] != info["listed"]:
         print(f"engine tests listed {info['listed']}, ran {info['ran']}", file=sys.stderr)

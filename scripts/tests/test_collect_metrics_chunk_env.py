@@ -32,3 +32,22 @@ def test_every_engine_process_is_started_with_that_env():
     assert calls, "run_tests starts its processes with subprocess.run"
     for call in calls:
         assert "env=" in call.split("\n\n")[0], call[:200]
+
+
+def test_failures_and_a_dead_process_are_named(capsys):
+    body = (
+        "running 3 tests\n"
+        "test a::passes ... ok\n"
+        "test a::fails ... FAILED\n"
+        "test b::dies ... "
+    )
+    collect_metrics.name_failures("lib", body)
+    err = capsys.readouterr().err
+    assert "lib: FAILED a::fails" in err
+    assert "lib: the process ended during b::dies" in err
+    assert "a::passes" not in err
+
+
+def test_a_run_that_finished_names_no_dead_test(capsys):
+    collect_metrics.name_failures("lib", "test a::x ... ok\ntest result: ok. 1 passed\n")
+    assert capsys.readouterr().err == ""
