@@ -43,29 +43,26 @@ pub(crate) fn analytics_allowed(message_nonce: Option<&str>) -> bool {
 }
 
 /// A URL as it may be logged: a `data:` URL (how the app loads its own pages, the report with its
-/// nonce included) is logged by size only; anything else as scheme, host and path, without its
-/// query, fragment or userinfo (upstream CH3.A6), cut to a sane length.
+/// nonce included) is logged by size only; anything else as scheme, host, port and path as the URL
+/// parser reads them, without its query, fragment or userinfo (upstream CH3.A6), cut to a sane
+/// length. A URL that does not parse is logged by size only.
 pub(crate) fn url_for_log(url: &str) -> String {
+    let url = url.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control());
     // `get`, not a slice: byte 5 may sit inside a multi-byte character.
     if url.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:")) {
         return format!("data: URL ({} bytes)", url.len());
     }
-    let url = url.find(['?', '#']).map_or(url, |at| &url[..at]);
-    let without_userinfo;
-    let url = match url.find("://") {
-        Some(scheme_end) => {
-            let auth_start = scheme_end + 3;
-            let auth_end = url[auth_start..].find('/').map_or(url.len(), |i| auth_start + i);
-            match url[auth_start..auth_end].rfind('@') {
-                Some(at) => {
-                    without_userinfo = format!("{}{}", &url[..auth_start], &url[auth_start + at + 1..]);
-                    without_userinfo.as_str()
-                }
-                None => url,
+    let shown = match url::Url::parse(url) {
+        Ok(parsed) => match parsed.host_str() {
+            Some(host) => {
+                let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+                format!("{}://{}{}{}", parsed.scheme(), host, port, parsed.path())
             }
-        }
-        None => url,
+            None => format!("{}:{}", parsed.scheme(), parsed.path()),
+        },
+        Err(_) => return format!("unparsed URL ({} bytes)", url.len()),
     };
+    let url = shown.as_str();
     if url.len() > 200 {
         let mut cut = 200;
         while !url.is_char_boundary(cut) {
@@ -112,7 +109,7 @@ mod tests {
         // character (bytes 3..6) puts byte 5 inside it.
         let url = "abc\u{20AC}tail";
         assert!(!url.is_char_boundary(5));
-        assert_eq!(url_for_log(url), url);
+        assert_eq!(url_for_log(url), format!("unparsed URL ({} bytes)", url.len()));
         assert_eq!(url_for_log("DATA:text/html,x"), "data: URL (16 bytes)");
     }
     #[test]
@@ -121,6 +118,20 @@ mod tests {
         assert_eq!(url_for_log("http://x.test/?q=1"), "http://x.test/");
         assert_eq!(url_for_log("https://example.com/p#section"), "https://example.com/p");
         assert_eq!(url_for_log("hiwave://report"), "hiwave://report");
+        assert_eq!(url_for_log("https://example.com:8443/a?x"), "https://example.com:8443/a");
+        assert_eq!(url_for_log("about:blank"), "about:blank");
+    }
+
+    /// The URL parser decides where the userinfo ends, as the browser does: a backslash is a path
+    /// separator in an http(s) URL, so a hand-split at the first '/' would keep the password.
+    #[test]
+    fn a_logged_url_follows_the_url_parser_not_a_hand_split() {
+        let logged = url_for_log("https://user:SECRET@example.com" ) ;
+        assert_eq!(logged, "https://example.com/");
+        let logged = url_for_log(&format!("https://user:SECRET@evil.test{}p", '\\'));
+        assert_eq!(logged, "https://evil.test/p");
+        assert_eq!(url_for_log("  data:text/html,secret"), "data: URL (21 bytes)");
+        assert_eq!(url_for_log("not a url SECRET"), "unparsed URL (16 bytes)");
     }
 
     /// No page URL goes to the log whole: every log call that formats a URL passes it through
