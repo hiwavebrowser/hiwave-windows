@@ -3763,12 +3763,17 @@ fn main() {
     } // end cfg(not(feature = "native-win32"))
 }
 
-#[cfg(all(test, not(feature = "native-win32")))]
+#[cfg(test)]
 mod chrome_ipc_log_tests {
+    // The two behaviour tests use the hybrid-mode helpers (built with `mod ipc`); the source pin
+    // reads the file as text and runs in every configuration.
+    #[cfg(not(feature = "native-win32"))]
     use super::*;
 
+    #[cfg(not(feature = "native-win32"))]
     const SECRET: &str = "hunter2-chrome-secret";
 
+    #[cfg(not(feature = "native-win32"))]
     #[test]
     fn a_chrome_ipc_response_is_logged_by_kind_and_size_never_its_data() {
         let ok = ipc::IpcResponse::success(serde_json::json!([{ "username": "u", "password": SECRET }]));
@@ -3780,6 +3785,7 @@ mod chrome_ipc_log_tests {
         assert_eq!(ipc_log_shape(r#"{"cmd":"unlock_vault"}"#, &err), "unlock_vault: error");
     }
 
+    #[cfg(not(feature = "native-win32"))]
     #[test]
     fn the_logged_command_name_is_a_short_snake_case_word_or_unknown() {
         let ok = ipc::IpcResponse::success(serde_json::json!(1));
@@ -3803,7 +3809,10 @@ mod chrome_ipc_log_tests {
     fn source_pins_for_the_ipc_response_and_body_logs() {
         let source = include_str!("main.rs").replace("\r\n", "\n");
         // Everything above this module (the last thing in the file), whose strings name what it looks for.
-        let production = &source[..source.find("mod chrome_ipc_log_tests {").unwrap()];
+        let marker = ["mod chrome_ipc_log", "_tests {"].concat();
+        assert_eq!(source.matches(marker.as_str()).count(), 1, "the module marker is exact");
+        let production = &source[..source.find(marker.as_str()).unwrap()];
+        assert!(production.contains("fn main()") && production.matches("info!(").count() > 30, "the scan covers the app");
         let mut whole_response_logs: Vec<String> = Vec::new();
         let mut whole_body_logs: Vec<String> = Vec::new();
         for mac in ["info!(", "warn!(", "debug!(", "trace!(", "error!("] {
