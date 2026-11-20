@@ -80,11 +80,14 @@ pub(crate) fn page_navigation_allowed(url: &str) -> bool {
     !is_browser_page_url(url)
 }
 
-/// Whether `url` names one of the browser's own pages: the `hiwave:` scheme, in any case, after
-/// the leading whitespace and control characters a URL parser skips.
+/// Whether `url` names one of the browser's own pages: the `hiwave:` scheme, in any case, read as
+/// the URL parser reads it: ASCII tabs and newlines anywhere are dropped, and leading whitespace
+/// and control characters skipped. Both the prefix and the parsed scheme are checked.
 pub(crate) fn is_browser_page_url(url: &str) -> bool {
-    let url = url.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control());
-    url.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("hiwave:"))
+    let cleaned: String = url.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    let cleaned = cleaned.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control());
+    cleaned.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("hiwave:"))
+        || url::Url::parse(cleaned).is_ok_and(|u| u.scheme() == "hiwave")
 }
 
 /// The console line Chrome writes when a page tries to load one of the browser's own pages.
