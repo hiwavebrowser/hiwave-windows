@@ -109,9 +109,11 @@ pub(crate) enum StartupLoad {
 }
 
 /// How startup loads the restored active tab's `url` (`is_new_tab`: the app's new-tab check).
-pub(crate) fn startup_load(_url: &str, is_new_tab: bool) -> StartupLoad {
+pub(crate) fn startup_load(url: &str, is_new_tab: bool) -> StartupLoad {
     if is_new_tab {
         StartupLoad::NewTab
+    } else if is_browser_page_url(url) {
+        StartupLoad::BrowserPage
     } else {
         StartupLoad::Web
     }
