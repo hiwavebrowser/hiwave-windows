@@ -310,6 +310,8 @@ enum UserEvent {
     // Internal page loading
     LoadAboutPage,
     LoadReportPage,
+    /// A page tried to open one of the browser's own pages: the line Chrome writes in its console.
+    ReportRefusedNavigation(String),
     // Print
     PrintPage,
     // Zoom controls
@@ -1330,6 +1332,7 @@ fn main() {
             info!("Content navigating to: {}", content_ipc_guard::url_for_log(&url));
             if !content_ipc_guard::page_navigation_allowed(&url) {
                 info!("Content navigation refused (the browser's own page): {}", content_ipc_guard::url_for_log(&url));
+                let _ = content_proxy.send_event(UserEvent::ReportRefusedNavigation(url));
                 return false;
             }
 
@@ -1355,20 +1358,8 @@ fn main() {
                 let _ = content_proxy.send_event(UserEvent::SyncShieldStats);
                 return true;
             }
-            if is_about_url(&url) {
-                let _ = content_proxy
-                    .send_event(UserEvent::UpdateActiveTabUrl(ABOUT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::UpdateUrl(ABOUT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::LoadAboutPage);
-                return true;
-            }
-            if is_report_url(&url) {
-                let _ = content_proxy
-                    .send_event(UserEvent::UpdateActiveTabUrl(REPORT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::UpdateUrl(REPORT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::LoadReportPage);
-                return true;
-            }
+            // hiwave://about and hiwave://report never reach here: a page cannot open them (refused
+            // above), and the browser opens them from its UI through UserEvent::Navigate.
             if let Ok(s) = content_state.lock() {
                 if s.shield.is_enabled() {
                     if let Ok(parsed_url) = url::Url::parse(&url) {
@@ -3594,6 +3585,13 @@ fn main() {
                     UserEvent::LoadReportPage => {
                         info!("Loading analytics report page");
                         load_report_page(&content_for_events);
+                    }
+                    UserEvent::ReportRefusedNavigation(url) => {
+                        // A JSON string literal: the URL the page asked for is text, never script.
+                        let line = content_ipc_guard::refused_navigation_console_line(&url);
+                        if let Ok(literal) = serde_json::to_string(&line) {
+                            content_for_events.evaluate_script(&format!("console.error({literal});"));
+                        }
                     }
                     UserEvent::PrintPage => {
                         info!("Triggering print dialog");

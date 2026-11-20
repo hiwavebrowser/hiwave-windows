@@ -76,14 +76,26 @@ pub(crate) fn url_for_log(url: &str) -> String {
 /// Whether the content view follows a navigation the PAGE started (the webview's navigation
 /// handler sees only those: the browser opens its own pages with `load_html`, never by navigating
 /// the webview to a `hiwave:` URL).
-pub(crate) fn page_navigation_allowed(_url: &str) -> bool {
-    true
+pub(crate) fn page_navigation_allowed(url: &str) -> bool {
+    !is_browser_page_url(url)
+}
+
+/// Whether `url` names one of the browser's own pages: the `hiwave:` scheme, in any case, after
+/// the leading whitespace and control characters a URL parser skips.
+pub(crate) fn is_browser_page_url(url: &str) -> bool {
+    let url = url.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control());
+    url.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("hiwave:"))
+}
+
+/// The console line Chrome writes when a page tries to load one of the browser's own pages.
+pub(crate) fn refused_navigation_console_line(url: &str) -> String {
+    format!("Not allowed to load local resource: {url}")
 }
 
 /// Whether a page's new-window request (`window.open`, a `target=_blank` link) becomes a new tab
 /// at `url`.
-pub(crate) fn new_window_tab_allowed(_url: &str) -> bool {
-    true
+pub(crate) fn new_window_tab_allowed(url: &str) -> bool {
+    new_tab_url_allowed(Some(url))
 }
 
 /// Whether a page's `create_tab` is served: no URL (Ctrl+T, the new-tab page) or an http(s) URL
@@ -134,6 +146,10 @@ mod tests {
         for ok in ["https://example.com/a?b", "http://example.com"] {
             assert!(new_window_tab_allowed(ok), "{ok}");
         }
+        assert_eq!(
+            refused_navigation_console_line("hiwave://report"),
+            "Not allowed to load local resource: hiwave://report"
+        );
     }
 
     #[test]
