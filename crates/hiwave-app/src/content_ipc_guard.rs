@@ -95,6 +95,28 @@ pub(crate) fn refused_navigation_console_line(url: &str) -> String {
     format!("Not allowed to load local resource: {url}")
 }
 
+/// How the content view loads the restored active tab's URL at startup.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StartupLoad {
+    /// The new-tab page the view is created with: nothing more to load.
+    NewTab,
+    /// One of the browser's own pages, opened the way the browser's UI opens it
+    /// (`UserEvent::Navigate`, which loads it with `load_html`): a restore is the browser's
+    /// navigation, not the page's, so it must not reach the content navigation handler.
+    BrowserPage,
+    /// A web URL, loaded into the view.
+    Web,
+}
+
+/// How startup loads the restored active tab's `url` (`is_new_tab`: the app's new-tab check).
+pub(crate) fn startup_load(_url: &str, is_new_tab: bool) -> StartupLoad {
+    if is_new_tab {
+        StartupLoad::NewTab
+    } else {
+        StartupLoad::Web
+    }
+}
+
 /// Whether a page's new-window request (`window.open`, a `target=_blank` link) becomes a new tab
 /// at `url`.
 pub(crate) fn new_window_tab_allowed(url: &str) -> bool {
@@ -158,6 +180,20 @@ mod tests {
             refused_navigation_console_line("hiwave://report"),
             "Not allowed to load local resource: hiwave://report"
         );
+    }
+
+    /// A tab showing About or Report stores hiwave://about / hiwave://report and the session
+    /// keeps it; restoring it at startup is the browser's navigation and must open the page
+    /// through the browser's path. Loading it into the view sent it through the content
+    /// navigation handler, which refuses a hiwave: URL (Talos, cross-check of this PR).
+    #[test]
+    fn a_restored_browser_page_opens_through_the_browsers_path() {
+        for url in ["hiwave://about", "hiwave://report", "HIWAVE://about"] {
+            assert_eq!(startup_load(url, false), StartupLoad::BrowserPage, "{url}");
+        }
+        assert_eq!(startup_load("hiwave://newtab", true), StartupLoad::NewTab);
+        assert_eq!(startup_load("about:blank", true), StartupLoad::NewTab);
+        assert_eq!(startup_load("https://example.com/", false), StartupLoad::Web);
     }
 
     #[test]

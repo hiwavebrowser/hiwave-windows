@@ -1695,10 +1695,16 @@ fn main() {
         .build_as_child(&window)
         .expect("Failed to create Content WebView");
 
-    // WRY initial URL loading
-    if !is_new_tab_url(&initial_url) {
-        if let Err(e) = content_webview.load_url(&initial_url) {
-            error!("Failed to load initial URL: {}", e);
+    // WRY initial URL loading: the restored active tab, the way the browser opens it.
+    match content_ipc_guard::startup_load(&initial_url, is_new_tab_url(&initial_url)) {
+        content_ipc_guard::StartupLoad::NewTab => {}
+        content_ipc_guard::StartupLoad::BrowserPage => {
+            let _ = proxy.send_event(UserEvent::Navigate(initial_url.clone()));
+        }
+        content_ipc_guard::StartupLoad::Web => {
+            if let Err(e) = content_webview.load_url(&initial_url) {
+                error!("Failed to load initial URL: {}", e);
+            }
         }
     }
     info!("Content WebView created (content area)");
