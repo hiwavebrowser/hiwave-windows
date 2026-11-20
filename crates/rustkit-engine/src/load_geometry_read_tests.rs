@@ -11,6 +11,11 @@
 //! resizes from a ResizeObserver callback through `requestAnimationFrame`.
 //! That frame callback runs on the live loop's next turn, which the board's
 //! `--html-file` capture never turns. The last test pins the pattern.
+//!
+//! REPORT-CHART-0x0 found the second half: with the live loop turned, the
+//! first chart still stayed 0x0, because the ResizeObserver record came in
+//! the task that showed the box, before the frame Chart.js's animator had
+//! already asked for (the last two tests, against Chrome 148).
 
 use super::*;
 use crate::script_net_tests::serve_routes;
@@ -216,4 +221,90 @@ fn real_chart_js_sizes_its_canvases_from_the_container_at_load() {
         out(&mut engine, view),
         "R:activityChart=760x300/760pxx300px protectionChart=760x300/760pxx300px"
     );
+}
+
+/// REPORT-CHART-0x0: a ResizeObserver callback runs in the frame after the animation frame
+/// callbacks already asked for (HTML "update the rendering": animation frame callbacks, then
+/// layout, then resize observations), so a frame it asks for runs one frame later, after the
+/// loop's next callback. Chrome for Testing 148.0.7778.216 at 800x600
+/// (`tools/parity_oracle/report_chart_resize_log.mjs`,
+/// `docs/diagnostics/2026-11-19/report_chart_resize_cft148.json`). RustKit delivered it in the
+/// task that showed the box, before the frame: `ro A1 B A2 A3`.
+#[test]
+fn a_resize_observation_waits_for_the_frame_already_asked_for() {
+    let page = "<!doctype html><html><head><style>body{margin:0} #cc{height:300px}</style></head><body>\
+        <div id=content style='display:none'><div id=cc></div></div><div id=out>x</div><script>\
+        var log=[];function L(s){log.push(s);document.getElementById('out').textContent='R:'+log.join(' ');}\
+        var n=0;function A(){n++;L('A'+n);if(n<3)requestAnimationFrame(A);}\
+        document.addEventListener('DOMContentLoaded',function(){Promise.resolve().then(function(){\
+        requestAnimationFrame(A);\
+        new ResizeObserver(function(es){var r=es[0].contentRect;L('ro='+r.width+'x'+r.height);\
+        requestAnimationFrame(function(){L('B');});}).observe(document.getElementById('cc'));\
+        document.getElementById('content').style.display='block';});});\
+        </script></body></html>";
+    let (mut engine, view) = load_html(page);
+    let rt = runtime();
+    for _ in 0..8 {
+        rt.block_on(engine.pump_live(view, 16));
+    }
+    assert_eq!(out(&mut engine, view), "R:A1 ro=800x300 A2 B A3", "Chrome 148 at 800x600");
+}
+
+/// REPORT-CHART-0x0 (E10b): report.html's shape with the real Chart.js 4.4 the app ships and its
+/// default animation, its default period's data (one label) and its colours: both charts built while `#content` is display:none (0x0, as in Chrome),
+/// shown in the same task. Chart.js resizes from its ResizeObserver through a frame; a resize
+/// that comes while the chart's animation is running waits for its next draw. Delivered before
+/// the animator's frame, the first chart's resize waited for a draw that never came (its
+/// animation of a 0x0 chart ended without one): `activityChart=0x0`. Chrome for Testing
+/// 148.0.7778.216 at 800x600 (`report_chart_resize_cft148.json`).
+#[test]
+fn real_chart_js_built_hidden_resizes_both_charts_when_shown() {
+    const CHART: &str = include_str!("../../hiwave-app/src/ui/chart.umd.min.js");
+    let page = format!("<!doctype html><html><head><style>body{{margin:0;padding:20px}}\
+        .chart-container{{position:relative;height:300px}}</style></head><body>\
+        <div id=content style='display:none'><div class=chart-container><canvas id=activityChart></canvas></div>\
+        <div class=chart-container><canvas id=protectionChart></canvas></div></div>\
+        <div id=out>x</div><script>{CHART}</script><script>\
+        function mk(id,type){{return new Chart(document.getElementById(id).getContext('2d'),{{type:type,\
+        data:{{labels:['Today'],datasets:[{{data:[42],borderColor:'#06b6d4',backgroundColor:'rgba(6,182,212,0.1)',fill:true,tension:0.4}},\
+        {{data:[12],borderColor:'#10b981',backgroundColor:'rgba(16,185,129,0.1)',fill:true,tension:0.4}}]}},\
+        options:{{responsive:true,maintainAspectRatio:false,scales:{{y:{{beginAtZero:true}}}}}}}});}}\
+        function sizes(){{return ['activityChart','protectionChart'].map(function(i){{var c=document.getElementById(i);\
+        return i+'='+c.width+'x'+c.height;}}).join(' ');}}\
+        document.addEventListener('DOMContentLoaded',function(){{Promise.resolve().then(function(){{\
+        mk('activityChart','line');mk('protectionChart','bar');\
+        document.getElementById('content').style.display='block';\
+        document.getElementById('out').textContent='R:built '+sizes();\
+        setTimeout(function(){{document.getElementById('out').textContent='R:later '+sizes();}},300);}});}});\
+        </script></body></html>");
+    let (mut engine, view) = load_html(&page);
+    let rt = runtime();
+    for _ in 0..30 {
+        rt.block_on(engine.pump_live(view, 16));
+    }
+    assert_eq!(
+        out(&mut engine, view),
+        "R:later activityChart=760x300 protectionChart=760x300",
+        "Chrome 148 at 800x600"
+    );
+}
+
+/// R1 on #1361: an endless frame loop (a spinner, a canvas loop) running while the observed box
+/// is shown. The observation waits for the loop's frame; the load itself runs no frame, so at
+/// its end the engine runs the frame the observation waits for, and the observation follows it,
+/// as in Chrome's first rendering update: a load-only capture (the board, the campaign, MCP,
+/// smoke) gets it, after a frame. Chrome for Testing 148.0.7778.216 at 800x600
+/// (`report_chart_resize_cft148.json` `endless`). At af94142e it was never delivered ("x").
+#[test]
+fn a_resize_observation_under_an_endless_frame_loop_is_delivered_in_the_load() {
+    let page = "<!doctype html><html><head><style>body{margin:0} #cc{height:300px}</style></head><body>\
+        <div id=content style='display:none'><div id=cc></div></div><div id=out>x</div><script>\
+        var frames=0;function A(){frames++;requestAnimationFrame(A);}requestAnimationFrame(A);\
+        new ResizeObserver(function(es){var r=es[0].contentRect;\
+        document.getElementById('out').textContent='R:ro='+r.width+'x'+r.height+' after '+(frames>0?'a frame':'no frame');\
+        }).observe(document.getElementById('cc'));\
+        document.getElementById('content').style.display='block';\
+        </script></body></html>";
+    let (mut engine, view) = load_html(page);
+    assert_eq!(out(&mut engine, view), "R:ro=800x300 after a frame", "Chrome 148 at 800x600, load only");
 }

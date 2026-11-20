@@ -772,6 +772,7 @@ impl Presenter {
             Vec::new();
         let mut urls_seen = HashSet::new();
         let mut canvas_uploads = Vec::new();
+        let mut video_uploads = Vec::new();
         let mut gpu_canvases: Vec<String> = Vec::new();
 
         for cmd in commands {
@@ -792,6 +793,15 @@ impl Presenter {
             // uploaded already.
             if crate::canvas_paint::is_gpu_key(url) {
                 gpu_canvases.push(url.clone());
+                continue;
+            }
+
+            // MEDIA-AVF §3.3: a video's newest frame, posted by the page side, is
+            // uploaded into the texture already under its stable key (a copy, step 1a).
+            if !mask && crate::media::is_video_key(url) {
+                if let Some(frame) = crate::media::frame_to_upload(url, renderer.has_image(url)) {
+                    video_uploads.push((url.clone(), frame));
+                }
                 continue;
             }
 
@@ -840,8 +850,10 @@ impl Presenter {
 
         // A canvas's earlier bitmaps go once a list no longer names them:
         // every new bitmap has a key of its own.
+        // So does a video's texture (its element or its player went).
         renderer.retain_images(|key| {
-            !crate::canvas_paint::is_bitmap_key(key) || urls_seen.contains(&(key.to_string(), false))
+            !(crate::canvas_paint::is_bitmap_key(key) || crate::media::is_video_key(key))
+                || urls_seen.contains(&(key.to_string(), false))
         });
 
         for key in gpu_canvases {
@@ -859,6 +871,12 @@ impl Presenter {
             match renderer.upload_premultiplied_image(&key, frame.width, frame.height, &frame.rgba) {
                 Ok(()) => uploaded_count += 1,
                 Err(e) => tracing::warn!(?e, "Failed to upload a canvas bitmap"),
+            }
+        }
+        for (key, frame) in video_uploads {
+            match renderer.update_image(&key, frame.width, frame.height, &frame.rgba) {
+                Ok(()) => uploaded_count += 1,
+                Err(e) => tracing::warn!(?e, "Failed to upload a video frame"),
             }
         }
         for (url_str, image, mask) in urls_to_upload {

@@ -78,34 +78,8 @@ def edit(text: str, name: str, marker: str, old: str, new: str, state: list,
 
 def patch_text(text: str, state: list) -> str:
     quote = "'" + BS + "''"  # the three characters  '\''  as written in the Rust source
-    # 1. sans_serif(): Arial first on Windows.
-    text = edit(
-        text, "text.rs sans_serif leads with Arial on Windows",
-        'let (first, second) = ("Arial", "Segoe UI");',
-        '''    /// Create default font chain for sans-serif.
-    #[cfg(not(target_os = "macos"))]
-    pub fn sans_serif() -> Self {
-        Self::new("Segoe UI")
-            .with_fallback("Arial")
-            .with_fallback("Helvetica")
-''',
-        '''    /// Create default font chain for sans-serif.
-    ///
-    /// Windows: Chrome's default `sans-serif` there is Arial, not Segoe UI
-    /// (Segoe UI is what `system-ui` resolves to). At 14px Arial's `normal`
-    /// line is 16px and Segoe UI's is 19px, so leading with Segoe UI made
-    /// every line of a `sans-serif` page 3px too tall and the error
-    /// accumulated down the page.
-    #[cfg(not(target_os = "macos"))]
-    pub fn sans_serif() -> Self {
-        #[cfg(windows)]
-        let (first, second) = ("Arial", "Segoe UI");
-        #[cfg(not(windows))]
-        let (first, second) = ("Segoe UI", "Arial");
-        Self::new(first)
-            .with_fallback(second)
-            .with_fallback("Helvetica")
-''', state)
+    # 1. (retired in refresh #22) sans_serif(): Arial first on Windows is upstream: hiwave-macos
+    #    #1351 gives Windows its own sans_serif() leading with Arial (develop b60da7f5).
     # 2. from_css_value(): on Windows `BlinkMacSystemFont` is an unknown family too. Upstream skips
     #    `-apple-system` everywhere (CB7b) and maps `BlinkMacSystemFont` to system-ui, which is what
     #    Chrome on macOS does; Chrome for Testing 148 on Windows (win64) treats it as unknown:
@@ -201,35 +175,10 @@ def patch_text(text: str, state: list) -> str:
 
 
 def patch_lib(text: str, state: list) -> str:
-    text = edit(
-        text, "lib.rs strut test 1 tolerance",
-        "so the two agree to within a pixel, not half of one.",
-        '''        let expected = 40.0 + parent.inline_strut_descent();
-        assert!(
-            (parent.dimensions.content.height - expected).abs() < 0.5,
-''',
-        '''        let expected = 40.0 + parent.inline_strut_descent();
-        // `inline_strut_descent` is the font's raw fractional descent while
-        // the line box rounds ascent and descent to whole pixels (as Chrome
-        // does), so the two agree to within a pixel, not half of one. 0.5
-        // held for SF and Segoe UI by luck of their descents; Arial's
-        // 3.453 rounds up to 4.
-        assert!(
-            (parent.dimensions.content.height - expected).abs() < 1.0,
-''', state)
-    text = edit(
-        text, "lib.rs strut test 2 tolerance",
-        "Within a pixel: the raw fractional descent against a rounded line",
-        '''        let expected_y = 124.0 + sd + 10.0 + 2.0;
-        assert!(
-            (second_row.content.y - expected_y).abs() < 0.5,
-''',
-        '''        let expected_y = 124.0 + sd + 10.0 + 2.0;
-        // Within a pixel: the raw fractional descent against a rounded line
-        // box (see test_inline_flex_children_share_a_line).
-        assert!(
-            (second_row.content.y - expected_y).abs() < 1.0,
-''', state)
+    # (retired in refresh #22) The two strut-descent test tolerances are upstream: hiwave-macos
+    # develop b60da7f5 tests within a pixel on Windows (`let tolerance = if cfg!(windows) { 1.0 }
+    # else { 0.5 }`), which is what these edits did.
+    del state
     return text
 
 

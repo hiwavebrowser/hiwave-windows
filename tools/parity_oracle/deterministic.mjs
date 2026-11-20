@@ -139,6 +139,21 @@ export async function createDeterministicContext(browser, width, height, options
   return context;
 }
 
+// parity-freeze.js runs animation frames on a virtual clock, one per real
+// rendering update (16.67 ms of page time each). A capture of a page that
+// animates through requestAnimationFrame (Chart.js) must wait for those frames
+// to finish, or it samples whichever frame the wall clock reached. Resolves
+// {frames, settled, capped}: settled is false only if callbacks were still
+// pending at the timeout; capped is true if the page asked for frames past
+// the freeze's budget (an endless loop, stopped at the same frame every run).
+// A page that asks for none resolves within two frames.
+export async function settleAnimationFrames(page, timeoutMs = 30000) {
+  return page.evaluate(
+    (t) => (window.__parityFreeze ? window.__parityFreeze.settle(t) : { frames: null, settled: true, capped: false }),
+    timeoutMs,
+  );
+}
+
 export function shouldApplyParityResetForHtmlPath(htmlPath) {
   const p = String(htmlPath);
   // Micro-tests are designed to run under the parity reset.

@@ -296,7 +296,60 @@ impl Loader {
     }
 }
 
-/// The probe's loader, handed to its queue. It is only ever used there (its delegate
+/// A resource loader over a [`MediaSource`] and the serial queue it runs on: what makes
+/// an `AVURLAsset` read its bytes from the source (the probe's asset, and the player's
+/// in the main-thread `MediaHost`, step 3). Each asset gets a feed of its own.
+pub struct Feed {
+    loader: Retained<Loader>,
+    queue: DispatchRetained<DispatchQueue>,
+}
+
+// SAFETY: the loader's mutable state (its waiting requests) is touched only on `queue`:
+// AVFoundation calls its delegate methods there, and `bytes_changed` services it there.
+// From any other thread the loader is only retained, released and handed to
+// `setDelegate:queue:` with that queue, which AVFoundation allows from any thread.
+unsafe impl Send for Feed {}
+unsafe impl Sync for Feed {}
+
+/// Each asset's URL is its own (`rustkit-media://<kind>/<n>`).
+static NEXT_ASSET: AtomicU64 = AtomicU64::new(1);
+
+impl Feed {
+    pub fn new(source: Arc<MediaSource>) -> Arc<Feed> {
+        Arc::new(Feed {
+            loader: Loader::new(source),
+            queue: DispatchQueue::new("org.hiwave.rustkit-media.loader", None),
+        })
+    }
+
+    /// An asset on a private URL scheme, so AVFoundation cannot load it without this
+    /// feed's loader: every byte comes from the source (§3.4). `kind` names it in logs.
+    pub(crate) fn asset(&self, kind: &str) -> Retained<AVURLAsset> {
+        let id = NEXT_ASSET.fetch_add(1, Ordering::Relaxed);
+        let url =
+            NSURL::URLWithString(&NSString::from_str(&format!("rustkit-media://{kind}/{id}")))
+                .expect("a valid URL");
+        let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
+        unsafe {
+            asset.resourceLoader().setDelegate_queue(
+                Some(ProtocolObject::from_ref(&*self.loader)),
+                Some(&self.queue),
+            );
+        }
+        asset
+    }
+
+    /// Bytes came, or the fetch failed: answer the waiting requests, on the queue.
+    pub fn bytes_changed(&self) {
+        let loader = OnQueue(self.loader.clone());
+        self.queue.exec_async(move || {
+            let loader = loader;
+            loader.0.service();
+        });
+    }
+}
+
+/// A feed's loader, handed to its queue. It is only ever used there (its delegate
 /// methods run there too), which is what makes sending it sound.
 struct OnQueue(Retained<Loader>);
 // SAFETY: see above.
@@ -318,15 +371,11 @@ pub enum ProbeState {
     Failed,
 }
 
-/// Each probe's URL is its own (`rustkit-media://probe/<n>`).
-static NEXT_PROBE: AtomicU64 = AtomicU64::new(1);
-
 /// One resource's metadata, loaded by AVFoundation from bytes the engine fetches for it.
 pub struct Probe {
     asset: Retained<AVURLAsset>,
     // Kept alive: the resource loader holds its delegate weakly.
-    loader: Retained<Loader>,
-    queue: DispatchRetained<DispatchQueue>,
+    feed: Arc<Feed>,
     loaded: Arc<AtomicBool>,
     state: Option<ProbeState>,
 }
@@ -342,18 +391,8 @@ impl Probe {
     /// Start loading the metadata of `source`'s resource. Nothing blocks: what
     /// AVFoundation reads shows up as `source`'s wants, and [`Probe::poll`] reports.
     pub fn start(source: Arc<MediaSource>) -> Probe {
-        let id = NEXT_PROBE.fetch_add(1, Ordering::Relaxed);
-        // The scheme is ours alone, so AVFoundation cannot load it without the delegate.
-        let url = NSURL::URLWithString(&NSString::from_str(&format!("rustkit-media://probe/{id}")))
-            .expect("a valid URL");
-        let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
-        let queue = DispatchQueue::new("org.hiwave.rustkit-media.loader", None);
-        let loader = Loader::new(source);
-        unsafe {
-            asset
-                .resourceLoader()
-                .setDelegate_queue(Some(ProtocolObject::from_ref(&*loader)), Some(&queue));
-        }
+        let feed = Feed::new(source);
+        let asset = feed.asset("probe");
         let loaded = Arc::new(AtomicBool::new(false));
         let done = loaded.clone();
         let handler = block2::RcBlock::new(move || done.store(true, Ordering::Release));
@@ -365,8 +404,7 @@ impl Probe {
         unsafe { asset.loadValuesAsynchronouslyForKeys_completionHandler(&keys, Some(&handler)) };
         Probe {
             asset,
-            loader,
-            queue,
+            feed,
             loaded,
             state: None,
         }
@@ -374,11 +412,7 @@ impl Probe {
 
     /// Bytes came, or the fetch failed: answer the waiting requests, on the queue.
     pub fn bytes_changed(&self) {
-        let loader = OnQueue(self.loader.clone());
-        self.queue.exec_async(move || {
-            let loader = loader;
-            loader.0.service();
-        });
+        self.feed.bytes_changed();
     }
 
     /// The probe's state now. Once out of `Pending` it does not change.

@@ -1,0 +1,146 @@
+{
+  "chrome": "148.0.7778.216",
+  "container_width": 400,
+  "cases": [
+    {
+      "label": "input beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><input id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px\"><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=100,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "input beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><input id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px\"><div id=n style=\"height:10px\"></div>",
+      "want": "f=300,0,100,80 e=0,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "input too wide moves below the float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><input id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:350px;height:40px\"><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=0,80,350,40 n=0,120,400,10"
+    },
+    {
+      "label": "select beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><select id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px\"></select><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=100,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "select beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><select id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px\"></select><div id=n style=\"height:10px\"></div>",
+      "want": "f=300,0,100,80 e=0,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "select too wide moves below the float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><select id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:350px;height:40px\"></select><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=0,80,350,40 n=0,120,400,10"
+    },
+    {
+      "label": "textarea beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><textarea id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;resize:none;width:150px;height:40px\"></textarea><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=100,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "textarea beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><textarea id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;resize:none;width:150px;height:40px\"></textarea><div id=n style=\"height:10px\"></div>",
+      "want": "f=300,0,100,80 e=0,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "textarea too wide moves below the float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><textarea id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;resize:none;width:350px;height:40px\"></textarea><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=0,80,350,40 n=0,120,400,10"
+    },
+    {
+      "label": "button beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><button id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px\"></button><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=100,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "button beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><button id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px\"></button><div id=n style=\"height:10px\"></div>",
+      "want": "f=300,0,100,80 e=0,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "button too wide moves below the float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><button id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:350px;height:40px\"></button><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=0,80,350,40 n=0,120,400,10"
+    },
+    {
+      "label": "input exactly fits",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><input id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:300px;height:40px\">",
+      "want": "f=0,0,100,80 e=100,0,300,40"
+    },
+    {
+      "label": "input with a left margin beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><input id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px;margin-left:20px\">",
+      "want": "f=0,0,100,80 e=100,0,150,40"
+    },
+    {
+      "label": "button with a left margin past a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><button id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px;margin-left:150px\"></button>",
+      "want": "f=0,0,100,80 e=150,0,150,40"
+    },
+    {
+      "label": "textarea with a right margin beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><textarea id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;resize:none;width:150px;height:40px;margin-right:20px\"></textarea>",
+      "want": "f=300,0,100,80 e=0,0,150,40"
+    },
+    {
+      "label": "select margin 0 auto beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><select id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px;margin:0 auto\"></select>",
+      "want": "f=0,0,100,80 e=175,0,150,40"
+    },
+    {
+      "label": "input margin-left:auto beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><input id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px;margin-left:auto\">",
+      "want": "f=0,0,100,80 e=250,0,150,40"
+    },
+    {
+      "label": "button negative margin-left moved below a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><button id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:350px;height:40px;margin-left:-20px\"></button>",
+      "want": "f=0,0,100,80 e=-20,80,350,40"
+    },
+    {
+      "label": "input with margin-top after a margined div, beside a float",
+      "body": "<div id=a style=\"height:20px;margin-bottom:30px\"></div><div id=f style=\"float:left;width:100px;height:80px\"></div><input id=e style=\"display:block;box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px;margin-top:12px\"><div id=n style=\"height:10px\"></div>",
+      "want": "a=0,0,400,20 f=0,50,100,80 e=100,50,150,40 n=0,90,400,10"
+    },
+    {
+      "label": "fieldset auto width beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><fieldset id=e style=\"margin:0;padding:0;border:1px solid;min-inline-size:0;height:40px\"></fieldset><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=100,0,300,42 n=0,42,400,10"
+    },
+    {
+      "label": "fieldset auto width beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><fieldset id=e style=\"margin:0;padding:0;border:1px solid;min-inline-size:0;height:40px\"></fieldset><div id=n style=\"height:10px\"></div>",
+      "want": "f=300,0,100,80 e=0,0,300,42 n=0,42,400,10"
+    },
+    {
+      "label": "fieldset too wide moves below the float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><fieldset id=e style=\"margin:0;padding:0;border:1px solid;min-inline-size:0;width:350px;height:40px\"></fieldset><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=0,80,352,42 n=0,122,400,10"
+    },
+    {
+      "label": "fieldset with margin-left beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><fieldset id=e style=\"margin:0;padding:0;border:1px solid;min-inline-size:0;height:40px;margin-left:20px\"></fieldset>",
+      "want": "f=0,0,100,80 e=100,0,300,42"
+    },
+    {
+      "label": "fieldset with margin-left past a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><fieldset id=e style=\"margin:0;padding:0;border:1px solid;min-inline-size:0;height:40px;margin-left:150px\"></fieldset>",
+      "want": "f=0,0,100,80 e=150,0,250,42"
+    },
+    {
+      "label": "fieldset with UA style beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><fieldset id=e style=\"height:40px\"></fieldset>",
+      "want": "f=0,0,100,80 e=100,0,298,59.59375"
+    },
+    {
+      "label": "inline-block input beside a float (control)",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><input id=e style=\"box-sizing:border-box;margin:0;padding:0;border:1px solid;width:150px;height:40px;vertical-align:top\">",
+      "want": "f=0,0,100,80 e=100,0,150,40"
+    },
+    {
+      "label": "plain block still overlaps the float (control)",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><div id=e style=\"height:40px\"></div>",
+      "want": "f=0,0,100,80 e=0,0,400,40"
+    }
+  ]
+}

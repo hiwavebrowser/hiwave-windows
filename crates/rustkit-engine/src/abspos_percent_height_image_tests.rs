@@ -119,7 +119,8 @@ fn an_abspos_image_width_percent_resolves_against_the_inset_layer() {
 /// (`e` sits under the 20px block, `f` on the line after it), and its
 /// layout box carries no positioning at all. The box-level check is the
 /// byte-for-byte guard: `LayoutBox::new` sets exactly these fields, and a
-/// static, floated or relative `<img>` must still leave them untouched. Only
+/// static or relative `<img>` must still leave them untouched (a floated one
+/// takes its float since REPLACED-FLOAT-AVOID). Only
 /// the absolute one differs, and it carries its offsets.
 #[test]
 #[cfg(all(target_os = "macos", feature = "headless"))]
@@ -156,7 +157,11 @@ fn a_static_image_is_unchanged() {
         }
         b.children.iter().find_map(|c| image(c, id))
     }
-    for id in ["e", "f", "r", "fl"] {
+    // REPLACED-FLOAT-AVOID: a floated image is a float now (it rode the line).
+    let fl = image(&layout, "fl").expect("no #fl");
+    assert_eq!(fl.float, rustkit_css::Float::Left);
+    assert_eq!(fl.position, rustkit_layout::Position::Static);
+    for id in ["e", "f", "r"] {
         let b = image(&layout, id).unwrap_or_else(|| panic!("no #{id}"));
         assert_eq!(b.position, rustkit_layout::Position::Static, "#{id}");
         assert_eq!(b.float, rustkit_css::Float::None, "#{id}");

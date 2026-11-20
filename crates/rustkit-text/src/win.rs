@@ -398,6 +398,67 @@ fn read_substitutes() -> std::collections::HashMap<String, String> {
     table
 }
 
+/// ICU's Emoji_Presentation property (`UCHAR_EMOJI_PRESENTATION`, 58): the
+/// table Chrome's `SymbolsIterator` reads to send a character to the emoji
+/// face. Read from the system's ICU (`icu.dll`, Windows 10 1903 and later),
+/// as macOS reads libicucore. A character with it is emoji unless U+FE0E
+/// follows; one without it is drawn from a text face unless U+FE0F follows.
+/// Without `icu.dll` every `is_emoji` character counts, the old behaviour.
+pub fn has_emoji_presentation(ch: char) -> bool {
+    const UCHAR_EMOJI_PRESENTATION: i32 = 58;
+    (ch as u32) >= 0x80 && icu_binary_property(ch, UCHAR_EMOJI_PRESENTATION).unwrap_or_else(|| crate::is_emoji(ch))
+}
+
+/// ICU's Emoji property (`UCHAR_EMOJI`, 57): a character U+FE0F can turn into
+/// an emoji. Without `icu.dll`, `is_emoji`.
+pub fn has_emoji_property(ch: char) -> bool {
+    const UCHAR_EMOJI: i32 = 57;
+    icu_binary_property(ch, UCHAR_EMOJI).unwrap_or_else(|| crate::is_emoji(ch))
+}
+
+/// `u_hasBinaryProperty` from the system's `icu.dll`, looked up once; `None`
+/// when the DLL or the export is missing.
+fn icu_binary_property(ch: char, which: i32) -> Option<bool> {
+    type HasBinaryProperty = unsafe extern "C" fn(i32, i32) -> i8;
+    static ICU: OnceLock<Option<HasBinaryProperty>> = OnceLock::new();
+    let has = ICU.get_or_init(|| {
+        use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
+        // SAFETY: loading the system's icu.dll from System32 only (never the
+        // application or current directory) and reading one export, whose C
+        // signature is `UBool u_hasBinaryProperty(UChar32, UProperty)`.
+        unsafe {
+            let module = LoadLibraryExW(windows::core::w!("icu.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32).ok()?;
+            let proc = GetProcAddress(module, windows::core::s!("u_hasBinaryProperty"))?;
+            Some(std::mem::transmute::<*const (), HasBinaryProperty>(proc as *const ()))
+        }
+    });
+    // SAFETY: a pure lookup on a code point; ICU accepts any i32.
+    has.map(|f| unsafe { f(ch as i32, which) != 0 })
+}
+
+#[cfg(test)]
+mod emoji_presentation_tests {
+    use super::*;
+
+    /// Chrome for Testing 148 win64 draws the first list from Segoe UI Symbol
+    /// (no Emoji_Presentation) and the second from Segoe UI Emoji
+    /// (Emoji_Presentation): the chrome board's icons, CSS.getPlatformFontsForNode.
+    #[test]
+    fn the_system_icu_tells_text_from_emoji_presentation() {
+        for ch in ['\u{1F6E1}', '\u{2699}', '\u{2B07}', 'A', '\u{00A9}'] {
+            assert!(!has_emoji_presentation(ch), "{ch:?}");
+        }
+        for ch in ['\u{1F50D}', '\u{1F6AB}', '\u{1F4C8}', '\u{1F551}', '\u{1F504}'] {
+            assert!(has_emoji_presentation(ch), "{ch:?}");
+        }
+        // U+FE0F can make these emoji; a letter it cannot.
+        for ch in ['\u{2699}', '\u{00A9}', '\u{1F6E1}'] {
+            assert!(has_emoji_property(ch), "{ch:?}");
+        }
+        assert!(!has_emoji_property('A'));
+    }
+}
+
 #[cfg(test)]
 mod family_substitute_tests {
     use super::*;

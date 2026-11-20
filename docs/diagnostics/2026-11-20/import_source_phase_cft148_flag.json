@@ -1,0 +1,17 @@
+{
+ "01_source_binding": "SyntaxError",
+ "02_binding_named_source": "SyntaxError",
+ "03_binding_named_from": "SyntaxError",
+ "04_line_terminators": "SyntaxError",
+ "05_unloadable_module": "TypeError",
+ "06_default_named_source": "ok:42",
+ "07_default_source_and_named": "ok:49",
+ "08_default_source_and_namespace": "ok:7",
+ "09_source_with_named": "parse:SyntaxError",
+ "10_source_namespace": "parse:SyntaxError",
+ "11_source_named_list": "parse:SyntaxError",
+ "12_source_bare_specifier": "parse:SyntaxError",
+ "13_source_binding_redeclared": "parse:SyntaxError",
+ "14_escaped_source_keyword": "parse:SyntaxError",
+ "_version": "148.0.7778.216"
+}

@@ -6,7 +6,10 @@
     "its `fixture` after it (realistic state through the page's host entry points).",
     "A state is a list of actions executed IDENTICALLY by parity-capture --actions and",
     "by chrome_board.mjs: wait / click / hover / key (text | key + modifiers) / resize.",
-    "Pages name the states that apply to them; every state runs at every size."
+    "Pages name the states that apply to them; every state runs at every size.",
+    "A page's `live_ms` turns RustKit's live loop that long after the load and after the actions",
+    "(parity-capture --live-ms / --actions-live-ms). report: 1500, past Chart.js's 1 s animation,",
+    "so its charts are captured drawn, as the Chromium arm (with #1365's freeze fix) draws them (REPORT-CHART-0x0)."
   ],
   "sizes": [[1280, 800], [1024, 700], [1600, 1000]],
   "prelude": "ipc_stub.js",
@@ -54,7 +57,7 @@
       "states": ["default", "shelf_search"]
     },
     "inspector": {
-      "html": "crates/hiwave-app/src/ui/inspector.html",
+      "html": "crates/hiwave-app/src/ui/inspector.html", "not_shipped_on": ["windows"],
       "fixture": "inspector.js",
       "states": ["default", "console_tab"]
     },
@@ -66,6 +69,7 @@
     "report": {
       "html": "crates/hiwave-app/src/ui/report.html",
       "fixture": "report.js",
+      "live_ms": 1500,
       "inject": {"<!-- Chart.js is injected by Rust before page load -->": "crates/hiwave-app/src/ui/chart.umd.min.js"},
       "states": ["default", "weekly"]
     }

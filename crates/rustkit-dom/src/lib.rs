@@ -532,6 +532,10 @@ pub struct Document {
     /// the generation is the same. Keyed by the text instead, a sheet came
     /// back disabled when its text did (A -> B -> A; #964 R1 HOLD).
     disabled_style_sheets: RefCell<HashMap<NodeId, u64>>,
+    /// `CSS.registerProperty()` registrations, each as `@property` rule
+    /// text, in call order (TRANS-F). The cascade reads them after the
+    /// document's sheets; a name is registered once.
+    registered_properties: RefCell<Vec<(String, String)>>,
 }
 
 /// The CSS text of a `<style>` element: its Text children, in order.
@@ -827,6 +831,7 @@ impl Document {
             custom_element_definitions_settled: Cell::new(false),
             settled_custom_elements: RefCell::new(std::collections::HashSet::new()),
             disabled_style_sheets: RefCell::new(HashMap::new()),
+            registered_properties: RefCell::new(Vec::new()),
         }
     }
 
@@ -842,6 +847,25 @@ impl Document {
         } else {
             map.remove(&element.id);
         }
+    }
+
+    /// Record a `CSS.registerProperty()` registration of `name` as `rule`
+    /// (`@property` text). False when `name` is registered already (the
+    /// caller throws `InvalidModificationError`).
+    pub fn register_property(&self, name: &str, rule: String) -> bool {
+        let mut list = self.registered_properties.borrow_mut();
+        if list.iter().any(|(n, _)| n == name) {
+            return false;
+        }
+        note_mutation();
+        list.push((name.to_string(), rule));
+        true
+    }
+
+    /// The `CSS.registerProperty()` registrations as `@property` text, in
+    /// call order (empty when there are none).
+    pub fn registered_property_rules(&self) -> String {
+        self.registered_properties.borrow().iter().map(|(_, r)| r.as_str()).collect()
     }
 
     /// Whether `<style>` element `element`'s sheet is disabled: script set

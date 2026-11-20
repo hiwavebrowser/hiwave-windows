@@ -47,6 +47,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import realsite_har  # noqa: E402  (QB-ARCHIVE-INPUT)
+
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_SITES_FILE = REPO / "websuite" / "realsite-top20.json"
 HOLDOUT_SITES_FILE = REPO / "websuite" / "realsite-holdout20.json"
@@ -200,10 +203,11 @@ def probe_access(url):
     return {"status": status, "vendor": vendor, "blocked": blocked}
 
 
-def chrome_capture(url, png, text_json, width, height, env):
+def chrome_capture(url, png, text_json, width, height, env, har_path=None):
     res, err, _ = run_json(
         ["node", str(ORACLE), "chrome", url, str(png), str(text_json),
-         str(width), str(height), str(CHROME_SETTLE_MS)],
+         str(width), str(height), str(CHROME_SETTLE_MS)]
+        + ([str(har_path)] if har_path else []),
         timeout=120,
         env=env,
     )
@@ -241,6 +245,10 @@ def hid_idle_seconds():
 
 
 def _pid_alive(pid):
+    """Whether process `pid` is running. os.kill(pid, 0) is the POSIX probe; on
+    Windows signal 0 is CTRL_C_EVENT, not a probe, so ask the process handle."""
+    if os.name == "nt":
+        return _pid_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -248,6 +256,31 @@ def _pid_alive(pid):
     except PermissionError:
         return True
     return True
+
+
+def _pid_alive_windows(pid):
+    import ctypes
+    from ctypes import wintypes
+
+    # SYNCHRONIZE lets the handle be waited on; a process's handle is signalled once it has
+    # exited, so a zero-timeout wait is exact (an exit code equal to STILL_ACTIVE, 259, is not).
+    SYNCHRONIZE, PROCESS_QUERY_LIMITED_INFORMATION = 0x00100000, 0x1000
+    WAIT_TIMEOUT, ERROR_ACCESS_DENIED = 0x102, 5
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # No such process; a process we may not open exists, as PermissionError does above.
+        return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class OracleLockBusy(RuntimeError):
@@ -437,11 +470,17 @@ def score_site(site, capture_bin, outdir, width, height, env):
     d.mkdir(parents=True, exist_ok=True)
     rec = {"id": sid, "url": url}
 
-    # Chrome twice (self-noise), then RustKit once.
+    # QB-ARCHIVE-INPUT: what each side received, kept for an offline replay (realsite_har.py).
+    archive = realsite_har.archive_enabled()
+    chrome_raw, rustkit_raw = d / "chrome.raw.har", d / "rustkit.raw.har"
+
+    # Chrome twice (self-noise), then RustKit once. Capture a (the oracle unless it fails)
+    # records its load.
     chrome = []
     for tag in ("a", "b"):
         c = chrome_capture(url, d / f"chrome-{tag}.png", d / f"chrome-{tag}-text.json",
-                           width, height, env)
+                           width, height, env,
+                           har_path=chrome_raw if (archive and tag == "a") else None)
         chrome.append(c)
     rec["chrome"] = chrome
     # The oracle is whichever Chrome capture succeeded (screenshots of heavy
@@ -464,12 +503,19 @@ def score_site(site, capture_bin, outdir, width, height, env):
     rk, rk_err, rk_code = run_json(
         [str(capture_bin), "--url", url, "--width", str(width), "--height", str(height),
          "--timeout-ms", str(LOAD_TIMEOUT_MS), "--dump-frame", str(rk_frame),
-         "--dump-display-list", str(rk_dl), "--dump-scripts", str(rk_scripts)],
+         "--dump-display-list", str(rk_dl), "--dump-scripts", str(rk_scripts)]
+        + (["--dump-har", str(rustkit_raw)] if archive else []),
         timeout=LOAD_TIMEOUT_MS // 1000 + 15,
     )
     rec["rustkit"] = rk if rk is not None else {"status": "crash", "error": rk_err,
                                                 "exit_code": rk_code}
     rec["rustkit"]["wall_ms"] = int((time.time() - started) * 1000)
+    if archive:
+        cap = realsite_har.cap_bytes()
+        rec["inputs"] = {
+            "rustkit": realsite_har.archive_inputs(d, "rustkit", rustkit_raw, cap),
+            "chrome": realsite_har.archive_inputs(d, "chrome", chrome_raw, cap),
+        }
 
     # LOADS
     loads, loads_why = False, None
@@ -610,6 +656,14 @@ def summarize(rows, ts, width, height, all_ids, oracle=None):
     return summary
 
 
+def install_exit_signals(handler, sigmod=signal):
+    """SIGTERM and SIGHUP -> handler, for the signals this platform has (Windows has no SIGHUP)."""
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(sigmod, name, None)
+        if sig is not None:
+            sigmod.signal(sig, handler)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--site", action="append", help="only these site ids")
@@ -661,8 +715,7 @@ def main():
     def _signal_exit(signum, _frame):
         raise SystemExit(128 + signum)  # unwinds through OracleSession: lock released
 
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, _signal_exit)
+    install_exit_signals(_signal_exit)
 
     rows = []
     try:

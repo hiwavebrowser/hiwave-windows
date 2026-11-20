@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import {
   createDeterministicContext,
   getDeterministicLaunchOptions,
+  settleAnimationFrames,
   shouldApplyParityResetForHtmlPath,
 } from './deterministic.mjs';
 
@@ -217,6 +218,7 @@ export async function captureBaseline(htmlPath, outputDir, width, height) {
     const fileUrl = `file://${absolutePath}`;
     await page.goto(fileUrl, { waitUntil: 'networkidle' });
     await page.waitForTimeout(50);  // Animations are frozen; allow layout/fonts to settle
+    await settleAnimationFrames(page);  // rAF-driven drawing to its last frame
     
     // 1. Capture screenshot
     const screenshotPath = join(outputDir, 'baseline.png');

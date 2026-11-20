@@ -183,3 +183,99 @@ fn a_worker_scope_enumerates_no_engine_globals() {
     }
     assert_eq!(seen, "");
 }
+
+// One of the app's own pages shown in a web content view (the report page,
+// `load_internal_page_as`): a `window.ipc` whose messages go to
+// `drain_view_internal_reads`, never to the app's command queue, and only
+// in that document.
+
+const POSTS_A_READ: &str = "<p>report</p><script>window.ipc.postMessage(JSON.stringify({cmd: 'get_today_stats'}));\
+     window.ipc.postMessage({cmd: 'get_weekly_report'});</script>";
+
+#[test]
+fn an_internal_page_s_posts_reach_the_internal_reads_only() {
+    let (mut engine, id) = page_engine();
+    engine.load_internal_page_as(id, POSTS_A_READ, None).unwrap();
+    assert_eq!(
+        js(
+            &mut engine,
+            id,
+            "[typeof window.ipc.postMessage, typeof window.hiwaveChrome, typeof __rk_ipc_post, \
+             typeof __rustkit_app_read, typeof __rk].join(',')"
+        ),
+        "function,undefined,undefined,undefined,undefined"
+    );
+    let nav_id = engine.nav_id(id).unwrap();
+    assert_eq!(
+        engine.drain_view_internal_reads(id),
+        (
+            nav_id,
+            vec![r#"{"cmd":"get_today_stats"}"#.to_string(), r#"{"cmd":"get_weekly_report"}"#.to_string()]
+        )
+    );
+    assert!(engine.drain_view_ipc(id).is_empty());
+    assert!(engine.drain_ipc_messages().is_empty());
+}
+
+/// The page cannot swap its `window.ipc` for something else.
+#[test]
+fn an_internal_page_s_window_ipc_stays_as_installed() {
+    let (mut engine, id) = page_engine();
+    engine.load_internal_page_as(id, "<p>report</p>", None).unwrap();
+    js(
+        &mut engine,
+        id,
+        "try { window.ipc = null; } catch (e) {} try { window.ipc.postMessage = null; } catch (e) {} \
+         try { delete window.ipc; } catch (e) {} 0",
+    );
+    assert_eq!(js(&mut engine, id, "typeof window.ipc.postMessage"), "function");
+}
+
+#[test]
+fn a_web_document_has_no_internal_reads() {
+    let (mut engine, id) = page_engine();
+    engine
+        .load_html(id, "<script>window.ipc = { postMessage: function () {} }; window.ipc.postMessage('x');</script>")
+        .unwrap();
+    assert!(engine.drain_view_internal_reads(id).1.is_empty());
+    load_url(&mut engine, id, "<p>web</p>");
+    assert_eq!(js(&mut engine, id, BRIDGE), CHROMIUM);
+    assert!(engine.drain_view_internal_reads(id).1.is_empty());
+}
+
+/// The internal page is the one document: the web page that replaces it
+/// has no bridge, and an answer meant for the internal page is dropped.
+#[test]
+fn a_web_page_after_an_internal_page_has_no_bridge_and_gets_no_answer() {
+    let (mut engine, id) = page_engine();
+    engine.load_internal_page_as(id, POSTS_A_READ, None).unwrap();
+    let (asked, _) = engine.drain_view_internal_reads(id);
+    load_url(
+        &mut engine,
+        id,
+        "<script>window.__answers = 0; window.addEventListener('hiwave-response', function () { window.__answers++; });</script>",
+    );
+    assert_eq!(js(&mut engine, id, BRIDGE), CHROMIUM);
+    assert!(!engine.answer_view_internal_read(id, asked, r#"{"type":"success","data":{}}"#));
+    let now = engine.nav_id(id).unwrap();
+    assert!(!engine.answer_view_internal_read(id, now, r#"{"type":"success","data":{}}"#));
+    assert_eq!(js(&mut engine, id, "String(window.__answers)"), "0");
+}
+
+/// The answer reaches the internal page that asked as a `hiwave-response`
+/// event whose detail is the JSON value, parsed as data.
+#[test]
+fn an_answer_reaches_the_internal_page_as_data() {
+    let (mut engine, id) = page_engine();
+    engine
+        .load_internal_page_as(
+            id,
+            "<script>window.__got = []; window.addEventListener('hiwave-response', function (e) { \
+             window.__got.push(e.detail.type + ':' + e.detail.data.n); });</script>",
+            None,
+        )
+        .unwrap();
+    let nav_id = engine.nav_id(id).unwrap();
+    assert!(engine.answer_view_internal_read(id, nav_id, r#"{"type":"success","data":{"n":"');window.__x=1;//"}}"#));
+    assert_eq!(js(&mut engine, id, "window.__got.join('|') + ',' + typeof window.__x"), "success:');window.__x=1;//,undefined");
+}

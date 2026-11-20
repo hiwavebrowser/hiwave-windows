@@ -692,4 +692,29 @@
     }
     g.CSS.supports = supports;
     g.CSS.escape = escape;
+    // css-properties-values-api-1 §3.1: the descriptor is checked natively
+    // (name, syntax, initialValue against the syntax); a name registers once.
+    g.CSS.registerProperty = function registerProperty(definition) {
+        if (definition === null || typeof definition !== 'object') {
+            throw new TypeError("Failed to execute 'registerProperty' on 'CSS': parameter 1 is not of type 'PropertyDefinition'.");
+        }
+        if (!('name' in definition)) {
+            throw new TypeError("Failed to execute 'registerProperty' on 'CSS': required member name is undefined.");
+        }
+        if (!('inherits' in definition)) {
+            throw new TypeError("Failed to execute 'registerProperty' on 'CSS': required member inherits is undefined.");
+        }
+        var name = String(definition.name);
+        var syntax = definition.syntax === undefined ? '*' : String(definition.syntax);
+        var initial = definition.initialValue === undefined ? undefined : String(definition.initialValue);
+        var err = typeof __rk.registerProperty === 'function'
+            ? __rk.registerProperty(name, syntax, !!definition.inherits, initial) : '';
+        if (err) {
+            var messages = {
+                SyntaxError: "Failed to execute 'registerProperty' on 'CSS': The name provided is not a valid custom property name, or the syntax or initial value is not valid.",
+                InvalidModificationError: "Failed to execute 'registerProperty' on 'CSS': The name provided has already been registered."
+            };
+            throw domError(messages[err] || err, err);
+        }
+    };
 })(globalThis);

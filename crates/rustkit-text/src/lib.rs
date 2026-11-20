@@ -90,7 +90,10 @@ pub struct GlyphMetrics {
 mod win;
 
 #[cfg(windows)]
-pub use win::{face_by_id, family_substitute, intern_face, web_font_face, Font, FontCollection, FontFace, FontFamily};
+pub use win::{
+    face_by_id, family_substitute, has_emoji_presentation, has_emoji_property, intern_face, web_font_face, Font,
+    FontCollection, FontFace, FontFamily,
+};
 
 pub mod emoji;
 pub use emoji::is_emoji;

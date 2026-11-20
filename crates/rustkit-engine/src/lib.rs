@@ -730,6 +730,10 @@ mod css_transitions_sizes_tests;
 #[cfg(all(test, feature = "headless"))]
 mod css_transitions_visibility_tests;
 #[cfg(all(test, feature = "headless"))]
+mod css_transitions_property_tests;
+#[cfg(all(test, feature = "headless"))]
+mod registered_transition_fastpath_tests;
+#[cfg(all(test, feature = "headless"))]
 mod css_transitions_lists_tests;
 #[cfg(all(test, feature = "headless"))]
 mod css_transitions_grid_tests;
@@ -745,6 +749,14 @@ mod media_box_tests;
 mod media_load_tests;
 #[cfg(all(test, feature = "headless"))]
 mod media_fetch_tests;
+#[cfg(all(test, feature = "headless"))]
+mod media_host_tests;
+#[cfg(all(test, feature = "headless"))]
+mod replaced_float_avoid_tests;
+#[cfg(all(test, feature = "headless"))]
+mod form_control_float_avoid_tests;
+#[cfg(all(test, feature = "headless"))]
+mod anim_read_jump_tests;
 #[cfg(all(test, feature = "headless"))]
 mod css_transitions_cost_tests;
 #[cfg(all(test, feature = "headless"))]
@@ -784,6 +796,7 @@ mod clock_live_timer_tests;
 #[cfg(test)]
 mod clock_flag_tests;
 mod animations;
+mod registered_props;
 #[cfg(test)]
 mod ancestor_attribute_tests;
 #[cfg(test)]
@@ -3495,6 +3508,10 @@ pub struct Engine {
     presenter: Option<Presenter>,
     /// Commits a page engine publishes. A window engine stores them on its presenter.
     page_commits: HashMap<EngineViewId, FrameCommit>,
+    /// MEDIA-AVF step 3: the main-thread `MediaHost` that owns the players
+    /// (`docs/design/MEDIA_AVF.md` §3.2). `None` (the default until step 6): media
+    /// elements load their metadata and nothing more.
+    media_backend: Option<Arc<dyn rustkit_media::host::MediaBackend>>,
     /// One navigation sequence, shared with the window handle.
     nav_seq: Arc<AtomicU64>,
     /// `Some` replaces Boa's host re-entry cap for runtimes this engine creates.
@@ -3800,6 +3817,7 @@ impl Engine {
             config,
             presenter,
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq,
             host_reentry_override: None,
             clipboard: if system_clipboard {
@@ -6670,6 +6688,10 @@ impl Engine {
             return Ok(());
         }
         self.scroll_to_loaded_fragment(id);
+        // A resize observation held for a frame gets that frame now: no turn may follow.
+        if let Err(e) = self.run_held_observation_frame(id) {
+            debug!(?id, ?e, "Held resize observation frame failed");
+        }
         let view = self
             .views
             .get_mut(&id)
@@ -7761,11 +7783,17 @@ impl Engine {
                 Err(e) => debug!(?id, error = %e, "Failed to look for images an image listener added"),
             }
         }
-        // MEDIA-AVF: media elements' loading (media.rs).
-        if self.settle_media(id).await {
+        // MEDIA-AVF: media elements' loading (media.rs), and their players' answers.
+        let media = self.settle_media(id).await;
+        if media.resized {
             match self.relayout_for(id, RelayoutCause::Other("media metadata")) {
                 Ok(()) => out.relaid_out = true,
                 Err(e) => debug!(?id, error = %e, "relayout after media metadata failed"),
+            }
+        } else if media.new_frames {
+            // A new video frame changes no box: present it with no build (§3.3).
+            if let Err(e) = self.present_video_frame(id) {
+                debug!(?id, error = %e, "video frame present failed");
             }
         }
         if let Some(view) = self.views.get(&id) {
@@ -10954,6 +10982,10 @@ impl Engine {
         }
         self.scroll_to_loaded_fragment(id);
 
+        // A resize observation held for a frame gets that frame now: no turn may follow.
+        if let Err(e) = self.run_held_observation_frame(id) {
+            debug!(?id, ?e, "Held resize observation frame failed");
+        }
         // Finish navigation
         let view = self
             .views
@@ -11007,6 +11039,31 @@ impl Engine {
         id: EngineViewId,
         html: &str,
         preset_nav: Option<u64>,
+    ) -> Result<(), EngineError> {
+        self.load_html_doc(id, html, preset_nav, false)
+    }
+
+    /// [`Engine::load_html_as`] for one of the app's own pages shown in a
+    /// web content view (the report page). That document, and no later
+    /// one, gets the internal page's `window.ipc`
+    /// ([`DomBindings::new_internal_page`]); what it posts is read with
+    /// [`Self::drain_view_internal_reads`] and answered with
+    /// [`Self::answer_view_internal_read`]. A URL load never gets it.
+    pub fn load_internal_page_as(
+        &mut self,
+        id: EngineViewId,
+        html: &str,
+        preset_nav: Option<u64>,
+    ) -> Result<(), EngineError> {
+        self.load_html_doc(id, html, preset_nav, true)
+    }
+
+    fn load_html_doc(
+        &mut self,
+        id: EngineViewId,
+        html: &str,
+        preset_nav: Option<u64>,
+        internal_page: bool,
     ) -> Result<(), EngineError> {
         self.begin_view_visit(id, None);
         let _hold = wgate::hold("load_html");
@@ -11116,6 +11173,8 @@ impl Engine {
             let app_owned = self.views.get(&id).is_some_and(|view| view.app_owned);
             let bindings = if app_owned {
                 DomBindings::new_app_owned(js_runtime)
+            } else if internal_page {
+                DomBindings::new_internal_page(js_runtime)
             } else {
                 DomBindings::new(js_runtime)
             }
@@ -11196,6 +11255,10 @@ impl Engine {
         }
         self.flush_script_dom_writes(id, None)?;
 
+        // A resize observation held for a frame gets that frame now: no turn may follow.
+        if let Err(e) = self.run_held_observation_frame(id) {
+            debug!(?id, ?e, "Held resize observation frame failed");
+        }
         // Finish navigation
         let view = self
             .views
@@ -11519,7 +11582,28 @@ impl Engine {
             .get(&id)
             .is_some_and(|view| view.lay.scrolled_in_task.replace(false));
         let mut script_note = "-".to_string();
-        if script_restyle_enabled() && pointer_restyle.is_none() && !cooling {
+        // REG-TRANS-FASTPATH: an animation frame whose registered custom property transitions
+        // took no paint-only frame names the elements that animate; a relayout the animations
+        // alone asked for restyles only those (and what is under them) on the same short path.
+        let animation_roots = self
+            .views
+            .get(&id)
+            .and_then(|view| view.lay.animation_roots.borrow_mut().take())
+            .filter(|_| {
+                !causes.counts.is_empty()
+                    && causes.counts.iter().all(|(kind, _)| kind == "animation")
+                    && causes.mutations.is_empty()
+                    && dirty.as_ref().is_none_or(|d| d.full.is_none() && d.nodes.is_empty())
+                    && !scrolled_in_task
+            });
+        if let (true, Some(roots)) =
+            (script_restyle_enabled() && pointer_restyle.is_none() && !cooling, animation_roots)
+        {
+            if let Some(view) = self.views.get(&id) {
+                view.lay.script_idle.set(0);
+                *view.lay.script_roots.borrow_mut() = Some(roots);
+            }
+        } else if script_restyle_enabled() && pointer_restyle.is_none() && !cooling {
             match script_restyle_roots(&causes, dirty.as_ref(), scrolled_in_task) {
                 Ok(roots) => {
                     if let Some(view) = self.views.get(&id) {
@@ -12043,9 +12127,11 @@ impl Engine {
                     continue;
                 }
             }
-            // MEDIA-AVF M1.1: a media element's box paints nothing until its frames do.
+            // MEDIA-AVF M1.1: a media element's box with no metadata paints nothing. A
+            // video's (`rustkit-video:`) paints its newest frame once the presenter has
+            // one (step 3); until then the renderer finds no texture and skips it.
             if let rustkit_layout::DisplayCommand::Image { url, .. } = &cmd {
-                if rustkit_layout::key_has_no_ratio(url) || url.starts_with(media::VIDEO_KEY_PREFIX) {
+                if rustkit_layout::key_has_no_ratio(url) {
                     continue;
                 }
             }
@@ -14061,8 +14147,14 @@ impl layout_ctx::LayoutCtx {
         };
         // `document.adoptedStyleSheets` follows the document's `<style>`
         // and `<link>` sheets. The document node holds the text.
-        let adopted: Vec<String> =
+        let mut adopted: Vec<String> =
             document.root().adopted_styles().into_iter().filter(|text| !text.is_empty()).collect();
+        // `CSS.registerProperty()` registrations, as `@property` text after
+        // every sheet (TRANS-F).
+        let registered = document.registered_property_rules();
+        if !registered.is_empty() {
+            adopted.push(registered);
+        }
         // What the prepared sheets are made of, by identity (see
         // `SheetsFingerprint`); `None` when the build cannot vouch for it.
         let fingerprint = self.sheets_fingerprint(&inline_sheets, external_stylesheets, &adopted, viewport, &order);
@@ -14123,6 +14215,7 @@ impl layout_ctx::LayoutCtx {
                     && stylesheets
                         .iter()
                         .any(|s| s.rules.iter().any(container_query::floats_first_letter));
+                let registry = registered_props::registry_for(&stylesheets);
                 let prepared = PreparedSheets {
                     from: fingerprint.clone(),
                     // The document tree's sheets. Shared, so the build can
@@ -14130,6 +14223,7 @@ impl layout_ctx::LayoutCtx {
                     // (`shadow_tree`); the rules stay where they are, so
                     // the rule index still recognizes them.
                     sheets: Rc::new(stylesheets),
+                    registry,
                     css_vars,
                     any_container_rule,
                     container_first_letter,
@@ -14144,6 +14238,7 @@ impl layout_ctx::LayoutCtx {
         drop(inline_sheets);
         let stylesheets = prepared.sheets;
         let css_vars = prepared.css_vars;
+        let _registry = registered_props::RegistryScope::install(prepared.registry.clone());
         let _tree_indexes = TreeRuleIndexScope::install();
         let _tree_scopes = shadow_tree::BuildScope::install(
             document,
@@ -15019,6 +15114,32 @@ impl layout_ctx::LayoutCtx {
                 // and overlay the running ones (after the memo, so the
                 // memo keeps the cascade's own result).
                 let may_animate = self.animate_style(node.id.raw(), &mut style, stylesheets);
+                // TRANS-F: a registered custom property moves. What reads
+                // it (`var()` in this element's own declarations) is
+                // cascaded again with the moving values; what the
+                // animations set over the cascade is carried across.
+                if let Some(values) = self.take_custom_overlay(node.id.raw()) {
+                    let cascaded = self.cascaded_style(node.id.raw());
+                    let _override = registered_props::OverrideScope::install(values);
+                    let own_rules =
+                        shadow_tree::OwnRules::install(node, &tag_lower, attributes, ancestors, sib);
+                    let mut fresh = self.compute_style_for_element(
+                        tag_name,
+                        attributes,
+                        stylesheets,
+                        css_vars,
+                        ancestors,
+                        siblings_before,
+                        sib,
+                        parent_style,
+                    );
+                    drop(own_rules);
+                    if let Some(cascaded) = cascaded {
+                        animations::carry_animated(&cascaded, &style, &mut fresh);
+                    }
+                    fresh.custom_properties = style.custom_properties.clone();
+                    *style = fresh;
+                }
                 // Its memo entry is the bare cascade, and transitions and animations are applied
                 // after it: an element that animates, or may (it names an animation or a
                 // transition), hands its children values its entry does not show. A retained
@@ -15226,15 +15347,12 @@ impl layout_ctx::LayoutCtx {
                     // because the flow pass has no containing-block height
                     // for it and nothing re-anchored it (HT27 R3).
                     //
-                    // Only a POSITIONED image takes the transfer: a static
-                    // one keeps the box exactly as before, float and clear
-                    // included (a floated `<img>` still rides the line; that
-                    // is a separate item, not touched here), so nothing
-                    // moves on a page without a positioned image.
+                    // REPLACED-FLOAT-AVOID: a static image takes its float and
+                    // clear too. A floated `<img>` rode the line as an inline
+                    // box, and a cleared block one sat beside the float it
+                    // clears (Chrome 148 pins in `replaced_float_avoid_tests`).
                     let positioning = Engine::positioning_of(&b.style);
-                    if positioning.position != Position::Static {
-                        Engine::apply_positioning(&mut b, positioning);
-                    }
+                    Engine::apply_positioning(&mut b, positioning);
                     Engine::attach_identity(
                         &mut b,
                         selector_path,
@@ -15300,13 +15418,14 @@ impl layout_ctx::LayoutCtx {
                     }
                     // MEDIA-AVF M1.2: once a video's metadata is in, its box takes the
                     // video's size and ratio (Chrome 148: `width=100` on a 64x48 video
-                    // is 100x75), under its stable key `rustkit-video:<node>`.
+                    // is 100x75), under its key `rustkit-video:<node>@<player>` (step 3:
+                    // the player's frames paint under it).
                     let video_size = (tag_lower == "video")
-                        .then(|| self.with_building_lay(|lay| lay.media_sizes.borrow().get(&node.id.raw()).copied()))
+                        .then(|| self.with_building_lay(|lay| lay.media_sizes.borrow().get(&node.id.raw()).cloned()))
                         .flatten()
                         .flatten();
                     let (url, natural_width, natural_height) = match video_size {
-                        Some((w, h)) => (format!("{}{}", media::VIDEO_KEY_PREFIX, node.id.raw()), w as f32, h as f32),
+                        Some((w, h, key)) => (key, w as f32, h as f32),
                         None => (
                             format!("{}{}:{}", rustkit_layout::NO_RATIO_KEY_PREFIX, tag_lower, node.id.raw()),
                             300.0,
@@ -16909,6 +17028,17 @@ impl layout_ctx::LayoutCtx {
             }
         }
         let vars = Engine::element_custom_properties(&inherited_vars, &declared_vars);
+        let registry = registered_props::current();
+        let vars = match registry.as_deref() {
+            Some(registry) => registered_props::fix_up(
+                Some(registry),
+                vars,
+                &inherited_vars,
+                &declared_vars,
+                parent.is_none(),
+            ),
+            None => vars,
+        };
 
         // Apply matching rules: normal declarations, then `!important` ones
         // (CSS Cascade 4 §6.1), specificity order within each.
@@ -16996,6 +17126,21 @@ impl layout_ctx::LayoutCtx {
 
         pseudo_style.settle_animation_opacity(stylesheets);
 
+        let vars = match registry.as_deref() {
+            Some(registry) => {
+                let parent_px = parent
+                    .map(|p| registered_props::font_px(&p.font_size, 16.0))
+                    .unwrap_or(16.0);
+                registered_props::compute_own(
+                    Some(registry),
+                    vars,
+                    &declared_vars,
+                    registered_props::font_px(&pseudo_style.font_size, parent_px),
+                    self.building_viewport(),
+                )
+            }
+            None => vars,
+        };
         pseudo_style.custom_properties = vars;
 
         // Without `content` there is no box, so there is nothing to keep:
@@ -17466,10 +17611,13 @@ impl layout_ctx::LayoutCtx {
                 style.display = rustkit_css::Display::Block;
                 style.margin_left = rustkit_css::Length::Px(2.0);
                 style.margin_right = rustkit_css::Length::Px(2.0);
-                style.padding_top = rustkit_css::Length::Px(8.0); // 0.35em
-                style.padding_bottom = rustkit_css::Length::Px(10.0); // 0.625em
-                style.padding_left = rustkit_css::Length::Px(12.0); // 0.75em
-                style.padding_right = rustkit_css::Length::Px(12.0);
+                // Chrome's html.css: 0.35em 0.75em 0.625em, of the fieldset's own
+                // font size (5.6px, not 8, at 16px: row FORM-CONTROL-FLOAT-AVOID's
+                // UA-style case).
+                style.padding_top = rustkit_css::Length::Em(0.35);
+                style.padding_bottom = rustkit_css::Length::Em(0.625);
+                style.padding_left = rustkit_css::Length::Em(0.75);
+                style.padding_right = rustkit_css::Length::Em(0.75);
                 style.border_top_width = rustkit_css::Length::Px(2.0);
                 style.border_right_width = rustkit_css::Length::Px(2.0);
                 style.border_bottom_width = rustkit_css::Length::Px(2.0);
@@ -17890,7 +18038,10 @@ impl layout_ctx::LayoutCtx {
         // under a rule index, whose rule numbers the key holds with the
         // index's source. Rules from other trees are not in the key (extras):
         // no sharing with them.
-        let share = match (index.is_some() && extras.is_empty(), parent_style) {
+        let share = match (
+            index.is_some() && extras.is_empty() && !registered_props::override_active(),
+            parent_style,
+        ) {
             (true, Some(parent)) => style_share_lookup(parent, || StyleShareKey {
                 parent: 0,
                 source: index.as_ref().map_or((0, 0, 0), |ix| ix.source),
@@ -17935,6 +18086,10 @@ impl layout_ctx::LayoutCtx {
             .get("style")
             .map(|s| rustkit_css::split_declaration_list(s))
             .unwrap_or_default();
+        // TRANS-F: a moving registered value is the element's last
+        // declaration of it, so the element's other custom properties
+        // that read it (`--tw-gradient-stops`) take the moving value too.
+        let overridden = registered_props::override_values();
         let mut declared_vars: Vec<(&str, Option<&str>)> = Vec::new();
         for important_pass in [false, true] {
             for (rule, _, _) in rules_for(important_pass) {
@@ -17966,7 +18121,22 @@ impl layout_ctx::LayoutCtx {
                 }
             }
         }
+        declared_vars.extend(overridden.iter().map(|(k, v)| (k.as_str(), Some(v.as_str()))));
         let vars = Engine::element_custom_properties(&inherited_vars, &declared_vars);
+        // TRANS-F: registered properties (initial values, `inherits`,
+        // invalid values) and a running transition's override.
+        let registry = registered_props::current();
+        let vars = if registry.is_some() || registered_props::override_active() {
+            registered_props::fix_up(
+                registry.as_deref(),
+                vars,
+                &inherited_vars,
+                &declared_vars,
+                parent_style.is_none(),
+            )
+        } else {
+            vars
+        };
         let css_vars: &CustomProperties = &vars;
 
         // Provenance is recorded from INSIDE this loop rather than by a
@@ -18106,6 +18276,22 @@ impl layout_ctx::LayoutCtx {
 
         style.settle_animation_opacity(stylesheets);
 
+        // Registered values computed against the element's font size.
+        let vars = match registry.as_deref() {
+            Some(registry) => {
+                let parent_px = parent_style
+                    .map(|p| registered_props::font_px(&p.font_size, 16.0))
+                    .unwrap_or(16.0);
+                registered_props::compute_own(
+                    Some(registry),
+                    vars,
+                    &declared_vars,
+                    registered_props::font_px(&style.font_size, parent_px),
+                    self.building_viewport(),
+                )
+            }
+            None => vars,
+        };
         style.custom_properties = vars;
 
         style_share_store(share, &style);
@@ -22396,12 +22582,15 @@ impl Engine {
     /// MEDIA-AVF M1.2: one live turn of view `id`'s media elements (media.rs): sync
     /// them with the document after a layout or a `load()`, start the fetches that
     /// asks for, take the fetches that landed, poll the AVFoundation probes, and fire
-    /// the events that queued, each with the element's state as of it. Returns whether
-    /// a video's size came in (its box is laid out again).
-    async fn settle_media(&mut self, id: EngineViewId) -> bool {
-        let Some(view) = self.views.get(&id) else { return false };
+    /// the events that queued, each with the element's state as of it. Step 3: drain
+    /// the players' snapshots and pull the videos' frames (`MediaElements::tick_host`).
+    /// Returns whether a video's size came in (its box is laid out again) and whether a
+    /// video has a new frame (presented with no build).
+    async fn settle_media(&mut self, id: EngineViewId) -> media::HostTick {
+        let none = media::HostTick::default();
+        let Some(view) = self.views.get(&id) else { return none };
         let (Some(document), Some(bindings)) = (view.document.clone(), view.bindings.as_ref()) else {
-            return false;
+            return none;
         };
         let reload = bindings.take_media_loads();
         let generation = view.frame_generation;
@@ -22452,14 +22641,16 @@ impl Engine {
         }
         let landed = match self.views.get_mut(&id) {
             Some(view) => media::settle_keyed(&mut view.live_media, LIVE_NETWORK_SLICE).await,
-            None => return false,
+            None => return none,
         };
-        let Some(view) = self.views.get_mut(&id) else { return false };
+        let backend = self.media_backend.clone();
+        let Some(view) = self.views.get_mut(&id) else { return none };
         for fetched in landed {
             view.media.fetched(fetched);
         }
-        let resized = view.media.poll();
-        if resized {
+        let mut tick = view.media.tick_host();
+        tick.resized |= view.media.poll(backend.as_ref());
+        if tick.resized {
             *view.lay.media_sizes.borrow_mut() = view.media.video_sizes();
         }
         let events = view.media.take_events();
@@ -22473,7 +22664,38 @@ impl Engine {
                 inspector_glue::drain_errors(bindings, &view.inspector, "media");
             }
         }
-        resized
+        tick
+    }
+
+    /// MEDIA-AVF §3.3: present view `id` again for a new video frame. The display list
+    /// is the one already built (the frame's key is stable): its generation moves so the
+    /// presenter takes it as a new frame, and the presenter uploads the frame under its
+    /// key. No build, no layout.
+    fn present_video_frame(&mut self, id: EngineViewId) -> Result<(), EngineError> {
+        let Some(view) = self.views.get_mut(&id) else { return Ok(()) };
+        if view.display_list.is_none() {
+            return Ok(());
+        }
+        // What was done for this frame's boxes holds for the next generation too.
+        let generation = view.frame_generation;
+        view.frame_generation += 1;
+        if view.images_planned_for == generation {
+            view.images_planned_for = view.frame_generation;
+        }
+        if view.sheets_checked_for == Some(generation) {
+            view.sheets_checked_for = Some(view.frame_generation);
+        }
+        if view.media.synced_for == Some(generation) {
+            view.media.synced_for = Some(view.frame_generation);
+        }
+        view.relayout_stats.video_frames_presented = view.relayout_stats.video_frames_presented.saturating_add(1);
+        self.render(id)
+    }
+
+    /// MEDIA-AVF step 3: the main-thread host whose players media elements use
+    /// (`docs/design/MEDIA_AVF.md` §3.2), or `None` for none (metadata only).
+    pub fn set_media_backend(&mut self, backend: Option<Arc<dyn rustkit_media::host::MediaBackend>>) {
+        self.media_backend = backend;
     }
 
     fn start_planned_images(plan: ImagePlan) -> Vec<script_net::LiveFuture<FetchedImages>> {
@@ -26803,6 +27025,29 @@ impl Engine {
         self.script_turn(id, |bindings| bindings.evaluate_as_page_script(script))
     }
 
+    /// A resize observation held for an animation frame (REPORT-CHART-0x0: Chrome runs the
+    /// frame's callbacks first) when no turn is to come: run that frame's callbacks as one round,
+    /// then the turn's observer tick delivers it, in Chrome's order. The engine does it once at
+    /// the end of every load (a load runs no frame of its own, so a load-only capture, an MCP
+    /// render or a smoke frame would never get it), and a capture does it again after its
+    /// actions. Nothing held, nothing run: a page with no held observation gets no frame here.
+    pub fn run_held_observation_frame(&mut self, id: EngineViewId) -> Result<(), EngineError> {
+        let held = self
+            .views
+            .get(&id)
+            .and_then(|v| v.bindings.as_ref())
+            .is_some_and(|b| b.resize_held());
+        if !held {
+            return Ok(());
+        }
+        self.execute_host_turn(
+            id,
+            &format!("return __rk.pendingFrameRound({MAX_LIVE_TIMER_CALLBACKS});"),
+            &[],
+        )
+        .map(|_| ())
+    }
+
     /// [`Self::execute_script`] for one of the engine's own entry points:
     /// `body` is a function body whose `__rk` is the host object, which no
     /// page script reaches (`return __rk.fragmentNavigation(__a[0]);`), and
@@ -27907,6 +28152,48 @@ impl Engine {
         drained
     }
 
+    /// What the internal page in view `id` ([`Self::load_internal_page_as`])
+    /// posted since the last drain, with the navigation id of that
+    /// document. Empty for any other document.
+    pub fn drain_view_internal_reads(&self, id: EngineViewId) -> (u64, Vec<String>) {
+        let Some(view) = self.views.get(&id) else {
+            return (0, Vec::new());
+        };
+        let reads = view
+            .bindings
+            .as_ref()
+            .filter(|bindings| bindings.is_internal_page())
+            .map(|bindings| bindings.drain_internal_reads())
+            .unwrap_or_default();
+        (view.nav_id, reads)
+    }
+
+    /// Hand `response_json` (a JSON value) to the internal page that asked,
+    /// as a `hiwave-response` event at its window. Only while view `id`
+    /// still shows that document: navigation `nav_id`, built as an internal
+    /// page. Returns whether it was delivered.
+    pub fn answer_view_internal_read(
+        &mut self,
+        id: EngineViewId,
+        nav_id: u64,
+        response_json: &str,
+    ) -> bool {
+        let same_document = self.views.get(&id).is_some_and(|view| {
+            view.nav_id == nav_id
+                && view.bindings.as_ref().is_some_and(|bindings| bindings.is_internal_page())
+        });
+        if !same_document {
+            return false;
+        }
+        // The answer is data: parsed from a string literal, never spliced in
+        // as script.
+        let literal = serde_json::to_string(response_json).unwrap_or_else(|_| "\"null\"".to_string());
+        let script = format!(
+            "window.dispatchEvent(new CustomEvent('hiwave-response', {{ detail: JSON.parse({literal}) }})); 0"
+        );
+        self.execute_script(id, &script).is_ok()
+    }
+
     /// Check if any view has pending IPC messages.
     pub fn has_pending_ipc(&self) -> bool {
         self.views.values().any(|v| {
@@ -27955,6 +28242,9 @@ fn ipc_cmd_shape(payload: &str) -> String {
 pub struct EngineBuilder {
     config: EngineConfig,
     interceptor: Option<rustkit_net::RequestInterceptor>,
+    /// MEDIA-AVF step 3 (`avfoundation_media`).
+    #[cfg(all(target_os = "macos", feature = "media-avf"))]
+    avf_media: bool,
 }
 
 impl EngineBuilder {
@@ -27963,6 +28253,8 @@ impl EngineBuilder {
         Self {
             config: EngineConfig::default(),
             interceptor: None,
+            #[cfg(all(target_os = "macos", feature = "media-avf"))]
+            avf_media: false,
         }
     }
 
@@ -28073,15 +28365,38 @@ impl EngineBuilder {
         self
     }
 
+    /// MEDIA-AVF step 3: media elements play through AVFoundation, on the main-thread
+    /// `MediaHost` (`rustkit_media::avf_host`). The main thread's queue has to drain
+    /// (AppKit's does in the app).
+    #[cfg(all(target_os = "macos", feature = "media-avf"))]
+    pub fn avfoundation_media(mut self, on: bool) -> Self {
+        self.avf_media = on;
+        self
+    }
+
     /// Build the engine.
     pub fn build(self) -> Result<Engine, EngineError> {
-        Engine::with_interceptor(self.config, self.interceptor)
+        let media = self.media_backend();
+        let mut engine = Engine::with_interceptor(self.config, self.interceptor)?;
+        engine.media_backend = media;
+        Ok(engine)
     }
 
     /// Build a page engine on the caller. The content thread calls this on
     /// itself; the window does not.
     pub fn build_page(self, nav_seq: Arc<AtomicU64>) -> Result<Engine, EngineError> {
-        Engine::new_page(self.config, self.interceptor, nav_seq)
+        let media = self.media_backend();
+        let mut engine = Engine::new_page(self.config, self.interceptor, nav_seq)?;
+        engine.media_backend = media;
+        Ok(engine)
+    }
+
+    fn media_backend(&self) -> Option<Arc<dyn rustkit_media::host::MediaBackend>> {
+        #[cfg(all(target_os = "macos", feature = "media-avf"))]
+        if self.avf_media {
+            return Some(Arc::new(rustkit_media::avf_host::AvfHost::new()));
+        }
+        None
     }
 }
 
@@ -33372,6 +33687,7 @@ mod tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -34157,6 +34473,7 @@ mod tests {
             
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -34229,6 +34546,7 @@ mod tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -34318,6 +34636,7 @@ mod tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -34533,6 +34852,7 @@ mod tests {
             
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -34628,6 +34948,7 @@ mod tests {
             
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -34743,6 +35064,7 @@ mod tests {
             
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -34822,6 +35144,7 @@ mod tests {
             
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -34895,6 +35218,7 @@ mod tests {
             
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -34982,6 +35306,7 @@ mod tests {
             lctx: Rc::new(layout_ctx::LayoutCtx::default()),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -35085,6 +35410,7 @@ mod tests {
                 views: HashMap::new(),
                 presenter: Some(Presenter::layout_only(compositor)),
                 page_commits: HashMap::new(),
+                media_backend: None,
                 nav_seq: Arc::new(AtomicU64::new(0)),
                 host_reentry_override: None,
                 clipboard: MemoryClipboard::shared(),
@@ -35189,6 +35515,7 @@ mod tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -35272,6 +35599,7 @@ mod tests {
             
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -35359,6 +35687,7 @@ mod tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -35443,6 +35772,7 @@ mod tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -35518,6 +35848,7 @@ mod tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -35571,6 +35902,7 @@ mod tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -35764,6 +36096,7 @@ mod tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -35845,6 +36178,7 @@ mod tests {
             
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -38434,6 +38768,7 @@ mod web_font_tests {
             views: HashMap::new(),
             presenter: Some(Presenter::layout_only(compositor)),
             page_commits: HashMap::new(),
+            media_backend: None,
             nav_seq: Arc::new(AtomicU64::new(0)),
             host_reentry_override: None,
             clipboard: MemoryClipboard::shared(),
@@ -47022,6 +47357,8 @@ pub(crate) struct PreparedSheets {
     css_vars: Rc<HashMap<String, String>>,
     any_container_rule: bool,
     container_first_letter: bool,
+    /// The registered custom properties of these sheets (TRANS-F).
+    registry: Option<Arc<rustkit_css::PropertyRegistry>>,
 }
 
 impl SheetsFingerprint {

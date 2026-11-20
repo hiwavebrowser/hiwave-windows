@@ -775,11 +775,12 @@ fn a_container_in_or_beside_a_float_answers_with_its_width() {
         )
         .unwrap();
     // Chrome: c10 1080:8 and c11 550:8. Both sit beside a float, which stays
-    // on the fail-safe (count 0): c11 is laid out 640 wide here, not 550.
+    // on the fail-safe (count 0). c11 (`display: flow-root`) is laid out 550
+    // wide, as in Chrome, since REPLACED-FLOAT-AVOID (it was 640, over the float).
     assert!(
         got.contains(
             "c1:10:0 c2:250:5 c3:220:5 c4:384:7 c5:140:3 c6:238:5 c7:280:6 c8:300:6 \
-             c9:8:0 c10:1080:0 c11:640:0 c12:180:4"
+             c9:8:0 c10:1080:0 c11:550:0 c12:180:4"
         ),
         "width:thresholds met per container (Chrome 148, c10/c11 fail-safe): {got}"
     );

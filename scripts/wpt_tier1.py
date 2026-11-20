@@ -91,7 +91,7 @@ def capture_bin(env=os.environ) -> Path:
 
 def capture_label(path: Path) -> str:
     """The binary as last-run.json names it; a shared target dir is outside the repo."""
-    return path.relative_to(REPO_ROOT).as_posix() if path.is_relative_to(REPO_ROOT) else str(path)
+    return path.relative_to(REPO_ROOT).as_posix() if path.is_relative_to(REPO_ROOT) else path.as_posix()
 
 
 CAPTURE_BIN = capture_bin()

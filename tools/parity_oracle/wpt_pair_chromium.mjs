@@ -13,7 +13,7 @@
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
 import { readFileSync } from 'fs';
-import { getDeterministicLaunchOptions, createDeterministicContext } from './deterministic.mjs';
+import { getDeterministicLaunchOptions, createDeterministicContext, settleAnimationFrames } from './deterministic.mjs';
 
 const [width, height] = process.argv.slice(2).map(Number);
 const pairs = JSON.parse(readFileSync(0, 'utf8'));
@@ -25,6 +25,7 @@ const page = await context.newPage();
 async function frame(path) {
   await page.goto('file://' + path, { waitUntil: 'load' });
   await page.evaluate(() => document.fonts.ready.then(() => {}));
+  await settleAnimationFrames(page);
   return PNG.sync.read(await page.screenshot());
 }
 

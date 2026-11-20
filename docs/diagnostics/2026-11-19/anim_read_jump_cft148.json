@@ -1,0 +1,103 @@
+{
+  "chrome": "148.0.7778.216",
+  "duration_ms": 100,
+  "times": [
+    25,
+    50,
+    75
+  ],
+  "cases": [
+    {
+      "label": "width transition",
+      "css": "#d{width:0;height:10px;background:blue;transition:width 100ms linear}#d.on{width:100px}",
+      "prop": "width",
+      "at": {
+        "25": "25px",
+        "50": "50px",
+        "75": "75px"
+      },
+      "listed": {
+        "25": "transition:width@25",
+        "50": "transition:width@50",
+        "75": "transition:width@75"
+      },
+      "end": "100px",
+      "after_end": 0
+    },
+    {
+      "label": "color transition",
+      "css": "#d{width:10px;height:10px;color:rgb(0,0,0);transition:color 100ms linear}#d.on{color:rgb(200,100,0)}",
+      "prop": "color",
+      "at": {
+        "25": "rgb(50, 25, 0)",
+        "50": "rgb(100, 50, 0)",
+        "75": "rgb(150, 75, 0)"
+      },
+      "listed": {
+        "25": "transition:color@25",
+        "50": "transition:color@50",
+        "75": "transition:color@75"
+      },
+      "end": "rgb(200, 100, 0)",
+      "after_end": 0
+    },
+    {
+      "label": "opacity transition",
+      "css": "#d{width:10px;height:10px;opacity:0;transition:opacity 100ms linear}#d.on{opacity:1}",
+      "prop": "opacity",
+      "at": {
+        "25": "0.25",
+        "50": "0.5",
+        "75": "0.75"
+      },
+      "listed": {
+        "25": "transition:opacity@25",
+        "50": "transition:opacity@50",
+        "75": "transition:opacity@75"
+      },
+      "end": "1",
+      "after_end": 0
+    },
+    {
+      "label": "transform transition",
+      "css": "#d{width:10px;height:10px;transform:translateX(0px);transition:transform 100ms linear}#d.on{transform:translateX(100px)}",
+      "prop": "transform",
+      "at": {
+        "25": "matrix(1, 0, 0, 1, 25, 0)",
+        "50": "matrix(1, 0, 0, 1, 50, 0)",
+        "75": "matrix(1, 0, 0, 1, 75, 0)"
+      },
+      "listed": {
+        "25": "transition:transform@25",
+        "50": "transition:transform@50",
+        "75": "transition:transform@75"
+      },
+      "end": "matrix(1, 0, 0, 1, 100, 0)",
+      "after_end": 0
+    },
+    {
+      "label": "width animation",
+      "css": "@keyframes grow{from{width:0}to{width:100px}}#d{width:0;height:10px}#d.on{animation:grow 100ms linear forwards}",
+      "prop": "width",
+      "at": {
+        "25": "25px",
+        "50": "50px",
+        "75": "75px"
+      },
+      "listed": {
+        "25": "animation:grow@25",
+        "50": "animation:grow@50",
+        "75": "animation:grow@75"
+      },
+      "end": "100px",
+      "after_end": 1
+    }
+  ],
+  "raf_t_is_timeline": [
+    true,
+    true,
+    true,
+    true,
+    true
+  ]
+}

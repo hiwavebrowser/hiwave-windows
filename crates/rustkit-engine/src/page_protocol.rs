@@ -55,6 +55,10 @@ pub enum PageCmd {
     LoadHtml {
         html: String,
         nav_id: u64,
+        /// One of the app's own pages shown in a web view (the report
+        /// page): see [`crate::Engine::load_internal_page_as`]. Set only by
+        /// the window for a document it built itself.
+        internal_page: bool,
         reply: oneshot::Sender<Result<(), String>>,
     },
     /// Cancel the load in progress. `true` when one was in progress.
@@ -108,6 +112,13 @@ pub enum PageCmd {
     },
     GrabKeyboard,
     Relayout,
+    /// The window's answer to a [`PageEvent::InternalRead`] of navigation
+    /// `nav_id`; dropped unless the page still shows that internal page
+    /// ([`crate::Engine::answer_view_internal_read`]).
+    AnswerInternalRead {
+        nav_id: u64,
+        response_json: String,
+    },
     /// CH3.A7: the app owns this view (its chrome, a panel). Sent before
     /// the view's first document; see [`crate::Engine::set_app_owned`].
     SetAppOwned {
@@ -343,6 +354,13 @@ pub enum PageEvent {
         payload: String,
         nav_id: u64,
     },
+    /// A message an internal page ([`crate::Engine::load_internal_page_as`])
+    /// posted with its `window.ipc.postMessage`. The window answers the
+    /// ones it serves with [`PageCmd::AnswerInternalRead`].
+    InternalRead {
+        payload: String,
+        nav_id: u64,
+    },
     /// Whether the page claimed the Cmd chord `token`
     /// ([`PageInput::CommandKey`]); the window hands one it did not to the
     /// menu (CH2.E3).
@@ -543,8 +561,8 @@ impl EndpointSide {
             PageCmd::Navigate { url, nav_id } => {
                 self.load_url(engine, url, nav_id);
             }
-            PageCmd::LoadHtml { html, nav_id, reply } => {
-                let result = self.load_html_cmd(engine, &html, nav_id);
+            PageCmd::LoadHtml { html, nav_id, internal_page, reply } => {
+                let result = self.load_html_cmd(engine, &html, nav_id, internal_page);
                 let _ = reply.send(result);
                 self.after_page_change(engine);
             }
@@ -646,6 +664,10 @@ impl EndpointSide {
             }
             PageCmd::SetAppOwned { owned } => {
                 engine.set_app_owned(self.view, owned);
+            }
+            PageCmd::AnswerInternalRead { nav_id, response_json } => {
+                engine.answer_view_internal_read(self.view, nav_id, &response_json);
+                self.publish_commit(engine);
             }
             PageCmd::InstallReentryProbe { reply } => {
                 let result = engine
@@ -873,11 +895,12 @@ impl EndpointSide {
         self.report_script_navigation(engine);
     }
 
-    fn load_html_cmd(&mut self, engine: &mut Engine, html: &str, nav_id: u64) -> Result<(), String> {
-        let loaded = if nav_id == 0 {
-            engine.load_html(self.view, html)
+    fn load_html_cmd(&mut self, engine: &mut Engine, html: &str, nav_id: u64, internal_page: bool) -> Result<(), String> {
+        let preset = (nav_id != 0).then_some(nav_id);
+        let loaded = if internal_page {
+            engine.load_internal_page_as(self.view, html, preset)
         } else {
-            engine.load_html_as(self.view, html, Some(nav_id))
+            engine.load_html_as(self.view, html, preset)
         };
         loaded.map_err(|e| e.to_string())
     }
@@ -1092,6 +1115,10 @@ impl EndpointSide {
     fn report_ipc(&mut self, engine: &mut Engine) {
         if !self.wake_window {
             return;
+        }
+        let (read_nav, reads) = engine.drain_view_internal_reads(self.view);
+        for payload in reads {
+            self.emit(PageEvent::InternalRead { payload, nav_id: read_nav });
         }
         let messages = engine.drain_view_ipc(self.view);
         if messages.is_empty() {
@@ -1389,8 +1416,8 @@ impl EndpointSide {
                 let _ = reply.send(turn);
                 self.after_page_change(engine);
             }
-            PageCmd::LoadHtml { html, nav_id, reply } => {
-                let result = self.load_html_cmd(engine, &html, nav_id);
+            PageCmd::LoadHtml { html, nav_id, internal_page, reply } => {
+                let result = self.load_html_cmd(engine, &html, nav_id, internal_page);
                 let _ = reply.send(result);
                 self.after_page_change(engine);
             }
@@ -1819,6 +1846,7 @@ pub(crate) fn runs_mid_load(cmd: &PageCmd) -> bool {
         | PageCmd::Close
         | PageCmd::PumpLive { .. }
         | PageCmd::SetAppOwned { .. }
+        | PageCmd::AnswerInternalRead { .. }
         | PageCmd::SetHostReentry { .. }
         | PageCmd::InstallReentryProbe { .. } => false,
         #[cfg(test)]
@@ -2081,6 +2109,7 @@ mod tests {
         handle.send(PageCmd::LoadHtml {
             html: "<p id=\"t\">hi</p>".into(),
             nav_id: 0,
+            internal_page: false,
             reply: tx,
         });
         let (tx1, mut rx1) = oneshot::channel();
@@ -2138,7 +2167,7 @@ mod tests {
         let (handle, mut endpoint) = pair();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let (tx, _rx) = oneshot::channel();
-        handle.send(PageCmd::LoadHtml { html: "<p>chain</p>".into(), nav_id: 0, reply: tx });
+        handle.send(PageCmd::LoadHtml { html: "<p>chain</p>".into(), nav_id: 0, internal_page: false, reply: tx });
         endpoint.drain(Some(&rt));
         let pump = |handle: &PageHandle, endpoint: &mut PageEndpoint, elapsed_ms: u64| {
             let (tx, mut rx) = oneshot::channel();
@@ -2173,6 +2202,7 @@ mod tests {
                    <div style='height:40px'></div></body>"
                 .into(),
             nav_id: 0,
+            internal_page: false,
             reply: tx,
         });
         endpoint.drain(None);

@@ -1,6 +1,7 @@
 //! Media elements' resource loading (MEDIA-AVF Milestone 1 step 2,
 //! `docs/design/MEDIA_AVF.md` §3.2-3.5): HTML §4.8.11.5's load algorithm, up to the
-//! metadata. Nothing plays yet (steps 3 and 4).
+//! metadata; step 3 adds the players on the main-thread host and their frames. Nothing
+//! plays yet (step 4).
 //!
 //! Each `<video>` / `<audio>` of a view's document is tracked by raw NodeId in its
 //! [`MediaElements`] (the engine side of `docs/design/MEDIA_AVF.md` §3.2: the main-thread
@@ -28,18 +29,136 @@
 //! Removing an element, or giving it another resource, drops its fetches (the requests
 //! are cancelled) and its bytes.
 //!
+//! Step 3 (§3.2, §3.3): when the engine has a [`MediaBackend`] (the main-thread
+//! `MediaHost`, feature `media-avf`), an element whose metadata is in gets a player
+//! there: `Create`, then `Load` over a feed of the same bytes, which the element keeps
+//! fetching by range as the player reads. The host answers with snapshots, drained at
+//! each live turn ([`MediaElements::tick_host`]): a failed item is
+//! `MEDIA_ERR_DECODE`, a new presentation size a `resize`. A video's frames are pulled
+//! from its player's output here, on the engine's thread, and posted under its box's key
+//! (`rustkit-video:<node>@<player>`) for the presenter to upload: a new frame changes
+//! no box, so it is a present-only frame (no build, no layout). Without a backend
+//! (the default until step 6) nothing changes from step 2.
+//!
 //! The state each event carries is the element's as of that event (pushed with it to
 //! the getters in dom.rs). The order is Chrome 148's
 //! (`docs/diagnostics/2026-11-18/media_load_cft148.json`).
 
 use rustkit_dom::{Document, Node, NodeType};
+use rustkit_media::host::{Command, ItemStatus, MediaBackend, PlayerId, RgbaFrame, VideoFrames};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-/// The display-list key of a video's box once its size is known (its frames paint
-/// under it from step 3; nothing paints yet).
+/// The display-list key of a video's box once its size is known: its frames paint under
+/// it (step 3), as `rustkit-video:<node>@<player>`.
 pub(crate) const VIDEO_KEY_PREFIX: &str = "rustkit-video:";
+
+/// `node`'s video key for its run `player`.
+pub(crate) fn video_key(node: usize, player: PlayerId) -> String {
+    format!("{VIDEO_KEY_PREFIX}{node}@{player}")
+}
+
+pub(crate) fn is_video_key(key: &str) -> bool {
+    key.starts_with(VIDEO_KEY_PREFIX)
+}
+
+/// The newest frame of each video, by key, posted by the page side and uploaded by the
+/// presenter (which runs on the window thread in the app): `fresh` until uploaded.
+static FRAMES: std::sync::LazyLock<Mutex<HashMap<String, (Arc<RgbaFrame>, bool)>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn post_frame(key: &str, frame: RgbaFrame) {
+    if let Ok(mut frames) = FRAMES.lock() {
+        frames.insert(key.to_string(), (Arc::new(frame), true));
+    }
+}
+
+fn forget_frame(key: &str) {
+    if let Ok(mut frames) = FRAMES.lock() {
+        frames.remove(key);
+    }
+}
+
+/// Presenter: the frame to upload under `key`: the newest when it is fresh, or when the
+/// presenter holds no texture for it (`has_texture` false). Taking it makes it stale.
+pub(crate) fn frame_to_upload(key: &str, has_texture: bool) -> Option<Arc<RgbaFrame>> {
+    let mut frames = FRAMES.lock().ok()?;
+    let (frame, fresh) = frames.get_mut(key)?;
+    if !*fresh && has_texture {
+        return None;
+    }
+    *fresh = false;
+    Some(frame.clone())
+}
+
+/// `MEDIA_ERR_DECODE`.
+const DECODE: u16 = 3;
+
+/// How long a video whose item is ready waits for its first frame before the live loop
+/// stops turning for it.
+const FIRST_FRAME_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// An element's player on the host. Dropping it destroys the player.
+pub(crate) struct PlayerLink {
+    id: PlayerId,
+    backend: Arc<dyn MediaBackend>,
+    frames: Arc<VideoFrames>,
+    /// The feed the player reads through: told when bytes land.
+    feed: Arc<rustkit_media::avf::Feed>,
+    /// Commands sent, and the host's count of those it ran (from the snapshots).
+    sent: u64,
+    answered: u64,
+    status: ItemStatus,
+    /// The box's key, for a video.
+    key: Option<String>,
+    /// A frame came.
+    framed: bool,
+    /// When the item read ready.
+    ready_at: Option<std::time::Instant>,
+}
+
+impl PlayerLink {
+    fn send(&mut self, command: Command) {
+        self.sent += 1;
+        self.backend.send(command);
+    }
+
+    /// Whether the live loop has to keep turning for the player: a command is
+    /// unanswered, or a video waits for its first frame.
+    fn busy(&self) -> bool {
+        if self.sent > self.answered {
+            return true;
+        }
+        match self.status {
+            ItemStatus::None | ItemStatus::Loading => true,
+            ItemStatus::Failed => false,
+            ItemStatus::Ready => {
+                self.key.is_some()
+                    && !self.framed
+                    && self.ready_at.is_none_or(|t| t.elapsed() < FIRST_FRAME_WAIT)
+            }
+        }
+    }
+}
+
+impl Drop for PlayerLink {
+    fn drop(&mut self) {
+        self.backend.send(Command::Destroy { player: self.id });
+        if let Some(key) = &self.key {
+            forget_frame(key);
+        }
+    }
+}
+
+/// What a turn of the host's answers brought.
+#[derive(Default, Debug, PartialEq)]
+pub(crate) struct HostTick {
+    /// A video's size changed: its box is laid out again.
+    pub(crate) resized: bool,
+    /// A video has a new frame: the view is presented again, with no build.
+    pub(crate) new_frames: bool,
+}
 
 /// `MEDIA_ERR_NETWORK`.
 const NETWORK: u16 = 2;
@@ -140,8 +259,28 @@ enum Stage {
         announced: bool,
         url: url::Url,
     },
-    /// Metadata in, or an error: nothing more until the resource changes.
+    /// Metadata in, and a player on the host reads the same bytes (step 3). Its
+    /// reads become wants, fetched as the probe's were.
+    Playing {
+        source: Arc<rustkit_media::avf::MediaSource>,
+        url: url::Url,
+        player: PlayerLink,
+    },
+    /// Metadata in with no player (no backend), or an error: nothing more until the
+    /// resource changes.
     Done,
+}
+
+impl Stage {
+    /// The resource's bytes and URL while they are fetched.
+    fn fetching(&self) -> Option<(&Arc<rustkit_media::avf::MediaSource>, &url::Url)> {
+        match self {
+            Stage::Loading { source, url, .. } | Stage::Playing { source, url, .. } => {
+                Some((source, url))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// One media element.
@@ -298,10 +437,11 @@ impl MediaElements {
     /// or events wait.
     pub(crate) fn busy(&self) -> bool {
         !self.events.is_empty()
-            || self
-                .elements
-                .values()
-                .any(|e| matches!(e.stage, Stage::Loading { .. }))
+            || self.elements.values().any(|e| match &e.stage {
+                Stage::Loading { .. } => true,
+                Stage::Playing { player, .. } => player.busy(),
+                _ => false,
+            })
     }
 
     /// Whether a fetch for `node`'s run `serial` is still wanted (the element is there,
@@ -309,7 +449,7 @@ impl MediaElements {
     pub(crate) fn wants_fetch(&self, node: usize, serial: u64) -> bool {
         self.elements
             .get(&node)
-            .is_some_and(|e| e.serial == serial && matches!(e.stage, Stage::Loading { .. }))
+            .is_some_and(|e| e.serial == serial && e.stage.fetching().is_some())
     }
 
     /// Bytes the elements hold, in all.
@@ -317,10 +457,7 @@ impl MediaElements {
     pub(crate) fn held(&self) -> usize {
         self.elements
             .values()
-            .map(|e| match &e.stage {
-                Stage::Loading { source, .. } => source.held(),
-                _ => 0,
-            })
+            .map(|e| e.stage.fetching().map_or(0, |(source, _)| source.held()))
             .sum()
     }
 
@@ -328,7 +465,7 @@ impl MediaElements {
     pub(crate) fn take_fetches(&mut self) -> Vec<MediaFetch> {
         let mut out = Vec::new();
         for (node, e) in &self.elements {
-            let Stage::Loading { source, url, .. } = &e.stage else {
+            let Some((source, url)) = e.stage.fetching() else {
                 continue;
             };
             for (start, end) in source.take_wants(METADATA_BUDGET) {
@@ -349,12 +486,23 @@ impl MediaElements {
         out
     }
 
-    /// Every video's display size whose metadata is in, by raw NodeId.
-    pub(crate) fn video_sizes(&self) -> HashMap<usize, (u32, u32)> {
+    /// Every video's display size whose metadata is in, with its box's key, by raw
+    /// NodeId. The key names the player (the frames painted under it); with no player,
+    /// the element's run.
+    pub(crate) fn video_sizes(&self) -> HashMap<usize, (u32, u32, String)> {
         self.elements
             .iter()
             .filter(|(_, e)| e.video && e.state.width > 0 && e.state.height > 0)
-            .map(|(n, e)| (*n, (e.state.width, e.state.height)))
+            .map(|(n, e)| {
+                let key = match &e.stage {
+                    Stage::Playing {
+                        player: PlayerLink { key: Some(key), .. },
+                        ..
+                    } => key.clone(),
+                    _ => format!("{VIDEO_KEY_PREFIX}{n}"),
+                };
+                (*n, (e.state.width, e.state.height, key))
+            })
             .collect()
     }
 
@@ -486,13 +634,7 @@ impl MediaElements {
         };
         let cap = whole_cap();
         let e = self.elements.get_mut(&node).expect("checked");
-        let Stage::Loading {
-            source,
-            probe,
-            announced,
-            ..
-        } = &mut e.stage
-        else {
+        let Some((source, _)) = e.stage.fetching() else {
             return;
         };
         if source.held() as u64 + span.bytes.len() as u64 > cap {
@@ -500,18 +642,26 @@ impl MediaElements {
         }
         source.set_info(span.content_type, span.total);
         source.add(span.start, span.bytes);
-        probe.bytes_changed();
-        if !std::mem::replace(announced, true) {
-            // Chrome 148: `progress` and `suspend` before the metadata events.
-            e.state.network_state = 1;
-            self.queue(node, "progress");
-            self.queue(node, "suspend");
+        match &mut e.stage {
+            Stage::Loading {
+                probe, announced, ..
+            } => {
+                probe.bytes_changed();
+                if !std::mem::replace(announced, true) {
+                    // Chrome 148: `progress` and `suspend` before the metadata events.
+                    e.state.network_state = 1;
+                    self.queue(node, "progress");
+                    self.queue(node, "suspend");
+                }
+            }
+            Stage::Playing { player, .. } => player.feed.bytes_changed(),
+            _ => {}
         }
     }
 
     /// Poll the probes. Returns whether a video's size changed (its box must be laid
-    /// out again).
-    pub(crate) fn poll(&mut self) -> bool {
+    /// out again). With a `backend`, an element whose metadata came gets a player.
+    pub(crate) fn poll(&mut self, backend: Option<&Arc<dyn MediaBackend>>) -> bool {
         let mut resized = false;
         let nodes: Vec<usize> = self
             .elements
@@ -531,8 +681,33 @@ impl MediaElements {
                 rustkit_media::avf::ProbeState::Ready {
                     duration, video, ..
                 } => {
-                    // Nothing plays in step 2: the probe and its bytes go.
-                    e.stage = Stage::Done;
+                    // With a host, a player reads the same bytes (step 3); without
+                    // one, the probe and its bytes go.
+                    let stage = std::mem::replace(&mut e.stage, Stage::Done);
+                    if let (Some(backend), Stage::Loading { source, url, .. }) = (backend, stage) {
+                        let id = rustkit_media::host::next_player_id();
+                        let frames = VideoFrames::new();
+                        let feed = rustkit_media::avf::Feed::new(source.clone());
+                        let mut player = PlayerLink {
+                            id,
+                            backend: backend.clone(),
+                            frames: frames.clone(),
+                            feed: feed.clone(),
+                            sent: 0,
+                            answered: 0,
+                            status: ItemStatus::None,
+                            key: e.video.then(|| video_key(node, id)),
+                            framed: false,
+                            ready_at: None,
+                        };
+                        player.send(Command::Create { player: id, frames });
+                        player.send(Command::Load { player: id, feed });
+                        e.stage = Stage::Playing {
+                            source,
+                            url,
+                            player,
+                        };
+                    }
                     e.state.network_state = 1;
                     e.state.ready_state = 1;
                     e.state.duration = Some(duration);
@@ -569,6 +744,64 @@ impl MediaElements {
             }
         }
         resized
+    }
+}
+
+impl MediaElements {
+    /// One live turn of the host's side (§3.2): drain each player's snapshots and turn
+    /// them into the element's state (a failed item is `MEDIA_ERR_DECODE`, a new
+    /// presentation size a `resize`), then pull each video's newest frame from its
+    /// player's output, here on the engine's thread, and post it for the presenter.
+    pub(crate) fn tick_host(&mut self) -> HostTick {
+        let mut tick = HostTick::default();
+        let nodes: Vec<usize> = self
+            .elements
+            .iter()
+            .filter(|(_, e)| matches!(e.stage, Stage::Playing { .. }))
+            .map(|(n, _)| *n)
+            .collect();
+        for node in nodes {
+            let e = self.elements.get_mut(&node).expect("listed");
+            let video = e.video;
+            let Stage::Playing { player, .. } = &mut e.stage else {
+                continue;
+            };
+            let mut failed = false;
+            let mut resized = false;
+            for snapshot in player.backend.drain(player.id) {
+                player.answered = player.answered.max(snapshot.answered);
+                if snapshot.status == ItemStatus::Ready && player.status != ItemStatus::Ready {
+                    player.ready_at = Some(std::time::Instant::now());
+                }
+                player.status = snapshot.status;
+                failed |= snapshot.status == ItemStatus::Failed;
+                if let (true, Some((w, h))) = (video, snapshot.natural_size) {
+                    let (w, h) = (w.round() as u32, h.round() as u32);
+                    if w > 0 && h > 0 && (w, h) != (e.state.width, e.state.height) {
+                        e.state.width = w;
+                        e.state.height = h;
+                        resized = true;
+                    }
+                }
+            }
+            if failed {
+                // The player and its bytes go with the stage.
+                self.fail(node, DECODE);
+                continue;
+            }
+            if let Some(key) = &player.key {
+                if let Some(frame) = player.frames.pull() {
+                    post_frame(key, frame);
+                    player.framed = true;
+                    tick.new_frames = true;
+                }
+            }
+            if resized {
+                tick.resized = true;
+                self.queue(node, "resize");
+            }
+        }
+        tick
     }
 }
 

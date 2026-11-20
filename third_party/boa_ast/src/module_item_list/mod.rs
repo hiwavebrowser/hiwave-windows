@@ -279,6 +279,15 @@ impl ModuleItemList {
                             attributes.clone(),
                         ));
                     }
+                    // HIWAVE PATCH (source-phase-import).
+                    ImportKind::Source { binding } => {
+                        self.0.push(ImportEntry::new(
+                            module,
+                            ImportName::Source,
+                            *binding,
+                            attributes.clone(),
+                        ));
+                    }
                     ImportKind::Named { names } => {
                         for name in &**names {
                             self.0.push(ImportEntry::new(

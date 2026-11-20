@@ -2080,11 +2080,13 @@ fn function_declaration_instantiation(
 
         // d. Let instantiatedVarNames be a new empty List.
         let mut instantiated_var_names = Vec::new();
+        // HIWAVE PATCH (scope-name-index): a set beside the list, so the membership test is not a scan.
+        let mut instantiated_var_seen = rustc_hash::FxHashSet::default();
 
         // e. For each element n of varNames, do
         for n in var_names {
             // i. If instantiatedVarNames does not contain n, then
-            if !instantiated_var_names.contains(&n) {
+            if instantiated_var_seen.insert(n) {
                 // 1. Append n to instantiatedVarNames.
                 instantiated_var_names.push(n);
 
@@ -2100,11 +2102,14 @@ fn function_declaration_instantiation(
         // a. NOTE: Only a single Environment Record is needed for the parameters and top-level vars.
         // b. Let instantiatedVarNames be a copy of the List parameterBindings.
         let mut instantiated_var_names = parameter_bindings;
+        // HIWAVE PATCH (scope-name-index): a set beside the list, so the membership test is not a scan.
+        let mut instantiated_var_seen: rustc_hash::FxHashSet<_> =
+            instantiated_var_names.iter().copied().collect();
 
         // c. For each element n of varNames, do
         for n in var_names {
             // i. If instantiatedVarNames does not contain n, then
-            if !instantiated_var_names.contains(&n) {
+            if instantiated_var_seen.insert(n) {
                 // 1. Append n to instantiatedVarNames.
                 instantiated_var_names.push(n);
 
@@ -2236,10 +2241,12 @@ fn module_instantiation(module: &Module, env: &Scope, interner: &Interner) {
     }
     let var_declarations = var_scoped_declarations(module);
     let mut declared_var_names = Vec::new();
+    // HIWAVE PATCH (scope-name-index): a set beside the list, so the membership test is not a scan.
+    let mut declared_var_seen = rustc_hash::FxHashSet::default();
     for var in var_declarations {
         for name in var.bound_names() {
             let name = name.to_js_string(interner);
-            if !declared_var_names.contains(&name) {
+            if declared_var_seen.insert(name.clone()) {
                 drop(env.create_mutable_binding(name.clone(), false));
                 declared_var_names.push(name);
             }
@@ -2472,6 +2479,8 @@ pub(crate) fn eval_declaration_instantiation_scope(
 
     // 12. Let declaredVarNames be a new empty List.
     let mut declared_var_names = Vec::new();
+    // HIWAVE PATCH (scope-name-index): a set beside the list, so the membership test is not a scan.
+    let mut declared_var_seen = rustc_hash::FxHashSet::default();
 
     // 13. For each element d of varDeclarations, do
     for declaration in var_declarations {
@@ -2486,7 +2495,7 @@ pub(crate) fn eval_declaration_instantiation_scope(
             if !declared_function_names.contains(&name) {
                 // a. If varEnv is a Global Environment Record, then
                 // b. If declaredVarNames does not contain vn, then
-                if !declared_var_names.contains(&name) {
+                if declared_var_seen.insert(name) {
                     // i. Append vn to declaredVarNames.
                     declared_var_names.push(name);
                 }

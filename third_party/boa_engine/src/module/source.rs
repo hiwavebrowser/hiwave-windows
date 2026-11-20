@@ -379,7 +379,12 @@ impl SourceTextModule {
                     if let Some(ie) = import_entries
                         .iter()
                         .find(|ie| ie.local_name() == entry.local_name())
+                        && !matches!(ie.import_name(), ImportName::Source)
                     {
+                        // HIWAVE PATCH (source-phase-import): an exported source phase import
+                        // stays a local export (see PATCHES.md); a source text module has no
+                        // source phase representation, so this module fails at link anyway.
+                        //
                         // 1. NOTE: When exporting a binding or namespace object
                         //    which was originally imported from another module,
                         //    the ExportEntry Record is rewritten to match the form
@@ -413,6 +418,7 @@ impl SourceTextModule {
                                 ));
                             }
                             // 4. Else,
+                            ImportName::Source => unreachable!("kept as a local export above"),
                             ImportName::Name(import) => {
                                 // a. NOTE: This is a re-export of a single name.
                                 // b. Append the ExportEntry Record {
@@ -1711,6 +1717,16 @@ impl SourceTextModule {
                     compiler.interner(),
                 );
                 let imported_module = self.loaded_modules.borrow()[&module_request].clone();
+
+                // HIWAVE PATCH (source-phase-import): c. Else if in.[[ImportName]] is source, then
+                //    i. Let moduleSourceObject be ? importedModule.GetModuleSource().
+                //    GetModuleSource of a Source Text Module Record always throws a SyntaxError
+                //    (16.2.1.7.2), and every module here is one.
+                if let ImportName::Source = entry.import_name() {
+                    return Err(JsNativeError::syntax()
+                        .with_message("source phase import is not available for this module")
+                        .into());
+                }
 
                 if let ImportName::Name(name) = entry.import_name() {
                     let name = name.to_js_string(compiler.interner());

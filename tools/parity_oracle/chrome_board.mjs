@@ -27,6 +27,7 @@ import { join, resolve } from 'path';
 import {
   createDeterministicContext,
   getDeterministicLaunchOptions,
+  settleAnimationFrames,
 } from './deterministic.mjs';
 import { extractPageGeometry } from './capture_baseline.mjs';
 
@@ -189,6 +190,8 @@ async function main() {
     await page.waitForTimeout(SETTLE_MS);
     record.action_results = await runActions(page, actions, outDir);
     await page.waitForTimeout(SETTLE_MS);
+    // rAF-driven drawing (the report page's Chart.js charts) to its last frame.
+    record.animation_frames = await settleAnimationFrames(page);
 
     await page.screenshot({ path: join(outDir, 'chrome.png'), type: 'png', fullPage: false });
     const { styles, rects } = await extractPageGeometry(page);
