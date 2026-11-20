@@ -137,6 +137,11 @@ mod tests {
         for no in ["hiwave://about", "hiwave://report", "hiwave://newtab", "HIWAVE://Report", "hiwave:settings", " hiwave://about"] {
             assert!(!page_navigation_allowed(no), "{no}");
         }
+        // The URL parser drops ASCII tabs and newlines anywhere in a URL, so these name the
+        // `hiwave:` scheme too: the check is the parsed scheme, not only a prefix.
+        for no in ["hi\twave://about", "hiwave\n://report", "h\ri\twave:settings"] {
+            assert!(!page_navigation_allowed(no), "{no:?}");
+        }
         for ok in ["https://example.com/a", "http://example.com", "about:blank", "about:srcdoc"] {
             assert!(page_navigation_allowed(ok), "{ok}");
         }
