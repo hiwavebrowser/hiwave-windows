@@ -9,6 +9,7 @@ is one command and a reviewer can re-run it to check a sync PR byte for byte:
 
 What it copies VERBATIM from macOS (tracked files only):
   scripts/*.py, scripts/tests/**, tools/parity_oracle/*.{mjs,py,html,json},
+  tools/parity_oracle/chrome_fixtures/** (the chrome board's stub and per-page fixtures),
   cases/*.json, websuite/*.json, docs/VISUAL_DIFF_POLICY.md (the gates parse it),
   baselines/common/* (the freeze script and reset stylesheet every Chrome
   capture injects: tooling, not captures)
@@ -75,7 +76,8 @@ def tracked(src: Path, *patterns: str) -> list[str]:
 def copy_set(src: Path) -> list[str]:
     files = tracked(src, "scripts/*.py", "scripts/tests", "tools/parity_oracle/*.mjs",
                     "tools/parity_oracle/*.py", "tools/parity_oracle/*.html",
-                    "tools/parity_oracle/*.json", "cases/*.json", "websuite/*.json",
+                    "tools/parity_oracle/*.json", "tools/parity_oracle/chrome_fixtures",
+                    "cases/*.json", "websuite/*.json",
                     "docs/VISUAL_DIFF_POLICY.md", "docs/REAL_SITE_*_DESIGN_*.md",
                     "baselines/common/*")
     return [f for f in files if "/node_modules/" not in f and f != THIS and f not in MACOS_CI_TESTS]
