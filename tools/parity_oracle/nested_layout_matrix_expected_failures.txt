@@ -10,11 +10,8 @@
 
 # intrinsic-width-keyword-unparsed: 36
 core--block--block--w-min-content--h-auto            intrinsic-width-keyword-unparsed
-core--block--block--w-max-content--h-50pct           intrinsic-width-keyword-unparsed
 core--block--flex-row--w-min-content--h-auto         intrinsic-width-keyword-unparsed
-core--block--flex-row--w-max-content--h-50pct        intrinsic-width-keyword-unparsed
 core--block--flex-col--w-min-content--h-auto         intrinsic-width-keyword-unparsed
-core--block--flex-col--w-max-content--h-50pct        intrinsic-width-keyword-unparsed
 core--block--grid--w-min-content--h-auto             intrinsic-width-keyword-unparsed
 core--block--grid--w-max-content--h-50pct            intrinsic-width-keyword-unparsed
 core--flex-col--block--w-min-content--h-auto         intrinsic-width-keyword-unparsed
@@ -106,26 +103,9 @@ core--abspos--grid--w-max-content--h-50pct       grid-max-content-width-no-grid-
 core--inline-block--grid--w-fit-content--h-120px grid-max-content-width-no-grid-arm
 
 # flex-item-min-width-is-its-own-width: 20
-core--float--flex-row--w-50pct--h-auto         flex-item-min-width-is-its-own-width
-core--float--flex-row--w-50pct--h-50pct        flex-item-min-width-is-its-own-width
-core--float--flex-row--w-50pct--h-120px        flex-item-min-width-is-its-own-width
 core--inline-block--flex-row--w-50pct--h-auto  flex-item-min-width-is-its-own-width
 core--inline-block--flex-row--w-50pct--h-50pct flex-item-min-width-is-its-own-width
 core--inline-block--flex-row--w-50pct--h-120px flex-item-min-width-is-its-own-width
-core--abspos--flex-row--w-50pct--h-auto        flex-item-min-width-is-its-own-width
-core--abspos--flex-row--w-50pct--h-50pct       flex-item-min-width-is-its-own-width
-core--abspos--flex-row--w-50pct--h-120px       flex-item-min-width-is-its-own-width
-clamp--block--max-width-flex                   flex-item-min-width-is-its-own-width
-clamp--flex-row--max-width-flex                flex-item-min-width-is-its-own-width
-clamp--grid--max-width-flex                    flex-item-min-width-is-its-own-width
-flex-min-auto--block--empty-basis-0            flex-item-min-width-is-its-own-width
-flex-min-auto--flex-row--empty-basis-0         flex-item-min-width-is-its-own-width
-flex-min-auto--flex-col--empty-basis-0         flex-item-min-width-is-its-own-width
-flex-min-auto--grid--empty-basis-0             flex-item-min-width-is-its-own-width
-flex-min-auto--block--content-overflows        flex-item-min-width-is-its-own-width
-flex-min-auto--flex-row--content-overflows     flex-item-min-width-is-its-own-width
-flex-min-auto--flex-col--content-overflows     flex-item-min-width-is-its-own-width
-flex-min-auto--grid--content-overflows         flex-item-min-width-is-its-own-width
 
 # table-cell-percent-height: 16
 core--table-cell--block--w-auto--h-50pct               table-cell-percent-height
@@ -185,7 +165,6 @@ margin-auto--block--grid grid-item-auto-margins-ignored
 margin-auto--grid--grid  grid-item-auto-margins-ignored
 
 # percent-height-chain-in-stretched-grid-item: 1
-percent-height--grid--through-auto percent-height-chain-in-stretched-grid-item
 
 # max-height-ignored-on-stretched-item: 1
 clamp--grid--max-height-grid max-height-ignored-on-stretched-item
