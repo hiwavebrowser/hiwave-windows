@@ -310,6 +310,8 @@ enum UserEvent {
     // Internal page loading
     LoadAboutPage,
     LoadReportPage,
+    /// A page tried to open one of the browser's own pages: the line Chrome writes in its console.
+    ReportRefusedNavigation(String),
     // Print
     PrintPage,
     // Zoom controls
@@ -1328,6 +1330,11 @@ fn main() {
         .with_bounds(content_bounds)
         .with_navigation_handler(move |url| {
             info!("Content navigating to: {}", content_ipc_guard::url_for_log(&url));
+            if !content_ipc_guard::page_navigation_allowed(&url) {
+                info!("Content navigation refused (the browser's own page): {}", content_ipc_guard::url_for_log(&url));
+                let _ = content_proxy.send_event(UserEvent::ReportRefusedNavigation(url));
+                return false;
+            }
 
             // Check if current tab URL is an internal URL before processing data URLs
             // This prevents overwriting hiwave://about when loading the about page via load_html()
@@ -1351,20 +1358,8 @@ fn main() {
                 let _ = content_proxy.send_event(UserEvent::SyncShieldStats);
                 return true;
             }
-            if is_about_url(&url) {
-                let _ = content_proxy
-                    .send_event(UserEvent::UpdateActiveTabUrl(ABOUT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::UpdateUrl(ABOUT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::LoadAboutPage);
-                return true;
-            }
-            if is_report_url(&url) {
-                let _ = content_proxy
-                    .send_event(UserEvent::UpdateActiveTabUrl(REPORT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::UpdateUrl(REPORT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::LoadReportPage);
-                return true;
-            }
+            // hiwave://about and hiwave://report never reach here: a page cannot open them (refused
+            // above), and the browser opens them from its UI through UserEvent::Navigate.
             if let Ok(s) = content_state.lock() {
                 if s.shield.is_enabled() {
                     if let Ok(parsed_url) = url::Url::parse(&url) {
@@ -1550,6 +1545,10 @@ fn main() {
                 }
             }
 
+            if !content_ipc_guard::new_window_tab_allowed(&url) {
+                info!("New window request refused (not a web URL): {}", page_url_for_log(&url));
+                return false;
+            }
             info!("New window request -> new tab: {}", page_url_for_log(&url));
             let response = ipc::commands::handle_message(
                 &content_state2,
@@ -1696,10 +1695,16 @@ fn main() {
         .build_as_child(&window)
         .expect("Failed to create Content WebView");
 
-    // WRY initial URL loading
-    if !is_new_tab_url(&initial_url) {
-        if let Err(e) = content_webview.load_url(&initial_url) {
-            error!("Failed to load initial URL: {}", e);
+    // WRY initial URL loading: the restored active tab, the way the browser opens it.
+    match content_ipc_guard::startup_load(&initial_url, is_new_tab_url(&initial_url)) {
+        content_ipc_guard::StartupLoad::NewTab => {}
+        content_ipc_guard::StartupLoad::BrowserPage => {
+            let _ = proxy.send_event(UserEvent::Navigate(initial_url.clone()));
+        }
+        content_ipc_guard::StartupLoad::Web => {
+            if let Err(e) = content_webview.load_url(&initial_url) {
+                error!("Failed to load initial URL: {}", e);
+            }
         }
     }
     info!("Content WebView created (content area)");
@@ -3586,6 +3591,13 @@ fn main() {
                     UserEvent::LoadReportPage => {
                         info!("Loading analytics report page");
                         load_report_page(&content_for_events);
+                    }
+                    UserEvent::ReportRefusedNavigation(url) => {
+                        // A JSON string literal: the URL the page asked for is text, never script.
+                        let line = content_ipc_guard::refused_navigation_console_line(&url);
+                        if let Ok(literal) = serde_json::to_string(&line) {
+                            content_for_events.evaluate_script(&format!("console.error({literal});"));
+                        }
                     }
                     UserEvent::PrintPage => {
                         info!("Triggering print dialog");

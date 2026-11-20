@@ -73,6 +73,58 @@ pub(crate) fn url_for_log(url: &str) -> String {
     url.to_string()
 }
 
+/// Whether the content view follows a navigation the PAGE started (the webview's navigation
+/// handler sees only those: the browser opens its own pages with `load_html`, never by navigating
+/// the webview to a `hiwave:` URL).
+pub(crate) fn page_navigation_allowed(url: &str) -> bool {
+    !is_browser_page_url(url)
+}
+
+/// Whether `url` names one of the browser's own pages: the `hiwave:` scheme, in any case, read as
+/// the URL parser reads it: ASCII tabs and newlines anywhere are dropped, and leading whitespace
+/// and control characters skipped. Both the prefix and the parsed scheme are checked.
+pub(crate) fn is_browser_page_url(url: &str) -> bool {
+    let cleaned: String = url.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    let cleaned = cleaned.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control());
+    cleaned.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("hiwave:"))
+        || url::Url::parse(cleaned).is_ok_and(|u| u.scheme() == "hiwave")
+}
+
+/// The console line Chrome writes when a page tries to load one of the browser's own pages.
+pub(crate) fn refused_navigation_console_line(url: &str) -> String {
+    format!("Not allowed to load local resource: {url}")
+}
+
+/// How the content view loads the restored active tab's URL at startup.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StartupLoad {
+    /// The new-tab page the view is created with: nothing more to load.
+    NewTab,
+    /// One of the browser's own pages, opened the way the browser's UI opens it
+    /// (`UserEvent::Navigate`, which loads it with `load_html`): a restore is the browser's
+    /// navigation, not the page's, so it must not reach the content navigation handler.
+    BrowserPage,
+    /// A web URL, loaded into the view.
+    Web,
+}
+
+/// How startup loads the restored active tab's `url` (`is_new_tab`: the app's new-tab check).
+pub(crate) fn startup_load(url: &str, is_new_tab: bool) -> StartupLoad {
+    if is_new_tab {
+        StartupLoad::NewTab
+    } else if is_browser_page_url(url) {
+        StartupLoad::BrowserPage
+    } else {
+        StartupLoad::Web
+    }
+}
+
+/// Whether a page's new-window request (`window.open`, a `target=_blank` link) becomes a new tab
+/// at `url`.
+pub(crate) fn new_window_tab_allowed(url: &str) -> bool {
+    new_tab_url_allowed(Some(url))
+}
+
 /// Whether a page's `create_tab` is served: no URL (Ctrl+T, the new-tab page) or an http(s) URL
 /// (the context menu's links, images and search). Any other scheme (`javascript:`, `file:`,
 /// `data:`, the app's own `hiwave:` pages) is not opened from a page.
@@ -102,6 +154,49 @@ mod tests {
     }
 
     use super::*;
+
+    /// The browser's own pages (`hiwave://about`, `hiwave://report`, the new-tab page) open only
+    /// from the browser's UI (address bar, menus, session restore), as Chrome's chrome:// pages
+    /// do: a page that navigates itself there is refused (Chrome: "Not allowed to load local
+    /// resource"), and a web page's new window opens only at a web URL, as its `create_tab` does.
+    #[test]
+    fn a_page_cannot_open_the_browsers_own_pages() {
+        for no in ["hiwave://about", "hiwave://report", "hiwave://newtab", "HIWAVE://Report", "hiwave:settings", " hiwave://about"] {
+            assert!(!page_navigation_allowed(no), "{no}");
+        }
+        // The URL parser drops ASCII tabs and newlines anywhere in a URL, so these name the
+        // `hiwave:` scheme too: the check is the parsed scheme, not only a prefix.
+        for no in ["hi\twave://about", "hiwave\n://report", "h\ri\twave:settings"] {
+            assert!(!page_navigation_allowed(no), "{no:?}");
+        }
+        for ok in ["https://example.com/a", "http://example.com", "about:blank", "about:srcdoc"] {
+            assert!(page_navigation_allowed(ok), "{ok}");
+        }
+        for no in ["hiwave://report", "hiwave://about", "javascript:alert(1)", "file:///C:/x", "data:text/html,x", "ms-settings:"] {
+            assert!(!new_window_tab_allowed(no), "{no}");
+        }
+        for ok in ["https://example.com/a?b", "http://example.com"] {
+            assert!(new_window_tab_allowed(ok), "{ok}");
+        }
+        assert_eq!(
+            refused_navigation_console_line("hiwave://report"),
+            "Not allowed to load local resource: hiwave://report"
+        );
+    }
+
+    /// A tab showing About or Report stores hiwave://about / hiwave://report and the session
+    /// keeps it; restoring it at startup is the browser's navigation and must open the page
+    /// through the browser's path. Loading it into the view sent it through the content
+    /// navigation handler, which refuses a hiwave: URL (Talos, cross-check of this PR).
+    #[test]
+    fn a_restored_browser_page_opens_through_the_browsers_path() {
+        for url in ["hiwave://about", "hiwave://report", "HIWAVE://about"] {
+            assert_eq!(startup_load(url, false), StartupLoad::BrowserPage, "{url}");
+        }
+        assert_eq!(startup_load("hiwave://newtab", true), StartupLoad::NewTab);
+        assert_eq!(startup_load("about:blank", true), StartupLoad::NewTab);
+        assert_eq!(startup_load("https://example.com/", false), StartupLoad::Web);
+    }
 
     #[test]
     fn url_for_log_does_not_panic_when_byte_five_is_inside_a_multibyte_char() {
