@@ -1328,6 +1328,10 @@ fn main() {
         .with_bounds(content_bounds)
         .with_navigation_handler(move |url| {
             info!("Content navigating to: {}", content_ipc_guard::url_for_log(&url));
+            if !content_ipc_guard::page_navigation_allowed(&url) {
+                info!("Content navigation refused (the browser's own page): {}", content_ipc_guard::url_for_log(&url));
+                return false;
+            }
 
             // Check if current tab URL is an internal URL before processing data URLs
             // This prevents overwriting hiwave://about when loading the about page via load_html()
@@ -1550,6 +1554,10 @@ fn main() {
                 }
             }
 
+            if !content_ipc_guard::new_window_tab_allowed(&url) {
+                info!("New window request refused (not a web URL): {}", page_url_for_log(&url));
+                return false;
+            }
             info!("New window request -> new tab: {}", page_url_for_log(&url));
             let response = ipc::commands::handle_message(
                 &content_state2,

@@ -73,6 +73,19 @@ pub(crate) fn url_for_log(url: &str) -> String {
     url.to_string()
 }
 
+/// Whether the content view follows a navigation the PAGE started (the webview's navigation
+/// handler sees only those: the browser opens its own pages with `load_html`, never by navigating
+/// the webview to a `hiwave:` URL).
+pub(crate) fn page_navigation_allowed(_url: &str) -> bool {
+    true
+}
+
+/// Whether a page's new-window request (`window.open`, a `target=_blank` link) becomes a new tab
+/// at `url`.
+pub(crate) fn new_window_tab_allowed(_url: &str) -> bool {
+    true
+}
+
 /// Whether a page's `create_tab` is served: no URL (Ctrl+T, the new-tab page) or an http(s) URL
 /// (the context menu's links, images and search). Any other scheme (`javascript:`, `file:`,
 /// `data:`, the app's own `hiwave:` pages) is not opened from a page.
@@ -102,6 +115,26 @@ mod tests {
     }
 
     use super::*;
+
+    /// The browser's own pages (`hiwave://about`, `hiwave://report`, the new-tab page) open only
+    /// from the browser's UI (address bar, menus, session restore), as Chrome's chrome:// pages
+    /// do: a page that navigates itself there is refused (Chrome: "Not allowed to load local
+    /// resource"), and a web page's new window opens only at a web URL, as its `create_tab` does.
+    #[test]
+    fn a_page_cannot_open_the_browsers_own_pages() {
+        for no in ["hiwave://about", "hiwave://report", "hiwave://newtab", "HIWAVE://Report", "hiwave:settings", " hiwave://about"] {
+            assert!(!page_navigation_allowed(no), "{no}");
+        }
+        for ok in ["https://example.com/a", "http://example.com", "about:blank", "about:srcdoc"] {
+            assert!(page_navigation_allowed(ok), "{ok}");
+        }
+        for no in ["hiwave://report", "hiwave://about", "javascript:alert(1)", "file:///C:/x", "data:text/html,x", "ms-settings:"] {
+            assert!(!new_window_tab_allowed(no), "{no}");
+        }
+        for ok in ["https://example.com/a?b", "http://example.com"] {
+            assert!(new_window_tab_allowed(ok), "{ok}");
+        }
+    }
 
     #[test]
     fn url_for_log_does_not_panic_when_byte_five_is_inside_a_multibyte_char() {
