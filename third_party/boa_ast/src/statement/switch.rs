@@ -205,7 +205,7 @@ impl ToIndentedString for Switch {
 impl From<Switch> for Statement {
     #[inline]
     fn from(switch: Switch) -> Self {
-        Self::Switch(switch)
+        Self::Switch(Box::new(switch))
     }
 }
 

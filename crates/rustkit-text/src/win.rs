@@ -255,6 +255,54 @@ impl FontFace {
     }
 }
 
+impl FontFace {
+    /// Whether the face carries an embedded bitmap strike (its `EBLC` table) at `ppem`.
+    pub fn has_bitmap_strike(&self, ppem: u32) -> bool {
+        const EBLC: u32 = u32::from_le_bytes(*b"EBLC");
+        let (mut data, mut size, mut context, mut exists) =
+            (std::ptr::null_mut(), 0u32, std::ptr::null_mut(), BOOL(0));
+        // SAFETY: DirectWrite hands back a read-only view of the table, `size` bytes long,
+        // valid until ReleaseFontTable; every read below is bounds-checked against it.
+        unsafe {
+            if self.face.TryGetFontTable(EBLC, &mut data, &mut size, &mut context, &mut exists).is_err() {
+                return false;
+            }
+            if !exists.as_bool() || data.is_null() {
+                if !context.is_null() {
+                    self.face.ReleaseFontTable(context);
+                }
+                return false;
+            }
+            let table = std::slice::from_raw_parts(data as *const u8, size as usize);
+            let be32 = |at: usize| table.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+            // BitmapSize records are 48 bytes from offset 8; ppemY is byte 45 of each.
+            let found = be32(4).is_some_and(|count| {
+                (0..count as usize).any(|i| table.get(8 + i * 48 + 45).is_some_and(|&y| u32::from(y) == ppem))
+            });
+            self.face.ReleaseFontTable(context);
+            found
+        }
+    }
+
+    /// `glyph`'s advance in px at `size` the way Chrome measures it on Windows, where it
+    /// differs from the design advance: at a size the face has an embedded bitmap strike for,
+    /// Skia's DirectWrite scaler measures in GDI-classic mode (whole-pixel advances). Chrome for
+    /// Testing 148 win64 gives Cambria Math's U+25BE 10.00 at 12px and 13.00 at 16px (strikes),
+    /// 8.36 at 10px (none, the design advance). None when the design advance stands.
+    pub fn gdi_classic_advance(&self, glyph: u16, size: f32) -> Option<f32> {
+        let ppem = size.round();
+        if (size - ppem).abs() > f32::EPSILON || !self.has_bitmap_strike(ppem as u32) {
+            return None;
+        }
+        let upem = self.metrics().ok()?.design_units_per_em as f32;
+        let mut m = DWRITE_GLYPH_METRICS::default();
+        // SAFETY: one glyph index in, one metrics record out, both locals.
+        unsafe { self.face.GetGdiCompatibleGlyphMetrics(size, 1.0, None, false, &glyph, 1, &mut m, false) }.ok()?;
+        // Skia rounds a GDI-classic advance to whole pixels.
+        Some((m.advanceWidth as f32 * size / upem).round())
+    }
+}
+
 fn to_wide_null(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -434,6 +482,254 @@ fn icu_binary_property(ch: char, which: i32) -> Option<bool> {
     });
     // SAFETY: a pure lookup on a code point; ICU accepts any i32.
     has.map(|f| unsafe { f(ch as i32, which) != 0 })
+}
+
+/// The families Chrome's Windows fallback tries for a character no face of the run has, by
+/// Unicode block (Blink's `GetFontBasedOnUnicodeBlock`, font_fallback_win.cc): the math,
+/// arrow and shape blocks take its math font (Cambria Math first), the symbol, dingbat and
+/// pictograph blocks Segoe UI Symbol, emoticons and enclosed alphanumerics its monochrome
+/// emoji font. Empty outside those blocks. Chrome for Testing 148 win64 draws U+25BE / U+25B8
+/// / U+21BB from Cambria Math (CSS.getPlatformFontsForNode), where DirectWrite's own
+/// MapCharacters picks Segoe UI Symbol.
+pub fn blink_block_fallback(ch: char) -> &'static [&'static str] {
+    const MATH: &[&str] = &["Cambria Math", "Segoe UI Symbol"];
+    const SYMBOL: &[&str] = &["Segoe UI Symbol"];
+    const MONO_EMOJI: &[&str] = &["Segoe UI Symbol", "Segoe UI Emoji"];
+    match ch as u32 {
+        // Arrows, Mathematical Operators, Miscellaneous Technical
+        0x2190..=0x23FF
+        // Geometric Shapes
+        | 0x25A0..=0x25FF
+        // Misc Mathematical Symbols-A, Supplemental Arrows-A
+        | 0x27C0..=0x27FF
+        // Supplemental Arrows-B, Misc Mathematical Symbols-B, Supplemental Mathematical Operators
+        | 0x2900..=0x2AFF
+        // Mathematical Alphanumeric Symbols
+        | 0x1D400..=0x1D7FF
+        // Arabic Mathematical Alphabetic Symbols
+        | 0x1EE00..=0x1EEFF
+        // Geometric Shapes Extended
+        | 0x1F780..=0x1F7FF => MATH,
+        // Miscellaneous Symbols, Dingbats
+        0x2600..=0x27BF
+        // Miscellaneous Symbols and Arrows
+        | 0x2B00..=0x2BFF
+        // Gothic
+        | 0x10330..=0x1034F
+        // Playing Cards
+        | 0x1F0A0..=0x1F0FF
+        // Misc Symbols and Pictographs
+        | 0x1F300..=0x1F5FF
+        // Transport and Map Symbols, Alchemical Symbols
+        | 0x1F680..=0x1F77F => SYMBOL,
+        // Enclosed Alphanumeric Supplement, Emoticons
+        0x1F100..=0x1F1FF | 0x1F600..=0x1F64F => MONO_EMOJI,
+        _ => &[],
+    }
+}
+
+/// The text face a character the run's own face (`family`) has no glyph for is drawn from on
+/// Windows, with its family name: a text-presentation emoji character Segoe UI Symbol (Blink's
+/// monochrome emoji font, as the shaper already measures it); any other character the first
+/// installed `blink_block_fallback` family with a glyph for it, then the face DirectWrite's
+/// system fallback (IDWriteFontFallback::MapCharacters) maps it to. None when nothing has the
+/// glyph. Layout measures the character in this face and paint draws it from the same one, so
+/// both ask here. Cached per (character, family).
+pub fn text_fallback_face(ch: char, family: &str) -> Option<(FontFace, String)> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    type Key = (char, String);
+    static CACHE: OnceLock<Mutex<HashMap<Key, Option<(u64, String)>>>> = OnceLock::new();
+    let key = (ch, family.to_ascii_lowercase());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache.lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return hit.and_then(|(id, name)| face_by_id(id).map(|face| (face, name)));
+    }
+    let found = find_text_fallback(ch, family);
+    let stored = found.as_ref().map(|(face, name)| (intern_face(face), name.clone()));
+    if let Ok(mut c) = cache.lock() {
+        c.insert(key, stored);
+    }
+    found
+}
+
+fn find_text_fallback(ch: char, family: &str) -> Option<(FontFace, String)> {
+    let emoji = crate::is_emoji(ch) || has_emoji_property(ch);
+    let candidates: &[&str] = if emoji { &["Segoe UI Symbol"] } else { blink_block_fallback(ch) };
+    let collection = FontCollection::system().ok()?;
+    for name in candidates {
+        let Some(fam) = collection.font_family_by_name(name).ok().flatten() else {
+            continue;
+        };
+        let Ok(font) = fam.first_matching_font(FontWeight::from_u32(400), FontStretch::from_u32(5), FontStyle::Normal)
+        else {
+            continue;
+        };
+        let Ok(face) = font.create_font_face() else {
+            continue;
+        };
+        if face.glyph_indices(&[ch as u32]).is_ok_and(|ids| ids[0] != 0) {
+            return Some((face, name.to_string()));
+        }
+    }
+    if emoji {
+        return None; // the emoji path takes it
+    }
+    map_characters(ch, family, 400, false)
+}
+
+fn map_characters(ch: char, family: &str, weight: u16, italic: bool) -> Option<(FontFace, String)> {
+    use windows::core::{implement, PCWSTR};
+
+    /// One character as DirectWrite's text-analysis source: the text, English locale, LTR.
+    #[implement(IDWriteTextAnalysisSource)]
+    struct Source {
+        text: Vec<u16>,
+        locale: Vec<u16>,
+    }
+
+    impl IDWriteTextAnalysisSource_Impl for Source_Impl {
+        fn GetTextAtPosition(&self, pos: u32, text: *mut *mut u16, len: *mut u32) -> windows::core::Result<()> {
+            unsafe {
+                if (pos as usize) < self.text.len() {
+                    *text = self.text.as_ptr().add(pos as usize) as *mut u16;
+                    *len = (self.text.len() - pos as usize) as u32;
+                } else {
+                    *text = std::ptr::null_mut();
+                    *len = 0;
+                }
+            }
+            Ok(())
+        }
+        fn GetTextBeforePosition(&self, pos: u32, text: *mut *mut u16, len: *mut u32) -> windows::core::Result<()> {
+            unsafe {
+                if pos > 0 && (pos as usize) <= self.text.len() {
+                    *text = self.text.as_ptr() as *mut u16;
+                    *len = pos;
+                } else {
+                    *text = std::ptr::null_mut();
+                    *len = 0;
+                }
+            }
+            Ok(())
+        }
+        fn GetParagraphReadingDirection(&self) -> DWRITE_READING_DIRECTION {
+            DWRITE_READING_DIRECTION_LEFT_TO_RIGHT
+        }
+        fn GetLocaleName(&self, _pos: u32, len: *mut u32, locale: *mut *mut u16) -> windows::core::Result<()> {
+            unsafe {
+                *len = self.text.len() as u32;
+                *locale = self.locale.as_ptr() as *mut u16;
+            }
+            Ok(())
+        }
+        fn GetNumberSubstitution(
+            &self,
+            _pos: u32,
+            len: *mut u32,
+            substitution: windows::core::OutRef<'_, IDWriteNumberSubstitution>,
+        ) -> windows::core::Result<()> {
+            unsafe {
+                *len = self.text.len() as u32;
+            }
+            substitution.write(None)
+        }
+    }
+
+    let mut units = [0u16; 2];
+    let text: Vec<u16> = ch.encode_utf16(&mut units).to_vec();
+    let length = text.len() as u32;
+    let source: IDWriteTextAnalysisSource =
+        Source { text, locale: "en-us".encode_utf16().chain(std::iter::once(0)).collect() }.into();
+    let family_wide: Vec<u16> = family.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: COM calls on interfaces this function owns; out-pointers are locals.
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let factory: IDWriteFactory2 = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()?;
+        let fallback = factory.GetSystemFontFallback().ok()?;
+        let mut mapped_length = 0u32;
+        let mut mapped: Option<IDWriteFont> = None;
+        let mut scale = 1.0f32;
+        fallback
+            .MapCharacters(
+                &source,
+                0,
+                length,
+                None,
+                PCWSTR(family_wide.as_ptr()),
+                DWRITE_FONT_WEIGHT(weight as i32),
+                if italic { DWRITE_FONT_STYLE_ITALIC } else { DWRITE_FONT_STYLE_NORMAL },
+                DWRITE_FONT_STRETCH_NORMAL,
+                &mut mapped_length,
+                &mut mapped,
+                &mut scale,
+            )
+            .ok()?;
+        let font = mapped?;
+        if mapped_length == 0 {
+            return None;
+        }
+        let names = font.GetFontFamily().ok()?.GetFamilyNames().ok()?;
+        let name = localized_first(&names)?;
+        if name.eq_ignore_ascii_case(family) {
+            return None; // the base family draws it itself
+        }
+        let face = font.CreateFontFace().ok()?;
+        Some((FontFace::from_raw(face), name))
+    }
+}
+
+/// The first name in a localized-strings list.
+unsafe fn localized_first(names: &IDWriteLocalizedStrings) -> Option<String> {
+    unsafe {
+        let len = names.GetStringLength(0).ok()?;
+        let mut buf = vec![0u16; len as usize + 1];
+        names.GetString(0, &mut buf).ok()?;
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
+    }
+}
+
+#[cfg(test)]
+mod system_fallback_tests {
+    use super::*;
+
+    /// Chrome for Testing 148 win64 draws these from Cambria Math under Segoe UI
+    /// (CSS.getPlatformFontsForNode), by Blink's block table: DirectWrite's own
+    /// MapCharacters would pick Segoe UI Symbol. U+2699 (a text-presentation emoji
+    /// character) keeps Segoe UI Symbol, as Chrome draws it.
+    #[test]
+    fn the_chrome_pages_math_symbols_fall_back_to_cambria_math() {
+        for ch in ['\u{25BE}', '\u{25B8}', '\u{21BB}'] {
+            let (face, name) = text_fallback_face(ch, "Segoe UI").expect("a fallback face");
+            assert_eq!(name, "Cambria Math", "{ch:?}");
+            assert_ne!(face.glyph_indices(&[ch as u32]).unwrap()[0], 0, "{ch:?}");
+        }
+        assert_eq!(text_fallback_face('\u{2699}', "Segoe UI").map(|f| f.1).as_deref(), Some("Segoe UI Symbol"));
+        // U+23F1 (Miscellaneous Technical, Emoji property): Blink's text-presentation
+        // emoji font, not its math font.
+        assert_eq!(text_fallback_face('\u{23F1}', "Segoe UI").map(|f| f.1).as_deref(), Some("Segoe UI Symbol"));
+        assert_eq!(blink_block_fallback('A'), &[] as &[&str]);
+    }
+
+    /// Cambria Math carries bitmap strikes at 12 and 16 ppem but not 10, so Chrome
+    /// measures U+25BE whole-pixel there (10.00, 13.00) and by design at 10px.
+    #[test]
+    fn a_bitmap_strike_size_measures_whole_pixel_advances() {
+        let (face, _) = text_fallback_face('\u{25BE}', "Segoe UI").expect("Cambria Math");
+        let glyph = face.glyph_indices(&[0x25BE]).unwrap()[0];
+        assert!(face.has_bitmap_strike(12) && face.has_bitmap_strike(16) && !face.has_bitmap_strike(10));
+        assert_eq!(face.gdi_classic_advance(glyph, 12.0), Some(10.0));
+        assert_eq!(face.gdi_classic_advance(glyph, 16.0), Some(13.0));
+        assert_eq!(face.gdi_classic_advance(glyph, 10.0), None);
+    }
+
+    /// Outside Blink's blocks, DirectWrite's system fallback decides: U+0E01 (Thai,
+    /// which Segoe UI lacks) maps to a Thai face, not to nothing.
+    #[test]
+    fn a_character_outside_the_block_table_takes_directwrites_fallback() {
+        let (face, name) = text_fallback_face('\u{0E01}', "Segoe UI").expect("a fallback face");
+        assert_ne!(face.glyph_indices(&[0x0E01]).unwrap()[0], 0, "{name}");
+    }
 }
 
 #[cfg(test)]

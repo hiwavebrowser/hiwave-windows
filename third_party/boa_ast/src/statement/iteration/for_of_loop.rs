@@ -120,7 +120,7 @@ impl ToIndentedString for ForOfLoop {
 impl From<ForOfLoop> for Statement {
     #[inline]
     fn from(for_of: ForOfLoop) -> Self {
-        Self::ForOfLoop(for_of)
+        Self::ForOfLoop(Box::new(for_of))
     }
 }
 

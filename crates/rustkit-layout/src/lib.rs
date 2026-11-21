@@ -15425,7 +15425,12 @@ mod tests {
             button_type: "button".to_string(),
         };
         assert_eq!(form_control_intrinsic_size(&style, &plain).1, 32.0);
-        assert_eq!(form_control_intrinsic_size(&style, &emoji).1, 39.0);
+        // The united line is the fallback face's: Apple Color Emoji lifts the
+        // label to 23 on macOS (39), Segoe UI Emoji to 19 on Windows (Chrome for
+        // Testing 148 win64 builds report's "\u{1F504} Export" button 35 tall
+        // beside the plain ones' 32).
+        let emoji_button = if cfg!(windows) { 35.0 } else { 39.0 };
+        assert_eq!(form_control_intrinsic_size(&style, &emoji).1, emoji_button);
     }
 
     #[test]

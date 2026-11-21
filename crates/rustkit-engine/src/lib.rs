@@ -617,8 +617,99 @@ mod content_string_tests;
 mod html_element_ancestor_tests;
 #[cfg(test)]
 mod is_complex_argument_tests;
+/// The CSS generic family keywords: written bare they name the generic, quoted a family.
+const GENERIC_FONT_FAMILIES: &[&str] = &[
+    "serif", "sans-serif", "cursive", "fantasy", "monospace", "system-ui", "ui-serif",
+    "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji", "fangsong",
+];
+
+/// The items of a `font-family` list, split at commas outside quotes, each trimmed.
+fn font_family_items(list: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for c in list.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => {
+                quote = None;
+                current.push(c);
+            }
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                current.push(c);
+            }
+            (None, ',') => items.push(std::mem::take(&mut current).trim().to_string()),
+            _ => current.push(c),
+        }
+    }
+    items.push(current.trim().to_string());
+    items.retain(|i| !i.is_empty());
+    items
+}
+
+/// A `font-family` value as stored on the computed style: the families joined with ", ".
+/// A quoted name loses its quotes unless it is a generic keyword (then it is a family name, and
+/// the quotes say so); an unquoted run of identifiers is one name, its whitespace collapsed.
+fn parse_font_family_list(value: &str) -> String {
+    font_family_items(value)
+        .into_iter()
+        .map(|item| {
+            let quoted = item.len() >= 2
+                && ((item.starts_with('"') && item.ends_with('"')) || (item.starts_with('\'') && item.ends_with('\'')));
+            if quoted {
+                let inner = &item[1..item.len() - 1];
+                if GENERIC_FONT_FAMILIES.iter().any(|g| inner.eq_ignore_ascii_case(g)) {
+                    format!("\"{inner}\"")
+                } else {
+                    inner.to_string()
+                }
+            } else {
+                item.split_whitespace().collect::<Vec<_>>().join(" ")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether `name` is a single CSS identifier (no escapes considered).
+fn is_css_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let start_ok = |c: char| c.is_ascii_alphabetic() || c == '_' || !c.is_ascii();
+    match chars.next() {
+        Some('-') => match chars.next() {
+            Some(c) if start_ok(c) || c == '-' => {}
+            _ => return false,
+        },
+        Some(c) if start_ok(c) => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || !c.is_ascii())
+}
+
+/// `getComputedStyle(...).fontFamily` as Chrome serializes it, per family: a quoted generic keeps
+/// its quotes, a bare generic stays bare, any other name is bare when it is one CSS identifier and
+/// a double-quoted string otherwise (Chrome for Testing 148.0.7778.216,
+/// docs/diagnostics/2026-11-21/font_family_serialization_cft148.json).
+fn serialize_font_family_list(stored: &str) -> String {
+    font_family_items(stored)
+        .into_iter()
+        .map(|item| {
+            if item.starts_with('"') {
+                item
+            } else if GENERIC_FONT_FAMILIES.iter().any(|g| item.eq_ignore_ascii_case(g)) || is_css_identifier(&item) {
+                item
+            } else {
+                format!("\"{}\"", item.replace('\\', "\\\\").replace('"', "\\\""))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod ancestor_attribute_query_tests;
+#[cfg(test)]
+mod font_family_serialization_tests;
 #[cfg(test)]
 mod match_media_tests;
 #[cfg(test)]
@@ -2319,9 +2410,13 @@ enum ScriptTiming {
     Async,
 }
 
-/// The largest page script `run_page_scripts` starts. Instagram's 3.9 MB
-/// bundle ran in 3.3s; youtube's 10.8 MB one did not finish in 16s.
-const MAX_PAGE_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
+/// The largest page script `run_page_scripts` starts. It was 4 MiB while
+/// Boa's parse and compile grew with the square of a scope's variables:
+/// YouTube's 10.9 MB `kevlar_base` bundle ran for 12.7 s. Since the scope
+/// name index (#1376) that bundle parses in about 1.4 s and compiles in about
+/// 0.6 s, so the limit now bounds memory, not time: Boa peaks at about 85
+/// bytes per source byte, about 1.4 GB for a 16 MiB script.
+const MAX_PAGE_SCRIPT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Why an inline HTML load (`load_html`) does not run a script: it runs
 /// inline classic scripts only. Every other `Skipped` there is a script it
@@ -9538,10 +9633,9 @@ impl Engine {
                 log.push(record);
                 continue;
             }
-            // Boa cannot be interrupted mid-script, so the budget can only
-            // be enforced between scripts. Boa takes about 1s per MB here,
-            // and more on app bundles: youtube's 10.8 MB bundle ran for 16s+
-            // and hung the capture. A script that big is not started.
+            // A script over MAX_PAGE_SCRIPT_BYTES is not started: Boa's
+            // parse of it alone would take more memory than a page should
+            // (about 85 bytes per source byte at its peak).
             if text.len() > MAX_PAGE_SCRIPT_BYTES {
                 let record = ScriptRecord {
                     source: label,
@@ -19053,18 +19147,10 @@ impl layout_ctx::LayoutCtx {
                 }
             }
             "font-family" => {
-                // A quoted "monospace" is a family name, not the generic
-                // (#1053 R1; CfT 148 sizes it 16px): its quotes are kept so
-                // `is_generic_monospace` does not take it for the generic.
-                let v = value.trim();
-                let quoted_generic = v.len() >= 2
-                    && (v.starts_with('"') || v.starts_with('\''))
-                    && v[1..v.len() - 1].trim().eq_ignore_ascii_case("monospace");
-                style.font_family = if quoted_generic {
-                    v.to_string()
-                } else {
-                    value.trim_matches(|c| c == '"' || c == '\'').to_string()
-                };
+                // Each family on its own (`parse_font_family_list`): a quoted generic keeps its
+                // quotes, so `is_generic_monospace` and the chain do not take "monospace" (a family
+                // name, #1053 R1; CfT 148 sizes it 16px) for the generic.
+                style.font_family = parse_font_family_list(value);
             }
             "font-style" => {
                 if value == "italic" {
@@ -32743,7 +32829,7 @@ fn computed_style_lines(b: &LayoutBox) -> String {
         ("font-size", css_px(font_px)),
         ("font-weight", s.font_weight.0.to_string()),
         ("font-style", css_keyword(&format!("{:?}", s.font_style))),
-        ("font-family", s.font_family.clone()),
+        ("font-family", serialize_font_family_list(&s.font_family)),
         ("line-height", line_height),
         ("letter-spacing", letter_spacing),
         ("text-align", css_keyword(&format!("{:?}", s.text_align))),
@@ -45213,12 +45299,13 @@ document.currentScript.remove();
     }
 
     #[test]
-    fn a_script_too_large_for_the_budget_is_not_started() {
+    fn a_script_over_16_mib_is_not_started() {
         let page = r#"<html><head>
 <script src="/huge.js"></script>
 <script>var after = true;</script>
 </head><body>hi</body></html>"#;
-        let huge = format!("var huge = true;\n{}", "// padding\n".repeat(MAX_PAGE_SCRIPT_BYTES / 11 + 1));
+        let huge = format!("var huge = true;\n{}", "// padding\n".repeat(16 * 1024 * 1024 / 11 + 1));
+        assert!(huge.len() > 16 * 1024 * 1024);
         let port = serve(vec![
             ("/", "text/html", page.to_string()),
             ("/huge.js", "text/javascript", huge),
@@ -45230,6 +45317,38 @@ document.currentScript.remove();
             "{log:#?}"
         );
         assert_eq!(engine.execute_script(view, "typeof huge").unwrap(), r#"String("undefined")"#);
+        assert_eq!(engine.execute_script(view, "after").unwrap(), "Boolean(true)");
+    }
+
+    /// A bundle the size of YouTube's `kevlar_base` (10.9 MB, one function
+    /// with thousands of variables) runs. Generated here, not the real one.
+    #[test]
+    fn a_youtube_sized_script_runs() {
+        let page = r#"<html><head>
+<script src="/big.js"></script>
+<script>var after = true;</script>
+</head><body>hi</body></html>"#;
+        let mut big = String::from("var big = (function () {\n");
+        for i in 0..9_000 {
+            big.push_str(&format!("  var v{i} = {i};\n"));
+        }
+        big.push_str("  function sum() { return v0 + v4500 + v8999; }\n");
+        let target = 10_900_000;
+        let line = "  // padding padding padding padding padding padding padding padding\n";
+        let tail = "  return sum();\n})();\n";
+        while big.len() + line.len() + tail.len() <= target {
+            big.push_str(line);
+        }
+        big.push_str(tail);
+        assert!(big.len() > 10_800_000 && big.len() <= target, "{}", big.len());
+        let port = serve(vec![
+            ("/", "text/html", page.to_string()),
+            ("/big.js", "text/javascript", big),
+        ]);
+        let (mut engine, view) = load(EngineConfig::default(), port);
+        let log = engine.script_log(view).unwrap();
+        assert!(matches!(log[0].outcome, ScriptOutcome::Ran), "{log:#?}");
+        assert_eq!(engine.execute_script(view, "big").unwrap(), "Number(13499.0)");
         assert_eq!(engine.execute_script(view, "after").unwrap(), "Boolean(true)");
     }
 

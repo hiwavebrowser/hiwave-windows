@@ -167,7 +167,7 @@ fn check_separated_switch() {
                 .unwrap(),
             ))
             .into(),
-            Statement::Switch(Switch::new(
+            Statement::from(Switch::new(
                 Identifier::new(a, Span::new((5, 2), (5, 3))).into(),
                 vec![
                     Case::new(
