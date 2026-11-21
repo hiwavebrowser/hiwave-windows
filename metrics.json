@@ -1,24 +1,123 @@
 {
-  "timestamp": "2026-10-02T21:16:04.284661+00:00",
-  "commit": "970dea926f6053ff50ce2c6c68f35ce9e07d06fa",
+  "timestamp": "2026-11-21T07:17:19.400077+00:00",
+  "commit": "0383aa7d5e9989ef8303baa3af6695490a7649af",
   "branch": "master",
   "platform": "windows",
   "build": {
     "ok": true,
     "exit_code": 0,
-    "warnings": 36
+    "warnings": 48
   },
   "tests": {
     "ok": true,
     "exit_code": 0,
-    "passed": 1822,
+    "passed": 3527,
     "failed": 0,
-    "ignored": 5,
-    "total": 1822
+    "ignored": 38,
+    "total": 3527,
+    "engine_chunks": {
+      "listed": 2701,
+      "ran": 0,
+      "processes": 3,
+      "build_exit": 0,
+      "skipped": 2701,
+      "adapter": "Cpu",
+      "skip_reason": "engine lib tests not run on a software adapter (WARP-ACCUMULATION); the full suite runs on a hardware GPU with every sync"
+    }
   },
   "per_crate": {
+    "argument_list_stop": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "array_length_reset": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "array_length_shapes": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "array_like_length_limits": {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    "arraybuffer_detach_key": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "arraybuffer_transfer": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "arrow_this_capture": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "canvas_shim_opcodes": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "class_element_eval": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "class_field_tdz": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "code_block_flags": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "compiled_moves": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "const_comma_newline": {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
     "corpus_tests": {
-      "passed": 49,
+      "passed": 50,
+      "failed": 0,
+      "ignored": 0
+    },
+    "cyclic_to_primitive": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "dropped_realm": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "entity_tokenizer": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 1
+    },
+    "eval_order": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "eval_var_per_call": {
+      "passed": 2,
       "failed": 0,
       "ignored": 0
     },
@@ -27,13 +126,28 @@
       "failed": 0,
       "ignored": 0
     },
+    "float_index_keys": {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    },
+    "float_index_keys_allocs": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
     "gc_weak_cycle": {
       "passed": 1,
       "failed": 0,
       "ignored": 0
     },
+    "global_lexical_scope": {
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
     "hiwave": {
-      "passed": 28,
+      "passed": 77,
       "failed": 0,
       "ignored": 0
     },
@@ -58,7 +172,7 @@
       "ignored": 0
     },
     "hiwave_shell": {
-      "passed": 2,
+      "passed": 9,
       "failed": 0,
       "ignored": 0
     },
@@ -68,11 +182,21 @@
       "ignored": 0
     },
     "hiwave_shield": {
-      "passed": 6,
+      "passed": 25,
       "failed": 0,
       "ignored": 0
     },
     "hiwave_shield (doc)": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_shield_intercept": {
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    "hiwave_shield_intercept (doc)": {
       "passed": 0,
       "failed": 0,
       "ignored": 0
@@ -92,13 +216,93 @@
       "failed": 0,
       "ignored": 0
     },
+    "html_parse_throughput": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 2
+    },
+    "ic_exotic_get": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "ic_holder": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "ic_set_dedupe": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "import_source_phase": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "index_fast_paths": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "index_fast_paths_allocs": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "json_array_stop": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "kept_function": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "let_of": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    "module_parse_depth": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "native_loop_limits": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "native_recursion": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
     "normal_line_height_probe": {
       "passed": 0,
       "failed": 0,
       "ignored": 0
     },
     "parity_capture": {
-      "passed": 6,
+      "passed": 97,
+      "failed": 0,
+      "ignored": 0
+    },
+    "png_decode": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 2
+    },
+    "regex_literal_compile": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "regexp_input_release": {
+      "passed": 2,
       "failed": 0,
       "ignored": 0
     },
@@ -106,6 +310,11 @@
       "passed": 4,
       "failed": 0,
       "ignored": 0
+    },
+    "rule_throughput": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 1
     },
     "rustkit_a11y": {
       "passed": 13,
@@ -138,9 +347,9 @@
       "ignored": 1
     },
     "rustkit_bindings": {
-      "passed": 100,
+      "passed": 795,
       "failed": 0,
-      "ignored": 0
+      "ignored": 7
     },
     "rustkit_bindings (doc)": {
       "passed": 0,
@@ -148,7 +357,7 @@
       "ignored": 0
     },
     "rustkit_canvas": {
-      "passed": 12,
+      "passed": 48,
       "failed": 0,
       "ignored": 0
     },
@@ -178,7 +387,7 @@
       "ignored": 0
     },
     "rustkit_compositor": {
-      "passed": 16,
+      "passed": 17,
       "failed": 0,
       "ignored": 0
     },
@@ -188,7 +397,7 @@
       "ignored": 0
     },
     "rustkit_core": {
-      "passed": 30,
+      "passed": 32,
       "failed": 0,
       "ignored": 0
     },
@@ -198,7 +407,7 @@
       "ignored": 0
     },
     "rustkit_css": {
-      "passed": 47,
+      "passed": 139,
       "failed": 0,
       "ignored": 0
     },
@@ -208,7 +417,7 @@
       "ignored": 0
     },
     "rustkit_cssparser": {
-      "passed": 22,
+      "passed": 33,
       "failed": 0,
       "ignored": 0
     },
@@ -218,17 +427,12 @@
       "ignored": 0
     },
     "rustkit_dom": {
-      "passed": 65,
+      "passed": 115,
       "failed": 0,
-      "ignored": 0
+      "ignored": 1
     },
     "rustkit_dom (doc)": {
       "passed": 0,
-      "failed": 0,
-      "ignored": 0
-    },
-    "rustkit_engine": {
-      "passed": 302,
       "failed": 0,
       "ignored": 0
     },
@@ -238,7 +442,7 @@
       "ignored": 0
     },
     "rustkit_html": {
-      "passed": 40,
+      "passed": 52,
       "failed": 0,
       "ignored": 0
     },
@@ -248,7 +452,7 @@
       "ignored": 2
     },
     "rustkit_http": {
-      "passed": 10,
+      "passed": 36,
       "failed": 0,
       "ignored": 0
     },
@@ -268,7 +472,7 @@
       "ignored": 0
     },
     "rustkit_image": {
-      "passed": 19,
+      "passed": 27,
       "failed": 0,
       "ignored": 0
     },
@@ -278,7 +482,7 @@
       "ignored": 0
     },
     "rustkit_js": {
-      "passed": 14,
+      "passed": 97,
       "failed": 0,
       "ignored": 0
     },
@@ -288,9 +492,9 @@
       "ignored": 0
     },
     "rustkit_layout": {
-      "passed": 575,
+      "passed": 972,
       "failed": 0,
-      "ignored": 0
+      "ignored": 15
     },
     "rustkit_layout (doc)": {
       "passed": 0,
@@ -298,7 +502,7 @@
       "ignored": 1
     },
     "rustkit_media": {
-      "passed": 13,
+      "passed": 16,
       "failed": 0,
       "ignored": 0
     },
@@ -308,7 +512,7 @@
       "ignored": 0
     },
     "rustkit_net": {
-      "passed": 46,
+      "passed": 112,
       "failed": 0,
       "ignored": 0
     },
@@ -318,9 +522,9 @@
       "ignored": 0
     },
     "rustkit_renderer": {
-      "passed": 110,
+      "passed": 189,
       "failed": 0,
-      "ignored": 0
+      "ignored": 3
     },
     "rustkit_renderer (doc)": {
       "passed": 0,
@@ -328,7 +532,7 @@
       "ignored": 0
     },
     "rustkit_svg": {
-      "passed": 26,
+      "passed": 51,
       "failed": 0,
       "ignored": 0
     },
@@ -358,7 +562,7 @@
       "ignored": 1
     },
     "rustkit_text": {
-      "passed": 64,
+      "passed": 74,
       "failed": 0,
       "ignored": 0
     },
@@ -368,7 +572,7 @@
       "ignored": 0
     },
     "rustkit_viewhost": {
-      "passed": 21,
+      "passed": 70,
       "failed": 0,
       "ignored": 0
     },
@@ -388,12 +592,112 @@
       "ignored": 0
     },
     "rustkit_worker": {
-      "passed": 13,
+      "passed": 14,
       "failed": 0,
       "ignored": 0
     },
     "rustkit_worker (doc)": {
       "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "scope_name_index": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "sort_fuzz": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "sort_numeric_difference": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 1
+    },
+    "sort_numeric_difference_stop": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "sort_v8_order": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "stack_overflow_catchable": {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    "string_length_limit": {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    "string_length_limit_more": {
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    },
+    "super_set": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "switch_tdz": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "table_tree_tests": {
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0
+    },
+    "tdz_assign": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "update_conversion": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "using_bindings": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "vm_interrupt": {
+      "passed": 9,
+      "failed": 0,
+      "ignored": 0
+    },
+    "vm_interrupt_promises": {
+      "passed": 21,
+      "failed": 0,
+      "ignored": 0
+    },
+    "vm_stats": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "vm_stop_finally": {
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0
+    },
+    "watchdog_turns": {
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    "web_api_census": {
+      "passed": 1,
       "failed": 0,
       "ignored": 0
     },
@@ -406,24 +710,36 @@
       "passed": 1,
       "failed": 0,
       "ignored": 0
+    },
+    "wpt_origin": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
     }
   },
   "crates_with_no_tests": [
     "fallback_face_line_height",
     "hiwave_core",
     "hiwave_smoke",
-    "normal_line_height_probe"
+    "html_parse_throughput",
+    "normal_line_height_probe",
+    "rule_throughput"
   ],
   "reachability": {
     "available": true,
-    "computed_style_fields": 129,
-    "read_by_layout": 90,
-    "writable_by_applier": 115,
-    "unreachable_count": 3,
+    "computed_style_fields": 172,
+    "read_by_layout": 137,
+    "writable_by_applier": 144,
+    "unreachable_count": 8,
     "unreachable": [
-      "box_shadows",
-      "object_position",
-      "text_decoration_thickness"
+      "animation_name",
+      "border_declared",
+      "mask",
+      "padding_declared",
+      "stacks",
+      "text_decoration_thickness",
+      "width_max_content",
+      "width_min_content"
     ],
     "method": "Fields matching `style.<name>` anywhere in rustkit-layout, minus fields assigned as `style.<name> =` or `s.<name> =` anywhere in rustkit-engine, intersected with the real ComputedStyle field set.",
     "limit": "A FLOOR, NOT A PROOF. This measures WRITABILITY - whether any arm can set the field - not whether setting it changes what gets painted. A field can leave this list and still be inert, because the break can be BELOW the applier: in propagation, in which box the consumer reads from, or in a consumer nothing populates. Measured 2026-07-31: text_decoration_line left this list and an underlined <p> still painted identically to a plain one, because decoration PROPAGATES to descendants rather than inheriting and the display list reads it off the text box. Pair this number with a test that asserts the value changes the display list.",
