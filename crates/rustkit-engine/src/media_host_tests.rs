@@ -339,6 +339,7 @@ fn rgb(value: &serde_json::Value) -> [u8; 3] {
 /// a new player, and the old one is destroyed; so is the player of an element that
 /// leaves the document.
 #[test]
+#[cfg_attr(windows, ignore = "Windows media backend row: the engine reads media metadata through AVFoundation (MEDIA-AVF step 2 probe, macOS only); Windows has no backend yet")]
 fn a_video_gets_a_player_on_the_host_and_loses_it_with_its_resource() {
     let host = FakeHost::new(OnLoad::Ready);
     let mut page = Page::open(
@@ -383,6 +384,7 @@ fn a_video_gets_a_player_on_the_host_and_loses_it_with_its_resource() {
 
 /// An `<audio>` gets a player too (its sound is step 4), with no frames and no key.
 #[test]
+#[cfg_attr(windows, ignore = "Windows media backend row: the engine reads media metadata through AVFoundation (MEDIA-AVF step 2 probe, macOS only); Windows has no backend yet")]
 fn an_audio_element_gets_a_player_with_no_frames() {
     let host = FakeHost::new(OnLoad::Ready);
     let mut page = Page::open(
@@ -400,6 +402,7 @@ fn an_audio_element_gets_a_player_with_no_frames() {
 
 /// With no host (the default until step 6), nothing changes from step 2: no player.
 #[test]
+#[cfg_attr(windows, ignore = "Windows media backend row: the engine reads media metadata through AVFoundation (MEDIA-AVF step 2 probe, macOS only); Windows has no backend yet")]
 fn with_no_host_a_video_loads_its_metadata_and_nothing_more() {
     let mut page = Page::open(
         None,
@@ -417,6 +420,7 @@ fn with_no_host_a_video_loads_its_metadata_and_nothing_more() {
 /// frame 0 in its box, letterboxed by `object-fit: contain`, filling it under `cover` and
 /// `fill`, placed by `object-position`; what is outside the frame is the page's white.
 #[test]
+#[cfg_attr(windows, ignore = "Windows media backend row: the engine reads media metadata through AVFoundation (MEDIA-AVF step 2 probe, macOS only); Windows has no backend yet")]
 fn the_first_frame_paints_as_chrome_paints_it() {
     let receipt = receipt();
     let frame0 = rgb(&receipt["cases"][0]["frame0_centre"]);
@@ -465,6 +469,7 @@ fn the_first_frame_paints_as_chrome_paints_it() {
 /// P-cost (RustKit only): a new frame changes no box, so it is presented with no build
 /// and no layout; the painted pixel follows the frame.
 #[test]
+#[cfg_attr(windows, ignore = "Windows media backend row: the engine reads media metadata through AVFoundation (MEDIA-AVF step 2 probe, macOS only); Windows has no backend yet")]
 fn a_new_frame_is_presented_with_no_build_and_no_layout() {
     let host = FakeHost::new(OnLoad::Ready);
     let mut page = Page::open(
@@ -512,6 +517,7 @@ fn a_new_frame_is_presented_with_no_build_and_no_layout() {
 /// A snapshot whose item failed is `MEDIA_ERR_DECODE`, with an `error` event, and the
 /// player goes.
 #[test]
+#[cfg_attr(windows, ignore = "Windows media backend row: the engine reads media metadata through AVFoundation (MEDIA-AVF step 2 probe, macOS only); Windows has no backend yet")]
 fn a_failed_item_is_a_decode_error() {
     let host = FakeHost::new(OnLoad::Fail);
     let mut page = Page::open(
@@ -528,6 +534,7 @@ fn a_failed_item_is_a_decode_error() {
 /// A presentation size the host reports later (a resolution switch) is a `resize` and
 /// a relayout of the box.
 #[test]
+#[cfg_attr(windows, ignore = "Windows media backend row: the engine reads media metadata through AVFoundation (MEDIA-AVF step 2 probe, macOS only); Windows has no backend yet")]
 fn a_new_presentation_size_is_a_resize() {
     let host = FakeHost::new(OnLoad::Ready);
     let mut page = Page::open(
@@ -555,6 +562,7 @@ fn a_new_presentation_size_is_a_resize() {
 /// §3.2: while a command is unanswered the view's media is busy, so the live loop keeps
 /// turning; once answered and framed it is not.
 #[test]
+#[cfg_attr(windows, ignore = "Windows media backend row: the engine reads media metadata through AVFoundation (MEDIA-AVF step 2 probe, macOS only); Windows has no backend yet")]
 fn an_unanswered_command_keeps_the_media_busy() {
     let host = FakeHost::new(OnLoad::Silent);
     let mut page = Page::open(
