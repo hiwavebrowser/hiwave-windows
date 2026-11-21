@@ -3616,6 +3616,48 @@ mod tests {
         near("system-ui", 220.78);
     }
 
+    /// Windows: Chrome's default font is Times New Roman, as on macOS it is
+    /// Times. Chrome for Testing 148.0.7778.216 win64, "Handgloves quick wizard
+    /// 0123" at 16px with no `font-family`: 199.52 in Times New Roman
+    /// (CSS.getPlatformFontsForNode), the same as `serif`; `sans-serif` (Arial)
+    /// is 217.02. RustKit's initial family was `sans-serif` there, so every page
+    /// that sets no font was laid out in Arial (replaced_float_avoid_tests'
+    /// "inline img with clear beside a float" placed the image at 130.23, Chrome
+    /// at 128: "text " is 30.23 in Arial, 28 in Times New Roman).
+    ///
+    /// Linux: the same numbers. Chrome for Testing 148.0.7778.216 on Linux,
+    /// the same string with no `font-family`: 199.52 in Liberation Serif (its
+    /// standard font, Times New Roman, through fontconfig), as `serif`;
+    /// `sans-serif` (Liberation Sans) 217.02 (measured 2026-11-21, with the CI
+    /// runner's fonts and the board's alike). On Linux this runs in
+    /// hiwave-linux, which carries the Linux shaper.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn the_initial_family_is_chromes_default_font() {
+        let width = |family: &str| {
+            TextShaper::new()
+                .shape(
+                    "Handgloves quick wizard 0123",
+                    &FontFamilyChain::from_css_value(family),
+                    FontWeight(400),
+                    FontStyle::Normal,
+                    FontStretch::Normal,
+                    16.0,
+                )
+                .expect("shape")
+                .metrics
+                .width
+        };
+        for (family, chrome) in [
+            (rustkit_css::INITIAL_FONT_FAMILY, 199.52),
+            ("serif", 199.52),
+            ("sans-serif", 217.02),
+        ] {
+            let w = width(family);
+            assert!((w - chrome).abs() < 0.05, "{family}: {w}, Chrome {chrome}");
+        }
+    }
+
     /// Chrome's line box for a 16px line of Times, Helvetica or Courier on
     /// macOS is 18px: Blink adds 15% of the rounded ascent + descent to the
     /// ascent of exactly those three families. The font's own extents give

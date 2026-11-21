@@ -3468,9 +3468,13 @@ pub struct ComputedStyle {
 /// where Chrome 148 has 199.52.
 #[cfg(target_os = "macos")]
 pub const INITIAL_FONT_FAMILY: &str = "Times";
-/// The initial value of `font-family`, which CSS leaves to the UA.
+/// The initial value of `font-family` off macOS: Chrome's default font is Times New Roman.
+/// Windows (Chrome for Testing 148 win64): an element with no `font-family` measures and draws
+/// in Times New Roman, as `serif` does. Linux (148.0.7778.216): the same, through fontconfig to
+/// Liberation Serif. `sans-serif` stood here and laid every unstyled page out in Arial / Liberation
+/// Sans ("Handgloves quick wizard 0123" at 16px: 217.02 where Chrome has 199.52).
 #[cfg(not(target_os = "macos"))]
-pub const INITIAL_FONT_FAMILY: &str = "sans-serif";
+pub const INITIAL_FONT_FAMILY: &str = "Times New Roman";
 
 impl ComputedStyle {
     /// The transform actually applied: `translate`, then `rotate`, then

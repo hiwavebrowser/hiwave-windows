@@ -1327,6 +1327,35 @@ indirect export with import name *source*; the exporting module fails at link an
 forms were parse errors). An escaped `sour\u0063e` is not the keyword: `import sour\u0063e x from "m"` stays a parse-time SyntaxError, in Chrome with and without the flag. test262: `test/language/module-code/source-phase-import/import-source.js`
 (sloppy and strict) passes.
 
+## Patch: the rare large statements are boxed (`statement-box`)
+
+**Files.** `third_party/boa_ast/src/statement/mod.rs` (`Statement::ForInLoop`, `ForOfLoop`, `Switch`
+hold a `Box`), the three `From<...> for Statement` impls (`statement/iteration/for_in_loop.rs`,
+`statement/iteration/for_of_loop.rs`, `statement/switch.rs`), `third_party/boa_ast/src/operations/mod.rs`
+(nine visitor arms pass `&**node`), and one parser unit test
+(`third_party/boa_parser/src/parser/statement/switch/tests.rs`, built through `Statement::from`).
+Marked `HIWAVE PATCH (statement-box)` on the enum. The vendored crates' licence is unchanged
+(Unlicense OR MIT); this is HiWave's patch.
+
+**Why.** An enum is as large as its largest variant. `ForInLoop` and `ForOfLoop` are 456 bytes
+stored inline, so every `Statement` was 464 bytes, and every statement in a script is a separate
+`Box<Statement>`. YouTube's 10.9 MB `kevlar_base.js` has 198,819 statements and about 1,100 for-in,
+for-of and switch statements among them: 88 MB of statement boxes, mostly padding.
+
+**What.** The three variants hold a `Box`; `Statement` is 216 bytes (`If` and `With`, 208, are now
+the largest). Matching code is unchanged except where a generic visitor needs the node itself
+(`&**node`); the bytecompiler's arms deref through the box.
+
+**Measured** (kevlar_base.js, counting allocator, dev profile with dependencies at opt-level 2,
+develop 64733ae3 without `paren-no-clone`): the parsed AST with source text and interner is
+388.3 MB instead of 434.4 MB (the AST alone 333.9 MB instead of 380.0 MB); peak heap during parse
+716 MB instead of 808 MB; peak heap during compile (AST and bytecode both alive) 541 MB instead of
+587 MB above a fresh context. The compiled code is unchanged (204.5 MB retained either way).
+
+**Pin.** `crates/rustkit-js/tests/statement_box_size.rs`: `size_of::<Statement>() <= 216` (464 on
+develop, red), and a script with for-in, for-of, a labelled `continue` across both, and a switch
+prints and runs as before.
+
 ## Patch: a parenthesized expression is moved, not copied (`paren-no-clone`)
 
 **Files.** `third_party/boa_parser/src/parser/expression/primary/mod.rs`
