@@ -1326,3 +1326,32 @@ indirect export with import name *source*; the exporting module fails at link an
 `import_source_phase_cft148.json`). Red without the patch: 5 of 14 (the `import source <binding>`
 forms were parse errors). An escaped `sour\u0063e` is not the keyword: `import sour\u0063e x from "m"` stays a parse-time SyntaxError, in Chrome with and without the flag. test262: `test/language/module-code/source-phase-import/import-source.js`
 (sloppy and strict) passes.
+
+## Patch: a parenthesized expression is moved, not copied (`paren-no-clone`)
+
+**Files.** `third_party/boa_parser/src/parser/expression/primary/mod.rs`
+(`CoverParenthesizedExpressionAndArrowParameterList::parse`). Marked
+`HIWAVE PATCH (paren-no-clone)`. The vendored crates' licence is unchanged (Unlicense OR MIT); this
+is HiWave's patch.
+
+**Why.** The parser reads `( ... )` into a list of expressions first, because it cannot know yet
+whether the parentheses hold an arrow function's parameters. When they do not, it built the
+`Parenthesized` node from `expression.clone()` of the list's one entry and then dropped the list,
+so the whole subtree was allocated twice and briefly existed twice. A bundle wrapped in one
+`(function(_){ ... })`, as YouTube's 10.9 MB `kevlar_base.js` is, therefore copied its entire AST
+once: the parse peaked at 808 MB of heap where the finished AST (with source text and interner) is
+434 MB. Nested parentheses copied each level's subtree again. Upstream Boa has the same clone
+(crates.io 0.22.0, and `main` at `bea404d173`, 2026-11-10).
+
+**What.** The list has exactly one entry at that point (checked just above), so it is popped and the
+expression moved into the node. The tree built is the same.
+
+**Measured** (kevlar_base.js, counting allocator, dev profile with dependencies at opt-level 2):
+parsing to the AST peaks at 434 MB instead of 808 MB and makes 4.79 M allocations instead of
+6.63 M; `Script::parse` (with scope analysis) peaks at 526 MB instead of 808 MB; parse plus compile
+peaks at 587 MB above the context instead of 808 MB. The finished AST is the same size (434 MB).
+
+**Pin.** `crates/rustkit-js/tests/parse_paren_no_clone.rs`: parsing `x = (E);` for a large function
+expression `E` may cost at most 64 allocations and 10% of peak heap more than `x = E;`. Before the
+patch it cost 123,140 against 97,136 allocations and 13.4 MB against 7.4 MB; after, 97,138 and
+7.36 MB against 7.36 MB. The printed tree of `x = (a + (b * (c, d)));` is checked as well.

@@ -6913,12 +6913,13 @@ impl Renderer {
             let drawn = self.glyph_cache.get_or_rasterize_faced(&self.queue, &key);
             #[cfg(windows)]
             let drawn = match crate::glyph::windows_paint(ch, face) {
-                // A text-presentation symbol: the coverage mask from the text
-                // face layout measured it in (Segoe UI Symbol), as Chrome
-                // draws it, not Segoe UI Emoji's colour artwork.
+                // A text-presentation symbol, or a character the run's face
+                // lacks: the coverage mask from the text face layout measured
+                // it in (Segoe UI Symbol, Cambria Math, ...), as Chrome draws
+                // it, not Segoe UI Emoji's colour artwork.
                 crate::glyph::WindowsPaint::TextFallback => {
                     let symbol = GlyphKey {
-                        font_family: crate::glyph::WINDOWS_TEXT_SYMBOL_FAMILY.to_string(),
+                        font_family: crate::glyph::windows_text_fallback_family(ch, font_family),
                         font_weight: 400,
                         font_style: 0,
                         web_face: 0,

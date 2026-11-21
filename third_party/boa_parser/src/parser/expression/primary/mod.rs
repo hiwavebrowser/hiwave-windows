@@ -480,9 +480,11 @@ where
                     "multiple expressions in parenthesized expression",
                 ));
             }
-            if let InnerExpression::Expression(expression) = &expressions[0] {
+            // HIWAVE PATCH (paren-no-clone): move the one expression out of the list; a clone
+            // copied the whole subtree (all of a bundle wrapped in `(function(){ ... })`).
+            if let Some(InnerExpression::Expression(expression)) = expressions.pop() {
                 return Ok(ast::Expression::Parenthesized(Parenthesized::new(
-                    expression.clone(),
+                    expression,
                     Span::new(span_start.start(), span.end()),
                 ))
                 .into());

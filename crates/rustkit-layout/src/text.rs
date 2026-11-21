@@ -1482,6 +1482,14 @@ impl TextShaper {
                         };
                     let mut emoji_face: Option<Option<(rustkit_text::FontFace, f32)>> = None;
                     let mut symbol_face: Option<Option<(rustkit_text::FontFace, f32)>> = None;
+                    // Which fallback faces this run drew a character from: their
+                    // extents are united into the run's line below.
+                    let (mut used_symbol, mut used_emoji) = (false, false);
+                    // Any other face a missing glyph was measured in
+                    // (`rustkit_text::text_fallback_face`: Blink's per-block
+                    // table, then DirectWrite's system fallback), by family,
+                    // with its px-per-design-unit scale.
+                    let mut text_faces: Vec<(String, rustkit_text::FontFace, f32)> = Vec::new();
 
                     for (i, (&glyph_id, &c)) in
                         glyph_indices.iter().zip(text_chars.iter()).enumerate()
@@ -1506,14 +1514,54 @@ impl TextShaper {
                             match text_face {
                                 Some(advance) => {
                                     face = GlyphFace::Fallback { emoji: false };
+                                    used_symbol = true;
                                     advance
                                 }
                                 // An emoji, or a symbol Segoe UI Symbol lacks:
                                 // Segoe UI Emoji's, as before.
                                 None => {
                                     face = GlyphFace::Fallback { emoji: true };
-                                    fallback_advance(&mut emoji_face, "Segoe UI Emoji", c).unwrap_or(notdef)
+                                    match fallback_advance(&mut emoji_face, "Segoe UI Emoji", c) {
+                                        Some(advance) => {
+                                            used_emoji = true;
+                                            advance
+                                        }
+                                        None => notdef,
+                                    }
                                 }
+                            }
+                        } else if glyph_id == 0 && !c.is_control() && !c.is_whitespace() {
+                            // A character the primary face lacks that is not
+                            // an emoji: Chrome draws it from its fallback
+                            // face (U+25BE from Cambria Math under Segoe UI),
+                            // not the primary's .notdef.
+                            let notdef = if i < glyph_metrics.len() {
+                                glyph_metrics[i].advance_width as f32 * scale
+                            } else {
+                                size * 0.5
+                            };
+                            let measured = rustkit_text::text_fallback_face(c, &font_family_name).and_then(|(fb, name)| {
+                                let ids = fb.glyph_indices(&[c as u32]).ok()?;
+                                let upem = fb.metrics().ok()?.design_units_per_em as f32;
+                                let m = fb.design_glyph_metrics(&ids, false).ok()?;
+                                let fb_scale = size / upem;
+                                // Whole-pixel at a size the face has a bitmap
+                                // strike for, as Skia measures it (Cambria Math
+                                // at 12 and 16px).
+                                let advance = fb
+                                    .gdi_classic_advance(ids[0], size)
+                                    .unwrap_or(m[0].advance_width as f32 * fb_scale);
+                                if !text_faces.iter().any(|(n, _, _)| *n == name) {
+                                    text_faces.push((name, fb, fb_scale));
+                                }
+                                Some(advance)
+                            });
+                            match measured {
+                                Some(advance) => {
+                                    face = GlyphFace::Fallback { emoji: false };
+                                    advance
+                                }
+                                None => notdef,
                             }
                         } else if i < glyph_metrics.len() {
                             glyph_metrics[i].advance_width as f32 * scale
@@ -1534,9 +1582,42 @@ impl TextShaper {
                         x_offset += advance;
                     }
 
-                    let ascent = design_metrics.ascent as f32 * scale;
-                    let descent = design_metrics.descent as f32 * scale;
-                    let leading = design_metrics.line_gap as f32 * scale;
+                    let mut ascent = design_metrics.ascent as f32 * scale;
+                    let mut descent = design_metrics.descent as f32 * scale;
+                    let mut leading = design_metrics.line_gap as f32 * scale;
+                    // Blink unites every face the run drew from into its line
+                    // under `line-height: normal` (`unite_fallback_extents`,
+                    // shared with the macOS shaper): Chrome for Testing 148
+                    // win64 builds Arial 14px with U+1F6E1 (Segoe UI Symbol)
+                    // a 19px line, plain 16. One face at a time.
+                    //
+                    // Blink rounds each face's ascent, descent and line gap
+                    // to whole pixels before uniting them (SimpleFontData):
+                    // 16px Segoe UI with U+21BB (Cambria Math, typo metrics
+                    // 0.7778 / 0.2222 / gap 0.1724) is 17 + max(4, 4 + 1.5)
+                    // = 22.5, a 23px line, where the raw extents give 22.
+                    let mut united: Vec<(rustkit_text::FontFace, f32)> = Vec::new();
+                    for (used, slot) in [(used_symbol, &symbol_face), (used_emoji, &emoji_face)] {
+                        if let Some(Some((fb_face, fb_scale))) = slot.as_ref().filter(|_| used) {
+                            united.push((fb_face.clone(), *fb_scale));
+                        }
+                    }
+                    united.extend(text_faces.iter().map(|(_, fb, fb_scale)| (fb.clone(), *fb_scale)));
+                    if !united.is_empty() {
+                        (ascent, descent, leading) = (ascent.round(), descent.round(), leading.round());
+                    }
+                    for (fb_face, fb_scale) in &united {
+                        if let Ok(m) = fb_face.metrics() {
+                            (ascent, descent, leading) = unite_fallback_extents(
+                                (ascent, descent, leading),
+                                (
+                                    (m.ascent as f32 * fb_scale).round(),
+                                    (m.descent as f32 * fb_scale).round(),
+                                    (m.line_gap as f32 * fb_scale).round(),
+                                ),
+                            );
+                        }
+                    }
 
                     let metrics = TextMetrics {
                         width: x_offset,
@@ -4338,6 +4419,78 @@ mod tests {
         // U+FE0F asks for the emoji presentation of a character that has one.
         let (_, gear_emoji) = one("\u{2699}\u{FE0F}");
         assert_eq!(gear_emoji, GlyphFace::Fallback { emoji: true });
+    }
+
+    /// A run that draws characters from a fallback face unites that face's
+    /// extents into its line (`unite_fallback_extents`), as Chrome does on
+    /// Windows. Chrome for Testing 148.0.7778.216 win64, a `<div>` of the
+    /// text (CSS.getPlatformFontsForNode names the faces): Arial 14px "Plain
+    /// text" 16; with U+1F6E1 (Segoe UI Symbol) or U+1F50D (Segoe UI Emoji)
+    /// 19; Arial 12px with U+2B07 16 (plain 14); Arial 16px with U+1F4F1 21
+    /// (plain 18). The Segoe faces' ascent and descent rounded, united with
+    /// Arial's. RustKit kept Arial's line (16 / 14 / 18).
+    #[cfg(windows)]
+    #[test]
+    fn a_run_drawn_partly_from_a_fallback_face_unites_its_extents() {
+        let shaper = TextShaper::new();
+        let chain = FontFamilyChain::new("Arial");
+        // The run's `normal` line: ascent + descent + its line gap (a united
+        // run carries none), rounded, as Chrome's line box is (Arial 16px
+        // plain: 14.48 + 3.39 + 0.52 = 18.4, Chrome 18).
+        let line = |t: &str, size: f32| {
+            let m = shaper
+                .shape(t, &chain, FontWeight::NORMAL, FontStyle::Normal, FontStretch::Normal, size)
+                .unwrap()
+                .metrics;
+            (m.ascent + m.descent + m.leading).round()
+        };
+        for (text, size, chrome) in [
+            ("Plain text", 14.0, 16.0),
+            ("\u{1F6E1} Shield", 14.0, 19.0),
+            ("\u{2699} Gear", 14.0, 19.0),
+            ("\u{1F50D} Search", 14.0, 19.0),
+            ("Plain text", 12.0, 14.0),
+            ("\u{2B07} Down", 12.0, 16.0),
+            ("Plain text", 16.0, 18.0),
+            ("\u{1F4F1} Share", 16.0, 21.0),
+        ] {
+            assert_eq!(line(text, size), chrome, "{text:?} at {size}px");
+        }
+    }
+
+    /// A character the primary face lacks and the emoji path does not take is
+    /// drawn from the face DirectWrite's system font fallback maps it to, as
+    /// Chrome does: Chrome for Testing 148.0.7778.216 win64 draws U+25BE / U+25B8
+    /// / U+21BB (the chrome page's workspace expander and reload) from Cambria
+    /// Math (CSS.getPlatformFontsForNode). Under a Segoe UI primary its advance
+    /// is 10.00 at 12px, 8.36 at 10px, 13.00 at 16px (RustKit took Segoe UI's
+    /// .notdef: 7.75, 6.46, 10.33), and its rounded typo extents (USE_TYPO_METRICS)
+    /// lift the `normal` line: 12px 16 -> 17, 10px 14 -> 14, 16px 21 -> 23.
+    #[cfg(windows)]
+    #[test]
+    fn a_missing_glyph_outside_the_emoji_path_takes_the_system_fallback_face() {
+        use rustkit_text::GlyphFace;
+        let shaper = TextShaper::new();
+        let chain = FontFamilyChain::new("Segoe UI");
+        let run = |t: &str, size: f32| {
+            shaper
+                .shape(t, &chain, FontWeight::NORMAL, FontStyle::Normal, FontStretch::Normal, size)
+                .unwrap()
+        };
+        for (text, size, width, line) in [
+            ("\u{25BE}", 12.0, 10.0, 17.0),
+            ("\u{25B8}", 12.0, 10.0, 17.0),
+            ("\u{25BE}", 10.0, 8.36, 14.0),
+            ("\u{21BB}", 16.0, 13.0, 23.0),
+        ] {
+            let shaped = run(text, size);
+            let w = shaped.metrics.width;
+            assert!((w - width).abs() < 0.02, "{text:?} at {size}px: RustKit {w}, Chrome {width}");
+            assert_eq!(shaped.glyphs[0].face, GlyphFace::Fallback { emoji: false }, "{text:?}");
+            let m = &shaped.metrics;
+            let got = (m.ascent + m.descent + m.leading).round();
+            assert_eq!(got, line, "{text:?} at {size}px line");
+        }
     }
 
     #[test]

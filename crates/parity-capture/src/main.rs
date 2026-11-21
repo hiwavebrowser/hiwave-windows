@@ -2502,7 +2502,8 @@ mod tests {
         assert_eq!(failed.source, "inline#2", "{threw:?}");
         // #799 nit: an inline classic script past the size cap was meant to
         // run and did not.
-        let big = format!("<html><body><script>/*{}*/</script></body></html>", "x".repeat(4 * 1024 * 1024 + 1));
+        // The engine's per-script cap is 16 MiB (#1396); one byte past it.
+        let big = format!("<html><body><script>/*{}*/</script></body></html>", "x".repeat(16 * 1024 * 1024 + 1));
         let too_large = log_of(&big);
         let failed = inline_script_failure(&too_large).expect("a too-large inline script fails the capture");
         assert!(matches!(failed.outcome, ScriptOutcome::Skipped(why) if why.starts_with("too large")), "{too_large:?}");
