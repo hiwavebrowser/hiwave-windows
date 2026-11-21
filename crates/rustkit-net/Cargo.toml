@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "HTTP networking, request interception, and downloads for RustKit"
 authors = ["HiWave Team"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 # HTTP client (RustKit-owned)
 rustkit-http = { path = "../rustkit-http" }
 
 # Async runtime
-tokio = { version = "1.42", features = ["sync", "time", "fs", "io-util", "macros"] }
+tokio = { version = "1.42", features = ["sync", "time", "fs", "io-util", "macros", "rt"] }
 futures = "0.3"
 
 # Serialization
@@ -42,6 +42,6 @@ base64 = "0.22"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "net"] }
 wiremock = "0.6"
 

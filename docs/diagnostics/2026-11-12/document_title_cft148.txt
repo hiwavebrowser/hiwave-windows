@@ -1,0 +1,18 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() of document_title.html
+accessor: function function own=false
+no title: "" titles=0
+set x: "x" titles=1 last-of-head=title ns=http://www.w3.org/1999/xhtml text="x" kids=1
+set y: "y" titles=1 text="y" kids=1
+whitespace: "a b c"
+other spaces stay: char codes 160,97,160,160,98,8195
+set keeps spaces in the element: "  p   q  " "p q"
+set empty: "" titles=1 kids=0
+set null, 5: "null" "5"
+element children are not its text: "pq" kids=3
+set replaces all children: "z" kids=1
+first in tree order: "z" "second"
+a title in the body counts: "" "in body" "set in body" head-titles=0
+no head: "nowhere" titles=0/1
+parsed document: "one two" "three" "<title>three</title>"
+parsed document without one: "" "<title>made</title>"
+this page is untouched by them: "nowhere"

@@ -11,9 +11,13 @@
 //! 4. **Mutation support**: Node insertion, removal, attribute modification
 //! 5. **Event dispatch**: DOM Events with capture/bubble phases
 
+pub mod attr_map;
 pub mod events;
+pub mod clipboard;
 pub mod forms;
 pub mod images;
+pub mod shadow;
+mod svg_names;
 
 pub use events::{
     AddEventListenerOptions, DomEvent, Event, EventDispatcher, EventId, EventListenerCallback,
@@ -21,18 +25,82 @@ pub use events::{
 };
 pub use forms::{
     CheckableState, FormDataEntry, FormDataValue, FormEnctype, FormMethod, FormState, InputType,
-    SelectionDirection, SelectionRange, TextEditState,
+    EditCommand, EditOutcome, KeyPlatform, SelectionDirection, SelectionRange, TextControlKind,
+    TextEditState,
 };
 pub use images::{
     CrossOrigin, FaviconLink, ImageDecoding, ImageElement, ImageElementManager, ImageLoading,
     ImageLoadingState, PictureElement, PictureSource,
 };
+pub use attr_map::AttrMap;
+pub use shadow::{is_valid_custom_element_name, ShadowRootInit, ShadowRootMode};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicPtr, Ordering};
 use thiserror::Error;
 use tracing::debug;
+
+thread_local! {
+    static REMOVAL_ARMED: Cell<bool> = const { Cell::new(false) };
+    /// Counts every change to any tree on this thread (`mutation_generation`).
+    static MUTATION_GENERATION: Cell<u64> = const { Cell::new(0) };
+}
+
+/// A number that changes whenever any DOM tree on this thread changes: a
+/// child inserted or removed, a node's data replaced (attributes, text),
+/// a shadow root attached or moved, adopted sheets set. A node's data is
+/// not interior-mutable, so these are the only ways a tree changes. Equal
+/// readings mean no tree changed in between, so a cache derived from the
+/// DOM (the engine's inline svg markup, LAT4b) may be taken as it is.
+/// One counter per thread, not per document: a change to another
+/// document only costs such a cache a check.
+pub fn mutation_generation() -> u64 {
+    MUTATION_GENERATION.with(Cell::get)
+}
+
+pub(crate) fn note_mutation() {
+    MUTATION_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+}
+
+static REMOVAL_HOOK: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+
+/// `parent tag`, `parent id` (empty when the element has none), subtree size.
+pub type RemovalDiag = fn(&str, &str, usize);
+
+/// The walk in [`Node::remove_from_parent`] runs only while this is set.
+pub fn set_removal_armed(on: bool) {
+    REMOVAL_ARMED.with(|cell| cell.set(on));
+}
+
+pub fn removal_armed() -> bool {
+    REMOVAL_ARMED.with(Cell::get)
+}
+
+pub fn set_removal_hook(hook: Option<RemovalDiag>) {
+    let ptr = match hook {
+        Some(hook) => hook as *mut (),
+        None => std::ptr::null_mut(),
+    };
+    REMOVAL_HOOK.store(ptr, Ordering::Relaxed);
+}
+
+/// A parent lost `nodes` descendants at once (innerHTML, textContent) or one
+/// child whose own subtree is that large. No-op unless armed and `nodes` > 50.
+pub fn note_large_clear(tag: &str, id: &str, nodes: usize) {
+    if nodes <= 50 || !removal_armed() {
+        return;
+    }
+    let ptr = REMOVAL_HOOK.load(Ordering::Relaxed);
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: stored from a `RemovalDiag` function pointer. The engine
+    // installs one static function for the process.
+    let hook: RemovalDiag = unsafe { std::mem::transmute(ptr) };
+    hook(tag, id, nodes);
+}
 
 /// Errors that can occur in DOM operations.
 #[derive(Error, Debug)]
@@ -75,7 +143,7 @@ pub enum NodeType {
     Element {
         tag_name: String,
         namespace: String,
-        attributes: HashMap<String, String>,
+        attributes: AttrMap,
     },
     Text(String),
     Comment(String),
@@ -105,6 +173,40 @@ pub struct Node {
     next_sibling: RefCell<Option<Weak<Node>>>,
     /// Event target mixin for event handling.
     pub event_target: EventTarget,
+    /// Shadow DOM: on a shadow host, its shadow root (owned); on a shadow
+    /// root, its host (weak, so host and root do not keep each other
+    /// alive). `None` on every other node (see `shadow.rs`).
+    shadow: RefCell<Option<shadow::ShadowLink>>,
+    /// CSS text of `adoptedStyleSheets`, in array order. Set on a
+    /// `Document` node or a shadow root. Empty strings are disabled sheets
+    /// and are not applied. The cascade reads this; it is not a `<style>`
+    /// element, so it does not change the child count.
+    adopted_styles: RefCell<Vec<String>>,
+    /// How many times this node's child list changed: one of the events
+    /// that end the sheet a `<style>` element owns (CSSOM "update a style
+    /// block": Chromium makes a new, enabled `CSSStyleSheet` each time).
+    /// Kept on every node, since a child list does not know its parent is
+    /// a `<style>`. See [`Node::sheet_generation`].
+    sheet_generation: Cell<u64>,
+    /// How many times this node was inserted or removed. A connection
+    /// change anywhere above a `<style>` ends its sheet too (a container
+    /// detached and reinserted, or moved), so [`Node::sheet_generation`]
+    /// sums this count over the element and every ancestor instead of
+    /// walking the subtree at every mutation.
+    connection_generation: Cell<u64>,
+    /// How many times `adoptedStyleSheets` was set on this document or
+    /// shadow root: equal readings, the same adopted texts.
+    adopted_generation: Cell<u64>,
+    /// The node's document (DOM "node document"), as the NodeId of its
+    /// Document node; 0 when no path has said (unknown). The page's own
+    /// Document node owns itself, and so does each other document here
+    /// (one `DOMParser` or `createHTMLDocument` made, and the one that
+    /// holds template contents). Set where a document makes a node, taken
+    /// from the new parent whenever a node is inserted (the move adopts
+    /// it), kept on removal and on a data write, copied by a clone. A
+    /// reader that needs to know must treat 0 as "not the page's". See
+    /// `set_owner`.
+    owner: Cell<usize>,
 }
 
 impl Node {
@@ -118,7 +220,85 @@ impl Node {
             prev_sibling: RefCell::new(None),
             next_sibling: RefCell::new(None),
             event_target: EventTarget::new(),
+            shadow: RefCell::new(None),
+            adopted_styles: RefCell::new(Vec::new()),
+            sheet_generation: Cell::new(0),
+            connection_generation: Cell::new(0),
+            adopted_generation: Cell::new(0),
+            owner: Cell::new(0),
         })
+    }
+
+    /// The NodeId of this node's Document node, 0 when unknown.
+    pub fn owner_document_id(&self) -> usize {
+        self.owner.get()
+    }
+
+    /// Give this node and everything under it the document `owner` (a
+    /// subtree always has one document). Shadow trees follow their host.
+    pub fn set_owner(&self, owner: usize) {
+        if self.owner.get() == owner {
+            return;
+        }
+        self.owner.set(owner);
+        let mut pending: Vec<Rc<Node>> = self.children.borrow().iter().cloned().collect();
+        pending.extend(self.shadow_root());
+        while let Some(node) = pending.pop() {
+            node.owner.set(owner);
+            pending.extend(node.children.borrow().iter().cloned());
+            pending.extend(node.shadow_root());
+        }
+    }
+
+    /// The document whose nodes a node inserted under this one joins:
+    /// this node's own document (a Document node owns itself).
+    fn document_for_children(&self) -> usize {
+        self.owner.get()
+    }
+
+    /// The current lifetime of this element's sheet: changes whenever the
+    /// element's children change or it, or any ancestor, is inserted or
+    /// removed. Two reads of one element are the same sheet iff they are
+    /// equal: every event adds one to a count on the chain, so the sum
+    /// only grows (a `wrapping_add` that never wraps in practice; script
+    /// reads it as a JS number, exact below 2^53, which no page reaches).
+    /// A `<style>`'s `sheet.disabled` is recorded against this number
+    /// ([`Document::set_style_sheet_disabled`]) and dies with the sheet.
+    pub fn sheet_generation(&self) -> u64 {
+        let mut generation = self.sheet_generation.get().wrapping_add(self.connection_generation.get());
+        let mut node = self.parent();
+        while let Some(ancestor) = node {
+            generation = generation.wrapping_add(ancestor.connection_generation.get());
+            node = ancestor.parent();
+        }
+        generation
+    }
+
+    fn end_sheet(&self) {
+        self.sheet_generation.set(self.sheet_generation.get().wrapping_add(1));
+    }
+
+    fn moved(&self) {
+        self.connection_generation.set(self.connection_generation.get().wrapping_add(1));
+    }
+
+    /// Replace the CSS text adopted by this document or shadow root.
+    /// One string per `adoptedStyleSheets` entry, in order. An empty
+    /// string is a disabled sheet and is skipped by style resolution.
+    pub fn set_adopted_styles(&self, texts: Vec<String>) {
+        note_mutation();
+        self.adopted_generation.set(self.adopted_generation.get().wrapping_add(1));
+        *self.adopted_styles.borrow_mut() = texts;
+    }
+
+    /// Changes whenever `set_adopted_styles` is called on this node.
+    pub fn adopted_generation(&self) -> u64 {
+        self.adopted_generation.get()
+    }
+
+    /// CSS text adopted by this document or shadow root, in array order.
+    pub fn adopted_styles(&self) -> Vec<String> {
+        self.adopted_styles.borrow().clone()
     }
 
     /// Get the tag name for element nodes.
@@ -127,6 +307,14 @@ impl Node {
             NodeType::Element { tag_name, .. } => Some(tag_name),
             _ => None,
         }
+    }
+
+    /// Are the children the parser makes under this element in the SVG
+    /// namespace: an SVG element that is not an HTML integration point.
+    pub fn holds_svg_content(&self) -> bool {
+        matches!(&self.node_type, NodeType::Element { tag_name, namespace, .. }
+            if namespace == svg_names::SVG_NAMESPACE
+                && !svg_names::is_html_integration_point(tag_name))
     }
 
     /// Get an attribute value.
@@ -153,6 +341,17 @@ impl Node {
                 }
             }
         }
+    }
+
+    /// Is this an HTML `<title>` element (not an SVG one).
+    pub fn is_title_element(&self) -> bool {
+        matches!(&self.node_type, NodeType::Element { tag_name, namespace, .. }
+            if tag_name.eq_ignore_ascii_case("title") && namespace != svg_names::SVG_NAMESPACE)
+    }
+
+    /// Is this, or anything under it, an HTML `<title>` element.
+    pub fn holds_title_element(&self) -> bool {
+        self.is_title_element() || self.children.borrow().iter().any(|child| child.holds_title_element())
     }
 
     /// Get parent node.
@@ -203,6 +402,11 @@ impl Node {
 
     /// Append a child node.
     pub fn append_child(self: &Rc<Self>, child: Rc<Node>) {
+        note_mutation();
+        self.end_sheet();
+        child.moved();
+        // An inserted node takes its new parent's document.
+        child.set_owner(self.document_for_children());
         // Update child's parent
         *child.parent.borrow_mut() = Some(Rc::downgrade(self));
 
@@ -216,9 +420,32 @@ impl Node {
         self.children.borrow_mut().push(child);
     }
 
+    /// This node plus every descendant.
+    pub fn subtree_len(&self) -> usize {
+        1 + self
+            .children
+            .borrow()
+            .iter()
+            .map(|child| child.subtree_len())
+            .sum::<usize>()
+    }
+
     /// Remove this node from its parent.
     pub fn remove_from_parent(self: &Rc<Self>) {
+        if removal_armed() {
+            let nodes = self.subtree_len();
+            if nodes > 50 {
+                if let Some(parent) = self.parent() {
+                    let tag = parent.tag_name().unwrap_or("-");
+                    let id = parent.get_attribute("id").unwrap_or("");
+                    note_large_clear(tag, id, nodes);
+                }
+            }
+        }
         if let Some(parent) = self.parent() {
+            note_mutation();
+            parent.end_sheet();
+            self.moved();
             // Update sibling links
             if let Some(prev) = self.previous_sibling() {
                 *prev.next_sibling.borrow_mut() = self.next_sibling.borrow().clone();
@@ -239,11 +466,15 @@ impl Node {
 
     /// Insert a child node before a reference node.
     pub fn insert_before(self: &Rc<Self>, new_child: Rc<Node>, reference: Rc<Node>) {
+        note_mutation();
         // Find the index of the reference node
         let mut children = self.children.borrow_mut();
         let ref_idx = children.iter().position(|c| Rc::ptr_eq(c, &reference));
 
         if let Some(idx) = ref_idx {
+            self.end_sheet();
+            new_child.moved();
+            new_child.set_owner(self.document_for_children());
             // Update new_child's parent
             *new_child.parent.borrow_mut() = Some(Rc::downgrade(self));
 
@@ -277,6 +508,45 @@ pub struct Document {
     elements_by_id: RefCell<HashMap<String, Rc<Node>>>,
     /// Next node ID.
     next_id: Cell<usize>,
+    /// How many shadow roots were ever attached in this document. Zero
+    /// means no node has a shadow root, so tree walks can skip the shadow
+    /// checks entirely.
+    shadow_roots: Cell<usize>,
+    /// The scripting flag the document was parsed with (HTML §13.2.3.5):
+    /// its scripts run, so `<noscript>` holds text. Fragments parsed for
+    /// its elements (`innerHTML`) follow it.
+    scripting: Cell<bool>,
+    /// Custom element names `customElements.define` has defined, for
+    /// `:defined` (see `shadow.rs`, `define_custom_element`).
+    defined_custom_elements: RefCell<std::collections::HashSet<String>>,
+    /// The page's load has settled its custom element definitions (once
+    /// per document; see `shadow.rs`, `settle_custom_element_definitions`).
+    custom_element_definitions_settled: Cell<bool>,
+    /// The names that settle found present and undefined, minus any
+    /// defined since: `:defined` for the cascade only.
+    settled_custom_elements: RefCell<std::collections::HashSet<String>>,
+    /// `<style>` elements whose sheet script disabled
+    /// (`sheet.disabled = true`), each with the [`Node::sheet_generation`]
+    /// of the sheet that was. New children or a move make a new, enabled
+    /// sheet (CSSOM: "update a style block"), so the flag holds only while
+    /// the generation is the same. Keyed by the text instead, a sheet came
+    /// back disabled when its text did (A -> B -> A; #964 R1 HOLD).
+    disabled_style_sheets: RefCell<HashMap<NodeId, u64>>,
+    /// `CSS.registerProperty()` registrations, each as `@property` rule
+    /// text, in call order (TRANS-F). The cascade reads them after the
+    /// document's sheets; a name is registered once.
+    registered_properties: RefCell<Vec<(String, String)>>,
+}
+
+/// The CSS text of a `<style>` element: its Text children, in order.
+pub fn style_element_text(element: &Node) -> String {
+    let mut text = String::new();
+    for child in element.children() {
+        if let NodeType::Text(s) = &child.node_type {
+            text.push_str(s);
+        }
+    }
+    text
 }
 
 /// Sink for building a Document from HTML parsing.
@@ -284,6 +554,19 @@ struct DocumentSink {
     doc: Document,
     /// Stack of open elements during parsing.
     open_elements: Vec<Rc<Node>>,
+    /// A `<template shadowrootmode>` was seen: declarative shadow roots
+    /// are attached once the parse is done (`shadow::attach_declarative`).
+    saw_declarative_shadow: bool,
+    /// A fragment whose context element holds SVG content.
+    svg_fragment: bool,
+    /// Attributes from a second `<html>`/`<body>` start tag (HTML
+    /// §13.2.6.4.7), applied once the parse is done: a node's data is not
+    /// interior-mutable, and swapping the node mid-parse would orphan the
+    /// parser's references to the open element. Sound only while no script
+    /// runs during `Document::parse_html` (scripts run after it). Streaming
+    /// or `document.write` parsing would need the merge applied at once,
+    /// i.e. interior-mutable attributes.
+    attr_merges: Vec<(NodeId, Vec<(String, String)>)>,
 }
 
 impl DocumentSink {
@@ -291,6 +574,55 @@ impl DocumentSink {
         Self {
             doc: Document::new(),
             open_elements: vec![],
+            saw_declarative_shadow: false,
+            svg_fragment: false,
+            attr_merges: Vec::new(),
+        }
+    }
+
+    /// Apply `attr_merges`: each attribute the element lacks is added, so
+    /// the first value of a name wins.
+    fn apply_attr_merges(&mut self) {
+        for (id, attrs) in std::mem::take(&mut self.attr_merges) {
+            let Some(node) = self.doc.get_node(id) else { continue };
+            let NodeType::Element { tag_name, namespace, attributes } = &node.node_type else {
+                continue;
+            };
+            let mut merged = attributes.clone();
+            let mut changed = false;
+            for (name, value) in attrs {
+                if !merged.contains_key(&name) {
+                    merged.insert(name, value);
+                    changed = true;
+                }
+            }
+            if changed {
+                let data = NodeType::Element {
+                    tag_name: tag_name.clone(),
+                    namespace: namespace.clone(),
+                    attributes: merged,
+                };
+                self.doc.replace_node_data(id, data);
+            }
+        }
+    }
+
+    /// The namespace and names of a parsed element under the current parent.
+    /// `create_element` has no parent yet, so there `in_svg` is false.
+    fn parsed_element(
+        name: String,
+        attrs: Vec<(String, String)>,
+        in_svg: bool,
+    ) -> (String, &'static str, AttrMap) {
+        let svg = name == "svg" || (in_svg && !svg_names::breaks_out_of_svg(&name, &attrs));
+        if svg {
+            let attributes = attrs
+                .into_iter()
+                .map(|(k, v)| (svg_names::adjust_attribute_name(k), v))
+                .collect();
+            (svg_names::adjust_tag_name(name), svg_names::SVG_NAMESPACE, attributes)
+        } else {
+            (name, "http://www.w3.org/1999/xhtml", attrs.into_iter().collect())
         }
     }
 
@@ -329,14 +661,20 @@ impl rustkit_html::TreeSink for DocumentSink {
         attrs: Vec<(String, String)>,
         self_closing: bool,
     ) -> Self::NodeId {
-        let mut attributes = HashMap::new();
-        for (key, value) in attrs {
-            attributes.insert(key, value);
+        let parent = self.current_parent();
+        let in_svg = if matches!(parent.node_type, NodeType::Document) {
+            self.svg_fragment
+        } else {
+            parent.holds_svg_content()
+        };
+        let (tag_name, namespace, attributes) = Self::parsed_element(name, attrs, in_svg);
+        if tag_name == "template" && attributes.contains_key("shadowrootmode") {
+            self.saw_declarative_shadow = true;
         }
 
         let node = self.create_node(NodeType::Element {
-            tag_name: name,
-            namespace: String::from("http://www.w3.org/1999/xhtml"),
+            tag_name,
+            namespace: namespace.to_string(),
             attributes,
         });
 
@@ -348,7 +686,6 @@ impl rustkit_html::TreeSink for DocumentSink {
                 .insert(id.to_string(), node.clone());
         }
 
-        let parent = self.current_parent();
         parent.append_child(node.clone());
 
         // Push onto stack for nested elements (but not void/self-closing elements)
@@ -381,6 +718,20 @@ impl rustkit_html::TreeSink for DocumentSink {
 
     fn current_node(&self) -> Option<Self::NodeId> {
         self.open_elements.last().cloned()
+    }
+
+    fn reopen(&mut self, node: Self::NodeId) {
+        self.open_elements.push(node);
+    }
+
+    fn remove_open(&mut self, node: Self::NodeId) {
+        if let Some(at) = self.open_elements.iter().rposition(|n| Rc::ptr_eq(n, &node)) {
+            self.open_elements.remove(at);
+        }
+    }
+
+    fn add_attrs_if_missing(&mut self, target: Self::NodeId, attrs: Vec<(String, String)>) {
+        self.attr_merges.push((target.id, attrs));
     }
 
     fn in_scope(&self, tag_name: &str) -> bool {
@@ -420,14 +771,10 @@ impl rustkit_html::TreeSink for DocumentSink {
     // ==================== AAA (Adoption Agency Algorithm) Methods ====================
 
     fn create_element(&mut self, name: String, attrs: Vec<(String, String)>) -> Self::NodeId {
-        let mut attributes = HashMap::new();
-        for (key, value) in attrs {
-            attributes.insert(key, value);
-        }
-
+        let (tag_name, namespace, attributes) = Self::parsed_element(name, attrs, false);
         self.create_node(NodeType::Element {
-            tag_name: name,
-            namespace: String::from("http://www.w3.org/1999/xhtml"),
+            tag_name,
+            namespace: namespace.to_string(),
             attributes,
         })
     }
@@ -478,17 +825,91 @@ impl Document {
             nodes: RefCell::new(nodes),
             elements_by_id: RefCell::new(HashMap::new()),
             next_id: Cell::new(1),
+            shadow_roots: Cell::new(0),
+            scripting: Cell::new(false),
+            defined_custom_elements: RefCell::new(std::collections::HashSet::new()),
+            custom_element_definitions_settled: Cell::new(false),
+            settled_custom_elements: RefCell::new(std::collections::HashSet::new()),
+            disabled_style_sheets: RefCell::new(HashMap::new()),
+            registered_properties: RefCell::new(Vec::new()),
         }
     }
 
-    /// Parse HTML and create a document (new rustkit-html parser).
+    /// Set the `disabled` flag of `<style>` element `element`'s sheet: the
+    /// one the element owns now ([`Node::sheet_generation`]). A CSSOM edit
+    /// rewrites the text, which ends that sheet, so web_cssom.js calls
+    /// again after one.
+    pub fn set_style_sheet_disabled(&self, element: &Node, disabled: bool) {
+        note_mutation();
+        let mut map = self.disabled_style_sheets.borrow_mut();
+        if disabled {
+            map.insert(element.id, element.sheet_generation());
+        } else {
+            map.remove(&element.id);
+        }
+    }
+
+    /// Record a `CSS.registerProperty()` registration of `name` as `rule`
+    /// (`@property` text). False when `name` is registered already (the
+    /// caller throws `InvalidModificationError`).
+    pub fn register_property(&self, name: &str, rule: String) -> bool {
+        let mut list = self.registered_properties.borrow_mut();
+        if list.iter().any(|(n, _)| n == name) {
+            return false;
+        }
+        note_mutation();
+        list.push((name.to_string(), rule));
+        true
+    }
+
+    /// The `CSS.registerProperty()` registrations as `@property` text, in
+    /// call order (empty when there are none).
+    pub fn registered_property_rules(&self) -> String {
+        self.registered_properties.borrow().iter().map(|(_, r)| r.as_str()).collect()
+    }
+
+    /// Whether `<style>` element `element`'s sheet is disabled: script set
+    /// the flag on this very sheet (its children and place in the tree are
+    /// unchanged since).
+    pub fn style_sheet_disabled(&self, element: &Node) -> bool {
+        let map = self.disabled_style_sheets.borrow();
+        if map.is_empty() {
+            return false;
+        }
+        map.get(&element.id) == Some(&element.sheet_generation())
+    }
+
+    /// Parse HTML and create a document (new rustkit-html parser), with
+    /// scripting off: what `DOMParser` and a page whose scripts do not run
+    /// get, where `<noscript>` content is elements.
     pub fn parse_html(html: &str) -> Result<Self, DomError> {
+        Self::parse_html_scripted(html, false)
+    }
+
+    /// Whether the document's scripts run (see `parse_html_scripted`).
+    pub fn scripting(&self) -> bool {
+        self.scripting.get()
+    }
+
+    /// `parse_html` with the scripting flag (HTML §13.2.3.5). On for a page
+    /// whose scripts run: the contents of every `<noscript>` are then one
+    /// text node, in the head and in the body, and nothing in them is an
+    /// element (so nothing in them loads, runs or matches a selector).
+    pub fn parse_html_scripted(html: &str, scripting: bool) -> Result<Self, DomError> {
         debug!(len = html.len(), "Parsing HTML (rustkit-html)");
 
         let sink = DocumentSink::new();
-        let sink = rustkit_html::parse(html, sink).map_err(|e| DomError::ParseError(e.to_string()))?;
+        let mut sink = rustkit_html::parse_scripted(html, sink, scripting)
+            .map_err(|e| DomError::ParseError(e.to_string()))?;
+        sink.doc.scripting.set(scripting);
+        sink.apply_attr_merges();
 
         debug!(node_count = sink.doc.nodes.borrow().len(), "HTML parsed");
+        // Declarative shadow DOM is a document-parser feature: the fragment
+        // parser (`parse_fragment`, behind innerHTML) leaves the templates.
+        if sink.saw_declarative_shadow {
+            shadow::attach_declarative(&sink.doc);
+        }
         Ok(sink.doc)
     }
 
@@ -514,15 +935,16 @@ impl Document {
             .find(|n| n.tag_name() == Some("head"))
     }
 
-    /// Get the <body> element.
+    /// The body element (HTML §3.1.3): the first child of the html element
+    /// that is a `body` OR a `frameset` element, or None. A frameset
+    /// document's body element is its frameset; callers that need a `<body>`
+    /// specifically must check the tag.
     pub fn body(&self) -> Option<Rc<Node>> {
-        // First try to find body as a direct child of the document element (html)
-        // This is the correct DOM structure per spec
         if let Some(html_element) = self.document_element() {
             if let Some(body) = html_element
                 .children()
                 .into_iter()
-                .find(|n| n.tag_name() == Some("body"))
+                .find(|n| matches!(n.tag_name(), Some("body") | Some("frameset")))
             {
                 return Some(body);
             }
@@ -546,13 +968,11 @@ impl Document {
     /// extraction) silently depend on document order — CSS rule order breaks
     /// ties, so random sheet order made identical renders differ run-to-run.
     pub fn get_elements_by_tag_name(&self, tag_name: &str) -> Vec<Rc<Node>> {
-        let tag_name_lower = tag_name.to_lowercase();
         let mut result = Vec::new();
+        // Compared in place: lowercasing every element's tag allocated once
+        // per node, on every build's walk for `<style>` elements.
         self.traverse(|n| {
-            if n.tag_name()
-                .map(|t| t.to_lowercase() == tag_name_lower)
-                .unwrap_or(false)
-            {
+            if n.tag_name().is_some_and(|t| t.eq_ignore_ascii_case(tag_name)) {
                 result.push(n.clone());
             }
         });
@@ -605,8 +1025,20 @@ impl Document {
         if Rc::ptr_eq(&old, &self.root) {
             return None;
         }
+        note_mutation();
         let new = Node::new(id, node_type);
         new.event_target.adopt_listeners(&old.event_target);
+        *new.adopted_styles.borrow_mut() = old.adopted_styles.borrow().clone();
+        new.adopted_generation.set(old.adopted_generation.get());
+        // An attribute change keeps a <style>'s sheet; new data in a Text
+        // child ends its parent's.
+        new.sheet_generation.set(old.sheet_generation.get());
+        new.connection_generation.set(old.connection_generation.get());
+        // A data write keeps the node's document.
+        new.owner.set(old.owner.get());
+        if let Some(p) = old.parent() {
+            p.end_sheet();
+        }
 
         let children = std::mem::take(&mut *old.children.borrow_mut());
         for child in &children {
@@ -634,6 +1066,7 @@ impl Document {
             }
         }
         *new.parent.borrow_mut() = parent;
+        shadow::move_link(&old, &new);
 
         self.nodes.borrow_mut().insert(id, new.clone());
         let mut by_id = self.elements_by_id.borrow_mut();
@@ -650,7 +1083,60 @@ impl Document {
     /// into this document. Returns the top-level nodes in order, detached
     /// and with fresh NodeIds; ids in the fragment join the id table.
     pub fn parse_fragment(&self, html: &str, context: &str) -> Result<Vec<Rc<Node>>, DomError> {
-        let sink = rustkit_html::parse_fragment(html, DocumentSink::new(), context)
+        self.parse_fragment_in(html, context, true, false)
+    }
+
+    /// `parse_fragment` for a context element that may be foreign:
+    /// `html_context` is false for an SVG or MathML context element, and
+    /// `svg_context` is true when the fragment's top level is SVG content
+    /// (`Node::holds_svg_content` of the context element).
+    pub fn parse_fragment_in(
+        &self,
+        html: &str,
+        context: &str,
+        html_context: bool,
+        svg_context: bool,
+    ) -> Result<Vec<Rc<Node>>, DomError> {
+        self.parse_fragment_scripted(html, context, html_context, svg_context, self.scripting.get())
+    }
+
+    /// `parse_fragment_in` with the scripting flag given: off for a context
+    /// element in a document whose scripts do not run (a `DOMParser`
+    /// document, a template's contents) even when this one's do.
+    pub fn parse_fragment_scripted(
+        &self,
+        html: &str,
+        context: &str,
+        html_context: bool,
+        svg_context: bool,
+        scripting: bool,
+    ) -> Result<Vec<Rc<Node>>, DomError> {
+        // HTML §13.4 step 4: a fragment whose context is a raw text element
+        // starts the tokenizer in RAWTEXT or script data state, one in title
+        // or textarea in RCDATA, and one in plaintext in PLAINTEXT. No tag is
+        // recognised, so the whole string is one text node. A framework that
+        // writes a script's code with `script.innerHTML = code` (Next.js's
+        // script loader) otherwise loses everything from the first `i<n`
+        // onward. noscript is RAWTEXT only with scripting on, which is always
+        // so for an innerHTML set from script. The states are for HTML
+        // elements only: an SVG title, script or style keeps the data state.
+        let context_lower = context.to_ascii_lowercase();
+        let verbatim = match context_lower.as_str() {
+            _ if !html_context => None,
+            "script" | "style" | "xmp" | "iframe" | "noembed" | "noframes" | "plaintext" => Some(html.to_string()),
+            "noscript" if scripting => Some(html.to_string()),
+            "title" | "textarea" => Some(rustkit_html::entities::decode(html)),
+            _ => None,
+        };
+        if let Some(text) = verbatim {
+            if text.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(vec![self.create_node(NodeType::Text(text))]);
+        }
+        let mut sink = DocumentSink::new();
+        sink.svg_fragment = svg_context;
+        let sink = rustkit_html::parse_fragment_scripted(html, sink, context, scripting)
             .map_err(|e| DomError::ParseError(e.to_string()))?;
         Ok(sink
             .doc
@@ -677,14 +1163,33 @@ impl Document {
         copy
     }
 
-    /// Get the title of the document.
+    /// The document's title as `document.title` reads it (HTML §3.1.3):
+    /// the text children of the first HTML `<title>` in tree order, with
+    /// ASCII whitespace stripped and collapsed. `None` when the document
+    /// has no such element.
     pub fn title(&self) -> Option<String> {
-        let head = self.head()?;
-        let title_elem = head
-            .children()
-            .into_iter()
-            .find(|n| n.tag_name() == Some("title"))?;
-        Some(title_elem.text_content())
+        fn first_title(node: &Rc<Node>) -> Option<Rc<Node>> {
+            if node.is_title_element() {
+                return Some(Rc::clone(node));
+            }
+            let mut i = 0;
+            while let Some(child) = node.children.borrow().get(i).cloned() {
+                if let Some(found) = first_title(&child) {
+                    return Some(found);
+                }
+                i += 1;
+            }
+            None
+        }
+        let title = first_title(&self.root)?;
+        let mut text = String::new();
+        for child in title.children.borrow().iter() {
+            if let NodeType::Text(data) = &child.node_type {
+                text.push_str(data);
+            }
+        }
+        const ASCII_WHITESPACE: [char; 5] = ['\t', '\n', '\u{c}', '\r', ' '];
+        Some(text.split(ASCII_WHITESPACE).filter(|word| !word.is_empty()).collect::<Vec<_>>().join(" "))
     }
 
     /// Traverse all nodes depth-first.
@@ -701,8 +1206,13 @@ impl Document {
         F: FnMut(&Rc<Node>),
     {
         callback(node);
-        for child in node.children() {
+        // By index with a short borrow each: `children()` cloned the
+        // vector at every node of the walk, and a callback may still edit
+        // the tree without hitting a held borrow.
+        let mut i = 0;
+        while let Some(child) = node.children.borrow().get(i).cloned() {
             self.traverse_node(&child, callback);
+            i += 1;
         }
     }
 }
@@ -739,6 +1249,24 @@ impl QuerySelector {
 mod tests {
     use super::*;
 
+    /// The document's title is what `document.title` reads (HTML §3.1.3):
+    /// the first HTML `<title>` in tree order, its own text, ASCII
+    /// whitespace stripped and collapsed.
+    #[test]
+    fn the_title_is_the_first_html_title_elements_collapsed_text() {
+        let title = |html: &str| Document::parse_html(html).unwrap().title();
+        assert_eq!(title("<title>  a \n\t b  </title>"), Some("a b".to_string()));
+        assert_eq!(title("<p>none</p>"), None);
+        assert_eq!(title("<title></title>"), Some(String::new()));
+        assert_eq!(title("<body><svg><title>drawing</title></svg><p>x</p>"), None, "an SVG title is not the document's");
+        assert_eq!(
+            title("<head></head><body><svg><title>drawing</title></svg><title>in body</title>"),
+            Some("in body".to_string()),
+            "a title outside the head counts"
+        );
+        assert_eq!(title("<title>\u{a0}kept\u{a0}</title>"), Some("\u{a0}kept\u{a0}".to_string()), "only ASCII whitespace is stripped");
+    }
+
     #[test]
     fn test_parse_simple_html() {
         let html = r#"<!DOCTYPE html>
@@ -761,6 +1289,43 @@ mod tests {
         let main = doc.get_element_by_id("main").unwrap();
         assert_eq!(main.tag_name(), Some("p"));
         assert_eq!(main.text_content(), "Hello, world!");
+    }
+
+    /// HTML §13.2.6.4.7 "in body", start tags `body` and `html`: a second
+    /// one adds the attributes the existing element lacks (first wins) and
+    /// creates nothing. S11: gmail's nested body kept the UA 8px margin.
+    #[test]
+    fn a_second_body_or_html_start_tag_merges_attributes() {
+        let doc = Document::parse_html(
+            "<html class=h><body class=a><html lang=en class=no><body class=b id=x>hello</body></html>",
+        )
+        .unwrap();
+        let bodies = doc.get_elements_by_tag_name("body");
+        assert_eq!(bodies.len(), 1);
+        let body = doc.body().unwrap();
+        assert_eq!(body.get_attribute("class"), Some("a"));
+        assert_eq!(body.get_attribute("id"), Some("x"));
+        assert_eq!(body.text_content(), "hello");
+        assert_eq!(doc.get_element_by_id("x").map(|n| n.id), Some(body.id));
+        assert_eq!(doc.get_elements_by_tag_name("html").len(), 1);
+        let html = doc.document_element().unwrap();
+        assert_eq!(html.get_attribute("class"), Some("h"));
+        assert_eq!(html.get_attribute("lang"), Some("en"));
+    }
+
+    /// HTML §3.1.3 "the body element": the first child of the html element
+    /// that is a body OR a frameset element. A frameset document's body
+    /// element is its frameset.
+    #[test]
+    fn body_of_a_frameset_document_is_the_frameset() {
+        let doc = Document::parse_html(
+            "<!DOCTYPE html><html><head><title>f</title></head><frameset cols='*'><frame src='a'></frameset></html>",
+        )
+        .unwrap();
+        let body = doc.body().expect("a frameset document's body element is its frameset");
+        assert_eq!(body.tag_name(), Some("frameset"));
+        assert_eq!(body.parent().and_then(|p| p.tag_name().map(str::to_string)), Some("html".to_string()));
+        assert_eq!(doc.head().map(|h| h.tag_name() == Some("head")), Some(true));
     }
 
     #[test]
@@ -1097,12 +1662,17 @@ mod windows_parser_pins {
     }
 }
 
+#[cfg(test)]
+mod svg_name_case_tests;
+#[cfg(test)]
+mod attr_cost_bench;
+
 /// Script writes to a node's own data (js-ladder mutation surface).
 #[cfg(test)]
 mod node_write_tests {
     use super::*;
 
-    fn attrs(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+    fn attrs(pairs: &[(&str, &str)]) -> AttrMap {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
@@ -1188,6 +1758,40 @@ mod node_write_tests {
         span.append_child(text);
         doc.body().unwrap().append_child(span);
         assert_eq!(doc.body().unwrap().text_content(), "xhi");
+    }
+
+    /// CH2.E17 / #964: `sheet.disabled` is keyed by [`Node::sheet_generation`].
+    /// A child rewrite or a connection move ends that sheet, so the flag dies.
+    #[test]
+    fn a_disabled_flag_dies_when_sheet_generation_moves() {
+        let doc = Document::parse_html(
+            "<html><head><style id=s>p{}</style></head><body></body></html>",
+        )
+        .unwrap();
+        let style = doc.get_element_by_id("s").unwrap();
+        assert!(!doc.style_sheet_disabled(&style));
+        doc.set_style_sheet_disabled(&style, true);
+        assert!(doc.style_sheet_disabled(&style));
+
+        // CSSOM text rewrite bumps sheet_generation (append_child → end_sheet).
+        let before = style.sheet_generation();
+        style.append_child(doc.create_node(NodeType::Text("q{}".into())));
+        assert_ne!(style.sheet_generation(), before);
+        assert!(
+            !doc.style_sheet_disabled(&style),
+            "a new sheet starts enabled"
+        );
+
+        // Re-disable, then move the element: connection_generation also ends it.
+        doc.set_style_sheet_disabled(&style, true);
+        assert!(doc.style_sheet_disabled(&style));
+        let head = doc.head().unwrap();
+        style.remove_from_parent();
+        head.append_child(style.clone());
+        assert!(
+            !doc.style_sheet_disabled(&style),
+            "a moved style's sheet is a new, enabled sheet"
+        );
     }
 
     #[test]

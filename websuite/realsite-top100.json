@@ -1,0 +1,520 @@
+{
+  "description": "PROPOSED PIN 2026-10-07 (Census / issue #593) \u2014 not yet BASELINE-dated. 80 sites from websuite/realsite-top80.json plus 20 US consumer sites not already listed (cargurus + bringatrailer taken from realsite-top25; remaining 18 fill retail/social/streaming/real-estate/travel/news/search/creative verticals missing from top80). Logged-out, 1280x800 first viewport. Atlas/ZeuzGb/Prometheus may drop/swap before any trench/BASELINE-realsite.md dated note. Change the pin only with a dated BASELINE note.",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "proposed_pin": true,
+  "proposed_pin_date": "2026-10-07",
+  "proposed_pin_issue": 593,
+  "ranking_policy": {
+    "base": "websuite/realsite-top80.json (unchanged order)",
+    "extension_source": "realsite-top25 leftovers + common US consumer verticals absent from top80",
+    "not_used": "realsite-holdout20.json (fully subsumed by top80)",
+    "status": "proposed \u2014 awaiting Atlas/ZeuzGb confirm or PR review drops"
+  },
+  "extension_notes": [
+    {
+      "id": "cargurus",
+      "url": "https://www.cargurus.com/",
+      "note": "from realsite-top25 (Pete-added 2026-10-06)"
+    },
+    {
+      "id": "bringatrailer",
+      "url": "https://bringatrailer.com/",
+      "note": "from realsite-top25 (Pete-added 2026-10-06)"
+    },
+    {
+      "id": "target",
+      "url": "https://www.target.com/",
+      "note": "US big-box retail"
+    },
+    {
+      "id": "bestbuy",
+      "url": "https://www.bestbuy.com/",
+      "note": "US electronics retail"
+    },
+    {
+      "id": "costco",
+      "url": "https://www.costco.com/",
+      "note": "US warehouse retail"
+    },
+    {
+      "id": "homedepot",
+      "url": "https://www.homedepot.com/",
+      "note": "US home improvement"
+    },
+    {
+      "id": "etsy",
+      "url": "https://www.etsy.com/",
+      "note": "US marketplace"
+    },
+    {
+      "id": "nike",
+      "url": "https://www.nike.com/",
+      "note": "US apparel DTC"
+    },
+    {
+      "id": "tiktok",
+      "url": "https://www.tiktok.com/",
+      "note": "social / short video"
+    },
+    {
+      "id": "pinterest",
+      "url": "https://www.pinterest.com/",
+      "note": "social discovery"
+    },
+    {
+      "id": "spotify",
+      "url": "https://www.spotify.com/",
+      "note": "music streaming"
+    },
+    {
+      "id": "twitch",
+      "url": "https://www.twitch.tv/",
+      "note": "live streaming"
+    },
+    {
+      "id": "zillow",
+      "url": "https://www.zillow.com/",
+      "note": "US real estate"
+    },
+    {
+      "id": "expedia",
+      "url": "https://www.expedia.com/",
+      "note": "US travel OTA"
+    },
+    {
+      "id": "washingtonpost",
+      "url": "https://www.washingtonpost.com/",
+      "note": "US news"
+    },
+    {
+      "id": "imdb",
+      "url": "https://www.imdb.com/",
+      "note": "entertainment reference"
+    },
+    {
+      "id": "duckduckgo",
+      "url": "https://duckduckgo.com/",
+      "note": "search"
+    },
+    {
+      "id": "adobe",
+      "url": "https://www.adobe.com/",
+      "note": "creative consumer"
+    },
+    {
+      "id": "discord",
+      "url": "https://discord.com/",
+      "note": "messaging / community"
+    },
+    {
+      "id": "wayfair",
+      "url": "https://www.wayfair.com/",
+      "note": "US home goods retail"
+    }
+  ],
+  "sites": [
+    {
+      "id": "google",
+      "url": "https://www.google.com/"
+    },
+    {
+      "id": "youtube",
+      "url": "https://www.youtube.com/"
+    },
+    {
+      "id": "facebook",
+      "url": "https://www.facebook.com/"
+    },
+    {
+      "id": "instagram",
+      "url": "https://www.instagram.com/"
+    },
+    {
+      "id": "wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Web_browser"
+    },
+    {
+      "id": "amazon",
+      "url": "https://www.amazon.com/"
+    },
+    {
+      "id": "reddit",
+      "url": "https://www.reddit.com/"
+    },
+    {
+      "id": "x",
+      "url": "https://x.com/"
+    },
+    {
+      "id": "linkedin",
+      "url": "https://www.linkedin.com/"
+    },
+    {
+      "id": "yahoo",
+      "url": "https://www.yahoo.com/"
+    },
+    {
+      "id": "bing",
+      "url": "https://www.bing.com/"
+    },
+    {
+      "id": "chatgpt",
+      "url": "https://chatgpt.com/"
+    },
+    {
+      "id": "microsoft",
+      "url": "https://www.microsoft.com/en-us"
+    },
+    {
+      "id": "apple",
+      "url": "https://www.apple.com/"
+    },
+    {
+      "id": "netflix",
+      "url": "https://www.netflix.com/"
+    },
+    {
+      "id": "github",
+      "url": "https://github.com/"
+    },
+    {
+      "id": "ebay",
+      "url": "https://www.ebay.com/"
+    },
+    {
+      "id": "nytimes",
+      "url": "https://www.nytimes.com/"
+    },
+    {
+      "id": "cnn",
+      "url": "https://www.cnn.com/"
+    },
+    {
+      "id": "weather",
+      "url": "https://weather.com/"
+    },
+    {
+      "id": "espn",
+      "url": "https://www.espn.com/"
+    },
+    {
+      "id": "hulu",
+      "url": "https://www.hulu.com/"
+    },
+    {
+      "id": "hbo",
+      "url": "https://www.hbo.com/"
+    },
+    {
+      "id": "disney",
+      "url": "https://www.disney.com/"
+    },
+    {
+      "id": "nbc",
+      "url": "https://www.nbc.com/"
+    },
+    {
+      "id": "foxnews",
+      "url": "https://www.foxnews.com/"
+    },
+    {
+      "id": "paypal",
+      "url": "https://www.paypal.com/"
+    },
+    {
+      "id": "abc",
+      "url": "https://www.abc.com/"
+    },
+    {
+      "id": "autotrader",
+      "url": "https://www.autotrader.com/"
+    },
+    {
+      "id": "cars",
+      "url": "https://www.cars.com/"
+    },
+    {
+      "id": "edmunds",
+      "url": "https://www.edmunds.com/"
+    },
+    {
+      "id": "kbb",
+      "url": "https://www.kbb.com/"
+    },
+    {
+      "id": "carmax",
+      "url": "https://www.carmax.com/"
+    },
+    {
+      "id": "carvana",
+      "url": "https://www.carvana.com/"
+    },
+    {
+      "id": "carfax",
+      "url": "https://www.carfax.com/"
+    },
+    {
+      "id": "topps",
+      "url": "https://www.topps.com/"
+    },
+    {
+      "id": "craigslist",
+      "url": "https://www.craigslist.org/"
+    },
+    {
+      "id": "indeed",
+      "url": "https://www.indeed.com/"
+    },
+    {
+      "id": "glassdoor",
+      "url": "https://www.glassdoor.com/"
+    },
+    {
+      "id": "ziprecruiter",
+      "url": "https://www.ziprecruiter.com/"
+    },
+    {
+      "id": "googlemaps",
+      "url": "https://www.google.com/maps"
+    },
+    {
+      "id": "yelp",
+      "url": "https://www.yelp.com/"
+    },
+    {
+      "id": "tripadvisor",
+      "url": "https://www.tripadvisor.com/"
+    },
+    {
+      "id": "booking",
+      "url": "https://www.booking.com/"
+    },
+    {
+      "id": "airbnb",
+      "url": "https://www.airbnb.com/"
+    },
+    {
+      "id": "uber",
+      "url": "https://www.uber.com/"
+    },
+    {
+      "id": "lyft",
+      "url": "https://www.lyft.com/"
+    },
+    {
+      "id": "doordash",
+      "url": "https://www.doordash.com/"
+    },
+    {
+      "id": "walmart",
+      "url": "https://www.walmart.com/"
+    },
+    {
+      "id": "gmail",
+      "url": "https://www.gmail.com/"
+    },
+    {
+      "id": "googlecalendar",
+      "url": "https://www.google.com/calendar/"
+    },
+    {
+      "id": "googledocs",
+      "url": "https://www.google.com/docs/about/"
+    },
+    {
+      "id": "googletranslate",
+      "url": "https://translate.google.com/"
+    },
+    {
+      "id": "chrono24",
+      "url": "https://www.chrono24.com/"
+    },
+    {
+      "id": "caranddriver",
+      "url": "https://www.caranddriver.com/"
+    },
+    {
+      "id": "vercel",
+      "url": "https://vercel.com/"
+    },
+    {
+      "id": "cloudflare",
+      "url": "https://www.cloudflare.com/"
+    },
+    {
+      "id": "digitalocean",
+      "url": "https://www.digitalocean.com/"
+    },
+    {
+      "id": "linode",
+      "url": "https://www.linode.com/"
+    },
+    {
+      "id": "rackspace",
+      "url": "https://www.rackspace.com/"
+    },
+    {
+      "id": "azure",
+      "url": "https://www.azure.com/"
+    },
+    {
+      "id": "aws",
+      "url": "https://www.aws.com/"
+    },
+    {
+      "id": "gcp",
+      "url": "https://cloud.google.com/"
+    },
+    {
+      "id": "ibm",
+      "url": "https://www.ibm.com/"
+    },
+    {
+      "id": "oracle",
+      "url": "https://www.oracle.com/"
+    },
+    {
+      "id": "sap",
+      "url": "https://www.sap.com/"
+    },
+    {
+      "id": "salesforce",
+      "url": "https://www.salesforce.com/"
+    },
+    {
+      "id": "shopify",
+      "url": "https://www.shopify.com/"
+    },
+    {
+      "id": "squarespace",
+      "url": "https://www.squarespace.com/"
+    },
+    {
+      "id": "wordpress",
+      "url": "https://www.wordpress.com/"
+    },
+    {
+      "id": "wix",
+      "url": "https://www.wix.com/"
+    },
+    {
+      "id": "porsche",
+      "url": "https://www.porsche.com/"
+    },
+    {
+      "id": "bmw",
+      "url": "https://www.bmw.com/"
+    },
+    {
+      "id": "mercedes",
+      "url": "https://www.mbusa.com/"
+    },
+    {
+      "id": "audi",
+      "url": "https://www.audi.com/"
+    },
+    {
+      "id": "ford",
+      "url": "https://www.ford.com/"
+    },
+    {
+      "id": "chevy",
+      "url": "https://www.chevy.com/"
+    },
+    {
+      "id": "gmc",
+      "url": "https://www.gmc.com/"
+    },
+    {
+      "id": "honda",
+      "url": "https://www.honda.com/"
+    },
+    {
+      "id": "toyota",
+      "url": "https://www.toyota.com/"
+    },
+    {
+      "id": "cargurus",
+      "url": "https://www.cargurus.com/"
+    },
+    {
+      "id": "bringatrailer",
+      "url": "https://bringatrailer.com/"
+    },
+    {
+      "id": "target",
+      "url": "https://www.target.com/"
+    },
+    {
+      "id": "bestbuy",
+      "url": "https://www.bestbuy.com/"
+    },
+    {
+      "id": "costco",
+      "url": "https://www.costco.com/"
+    },
+    {
+      "id": "homedepot",
+      "url": "https://www.homedepot.com/"
+    },
+    {
+      "id": "etsy",
+      "url": "https://www.etsy.com/"
+    },
+    {
+      "id": "nike",
+      "url": "https://www.nike.com/"
+    },
+    {
+      "id": "tiktok",
+      "url": "https://www.tiktok.com/"
+    },
+    {
+      "id": "pinterest",
+      "url": "https://www.pinterest.com/"
+    },
+    {
+      "id": "spotify",
+      "url": "https://www.spotify.com/"
+    },
+    {
+      "id": "twitch",
+      "url": "https://www.twitch.tv/"
+    },
+    {
+      "id": "zillow",
+      "url": "https://www.zillow.com/"
+    },
+    {
+      "id": "expedia",
+      "url": "https://www.expedia.com/"
+    },
+    {
+      "id": "washingtonpost",
+      "url": "https://www.washingtonpost.com/"
+    },
+    {
+      "id": "imdb",
+      "url": "https://www.imdb.com/"
+    },
+    {
+      "id": "duckduckgo",
+      "url": "https://duckduckgo.com/"
+    },
+    {
+      "id": "adobe",
+      "url": "https://www.adobe.com/"
+    },
+    {
+      "id": "discord",
+      "url": "https://discord.com/"
+    },
+    {
+      "id": "wayfair",
+      "url": "https://www.wayfair.com/"
+    }
+  ]
+}

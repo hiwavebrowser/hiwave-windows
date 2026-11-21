@@ -777,3 +777,487 @@ mod tests {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Styled, classic scrollbars (hub row CH2.E7)
+// ---------------------------------------------------------------------------
+
+use crate::{BorderRadius, CornerRadius, LayoutBox};
+use rustkit_css::{ComputedStyle, ScrollbarPart, WebkitScrollbar};
+
+/// How a box's scrollbars are styled, when they are drawn at all. Without
+/// `::-webkit-scrollbar` rules or the standard properties a scrollbar is
+/// the platform's overlay one (macOS), which takes no space and is not in
+/// the display list.
+#[derive(Debug, Clone, Copy)]
+pub enum ScrollbarLook<'a> {
+    /// `::-webkit-scrollbar*` parts.
+    Webkit(&'a WebkitScrollbar),
+    /// `scrollbar-width: auto | thin` with `scrollbar-color` (or the
+    /// default colours): Chrome's classic bar, without arrow buttons.
+    Standard { thickness: f32, thumb: Color, track: Color },
+}
+
+/// Chrome's default light-scheme classic colours.
+const STANDARD_THUMB: Color = Color { r: 0xc1, g: 0xc1, b: 0xc1, a: 1.0 };
+const STANDARD_TRACK: Color = Color { r: 0xf1, g: 0xf1, b: 0xf1, a: 1.0 };
+
+static SCROLLBARS_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Hide every styled scrollbar in this process, as Chrome's
+/// `--hide-scrollbars` does (bars take no space and paint nothing). The
+/// Chrome baselines are captured with it (Playwright passes it by
+/// default), so `parity-capture` turns it on; `RUSTKIT_HIDE_SCROLLBARS=1`
+/// does the same for any other binary.
+pub fn set_scrollbars_hidden(hidden: bool) {
+    SCROLLBARS_HIDDEN.store(hidden, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether styled scrollbars are hidden in this process
+/// (`set_scrollbars_hidden`, or `RUSTKIT_HIDE_SCROLLBARS=1`).
+pub fn scrollbars_hidden() -> bool {
+    static FROM_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    SCROLLBARS_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
+        || *FROM_ENV.get_or_init(|| std::env::var("RUSTKIT_HIDE_SCROLLBARS").is_ok_and(|v| v == "1"))
+}
+
+impl<'a> ScrollbarLook<'a> {
+    /// The look a style gives, Chrome's precedence: `scrollbar-width: none`
+    /// draws nothing; a non-`auto` `scrollbar-width` or `scrollbar-color`
+    /// turns the `::-webkit-scrollbar` rules off (Chrome 121+).
+    pub fn of(style: &'a ComputedStyle) -> Option<Self> {
+        if scrollbars_hidden() {
+            return None;
+        }
+        let standard = |thickness| ScrollbarLook::Standard {
+            thickness,
+            thumb: style.scrollbar_color.map_or(STANDARD_THUMB, |c| c.0),
+            track: style.scrollbar_color.map_or(STANDARD_TRACK, |c| c.1),
+        };
+        match style.scrollbar_width {
+            ScrollbarWidth::None => None,
+            ScrollbarWidth::Thin => Some(standard(rustkit_css::scrollbar::THIN_SCROLLBAR_PX)),
+            ScrollbarWidth::Auto if style.scrollbar_color.is_some() => {
+                Some(standard(rustkit_css::scrollbar::CLASSIC_SCROLLBAR_PX))
+            }
+            ScrollbarWidth::Auto => style.webkit_scrollbar.as_deref().map(ScrollbarLook::Webkit),
+        }
+    }
+
+    /// (vertical bar width, horizontal bar height).
+    pub fn thickness(&self) -> (f32, f32) {
+        match self {
+            ScrollbarLook::Webkit(w) => (w.vertical_thickness(), w.horizontal_thickness()),
+            ScrollbarLook::Standard { thickness, .. } => (*thickness, *thickness),
+        }
+    }
+}
+
+/// How an axis's `overflow` shows a scrollbar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarRule {
+    Never,
+    /// `auto`: when the content overflows on the axis.
+    WhenOverflowing,
+    /// `scroll`: always.
+    Always,
+}
+
+/// (rule for the vertical bar, rule for the horizontal bar). `visible`
+/// beside a non-`visible` axis computes to `auto`.
+pub fn bar_rules(style: &ComputedStyle) -> (BarRule, BarRule) {
+    let rule = |own: Overflow, other: Overflow| match own {
+        Overflow::Scroll => BarRule::Always,
+        Overflow::Auto => BarRule::WhenOverflowing,
+        Overflow::Visible if !matches!(other, Overflow::Visible | Overflow::Clip) => BarRule::WhenOverflowing,
+        _ => BarRule::Never,
+    };
+    (rule(style.overflow_y, style.overflow_x), rule(style.overflow_x, style.overflow_y))
+}
+
+/// Where one bar of a box is, in the box's own (unscrolled) coordinates,
+/// and what the thumb does on it.
+#[derive(Debug, Clone, Copy)]
+pub struct BarGeometry {
+    pub orientation: ScrollbarOrientation,
+    /// The whole bar (`::-webkit-scrollbar`'s box): the track's rect.
+    pub track: Rect,
+    /// The thumb, `None` when there is nothing to scroll.
+    pub thumb: Option<Rect>,
+    /// What one pixel of thumb travel scrolls.
+    pub scroll_per_px: f32,
+    /// The visible length along the axis (a page step is 7/8 of it).
+    pub visible: f32,
+}
+
+/// Chrome's `ScrollbarTheme::ThumbLength`: the visible fraction of the
+/// track, rounded, never under `min`.
+fn thumb_length(visible: f32, total: f32, track: f32, min: f32) -> f32 {
+    if total <= 0.0 {
+        return track;
+    }
+    (visible / total * track).round().max(min).min(track)
+}
+
+/// Chrome's `ScrollbarTheme::ThumbPosition`: truncated, and a whole pixel
+/// once the box is scrolled at all.
+fn thumb_position(scroll: f32, max: f32, track: f32, thumb: f32) -> f32 {
+    if max <= 0.0 {
+        return 0.0;
+    }
+    let pos = scroll.max(0.0) * (track - thumb) / max;
+    if pos > 0.0 && pos < 1.0 {
+        1.0
+    } else {
+        pos.trunc()
+    }
+}
+
+/// The shortest thumb: Chrome 153 draws a 100000px document's custom thumb
+/// 17px long whatever the bar's width or the track's length
+/// (`tools/parity_oracle/scrollbar_geometry_log.mjs`, `long_doc`).
+pub const MIN_THUMB_PX: f32 = 17.0;
+
+/// Chrome's page step for a track press: 7/8 of what is visible.
+pub fn page_step(visible: f32) -> f32 {
+    (visible * 0.875).max(1.0)
+}
+
+/// The bars of one scroller, from its padding box, how far it can scroll,
+/// where it is scrolled to and which bars show. Shared by the painter and
+/// the engine's press handling, so the two cannot disagree.
+pub fn bar_geometry(
+    padding_box: Rect,
+    (vertical, horizontal): (f32, f32),
+    max_scroll: (f32, f32),
+    scroll: (f32, f32),
+) -> Vec<BarGeometry> {
+    let mut bars = Vec::new();
+    let pb = padding_box;
+    if vertical > 0.0 {
+        let track = Rect { x: pb.x + pb.width, y: pb.y, width: vertical, height: pb.height };
+        bars.push(axis_bar(ScrollbarOrientation::Vertical, track, pb.height, max_scroll.1, scroll.1));
+    }
+    if horizontal > 0.0 {
+        let track = Rect { x: pb.x, y: pb.y + pb.height, width: pb.width, height: horizontal };
+        bars.push(axis_bar(ScrollbarOrientation::Horizontal, track, pb.width, max_scroll.0, scroll.0));
+    }
+    bars
+}
+
+fn axis_bar(
+    orientation: ScrollbarOrientation,
+    track: Rect,
+    visible: f32,
+    max: f32,
+    scroll: f32,
+) -> BarGeometry {
+    let vertical = orientation == ScrollbarOrientation::Vertical;
+    let track_len = if vertical { track.height } else { track.width };
+    let length = thumb_length(visible, visible + max, track_len, MIN_THUMB_PX.min(track_len));
+    let pos = thumb_position(scroll, max, track_len, length);
+    let thumb = (max > 0.0 && length > 0.0).then(|| {
+        if vertical {
+            Rect { x: track.x, y: track.y + pos, width: track.width, height: length }
+        } else {
+            Rect { x: track.x + pos, y: track.y, width: length, height: track.height }
+        }
+    });
+    let travel = track_len - length;
+    BarGeometry {
+        orientation,
+        track,
+        thumb,
+        scroll_per_px: if travel > 0.0 { max / travel } else { 0.0 },
+        visible,
+    }
+}
+
+impl LayoutBox {
+    /// This box's classic scrollbar look, if it is a scroller that has one.
+    pub fn scrollbar_look(&self) -> Option<ScrollbarLook<'_>> {
+        if !self.is_element_scroller() {
+            return None;
+        }
+        ScrollbarLook::of(&self.style)
+    }
+
+    /// The space this box's classic scrollbars take, (vertical bar width,
+    /// horizontal bar height): an `overflow: scroll` axis always, an
+    /// `auto` one once the overflow pass found it overflowing
+    /// (`scrollbar_overflows`). Layout keeps it as a gutter inside the border (`Dimensions::scrollbar`), out of
+    /// the content box, as Chrome does.
+    pub fn scrollbar_reserve(&self) -> (f32, f32) {
+        let Some(look) = self.scrollbar_look() else {
+            return (0.0, 0.0);
+        };
+        let (v, h) = look.thickness();
+        let (rule_v, rule_h) = bar_rules(&self.style);
+        let (over_v, over_h) = self.scrollbar_overflows.get();
+        let shows = |rule, over| match rule {
+            BarRule::Always => true,
+            BarRule::WhenOverflowing => over,
+            BarRule::Never => false,
+        };
+        (
+            if shows(rule_v, over_v) { v } else { 0.0 },
+            if shows(rule_h, over_h) { h } else { 0.0 },
+        )
+    }
+
+    /// The overflow pass, after a layout: mark each `auto` scroller with a
+    /// styled scrollbar that overflows on an axis whose bar it has not
+    /// reserved yet. With `unmark`, also clear a bar (one a previous layout
+    /// left, `apply_scrollbar_marks`) whose box no longer overflows even
+    /// with it. True when a mark changed and the layout must run again.
+    /// Only the first pass unmarks, so the passes end.
+    pub fn mark_overflowing_scrollbars(&self, unmark: bool) -> bool {
+        let mut changed = false;
+        if self.scrollbar_look().is_some() {
+            let (rule_v, rule_h) = bar_rules(&self.style);
+            let (max_x, max_y) = self.element_scroll_max();
+            let (mut over_v, mut over_h) = self.scrollbar_overflows.get();
+            let mut settle = |rule: BarRule, over: &mut bool, overflows: bool| {
+                if rule != BarRule::WhenOverflowing {
+                    return;
+                }
+                if !*over && overflows {
+                    *over = true;
+                    changed = true;
+                } else if *over && !overflows && unmark {
+                    *over = false;
+                    changed = true;
+                }
+            };
+            settle(rule_v, &mut over_v, max_y > 0.5);
+            settle(rule_h, &mut over_h, max_x > 0.5);
+            self.scrollbar_overflows.set((over_v, over_h));
+        }
+        for child in &self.children {
+            changed |= child.mark_overflowing_scrollbars(unmark);
+        }
+        changed
+    }
+
+    /// Whether any box in this tree may grow an `auto` styled scrollbar,
+    /// so the overflow pass has anything to find.
+    pub fn may_mark_scrollbars(&self) -> bool {
+        let here = self.scrollbar_look().is_some() && {
+            let (v, h) = bar_rules(&self.style);
+            v == BarRule::WhenOverflowing || h == BarRule::WhenOverflowing
+        };
+        here || self.children.iter().any(LayoutBox::may_mark_scrollbars)
+    }
+
+    /// The overflow pass's marks, by node, to carry onto a fresh copy of
+    /// the unlaid tree (`apply_scrollbar_marks`).
+    pub fn collect_scrollbar_marks(&self, marks: &mut std::collections::HashMap<usize, (bool, bool)>) {
+        let mine = self.scrollbar_overflows.get();
+        if let (Some(node), true) = (self.node_id, mine != (false, false)) {
+            marks.insert(node, mine);
+        }
+        for child in &self.children {
+            child.collect_scrollbar_marks(marks);
+        }
+    }
+
+    /// Set the marks `collect_scrollbar_marks` gathered on this tree; a box
+    /// missing from them is unmarked.
+    pub fn apply_scrollbar_marks(&self, marks: &std::collections::HashMap<usize, (bool, bool)>) {
+        let mark = self.node_id.and_then(|node| marks.get(&node)).copied();
+        self.scrollbar_overflows.set(mark.unwrap_or((false, false)));
+        for child in &self.children {
+            child.apply_scrollbar_marks(marks);
+        }
+    }
+
+    /// This scroller's bars as laid out and scrolled now, in its own
+    /// coordinates.
+    pub fn scrollbar_bars(&self) -> Vec<BarGeometry> {
+        let reserve = self.scrollbar_reserve();
+        if reserve == (0.0, 0.0) {
+            return Vec::new();
+        }
+        bar_geometry(
+            self.dimensions.padding_box(),
+            reserve,
+            self.element_scroll_max(),
+            self.element_scroll.get(),
+        )
+    }
+}
+
+/// Resolve a part's `border-radius` against its own box.
+fn part_radius(part: &ScrollbarPart, rect: Rect, font_size: f32) -> BorderRadius {
+    let corner = |c: &rustkit_css::CornerRadius| CornerRadius {
+        h: c.horizontal.to_px(font_size, 16.0, rect.width),
+        v: c.vertical.to_px(font_size, 16.0, rect.height),
+    };
+    BorderRadius {
+        top_left: corner(&part.radius[0]),
+        top_right: corner(&part.radius[1]),
+        bottom_right: corner(&part.radius[2]),
+        bottom_left: corner(&part.radius[3]),
+    }
+    .fitted(rect.width, rect.height)
+}
+
+fn fill(commands: &mut Vec<DisplayCommand>, color: Color, rect: Rect, radius: BorderRadius) {
+    if color.a <= 0.0 || rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+    if radius.is_zero() {
+        commands.push(DisplayCommand::SolidColor(color, rect));
+    } else {
+        commands.push(DisplayCommand::RoundedRect { color, rect, radius });
+    }
+}
+
+fn paint_part(commands: &mut Vec<DisplayCommand>, part: &ScrollbarPart, rect: Rect, font_size: f32) {
+    if part.hidden {
+        return;
+    }
+    if let Some(color) = part.background {
+        fill(commands, color, rect, part_radius(part, rect, font_size));
+    }
+}
+
+/// Paint a set of bars in a look. `thumb_hovered` picks the
+/// `::-webkit-scrollbar-thumb:hover` part.
+pub fn paint_bars(
+    look: ScrollbarLook<'_>,
+    bars: &[BarGeometry],
+    thumb_hovered: bool,
+    font_size: f32,
+) -> Vec<DisplayCommand> {
+    let mut commands = Vec::new();
+    for bar in bars {
+        match look {
+            ScrollbarLook::Webkit(w) => {
+                paint_part(&mut commands, &w.bar, bar.track, font_size);
+                paint_part(&mut commands, &w.track, bar.track, font_size);
+                if let Some(thumb) = bar.thumb {
+                    let part = match (&w.thumb_hover, thumb_hovered) {
+                        (Some(hover), true) => hover,
+                        _ => &w.thumb,
+                    };
+                    paint_part(&mut commands, part, thumb, font_size);
+                }
+            }
+            ScrollbarLook::Standard { thumb, track, thickness } => {
+                fill(&mut commands, track, bar.track, BorderRadius::default());
+                if let Some(rect) = bar.thumb {
+                    // Chrome insets the classic thumb across the bar and
+                    // rounds it fully.
+                    let inset = if thickness <= rustkit_css::scrollbar::THIN_SCROLLBAR_PX { 2.0 } else { 3.0 };
+                    let rect = match bar.orientation {
+                        ScrollbarOrientation::Vertical => {
+                            Rect { x: rect.x + inset, width: (rect.width - 2.0 * inset).max(0.0), ..rect }
+                        }
+                        ScrollbarOrientation::Horizontal => {
+                            Rect { y: rect.y + inset, height: (rect.height - 2.0 * inset).max(0.0), ..rect }
+                        }
+                    };
+                    let r = rect.width.min(rect.height) / 2.0;
+                    fill(&mut commands, thumb, rect, BorderRadius::uniform(r));
+                }
+            }
+        }
+    }
+    // The corner, where both bars meet.
+    if let (Some(v), Some(h)) = (
+        bars.iter().find(|b| b.orientation == ScrollbarOrientation::Vertical),
+        bars.iter().find(|b| b.orientation == ScrollbarOrientation::Horizontal),
+    ) {
+        let corner = Rect { x: v.track.x, y: h.track.y, width: v.track.width, height: h.track.height };
+        match look {
+            ScrollbarLook::Webkit(w) => paint_part(&mut commands, &w.corner, corner, font_size),
+            ScrollbarLook::Standard { track, .. } => fill(&mut commands, track, corner, BorderRadius::default()),
+        }
+    }
+    commands
+}
+
+/// A scroller's scrollbars, as the painter lists them after its content.
+pub fn scrollbar_commands(layout_box: &LayoutBox) -> Vec<DisplayCommand> {
+    let Some(look) = layout_box.scrollbar_look() else {
+        return Vec::new();
+    };
+    let bars = layout_box.scrollbar_bars();
+    if bars.is_empty() {
+        return Vec::new();
+    }
+    let font_size = match layout_box.style.font_size {
+        rustkit_css::Length::Px(px) => px,
+        _ => 16.0,
+    };
+    paint_bars(look, &bars, layout_box.scrollbar_thumb_hovered.get(), font_size)
+}
+
+#[cfg(test)]
+mod styled_scrollbar_tests {
+    use super::*;
+
+    #[test]
+    fn chrome_thumb_geometry_for_a_six_pixel_bar() {
+        // 200 visible of 600: a 67px thumb at the top, at 66 after 200.
+        let pb = Rect { x: 0.0, y: 0.0, width: 294.0, height: 200.0 };
+        let bars = bar_geometry(pb, (6.0, 0.0), (0.0, 400.0), (0.0, 0.0));
+        assert_eq!(bars.len(), 1);
+        let r = |r: Rect| (r.x, r.y, r.width, r.height);
+        assert_eq!(r(bars[0].track), (294.0, 0.0, 6.0, 200.0));
+        assert_eq!(r(bars[0].thumb.unwrap()), (294.0, 0.0, 6.0, 67.0));
+        let bars = bar_geometry(pb, (6.0, 0.0), (0.0, 400.0), (0.0, 200.0));
+        assert_eq!(bars[0].thumb.unwrap().y, 66.0);
+        // A drag of 50px scrolls 50 * 400 / 133.
+        assert!((bars[0].scroll_per_px * 50.0 - 150.375).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_long_documents_thumb_is_chromes_seventeen_pixels() {
+        let pb = Rect { x: 0.0, y: 0.0, width: 294.0, height: 200.0 };
+        let bars = bar_geometry(pb, (6.0, 0.0), (0.0, 99_800.0), (0.0, 0.0));
+        assert_eq!(bars[0].thumb.unwrap().height, MIN_THUMB_PX);
+    }
+
+    #[test]
+    fn nothing_to_scroll_has_no_thumb_and_a_page_is_seven_eighths() {
+        let pb = Rect { x: 0.0, y: 0.0, width: 294.0, height: 200.0 };
+        let bars = bar_geometry(pb, (6.0, 6.0), (0.0, 0.0), (0.0, 0.0));
+        assert_eq!(bars.len(), 2);
+        assert!(bars.iter().all(|b| b.thumb.is_none()));
+        assert_eq!(page_step(200.0), 175.0);
+    }
+
+    #[test]
+    fn the_gutter_is_in_the_border_box_but_not_the_border() {
+        // R1 on #900: a 6px bar inside a 3px right border on a 294px
+        // content box: border box 2 + 294 + 6 + 3 = 305, padding box 294,
+        // and `border` keeps the border alone.
+        let d = crate::Dimensions {
+            content: Rect { x: 12.0, y: 22.0, width: 294.0, height: 200.0 },
+            border: crate::EdgeSizes { top: 2.0, right: 3.0, bottom: 2.0, left: 2.0 },
+            scrollbar: crate::EdgeSizes { right: 6.0, ..Default::default() },
+            ..Default::default()
+        };
+        assert_eq!(d.border.right, 3.0);
+        assert_eq!(d.border_with_gutter().right, 9.0);
+        assert_eq!(d.padding_box().width, 294.0);
+        let bb = d.border_box();
+        assert_eq!((bb.x, bb.width, bb.height), (10.0, 305.0, 204.0));
+    }
+
+    #[test]
+    fn the_standard_properties_turn_the_webkit_parts_off() {
+        let mut style = ComputedStyle::new();
+        style.webkit_scrollbar = Some(Box::new(WebkitScrollbar { width: Some(6.0), ..Default::default() }));
+        assert!(matches!(ScrollbarLook::of(&style), Some(ScrollbarLook::Webkit(_))));
+        style.scrollbar_width = ScrollbarWidth::Thin;
+        assert_eq!(ScrollbarLook::of(&style).unwrap().thickness(), (10.0, 10.0));
+        style.scrollbar_width = ScrollbarWidth::None;
+        assert!(ScrollbarLook::of(&style).is_none());
+        style.scrollbar_width = ScrollbarWidth::Auto;
+        style.scrollbar_color = Some((Color::BLACK, Color::WHITE));
+        assert_eq!(ScrollbarLook::of(&style).unwrap().thickness(), (15.0, 15.0));
+    }
+}

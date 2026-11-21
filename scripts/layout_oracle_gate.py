@@ -214,6 +214,22 @@ def fmt_path(path: Tuple[int, ...]) -> str:
     return ".".join(str(i) for i in path) if path else "root"
 
 
+def join_key(selector: Optional[str]) -> Optional[str]:
+    """The selector as a join key: whitespace runs collapsed to one space.
+
+    Chrome's capture keys a classed element with its raw `className`
+    (`div.workspace-tab  locked` for `class="workspace-tab  locked"`); the
+    engine's mirror collapses class whitespace (`div.workspace-tab locked`).
+    Whitespace inside a class attribute carries no meaning and no other part
+    of the key contains a whitespace run (`#id`, tags, `:nth-of-type(N)`,
+    the ` > ` separator), so collapsing both sides joins the same element
+    and cannot merge two distinct ones.
+    """
+    if not selector:
+        return selector
+    return " ".join(selector.split())
+
+
 def index_rustkit(root: Dict[str, Any]) -> Tuple[
     Dict[str, List[Tuple[str, Dict[str, Any]]]], int, int
 ]:
@@ -230,7 +246,7 @@ def index_rustkit(root: Dict[str, Any]) -> Tuple[
     total = 0
     for path, box in walk_rustkit(root):
         total += 1
-        selector = box.get("selector")
+        selector = join_key(box.get("selector"))
         if not selector:
             continue
         identified += 1
@@ -387,7 +403,7 @@ def compare_case(
     matched_selectors = set()
 
     for element in chrome.get("elements", []):
-        selector = element.get("selector")
+        selector = join_key(element.get("selector"))
         expected = element.get("rect") or {}
         candidates = index.get(selector, [])
 

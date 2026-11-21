@@ -1,0 +1,95 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "expr": "encodeURIComponent(document.getElementById('t').innerText)",
+ "cases": [
+  {
+   "name": "ws-pre-div-keeps-spaces-and-newlines",
+   "html": "<!doctype html><html><head></head><body><div id=t><div style=\"white-space:pre\">  a\n  b</div></div></body></html>",
+   "chrome_boxes": "%20%20a%0A%20%20b"
+  },
+  {
+   "name": "ws-pre-on-target-itself",
+   "html": "<!doctype html><html><head></head><body><div id=t style=\"white-space:pre\">  a  b  </div></body></html>",
+   "chrome_boxes": "%20%20a%20%20b%20%20"
+  },
+  {
+   "name": "ws-pre-wrap-span-by-class",
+   "html": "<!doctype html><html><head><style>.w{white-space:pre-wrap}</style></head><body><div id=t>x<span class=w>  a  b </span>y</div></body></html>",
+   "chrome_boxes": "x%20%20a%20%20b%20y"
+  },
+  {
+   "name": "ws-pre-line-collapses-spaces-keeps-newlines",
+   "html": "<!doctype html><html><head></head><body><div id=t><div style=\"white-space:pre-line\">a   b\n   c</div></div></body></html>",
+   "chrome_boxes": "a%20b%0Ac"
+  },
+  {
+   "name": "ws-normal-on-pre-collapses",
+   "html": "<!doctype html><html><head></head><body><div id=t><pre style=\"white-space:normal\">  a\n  b</pre></div></body></html>",
+   "chrome_boxes": "a%20b"
+  },
+  {
+   "name": "ws-nowrap-collapses",
+   "html": "<!doctype html><html><head></head><body><div id=t><span style=\"white-space:nowrap\">  a   b  </span></div></body></html>",
+   "chrome_boxes": "a%20b"
+  },
+  {
+   "name": "ws-pre-inherited-by-nested-span",
+   "html": "<!doctype html><html><head></head><body><div id=t><div style=\"white-space:pre\"><span>  a</span>\n<b>b  </b></div></div></body></html>",
+   "chrome_boxes": "%20%20a%0Ab%20%20"
+  },
+  {
+   "name": "table-cell-spans-get-a-tab",
+   "html": "<!doctype html><html><head></head><body><div id=t><span style=display:table-cell>a</span><span style=display:table-cell>b</span></div></body></html>",
+   "chrome_boxes": "a%09b"
+  },
+  {
+   "name": "table-row-divs-get-a-line-feed",
+   "html": "<!doctype html><html><head></head><body><div id=t><div style=display:table><div style=display:table-row><div style=display:table-cell>a</div><div style=display:table-cell>b</div></div><div style=display:table-row><div style=display:table-cell>c</div></div></div></div></body></html>",
+   "chrome_boxes": "a%09b%0Ac"
+  },
+  {
+   "name": "td-display-block-is-no-cell",
+   "html": "<!doctype html><html><head></head><body><table id=t><tr><td style=display:block>a</td><td>b</td></tr></table></body></html>",
+   "chrome_boxes": "a%0Ab"
+  },
+  {
+   "name": "tr-display-block-is-no-row",
+   "html": "<!doctype html><html><head></head><body><table id=t><tr style=display:block><td>a</td></tr><tr><td>b</td></tr></table></body></html>",
+   "chrome_boxes": "a%0Ab"
+  },
+  {
+   "name": "display-contents-div-adds-no-breaks",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<div style=display:contents>b</div>c</div></body></html>",
+   "chrome_boxes": "abc"
+  },
+  {
+   "name": "display-contents-keeps-block-children",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<span style=display:contents><div>b</div></span>c</div></body></html>",
+   "chrome_boxes": "a%0Ab%0Ac"
+  },
+  {
+   "name": "display-contents-on-target",
+   "html": "<!doctype html><html><head></head><body><div id=t style=display:contents>a<div>b</div>c</div></body></html>",
+   "chrome_boxes": "a%0Ab%0Ac"
+  },
+  {
+   "name": "display-contents-p-still-two-breaks",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<p style=display:contents>b</p>c</div></body></html>",
+   "chrome_boxes": "abc"
+  },
+  {
+   "name": "display-inline-p-still-two-breaks",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<p style=display:inline>b</p>c</div></body></html>",
+   "chrome_boxes": "a%0A%0Ab%0A%0Ac"
+  },
+  {
+   "name": "display-contents-visibility-inside",
+   "html": "<!doctype html><html><head></head><body><div id=t>a<div style=display:contents><span style=visibility:hidden>x</span>b</div></div></body></html>",
+   "chrome_boxes": "ab"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

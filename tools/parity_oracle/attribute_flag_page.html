@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><style>
+nav { display: none; }
+nav[data-a="Foo" i] { display: block; }
+nav[data-b=foo i] { display: block; }
+nav[data-c~="Two" i] { display: block; }
+nav[data-d|="EN" i] { display: block; }
+nav[data-e^="AB" i] { display: block; }
+nav[data-f$='YZ' i] { display: block; }
+nav[data-g*="MiD" i] { display: block; }
+nav[data-h="Foo" s] { display: block; }
+nav[data-k="Foo" I] { display: block; }
+nav[data-l="foo"] { display: block; }
+[data-m="Open" i] > nav { display: block; }
+:is([data-n="X" i]) > nav { display: block; }
+nav.o:not([data-o="y" i]) { display: block; }
+nav[data-p="a b" i] { display: block; }
+nav[data-q="Foo"i] { display: block; }
+nav[data-r="foo" x] { display: block; }
+nav[data-u="é" i] { display: block; }
+nav[ data-v = "Foo"  i ] { display: block; }
+</style></head><body>
+<nav data-a="fOO">a1</nav>
+<nav data-a="bar">a0</nav>
+<nav data-b="FOO">b1</nav>
+<nav data-c="one TWO">c1</nav>
+<nav data-c="one twothree">c0</nav>
+<nav data-d="en-us">d1</nav>
+<nav data-d="ens">d0</nav>
+<nav data-e="abc">e1</nav>
+<nav data-e="cab">e0</nav>
+<nav data-f="xyz">f1</nav>
+<nav data-g="amidb">g1</nav>
+<nav data-h="Foo">h1</nav>
+<nav data-h="foo">h0</nav>
+<nav data-k="FOO">k1</nav>
+<nav data-l="foo">l1</nav>
+<nav data-l="FOO">l0</nav>
+<div data-m="OPEN"><nav>m1</nav></div>
+<div data-m="closed"><nav>m0</nav></div>
+<div data-n="x"><nav>n1</nav></div>
+<nav class="o" data-o="Y">o0</nav>
+<nav class="o" data-o="z">o1</nav>
+<nav data-p="A B">p1</nav>
+<nav data-q="FOO">q1</nav>
+<nav data-r="foo">r0</nav>
+<nav data-u="É">u0</nav>
+<nav data-u="é">u1</nav>
+<nav data-v="fOo">v1</nav>
+</body></html>

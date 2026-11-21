@@ -62,7 +62,8 @@ Engine: RustKit (custom Rust browser engine)
 
 ## License
 
-Mozilla Public License 2.0 (MPL-2.0)
+GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)
+Copyright (C) 2025-2026 Aleph Null LLC
 Commercial licenses available - contact via GitHub
 
 ---

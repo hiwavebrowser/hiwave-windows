@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>LAY2: what a position:fixed box is positioned against</title>
+<style>
+html, body { margin: 0; }
+body { height: 3000px; font: 12px/14px Times; }
+.stage { position: absolute; width: 150px; height: 60px; }
+.a { width: 100px; height: 40px; margin: 10px 0 0 15px; padding: 3px 0 0 5px; border: 2px solid #999; }
+.f { position: fixed; left: 20px; top: 30px; width: 30px; height: 10px; background: #9cf; }
+.s { position: fixed; width: 20px; height: 8px; background: #fc9; }
+</style></head><body>
+<!-- Each stage holds an ancestor (.a) with one property, and in it a fixed
+     box with insets (.f, left 20 top 30) and one without (.s, at its static
+     position). The stages are on a grid so their boxes do not share a spot. -->
+<div class="stage" style="left:10px;top:20px"><div class="a" id="a_abs" style="position:absolute">x<div class="f" id="f_abs"></div><div class="s" id="s_abs"></div></div></div>
+<div class="stage" style="left:165px;top:20px"><div class="a" id="a_rel" style="position:relative">x<div class="f" id="f_rel"></div><div class="s" id="s_rel"></div></div></div>
+<div class="stage" style="left:320px;top:20px"><div class="a" id="a_static" style="">x<div class="f" id="f_static"></div><div class="s" id="s_static"></div></div></div>
+<div class="stage" style="left:475px;top:20px"><div class="a" id="a_ovh" style="overflow:hidden">x<div class="f" id="f_ovh"></div><div class="s" id="s_ovh"></div></div></div>
+<div class="stage" style="left:630px;top:20px"><div class="a" id="a_abs_ovh" style="position:absolute;overflow:hidden">x<div class="f" id="f_abs_ovh"></div><div class="s" id="s_abs_ovh"></div></div></div>
+<div class="stage" style="left:10px;top:90px"><div class="a" id="a_abs_scroll" style="position:absolute;overflow:scroll">x<div class="f" id="f_abs_scroll"></div><div class="s" id="s_abs_scroll"></div></div></div>
+<div class="stage" style="left:165px;top:90px"><div class="a" id="a_fixed" style="position:fixed">x<div class="f" id="f_fixed"></div><div class="s" id="s_fixed"></div></div></div>
+<div class="stage" style="left:320px;top:90px"><div class="a" id="a_sticky" style="position:sticky;top:0">x<div class="f" id="f_sticky"></div><div class="s" id="s_sticky"></div></div></div>
+<div class="stage" style="left:475px;top:90px"><div class="a" id="a_transform" style="transform:translate(0px,0px)">x<div class="f" id="f_transform"></div><div class="s" id="s_transform"></div></div></div>
+<div class="stage" style="left:630px;top:90px"><div class="a" id="a_transform_none" style="transform:none">x<div class="f" id="f_transform_none"></div><div class="s" id="s_transform_none"></div></div></div>
+<div class="stage" style="left:10px;top:160px"><div class="a" id="a_rotate" style="rotate:0deg">x<div class="f" id="f_rotate"></div><div class="s" id="s_rotate"></div></div></div>
+<div class="stage" style="left:165px;top:160px"><div class="a" id="a_scale" style="scale:1">x<div class="f" id="f_scale"></div><div class="s" id="s_scale"></div></div></div>
+<div class="stage" style="left:320px;top:160px"><div class="a" id="a_translate" style="translate:0px">x<div class="f" id="f_translate"></div><div class="s" id="s_translate"></div></div></div>
+<div class="stage" style="left:475px;top:160px"><div class="a" id="a_perspective" style="perspective:500px">x<div class="f" id="f_perspective"></div><div class="s" id="s_perspective"></div></div></div>
+<div class="stage" style="left:630px;top:160px"><div class="a" id="a_filter" style="filter:grayscale(0)">x<div class="f" id="f_filter"></div><div class="s" id="s_filter"></div></div></div>
+<div class="stage" style="left:10px;top:230px"><div class="a" id="a_filter_none" style="filter:none">x<div class="f" id="f_filter_none"></div><div class="s" id="s_filter_none"></div></div></div>
+<div class="stage" style="left:165px;top:230px"><div class="a" id="a_backdrop" style="backdrop-filter:blur(1px)">x<div class="f" id="f_backdrop"></div><div class="s" id="s_backdrop"></div></div></div>
+<div class="stage" style="left:320px;top:230px"><div class="a" id="a_wc_transform" style="will-change:transform">x<div class="f" id="f_wc_transform"></div><div class="s" id="s_wc_transform"></div></div></div>
+<div class="stage" style="left:475px;top:230px"><div class="a" id="a_wc_filter" style="will-change:filter">x<div class="f" id="f_wc_filter"></div><div class="s" id="s_wc_filter"></div></div></div>
+<div class="stage" style="left:630px;top:230px"><div class="a" id="a_wc_perspective" style="will-change:perspective">x<div class="f" id="f_wc_perspective"></div><div class="s" id="s_wc_perspective"></div></div></div>
+<div class="stage" style="left:10px;top:300px"><div class="a" id="a_wc_backdrop" style="will-change:backdrop-filter">x<div class="f" id="f_wc_backdrop"></div><div class="s" id="s_wc_backdrop"></div></div></div>
+<div class="stage" style="left:165px;top:300px"><div class="a" id="a_wc_opacity" style="will-change:opacity">x<div class="f" id="f_wc_opacity"></div><div class="s" id="s_wc_opacity"></div></div></div>
+<div class="stage" style="left:320px;top:300px"><div class="a" id="a_wc_top" style="will-change:top">x<div class="f" id="f_wc_top"></div><div class="s" id="s_wc_top"></div></div></div>
+<div class="stage" style="left:475px;top:300px"><div class="a" id="a_contain_layout" style="contain:layout">x<div class="f" id="f_contain_layout"></div><div class="s" id="s_contain_layout"></div></div></div>
+<div class="stage" style="left:630px;top:300px"><div class="a" id="a_contain_paint" style="contain:paint">x<div class="f" id="f_contain_paint"></div><div class="s" id="s_contain_paint"></div></div></div>
+<div class="stage" style="left:10px;top:370px"><div class="a" id="a_contain_strict" style="contain:strict">x<div class="f" id="f_contain_strict"></div><div class="s" id="s_contain_strict"></div></div></div>
+<div class="stage" style="left:165px;top:370px"><div class="a" id="a_contain_content" style="contain:content">x<div class="f" id="f_contain_content"></div><div class="s" id="s_contain_content"></div></div></div>
+<div class="stage" style="left:320px;top:370px"><div class="a" id="a_contain_size" style="contain:size">x<div class="f" id="f_contain_size"></div><div class="s" id="s_contain_size"></div></div></div>
+<div class="stage" style="left:475px;top:370px"><div class="a" id="a_contain_style" style="contain:style">x<div class="f" id="f_contain_style"></div><div class="s" id="s_contain_style"></div></div></div>
+<div class="stage" style="left:630px;top:370px"><div class="a" id="a_opacity" style="opacity:0.5">x<div class="f" id="f_opacity"></div><div class="s" id="s_opacity"></div></div></div>
+<div class="stage" style="left:10px;top:440px"><div class="a" id="a_isolation" style="isolation:isolate">x<div class="f" id="f_isolation"></div><div class="s" id="s_isolation"></div></div></div>
+<div class="stage" style="left:165px;top:440px"><div class="a" id="a_zindex" style="position:relative;z-index:1">x<div class="f" id="f_zindex"></div><div class="s" id="s_zindex"></div></div></div>
+<div class="stage" style="left:320px;top:440px"><div class="a" id="a_inline_transform" style="display:inline;transform:translate(0px,0px)">x<div class="f" id="f_inline_transform"></div><div class="s" id="s_inline_transform"></div></div></div>
+<div class="stage" style="left:475px;top:440px"><div class="a" id="a_ct_inline_size" style="container-type:inline-size">x<div class="f" id="f_ct_inline_size"></div><div class="s" id="s_ct_inline_size"></div></div></div>
+<div class="stage" style="left:630px;top:440px"><div class="a" id="a_ct_size" style="container-type:size">x<div class="f" id="f_ct_size"></div><div class="s" id="s_ct_size"></div></div></div>
+<div class="stage" style="left:10px;top:510px"><div class="a" id="a_preserve_3d" style="transform-style:preserve-3d">x<div class="f" id="f_preserve_3d"></div><div class="s" id="s_preserve_3d"></div></div></div>
+<div class="stage" style="left:165px;top:510px"><div class="a" id="a_cv_auto" style="content-visibility:auto">x<div class="f" id="f_cv_auto"></div><div class="s" id="s_cv_auto"></div></div></div>
+<div class="stage" style="left:320px;top:510px"><div class="a" id="a_cv_hidden" style="content-visibility:hidden">x<div class="f" id="f_cv_hidden"></div><div class="s" id="s_cv_hidden"></div></div></div>
+<div class="stage" style="left:475px;top:510px"><div class="a" id="a_wc_transform_style" style="will-change:transform-style">x<div class="f" id="f_wc_transform_style"></div><div class="s" id="s_wc_transform_style"></div></div></div>
+<script>
+var NAMES = ['abs', 'rel', 'static', 'ovh', 'abs_ovh', 'abs_scroll', 'fixed', 'sticky', 'transform', 'transform_none', 'rotate', 'scale', 'translate', 'perspective', 'filter', 'filter_none', 'backdrop', 'wc_transform', 'wc_filter', 'wc_perspective', 'wc_backdrop', 'wc_opacity', 'wc_top', 'contain_layout', 'contain_paint', 'contain_strict', 'contain_content', 'contain_size', 'contain_style', 'opacity', 'isolation', 'zindex', 'inline_transform', 'ct_inline_size', 'ct_size', 'preserve_3d', 'cv_auto', 'cv_hidden', 'wc_transform_style'];
+function rect(id) { var r = document.getElementById(id).getBoundingClientRect(); return [r.x, r.y].map(function (n) { return Math.round(n * 100) / 100; }).join(','); }
+function pass(label) {
+    return NAMES.map(function (n) { return label + ' ' + n + ': a=' + rect('a_' + n) + ' f=' + rect('f_' + n) + ' s=' + rect('s_' + n); });
+}
+window.report = function () {
+    window.scrollTo(0, 0);
+    var out = pass('top');
+    window.scrollTo(0, 100);
+    out = out.concat(pass('scrolled'));
+    out.push('scrollY ' + window.scrollY);
+    window.scrollTo(0, 0);
+    return out.join('\n');
+};
+</script>
+</body></html>

@@ -1,0 +1,47 @@
+<!doctype html><html><head></head><body><div id="live"><noscript id="n">a &lt;b&gt; &amp; c</noscript></div><template id="t"><div><noscript>a &lt;b&gt; &amp; c</noscript></div></template>
+<script>
+window.report = function () {
+  var out = [], TEXT = '</noscript><img src=x onerror=1> & <b>';
+  function both(label, ns) { out.push(label + ' innerHTML: ' + ns.innerHTML); out.push(label + ' outerHTML: ' + ns.outerHTML); out.push(label + ' parent innerHTML: ' + ns.parentNode.innerHTML); }
+  // The main document: scripting is on.
+  var live = document.getElementById('n');
+  both('main, parsed', live);
+  live.textContent = TEXT;
+  both('main, text set', live);
+  var made = document.createElement('noscript'); made.textContent = TEXT; document.getElementById('live').appendChild(made);
+  both('main, created', made);
+  // A DOMParser document: scripting is off.
+  var doc = new DOMParser().parseFromString('<body><div><noscript>a &lt;b&gt; &amp; c<p>x</p></noscript></div>', 'text/html');
+  var pn = doc.querySelector('noscript');
+  both('DOMParser, parsed', pn);
+  pn.textContent = TEXT;
+  both('DOMParser, text set', pn);
+  out.push('DOMParser, document outerHTML: ' + doc.documentElement.outerHTML);
+  // createHTMLDocument: scripting is off.
+  var made2 = document.implementation.createHTMLDocument('');
+  var cn = made2.createElement('noscript'); cn.textContent = TEXT; made2.body.appendChild(cn);
+  both('createHTMLDocument, created', cn);
+  // Template contents: an inert document, scripting off.
+  var tpl = document.getElementById('t');
+  var tn = tpl.content.querySelector('noscript');
+  both('template, parsed', tn);
+  tn.textContent = TEXT;
+  both('template, text set', tn);
+  out.push('template innerHTML: ' + tpl.innerHTML);
+  // Moved from the inert document into the live one, and back.
+  var moved = doc.createElement('noscript'); moved.textContent = TEXT;
+  out.push('made in DOMParser doc, not inserted: ' + moved.outerHTML);
+  document.body.appendChild(moved);
+  out.push('adopted into main: ' + moved.outerHTML);
+  doc.body.appendChild(live);
+  out.push('main noscript adopted into DOMParser doc: ' + live.outerHTML);
+  var loose = document.createElement('noscript'); loose.textContent = TEXT;
+  out.push('main, created, not inserted: ' + loose.outerHTML);
+  var frag = document.createDocumentFragment(); var holder = document.createElement('div'); frag.appendChild(holder); holder.appendChild(loose);
+  out.push('main, in a fragment: ' + holder.innerHTML);
+  // Other raw-text elements are raw everywhere.
+  var st = doc.createElement('style'); st.textContent = 'a<b>&'; out.push('DOMParser style: ' + st.outerHTML);
+  out.push('XMLSerializer, main: ' + new XMLSerializer().serializeToString(made));
+  return out.join('\n');
+};
+</script></body></html>

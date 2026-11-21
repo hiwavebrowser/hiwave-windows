@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
-# Vendored with a patch, not a workspace member (see third_party/boa_gc/HIWAVE_PATCH.md).
-exclude = ["third_party/boa_gc"]
+# Vendored with a patch, not a workspace member (see third_party/boa_engine/PATCHES.md).
+exclude = ["third_party/boa_engine"]
 members = [
     "crates/hiwave-core",
     "crates/hiwave-shield",
+    "crates/hiwave-shield-intercept",
     "crates/hiwave-vault",
     "crates/hiwave-shell",
     "crates/hiwave-analytics",
@@ -48,7 +49,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 authors = ["HiWave Team"]
-license = "MPL-2.0"
+license = "AGPL-3.0-or-later"
 repository = "https://github.com/yourusername/hiwave"
 
 [workspace.dependencies]
@@ -120,13 +121,47 @@ rustkit-text = { path = "crates/rustkit-text" }
 rustkit-renderer = { path = "crates/rustkit-renderer" }
 rustkit-a11y = { path = "crates/rustkit-a11y" }
 
+# Test and dev builds run the page's JavaScript and the engine's own startup in UNOPTIMIZED code, and a
+# test builds a fresh engine and loads a page per case. Measured on a trivial `load_html` (T41, 12-core Linux,
+# headless engine suite, 1972 tests): 1.4 s per load with every dependency at opt-level 0; 0.42 s with the
+# third-party dependencies (boa, wgpu, ...) at 2; 0.15 s with `rustkit-js` and `rustkit-bindings` at 2 too.
+# The whole `cargo test -p rustkit-engine --features headless --lib` run went from 4212 s to under 1300 s with
+# the same tests and the same failures. Only dependencies and these two glue crates are optimized: the crates
+# a developer edits all day (layout, css, engine, ...) stay at opt-level 0, and an incremental rebuild after
+# editing rustkit-bindings measured the same with and without this (about 8-9 s either way). Overflow
+# checks and debug assertions are unchanged (they are not tied to opt-level).
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.rustkit-js]
+opt-level = 2
+
+[profile.dev.package.rustkit-bindings]
+opt-level = 2
+
+# tiny-skia's 16-lane integer maths wraps on aarch64 (NEON `vsubq_u16`) and in release builds, but on
+# x86-64 it is the plain operator, so a debug build's overflow check panics in it (wide/u16x16_t.rs,
+# `attempt to subtract with overflow`: rustkit-canvas recording_tests, every composite operation),
+# and the second panic while unwinding aborts the whole test binary. Off for this one dependency, the
+# x86 debug build wraps as the other two do.
+[profile.dev.package.tiny-skia]
+overflow-checks = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
 
-# boa_gc 0.20.0 with the weak-phase mark fix backported from 0.22.
-# Drop when Boa is upgraded to >= 0.22. See third_party/boa_gc/HIWAVE_PATCH.md.
+# Pixel-capture builds keep release optimizations without serial LTO/codegen.
+[profile.parity]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
+
+# boa_engine 0.22.0 with a cross-thread interrupt word. See third_party/boa_engine/PATCHES.md.
 [patch.crates-io]
-boa_gc = { path = "third_party/boa_gc" }
+boa_engine = { path = "third_party/boa_engine" }
+boa_parser = { path = "third_party/boa_parser" }
+boa_ast = { path = "third_party/boa_ast" }

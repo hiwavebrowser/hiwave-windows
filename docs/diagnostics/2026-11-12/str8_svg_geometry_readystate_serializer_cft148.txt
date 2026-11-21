@@ -1,0 +1,85 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() after load
+readyState classic:loading rsc:interactive module:interactive defer:interactive dcl:interactive rsc:complete load:complete
+bbox g_rect 5 6 30 20
+bbox g_rrect 5 6 30 20
+bbox g_circle 40 50 20 20
+bbox g_ellipse 60 50 40 20
+bbox g_line 10 100 30 40
+bbox g_polyline 100 10 30 40
+bbox g_polygon 150 10 30 40
+bbox g_path_lines 10 150 100 40
+bbox g_path_closed 200 100 30 40
+bbox g_path_cubic 10 10 40 7.5
+bbox g_path_quad 10 60 80 40
+bbox g_path_arc 200 140 40 10
+bbox g_path_two 0 0 20 30
+bbox g_path_empty 0 0 0 0
+bbox g_rect_tf 0 0 10 10
+bbox g_group 250 10 35 45
+bbox g_group_empty 0 0 0 0
+bbox root 0 0 285 190
+length g_rect 100
+length g_rrect 92.49
+length g_circle 62.43
+length g_ellipse 96.27
+length g_line 50
+length g_polyline 70
+length g_polygon 120
+length g_path_lines 140
+length g_path_closed 120
+length g_path_cubic 43.81
+length g_path_quad 118.32
+length g_path_arc 48.45
+length g_path_two 40
+length g_path_empty 0
+length g_rect_tf 40
+length g_group THROWS TypeError
+length g_group_empty THROWS TypeError
+length root THROWS TypeError
+point g_line 0 10 100
+point g_line 25 25 120
+point g_line 1000 40 140
+point g_line -5 10 100
+point g_path_lines 0 10 150
+point g_path_lines 25 35 150
+point g_path_lines 1000 110 190
+point g_path_lines -5 10 150
+point g_path_two 0 0 0
+point g_path_two 25 20 15
+point g_path_two 1000 20 30
+point g_path_two -5 0 0
+point g_rect 0 5 6
+point g_rect 25 30 6
+point g_rect 1000 5 6
+point g_rect -5 5 6
+point g_circle 0 60 60
+point g_circle 25 41.88 65.84
+point g_circle 1000 60 60
+point g_circle -5 60 60
+bbox type [object SVGRect] function false
+inherit function function function true true false false false
+xs typeof function
+xs div <div xmlns="http://www.w3.org/1999/xhtml" id="ser_div" class="a&quot;b" title="x&lt;y">t &amp; u<br /><span>s</span><!--c--></div>
+xs text a&lt;b&gt;&amp;"c
+xs comment <!--x-->
+xs svg rect <rect xmlns="http://www.w3.org/2000/svg" id="g_rect" x="5" y="6" width="30" height="20"/>
+xs svg group <g xmlns="http://www.w3.org/2000/svg" id="g_group_empty"/>
+xs fragment <b xmlns="http://www.w3.org/1999/xhtml"></b>z
+xs detached <input xmlns="http://www.w3.org/1999/xhtml" value="a'b&quot;c&#10;" />
+xs template doc <html xmlns="http://www.w3.org/1999/xhtml"><head></head><body><p>x</p></body></html>
+xs not a node THROWS TypeError
+fr initial:0:null:null
+fr consts:0122
+fr after call:1:null
+fr second read:THROWS InvalidStateError
+fr abort event:2:null
+fr abort loadend:2
+fr after abort:2:null
+fr not a blob:THROWS TypeError
+fr text loadstart:1:object:true:true:0/8
+fr text progress:1:object:true:true:8/8
+fr text load:2:string:true:true:8/8
+fr text result:héllo w
+fr text loadend:2:string:true:true:8/8
+fr dataurl:data:text/plain;base64,aMOpbGxvIHc=
+fr buffer:true:8:104,195,169,108,108,111,32,119

@@ -56,6 +56,8 @@ const SIDEBAR_WIDTH: f64 = 220.0;
 
 // Core modules (needed by both modes)
 mod import;
+mod autofill_guard;
+mod content_ipc_guard;
 mod state;
 
 // Native platform module (no wry/tao/WebView)
@@ -66,12 +68,14 @@ mod native;
 #[cfg(not(feature = "native-win32"))]
 mod ipc;
 #[cfg(not(feature = "native-win32"))]
+mod content_shortcuts;
+#[cfg(not(feature = "native-win32"))]
 mod webview;
 
 #[cfg(all(target_os = "windows", feature = "rustkit", not(feature = "native-win32")))]
 mod webview_rustkit;
 
-#[cfg(all(target_os = "windows", feature = "rustkit", not(feature = "native-win32")))]
+#[cfg(all(target_os = "windows", any(feature = "rustkit", feature = "native-win32")))]
 mod shield_adapter;
 
 #[cfg(not(feature = "native-win32"))]
@@ -306,6 +310,8 @@ enum UserEvent {
     // Internal page loading
     LoadAboutPage,
     LoadReportPage,
+    /// A page tried to open one of the browser's own pages: the line Chrome writes in its console.
+    ReportRefusedNavigation(String),
     // Print
     PrintPage,
     // Zoom controls
@@ -322,9 +328,6 @@ enum UserEvent {
     },
     // Autofill
     TriggerAutofill,
-    SendAutofillCredentials {
-        credentials_json: String,
-    },
     // Vault settings events (from settings webview)
     GetVaultStatus,
     UnlockVault(String),
@@ -596,7 +599,9 @@ fn load_report_page(content: &impl IWebView) {
         "<!-- Chart.js is injected by Rust before page load -->",
         &format!("<script>{}</script>", CHART_JS),
     );
-    content.load_html(&report_with_chartjs);
+    // A fresh nonce per load: only this document knows it (content_ipc_guard).
+    let nonce = content_ipc_guard::new_report_nonce();
+    content.load_html(&content_ipc_guard::with_nonce(&report_with_chartjs, &nonce));
 }
 
 #[cfg(not(feature = "native-win32"))]
@@ -632,6 +637,70 @@ fn should_record_history_url(url: &str) -> bool {
 
 // Popup filtering is now handled by platform::is_definitely_popup()
 // which provides comprehensive cross-platform URL blocking
+
+#[cfg(not(feature = "native-win32"))]
+/// The `cmd` of an IPC message, for the log: `?` when it has none, or when it is not a command
+/// name (letters, digits, `_`; a page can post anything to a handler). Ported from upstream.
+fn ipc_cmd(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|msg| msg.get("cmd").and_then(|c| c.as_str()).map(str::to_string))
+        .filter(|cmd| !cmd.is_empty() && cmd.len() <= 64 && cmd.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .unwrap_or_else(|| "?".to_string())
+}
+
+#[cfg(not(feature = "native-win32"))]
+/// Whether IPC messages are logged whole: only with `HIWAVE_DEBUG=1` (the app's verbose switch)
+/// or `HIWAVE_TEST_HOOKS=1`. By default a line says the message's `cmd` and size: a body carries
+/// URLs with their queries, find-in-page text, and what the vault commands are given.
+fn ipc_bodies_logged() -> bool {
+    static LOGGED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LOGGED.get_or_init(|| {
+        ["HIWAVE_DEBUG", "HIWAVE_TEST_HOOKS"]
+            .iter()
+            .any(|name| std::env::var(name).map(|v| v == "1").unwrap_or(false))
+    })
+}
+
+#[cfg(not(feature = "native-win32"))]
+/// One IPC message in the log, as `ipc_bodies_logged` allows.
+fn log_ipc(what: &str, body: &str) {
+    if ipc_bodies_logged() {
+        info!(%body, "{}", what);
+    } else {
+        info!(cmd = %ipc_cmd(body), len = body.len(), "{}", what);
+    }
+}
+
+#[cfg(not(feature = "native-win32"))]
+/// A page URL for an info line (upstream CH3.A6): whole only when IPC bodies are logged whole
+/// (`HIWAVE_DEBUG=1` or `HIWAVE_TEST_HOOKS=1`); scheme, host and path otherwise.
+fn page_url_for_log(url: &str) -> String {
+    if ipc_bodies_logged() {
+        url.to_string()
+    } else {
+        content_ipc_guard::url_for_log(url)
+    }
+}
+
+#[cfg(not(feature = "native-win32"))]
+/// What the log says about a chrome IPC command and its answer: the command name, only when it
+/// looks like one (a short snake_case word; anything else is "unknown"), and the answer's kind and
+/// size. Never the answer itself: it can carry what the vault or the history holds.
+fn ipc_log_shape(body: &str, response: &ipc::IpcResponse) -> String {
+    let name = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("cmd").and_then(|c| c.as_str().map(str::to_owned)))
+        .filter(|c| !c.is_empty() && c.len() <= 40 && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'))
+        .unwrap_or_else(|| "unknown".to_string());
+    match response {
+        ipc::IpcResponse::Success { data } => {
+            let bytes = serde_json::to_vec(data).map(|v| v.len()).unwrap_or(0);
+            format!("{name}: success, {bytes} bytes")
+        }
+        ipc::IpcResponse::Error { .. } => format!("{name}: error"),
+    }
+}
 
 fn main() {
     // Initialize logging with log compatibility
@@ -791,7 +860,7 @@ fn main() {
         .with_bounds(chrome_bounds)
         .with_ipc_handler(move |message| {
             let body = message.body();
-            info!("Chrome IPC: {}", body);
+            log_ipc("Chrome IPC", body);
 
             match serde_json::from_str::<IpcMessage>(body) {
                 Ok(msg) => match &msg {
@@ -824,7 +893,7 @@ fn main() {
                     IpcMessage::CreateTab { ref url } => {
                         let nav_url = url.clone();
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("IPC response: {:?}", response);
+                        info!("IPC response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
                         if let Some(u) = nav_url {
@@ -835,14 +904,14 @@ fn main() {
                     }
                     IpcMessage::CloseTab { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Close tab response: {:?}", response);
+                        info!("Close tab response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
                         // Navigate to the new active tab after closing
                         if let Ok(s) = chrome_state.lock() {
                             if let Some(active_tab) = s.shell.get_active_tab() {
                                 let url = active_tab.url.to_string();
-                                info!("Navigating to new active tab after close: {}", url);
+                                info!("Navigating to new active tab after close: {}", page_url_for_log(&url));
                                 let _ = chrome_proxy.send_event(UserEvent::Navigate(url));
                             }
                         }
@@ -856,12 +925,12 @@ fn main() {
                             .map(|active_id| id.parse::<u64>().ok() == Some(active_id))
                             .unwrap_or(false);
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Tab activation response: {:?}", response);
+                        info!("Tab activation response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                         if !already_active {
                             if let ipc::IpcResponse::Success { data } = response {
                                 if let Some(url) = data.get("url").and_then(|v| v.as_str()) {
-                                    info!("Navigating to tab URL: {}", url);
+                                    info!("Navigating to tab URL: {}", page_url_for_log(&url));
                                     let _ = chrome_proxy
                                         .send_event(UserEvent::Navigate(url.to_string()));
                                 }
@@ -873,7 +942,7 @@ fn main() {
                     IpcMessage::ExecuteCommand { ref id } => {
                         let _cmd_id = id.clone();
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Command execution response: {:?}", response);
+                        info!("Command execution response: {}", ipc_log_shape(body, &response));
 
                         if let ipc::IpcResponse::Success { data } = response {
                             if let Some(result) = data.get("result") {
@@ -927,13 +996,13 @@ fn main() {
                     }
                     IpcMessage::CreateWorkspace { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Create workspace response: {:?}", response);
+                        info!("Create workspace response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                     }
                     IpcMessage::ActivateWorkspace { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Activate workspace response: {:?}", response);
+                        info!("Activate workspace response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                         let active_url = chrome_state
@@ -946,23 +1015,23 @@ fn main() {
                     }
                     IpcMessage::DeleteWorkspace { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Delete workspace response: {:?}", response);
+                        info!("Delete workspace response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                     }
                     IpcMessage::RenameWorkspace { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Rename workspace response: {:?}", response);
+                        info!("Rename workspace response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
                     }
                     IpcMessage::SetMode { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Set mode response: {:?}", response);
+                        info!("Set mode response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::OpenSettings => {
                         let _ = chrome_proxy.send_event(UserEvent::OpenSettings);
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Open settings response: {:?}", response);
+                        info!("Open settings response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::CloseSettings => {
                         let _ = chrome_proxy.send_event(UserEvent::CloseSettings);
@@ -975,13 +1044,13 @@ fn main() {
                     }
                     IpcMessage::AddToShelf { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Add to shelf response: {:?}", response);
+                        info!("Add to shelf response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
                     }
                     IpcMessage::RestoreFromShelf { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Restore from shelf response: {:?}", response);
+                        info!("Restore from shelf response: {}", ipc_log_shape(body, &response));
                         let _ =
                             chrome_proxy.send_event(UserEvent::SyncShelf(ShelfScope::Workspace));
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
@@ -997,7 +1066,7 @@ fn main() {
                     }
                     IpcMessage::MoveTabToWorkspace { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Move tab response: {:?}", response);
+                        info!("Move tab response: {}", ipc_log_shape(body, &response));
                         let _ =
                             chrome_proxy.send_event(UserEvent::SyncShelf(ShelfScope::Workspace));
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
@@ -1005,23 +1074,23 @@ fn main() {
                     }
                     IpcMessage::LockPage { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Lock page response: {:?}", response);
+                        info!("Lock page response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
                     }
                     IpcMessage::UnlockPage { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Unlock page response: {:?}", response);
+                        info!("Unlock page response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                         let _ = chrome_proxy.send_event(UserEvent::SyncWorkspaces);
                     }
                     IpcMessage::GetStaleLocks { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Get stale locks response: {:?}", response);
+                        info!("Get stale locks response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::DeleteFromShelf { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Delete from shelf response: {:?}", response);
+                        info!("Delete from shelf response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::UpdateActiveTabUrl { ref url } => {
                         let _ = chrome_proxy.send_event(UserEvent::UpdateActiveTabUrl(url.clone()));
@@ -1058,31 +1127,31 @@ fn main() {
                     // Focus mode IPC handlers
                     IpcMessage::EnterFocusMode => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Enter focus mode response: {:?}", response);
+                        info!("Enter focus mode response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::EnterFocusMode);
                     }
                     IpcMessage::ExitFocusMode => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Exit focus mode response: {:?}", response);
+                        info!("Exit focus mode response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::ExitFocusMode);
                     }
                     IpcMessage::ToggleFocusMode => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Toggle focus mode response: {:?}", response);
+                        info!("Toggle focus mode response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::ToggleFocusMode);
                     }
                     IpcMessage::GetFocusModeStatus => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Get focus mode status response: {:?}", response);
+                        info!("Get focus mode status response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncFocusModeStatus);
                     }
                     IpcMessage::GetFocusModeConfig => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Get focus mode config response: {:?}", response);
+                        info!("Get focus mode config response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::SaveFocusModeConfig { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Save focus mode config response: {:?}", response);
+                        info!("Save focus mode config response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::FocusScrollProgress { .. } => {
                         let _ = ipc::commands::handle_message(&chrome_state, msg);
@@ -1106,54 +1175,54 @@ fn main() {
                     }
                     IpcMessage::AddToFocusBlocklist { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Add to focus blocklist response: {:?}", response);
+                        info!("Add to focus blocklist response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::RemoveFromFocusBlocklist { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Remove from focus blocklist response: {:?}", response);
+                        info!("Remove from focus blocklist response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::BlockAndClose { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Block and close response: {:?}", response);
+                        info!("Block and close response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncTabs);
                         let _ = chrome_proxy.send_event(UserEvent::SyncBlocklist);
                     }
                     IpcMessage::GetBlocklist => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Get blocklist response: {:?}", response);
+                        info!("Get blocklist response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncBlocklist);
                     }
                     IpcMessage::UnblockDomain { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Unblock domain response: {:?}", response);
+                        info!("Unblock domain response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncBlocklist);
                     }
                     IpcMessage::GetDownloads => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Get downloads response: {:?}", response);
+                        info!("Get downloads response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::ClearDownloads => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Clear downloads response: {:?}", response);
+                        info!("Clear downloads response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncDownloads);
                     }
                     IpcMessage::GetVisitHistory => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Get visit history response: {:?}", response);
+                        info!("Get visit history response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncHistory);
                     }
                     IpcMessage::ClearVisitHistory => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Clear visit history response: {:?}", response);
+                        info!("Clear visit history response: {}", ipc_log_shape(body, &response));
                         let _ = chrome_proxy.send_event(UserEvent::SyncHistory);
                     }
                     IpcMessage::OpenDownload { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Open download response: {:?}", response);
+                        info!("Open download response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::ShowDownloadInFolder { .. } => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("Show download response: {:?}", response);
+                        info!("Show download response: {}", ipc_log_shape(body, &response));
                     }
                     IpcMessage::GetSidebarWidth => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
@@ -1197,7 +1266,7 @@ fn main() {
                     }
                     _ => {
                         let response = ipc::commands::handle_message(&chrome_state, msg);
-                        info!("IPC response: {:?}", response);
+                        info!("IPC response: {}", ipc_log_shape(body, &response));
                     }
                 },
                 Err(e) => {
@@ -1260,7 +1329,12 @@ fn main() {
         .with_clipboard(true)
         .with_bounds(content_bounds)
         .with_navigation_handler(move |url| {
-            info!("Content navigating to: {}", url);
+            info!("Content navigating to: {}", content_ipc_guard::url_for_log(&url));
+            if !content_ipc_guard::page_navigation_allowed(&url) {
+                info!("Content navigation refused (the browser's own page): {}", content_ipc_guard::url_for_log(&url));
+                let _ = content_proxy.send_event(UserEvent::ReportRefusedNavigation(url));
+                return false;
+            }
 
             // Check if current tab URL is an internal URL before processing data URLs
             // This prevents overwriting hiwave://about when loading the about page via load_html()
@@ -1284,20 +1358,8 @@ fn main() {
                 let _ = content_proxy.send_event(UserEvent::SyncShieldStats);
                 return true;
             }
-            if is_about_url(&url) {
-                let _ = content_proxy
-                    .send_event(UserEvent::UpdateActiveTabUrl(ABOUT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::UpdateUrl(ABOUT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::LoadAboutPage);
-                return true;
-            }
-            if is_report_url(&url) {
-                let _ = content_proxy
-                    .send_event(UserEvent::UpdateActiveTabUrl(REPORT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::UpdateUrl(REPORT_URL.to_string()));
-                let _ = content_proxy.send_event(UserEvent::LoadReportPage);
-                return true;
-            }
+            // hiwave://about and hiwave://report never reach here: a page cannot open them (refused
+            // above), and the browser opens them from its UI through UserEvent::Navigate.
             if let Ok(s) = content_state.lock() {
                 if s.shield.is_enabled() {
                     if let Ok(parsed_url) = url::Url::parse(&url) {
@@ -1368,13 +1430,13 @@ fn main() {
         .with_new_window_req_handler(move |url| {
             // Allow Cloudflare challenges to stay as iframes (required for verification)
             if url.contains("challenges.cloudflare.com") || url.contains("turnstile") {
-                info!("Allowing Cloudflare challenge iframe: {}", url);
+                info!("Allowing Cloudflare challenge iframe: {}", page_url_for_log(&url));
                 return true; // Allow the iframe/popup to render in-place
             }
 
             // Allow Proton authentication popups/iframes
             if url.contains("proton.me") || url.contains("protonmail.com") {
-                info!("Allowing Proton auth iframe: {}", url);
+                info!("Allowing Proton auth iframe: {}", page_url_for_log(&url));
                 return true; // Allow the iframe/popup to render in-place
             }
 
@@ -1386,7 +1448,7 @@ fn main() {
 
             // Filter out unwanted popup/iframe requests using platform layer
             if platform::is_definitely_popup(&url) {
-                info!("New window request blocked (filtered): {}", url);
+                info!("New window request blocked (filtered): {}", page_url_for_log(&url));
                 return false;
             }
 
@@ -1394,7 +1456,7 @@ fn main() {
             if let Ok(mut s) = content_state2.lock() {
                 // Check user blocklist first (hot-editable)
                 if s.user_blocklist.should_block(&url) {
-                    info!("New window request blocked (user blocklist): {}", url);
+                    info!("New window request blocked (user blocklist): {}", page_url_for_log(&url));
                     // Increment Shield counters so all blocks show in UI
                     s.shield.increment_block_count();
                     // Track user blocklist blocks in analytics as popup, tracker, and ad
@@ -1474,7 +1536,7 @@ fn main() {
                                     workspace_id.as_deref()
                                 );
                             }
-                            info!("New window request blocked (Shield): {}", url);
+                            info!("New window request blocked (Shield): {}", page_url_for_log(&url));
                             drop(s);
                             let _ = content_proxy_new_window.send_event(UserEvent::SyncShieldStats);
                             return false;
@@ -1483,21 +1545,29 @@ fn main() {
                 }
             }
 
-            info!("New window request -> new tab: {}", url);
+            if !content_ipc_guard::new_window_tab_allowed(&url) {
+                info!("New window request refused (not a web URL): {}", page_url_for_log(&url));
+                return false;
+            }
+            info!("New window request -> new tab: {}", page_url_for_log(&url));
             let response = ipc::commands::handle_message(
                 &content_state2,
                 IpcMessage::CreateTab {
                     url: Some(url.clone()),
                 },
             );
-            info!("New window redirected to tab: {:?}", response);
+            info!("New window redirected to tab: {}", ipc_log_shape("", &response));
             let _ = content_proxy4.send_event(UserEvent::SyncTabs);
             let _ = content_proxy4.send_event(UserEvent::Navigate(url));
             false
         })
         .with_ipc_handler(move |message| {
             let body = message.body();
-            info!("Content IPC: {}", body);
+            // The shape only: a content page's message is not logged (it may carry anything).
+            let cmd = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("cmd").and_then(|c| c.as_str()).map(str::to_string));
+            info!(cmd = cmd.as_deref().unwrap_or("?"), len = body.len(), "Content IPC");
             if let Ok(msg) = serde_json::from_str::<IpcMessage>(body) {
                 match &msg {
                     IpcMessage::GoBack => {
@@ -1507,7 +1577,11 @@ fn main() {
                         let _ = content_proxy_ipc.send_event(UserEvent::GoForward);
                     }
                     IpcMessage::CreateTab { url } => {
-                        // Handle create tab directly
+                        // A page opens a new tab at a web URL, or the new-tab page when it names none.
+                        if !content_ipc_guard::new_tab_url_allowed(url.as_deref()) {
+                            info!("New tab from content: not served for that URL");
+                            return;
+                        }
                         let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
                         let _ = content_proxy_ipc.send_event(UserEvent::SyncTabs);
                         let _ = content_proxy_ipc.send_event(UserEvent::SyncWorkspaces);
@@ -1516,7 +1590,7 @@ fn main() {
                         }
                     }
                     IpcMessage::AddToShelf { tab_id } => {
-                        // If tab_id is "active", use the currently active tab
+                        // The context menu and Ctrl+Shift+S shelve the active tab; a page names no other tab.
                         let actual_tab_id = if tab_id == "active" {
                             if let Ok(s) = content_state_ipc.lock() {
                                 s.shell.get_active_tab().map(|t| t.id.0.to_string()).unwrap_or_default()
@@ -1524,7 +1598,8 @@ fn main() {
                                 String::new()
                             }
                         } else {
-                            tab_id.clone()
+                            info!("Shelve from content by id: not served");
+                            String::new()
                         };
 
                         if !actual_tab_id.is_empty() {
@@ -1542,52 +1617,25 @@ fn main() {
                         let _ = content_proxy_ipc.send_event(UserEvent::TabAudioStateChanged { playing: *playing });
                     }
                     IpcMessage::GetCredentialsForAutofill { ref domain } => {
-                        info!("Getting credentials for autofill: {}", domain);
-                        let response = ipc::commands::handle_message(&content_state_ipc, msg.clone());
-                        info!("Autofill response: {:?}", response);
-                        match response {
-                            ipc::IpcResponse::Success { data } => {
-                                let json = serde_json::to_string(&data).unwrap_or_else(|_| "[]".to_string());
-                                info!("Sending {} credentials to page", json.len());
-                                let _ = content_proxy_ipc.send_event(UserEvent::SendAutofillCredentials {
-                                    credentials_json: json,
-                                });
-                            }
-                            ipc::IpcResponse::Error { ref message } => {
-                                warn!("Autofill error: {}", message);
-                                // Show error alert on content page
-                                let script = format!(
-                                    "alert('[HiWave Autofill] {}');",
-                                    message.replace('\'', "\\'")
-                                );
-                                let _ = content_proxy_ipc.send_event(UserEvent::EvaluateContentScript(script));
-                            }
-                        }
+                        // Autofill hardening: credentials are delivered only for a user-requested
+                        // fill on the page's own origin; nothing is returned on this route.
+                        warn!("Dropped a content-page autofill request");
                     }
-                    // Handle focus mode from content (keyboard shortcuts)
+                    // Escape exits focus mode from a page. Entering or toggling it, and autofill,
+                    // come from the chrome or a real key press (`content_shortcuts`), not a page.
                     IpcMessage::ExitFocusMode => {
                         info!("Exit focus mode from content WebView");
                         let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
                         let _ = content_proxy_ipc.send_event(UserEvent::ExitFocusMode);
                     }
-                    IpcMessage::ToggleFocusMode => {
-                        info!("Toggle focus mode from content WebView");
-                        let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
-                        let _ = content_proxy_ipc.send_event(UserEvent::ToggleFocusMode);
-                    }
-                    IpcMessage::EnterFocusMode => {
-                        info!("Enter focus mode from content WebView");
-                        let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
-                        let _ = content_proxy_ipc.send_event(UserEvent::EnterFocusMode);
-                    }
                     // UI shortcuts forwarded from content WebView
                     IpcMessage::CloseTab { id } => {
-                        info!("Close tab from content: {}", id);
+                        // The context menu closes the active tab; a page names no other tab.
                         if id == "active" {
+                            info!("Close tab from content: active");
                             let _ = content_proxy_ipc.send_event(UserEvent::CloseActiveTab);
                         } else {
-                            let _ = ipc::commands::handle_message(&content_state_ipc, msg.clone());
-                            let _ = content_proxy_ipc.send_event(UserEvent::SyncTabs);
+                            info!("Close tab from content by id: not served");
                         }
                     }
                     IpcMessage::Refresh => {
@@ -1614,10 +1662,6 @@ fn main() {
                         info!("Activate tab by index from content: {}", index);
                         let _ = content_proxy_ipc.send_event(UserEvent::ActivateTabByIndex { index: *index });
                     }
-                    IpcMessage::TriggerAutofill => {
-                        info!("Trigger autofill from content");
-                        let _ = content_proxy_ipc.send_event(UserEvent::TriggerAutofill);
-                    }
                     // Handle analytics and other commands that need responses sent back to content
                     IpcMessage::GetTodayStats
                     | IpcMessage::GetWeeklyReport
@@ -1627,7 +1671,15 @@ fn main() {
                     | IpcMessage::GetWorkspaceStats
                     | IpcMessage::ResetAnalyticsData
                     | IpcMessage::ExportAnalyticsData { .. } => {
-                        info!("Analytics command from content: {:?}", msg);
+                        // IPC hardening: answered for the app's own report document only (the
+                        // nonce embedded in it at load), not for a page that merely looks like it.
+                        let nonce = serde_json::from_str::<serde_json::Value>(body)
+                            .ok()
+                            .and_then(|v| v.get("nonce").and_then(|n| n.as_str()).map(str::to_string));
+                        if !content_ipc_guard::analytics_allowed(nonce.as_deref()) {
+                            warn!("Dropped a content-page request");
+                            return;
+                        }
                         let response = ipc::commands::handle_message(&content_state_ipc, msg.clone());
                         let response_json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
                         let script = format!(
@@ -1643,10 +1695,16 @@ fn main() {
         .build_as_child(&window)
         .expect("Failed to create Content WebView");
 
-    // WRY initial URL loading
-    if !is_new_tab_url(&initial_url) {
-        if let Err(e) = content_webview.load_url(&initial_url) {
-            error!("Failed to load initial URL: {}", e);
+    // WRY initial URL loading: the restored active tab, the way the browser opens it.
+    match content_ipc_guard::startup_load(&initial_url, is_new_tab_url(&initial_url)) {
+        content_ipc_guard::StartupLoad::NewTab => {}
+        content_ipc_guard::StartupLoad::BrowserPage => {
+            let _ = proxy.send_event(UserEvent::Navigate(initial_url.clone()));
+        }
+        content_ipc_guard::StartupLoad::Web => {
+            if let Err(e) = content_webview.load_url(&initial_url) {
+                error!("Failed to load initial URL: {}", e);
+            }
         }
     }
     info!("Content WebView created (content area)");
@@ -1664,7 +1722,7 @@ fn main() {
         .with_bounds(shelf_bounds)
         .with_ipc_handler(move |message| {
             let body = message.body();
-            info!("Shelf IPC: {}", body);
+            log_ipc("Shelf IPC", body);
 
             match serde_json::from_str::<IpcMessage>(body) {
                 Ok(msg) => {
@@ -1684,7 +1742,7 @@ fn main() {
                         IpcMessage::ExecuteCommand { ref id } => {
                             let _cmd_id = id.clone();
                             let response = ipc::commands::handle_message(&shelf_state, msg);
-                            info!("Command execution response: {:?}", response);
+                            info!("Command execution response: {}", ipc_log_shape(body, &response));
                             // Close shelf after executing command
                             let _ = shelf_proxy.send_event(UserEvent::CollapseShelf);
 
@@ -1768,6 +1826,21 @@ fn main() {
     let chrome_webview: Arc<wry::WebView> = Arc::new(chrome_webview);
     let shelf_webview: Arc<wry::WebView> = Arc::new(shelf_webview);
     let content_webview: Arc<wry::WebView> = Arc::new(content_webview);
+
+    // Shortcuts pressed in a page that change what the app protects (focus mode, autofill) reach
+    // the app as real key presses (WebView2's AcceleratorKeyPressed), not as page IPC.
+    {
+        let (shortcut_proxy, shortcut_state) = (proxy.clone(), Arc::clone(&state));
+        content_shortcuts::install(&content_webview, move |shortcut| match shortcut {
+            content_shortcuts::Shortcut::ToggleFocusMode => {
+                let _ = ipc::commands::handle_message(&shortcut_state, IpcMessage::ToggleFocusMode);
+                let _ = shortcut_proxy.send_event(UserEvent::ToggleFocusMode);
+            }
+            content_shortcuts::Shortcut::TriggerAutofill => {
+                let _ = shortcut_proxy.send_event(UserEvent::TriggerAutofill);
+            }
+        });
+    }
 
     let chrome_for_events: Arc<wry::WebView> = Arc::clone(&chrome_webview);
     let shelf_for_events: Arc<wry::WebView> = Arc::clone(&shelf_webview);
@@ -1884,7 +1957,7 @@ fn main() {
             Event::UserEvent(user_event) => {
                 match user_event {
                     UserEvent::Navigate(url) => {
-                        info!("Navigating content to: {}", url);
+                        info!("Navigating content to: {}", page_url_for_log(&url));
                         if is_new_tab_url(&url) {
                             load_new_tab(&content_for_events);
                             chrome_for_events.evaluate_script(
@@ -2562,7 +2635,7 @@ fn main() {
                                                 let _ = settings_proxy.send_event(UserEvent::ExportAnalyticsData { format });
                                             }
                                             _ => {
-                                                info!("Settings window received unhandled IPC: {:?}", ipc_msg);
+                                                info!("Settings window received unhandled IPC: {}", ipc_cmd(body));
                                             }
                                         }
                                     }
@@ -3519,6 +3592,13 @@ fn main() {
                         info!("Loading analytics report page");
                         load_report_page(&content_for_events);
                     }
+                    UserEvent::ReportRefusedNavigation(url) => {
+                        // A JSON string literal: the URL the page asked for is text, never script.
+                        let line = content_ipc_guard::refused_navigation_console_line(&url);
+                        if let Ok(literal) = serde_json::to_string(&line) {
+                            content_for_events.evaluate_script(&format!("console.error({literal});"));
+                        }
+                    }
                     UserEvent::PrintPage => {
                         info!("Triggering print dialog");
                         content_for_events.evaluate_script("window.print();");
@@ -3664,15 +3744,6 @@ fn main() {
                             "if(window.hiwaveAutofill) { hiwaveAutofill.trigger(); }"
                         );
                     }
-                    UserEvent::SendAutofillCredentials { ref credentials_json } => {
-                        info!("Sending autofill credentials to page");
-                        // Send credentials to the page via window.postMessage
-                        let script = format!(
-                            "window.postMessage({{ type: 'hiwave_autofill_credentials', credentials: {} }}, '*');",
-                            credentials_json
-                        );
-                        content_for_events.evaluate_script(&script);
-                    }
                 }
             }
             _ => {}
@@ -3722,4 +3793,141 @@ fn main() {
         }
     });
     } // end cfg(not(feature = "native-win32"))
+}
+
+#[cfg(test)]
+mod chrome_ipc_log_tests {
+    // The two behaviour tests use the hybrid-mode helpers (built with `mod ipc`); the source pin
+    // reads the file as text and runs in every configuration.
+    #[cfg(not(feature = "native-win32"))]
+    use super::*;
+
+    #[cfg(not(feature = "native-win32"))]
+    const SECRET: &str = "hunter2-chrome-secret";
+
+    #[cfg(not(feature = "native-win32"))]
+    #[test]
+    fn a_chrome_ipc_response_is_logged_by_kind_and_size_never_its_data() {
+        let ok = ipc::IpcResponse::success(serde_json::json!([{ "username": "u", "password": SECRET }]));
+        let line = ipc_log_shape(r#"{"cmd":"get_all_credentials"}"#, &ok);
+        assert!(line.starts_with("get_all_credentials: success, "), "{line}");
+        assert!(line.ends_with(" bytes"), "{line}");
+        assert!(!line.contains(SECRET) && !line.contains("username"), "{line}");
+        let err = ipc::IpcResponse::error(format!("failed for {SECRET}"));
+        assert_eq!(ipc_log_shape(r#"{"cmd":"unlock_vault"}"#, &err), "unlock_vault: error");
+    }
+
+    #[cfg(not(feature = "native-win32"))]
+    #[test]
+    fn the_logged_command_name_is_a_short_snake_case_word_or_unknown() {
+        let ok = ipc::IpcResponse::success(serde_json::json!(1));
+        for body in [
+            format!(r#"{{"cmd":"{}"}}"#, "a".repeat(41)),
+            r#"{"cmd":"Has Spaces & secret"}"#.to_string(),
+            r#"{"cmd":""}"#.to_string(),
+            r#"{"cmd":7}"#.to_string(),
+            "not json".to_string(),
+        ] {
+            assert!(ipc_log_shape(&body, &ok).starts_with("unknown: "), "{body}");
+        }
+        assert!(ipc_log_shape(&format!(r#"{{"cmd":"{}"}}"#, "a".repeat(40)), &ok).starts_with("aaaa"));
+        assert_eq!(ipc_cmd(r#"{"cmd":"unlock_vault","password":"x"}"#), "unlock_vault");
+        assert_eq!(ipc_cmd(r#"{"cmd":"a b"}"#), "?");
+    }
+
+    /// Source pins: no command's response is logged whole, and no IPC message body is handed to
+    /// a log call directly (it goes through `log_ipc`, which logs it whole only on request).
+    #[test]
+    fn source_pins_for_the_ipc_response_and_body_logs() {
+        let source = include_str!("main.rs").replace("\r\n", "\n");
+        // Everything above this module (the last thing in the file), whose strings name what it looks for.
+        let marker = ["mod chrome_ipc_log", "_tests {"].concat();
+        assert_eq!(source.matches(marker.as_str()).count(), 1, "the module marker is exact");
+        let production = &source[..source.find(marker.as_str()).unwrap()];
+        assert!(production.contains("fn main()") && production.matches("info!(").count() > 30, "the scan covers the app");
+        let mut whole_response_logs: Vec<String> = Vec::new();
+        let mut whole_body_logs: Vec<String> = Vec::new();
+        for mac in ["info!(", "warn!(", "debug!(", "trace!(", "error!("] {
+            for (at, _) in production.match_indices(mac) {
+                let call = production[at..].split(");").next().unwrap_or("");
+                let first = call.lines().next().unwrap_or("").trim().to_string();
+                if (call.contains("{:?}") || call.contains(":?}")) && call.contains("response") {
+                    whole_response_logs.push(first.clone());
+                }
+                if call.trim_end().ends_with(", body") && !call.contains("%body") {
+                    whole_body_logs.push(first);
+                }
+            }
+        }
+        assert!(whole_response_logs.is_empty(), "a command's response is logged whole: {whole_response_logs:?}");
+        assert!(whole_body_logs.is_empty(), "an IPC body is logged whole: {whole_body_logs:?}");
+    }
+}
+
+#[cfg(test)]
+mod content_ipc_scope_tests {
+    const MAIN_RS: &str = include_str!("main.rs");
+
+    /// The content view's IPC handler: the closure every page in the content view can reach.
+    fn content_handler() -> String {
+        let main = MAIN_RS.replace("\r\n", "\n");
+        let start = main.find("\"Content IPC\"").expect("the content view's IPC handler");
+        let rest = &main[start..];
+        rest[..rest.find(".build_as_child(&window)").expect("the end of the content handler")].to_string()
+    }
+
+    /// A page does not open things outside the browser: the content view's handler has no
+    /// `open_external` arm (macOS's has none either).
+    #[test]
+    fn a_page_cannot_open_an_external_url() {
+        assert!(!content_handler().contains("IpcMessage::OpenExternal"));
+    }
+
+    /// The context menu closes the active tab; the content view closes no tab by its id.
+    #[test]
+    fn a_page_closes_only_the_active_tab() {
+        let handler = content_handler();
+        let arm = &handler[handler.find("IpcMessage::CloseTab { id } =>").expect("the close-tab arm")..];
+        let arm = &arm[..arm.find("IpcMessage::Refresh").unwrap_or(arm.len())];
+        assert!(!arm.contains("handle_message"), "{arm}");
+    }
+
+    /// One arm of the content handler, from its pattern to the next `IpcMessage::` pattern.
+    fn arm(pattern: &str) -> String {
+        let handler = content_handler();
+        let at = handler.find(pattern).unwrap_or_else(|| panic!("`{pattern}` is gone; update this pin"));
+        let rest = &handler[at + pattern.len()..];
+        let end = rest.find("\n                    IpcMessage::").or_else(|| rest.find("_ => {}")).unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// The context menu and Ctrl+Shift+S shelve the active tab; a page names no other tab.
+    #[test]
+    fn a_page_shelves_only_the_active_tab() {
+        let arm = arm("IpcMessage::AddToShelf { tab_id } =>");
+        assert!(!arm.contains("tab_id.clone()"), "a tab named by id is shelved: {arm}");
+    }
+
+    /// A new tab from a page (the context menu's links, images and search, and Ctrl+T) opens
+    /// only a web URL, or the new-tab page when it names none.
+    #[test]
+    fn a_page_opens_only_web_urls_in_a_new_tab() {
+        let arm = arm("IpcMessage::CreateTab { url } =>");
+        let guard = arm.find("content_ipc_guard::new_tab_url_allowed(").expect("the arm checks the URL");
+        let served = arm.find("handle_message").expect("the arm opens the tab");
+        assert!(guard < served, "the URL is checked before the tab opens: {arm}");
+    }
+
+    /// A page neither starts an autofill nor turns focus mode on; those shortcuts come from
+    /// real key presses, which `content_shortcuts` takes natively.
+    #[test]
+    fn a_page_cannot_trigger_autofill_or_change_focus_mode() {
+        let main = MAIN_RS.replace("\r\n", "\n");
+        assert!(main.contains("content_shortcuts::install(&content_webview"), "the content view's shortcuts are installed");
+        let handler = content_handler();
+        // Escape (`ExitFocusMode`) is still served: leaving focus mode is the page's user's choice.
+        for variant in ["IpcMessage::TriggerAutofill", "IpcMessage::EnterFocusMode", "IpcMessage::ToggleFocusMode"] {
+            assert!(!handler.contains(variant), "the content view serves `{variant}`");
+        }
+    }
 }

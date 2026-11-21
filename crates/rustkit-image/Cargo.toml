@@ -3,7 +3,7 @@ name = "rustkit-image"
 version = "0.1.0"
 edition = "2021"
 description = "Image loading, decoding, and caching for RustKit browser engine"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [features]
 test-hooks = []
@@ -15,9 +15,6 @@ rustkit-codecs = { path = "../rustkit-codecs" }
 
 # Async runtime
 tokio = { version = "1", features = ["sync", "time"] }
-
-# HTTP client for loading (RustKit-owned)
-rustkit-http = { path = "../rustkit-http" }
 
 # URL handling
 url = "2"

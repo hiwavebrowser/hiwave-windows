@@ -25,12 +25,17 @@
 //! cargo build --features native-win32
 //! ```
 
-use rustkit_core::input::{InputEvent, KeyCode, KeyEventType, Modifiers};
+use rustkit_core::input::{InputEvent, KeyCode, KeyEvent, KeyEventType, Modifiers, MouseButton, MouseEventType};
 use super::shortcuts::{self, Shortcut};
+use super::chrome_data;
+use super::shell_tabs;
+use super::content_page::{self, ContentPage};
+use super::layout::{self, Layout, LayoutInput};
 use super::tabs::{TabModel, TabSwitch};
 use rustkit_engine::{Engine, EngineBuilder, EngineViewId, IpcMessage};
 use rustkit_viewhost::{Bounds, MainWindowConfig, ViewEvent, ViewHost};
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info, trace, warn};
@@ -41,6 +46,8 @@ use crate::state::AppState;
 // Chrome UI constants
 const CHROME_HEIGHT_DEFAULT: u32 = 104;
 const CHROME_HEIGHT_EXPANDED: u32 = 460;
+/// A small expansion: the tab actions panel (the WebView2 shell uses 148 too).
+const CHROME_HEIGHT_SMALL: u32 = 148;
 const SHELF_HEIGHT_DEFAULT: u32 = 0;
 const SHELF_HEIGHT_EXPANDED: u32 = 280;
 const SIDEBAR_WIDTH: u32 = 220;
@@ -49,6 +56,36 @@ const SIDEBAR_WIDTH: u32 = 220;
 const CHROME_HTML: &str = include_str!("../ui/chrome.html");
 const SHELF_HTML: &str = include_str!("../ui/shelf.html");
 const ABOUT_HTML: &str = include_str!("../ui/about.html");
+/// The find-in-page helper. It runs inside the page and walks the DOM; it needs no engine support.
+const FIND_IN_PAGE_HELPER: &str = include_str!("../ui/find_in_page.js");
+/// The `<title>` of the start page (ui/about.html).
+const ABOUT_TITLE: &str = "About HiWave";
+
+/// One row of the chrome's tab strip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TabRow {
+    id: u64,
+    /// Pinned against tab decay (lock_page / unlock_page).
+    locked: bool,
+    title: String,
+    url: String,
+    active: bool,
+}
+
+/// What the chrome page was last told. The run loop compares the live state
+/// against this each turn and only calls into the page when something changed,
+/// so typing in the address bar is never overwritten by a periodic refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChromeSnapshot {
+    tabs: Vec<TabRow>,
+    url: String,
+    title: String,
+    can_go_back: bool,
+    can_go_forward: bool,
+    shield_enabled: bool,
+    shield_blocked: u64,
+    loading: bool,
+}
 
 /// View types in the browser
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -64,6 +101,9 @@ pub struct NativeBrowser {
     viewhost: ViewHost,
     /// RustKit engine for rendering
     engine: RefCell<Engine>,
+    /// One runtime owns page I/O across loads and subsequent live turns.
+    runtime: tokio::runtime::Runtime,
+    live_clocks: RefCell<HashMap<EngineViewId, Instant>>,
     /// Map of view types to engine view IDs
     views: HashMap<ViewType, EngineViewId>,
     /// Reverse map: engine view ID to view type (for IPC routing)
@@ -81,15 +121,57 @@ pub struct NativeBrowser {
     tabs: Option<TabModel<EngineViewId>>,
     /// Application state
     #[allow(dead_code)]
-    app_state: Arc<AppState>,
+    app_state: Arc<Mutex<AppState>>,
     /// Current window dimensions
     window_width: u32,
     window_height: u32,
     /// Layout state
     chrome_height: u32,
     shelf_height: u32,
+    /// Width of the left sidebar; 0 while it is closed (chrome.html starts closed).
     sidebar_width: u32,
-    sidebar_open: bool,
+    right_panel_open: bool,
+    /// Focus mode's chrome strip (see `LayoutInput::focus_bar`); None when not in focus mode.
+    focus_bar: Option<u32>,
+    /// Tab ids this shell has put into the shared `BrowserShell` (see `shell_tabs`).
+    mirrored_tabs: std::collections::HashSet<u64>,
+    /// The active tab is not one the active workspace shows: settle on the next tick,
+    /// once the model has caught up with a closed tab.
+    needs_settle: bool,
+    /// The workspaces script the chrome was last sent, so it is sent again only when it changes.
+    last_workspaces: String,
+    /// Restored tabs that have a view but have not been loaded: the page is loaded the first
+    /// time the tab is shown (the WebView2 shell restores tabs suspended too).
+    pending_load: HashMap<u64, String>,
+    /// Which shelf the chrome last asked for (`"workspace"` or `"all"`).
+    shelf_scope: String,
+    /// The view that last had the keyboard focus. Win32 can leave focus on the
+    /// bare main window (activation, a click on the frame); the main window
+    /// ignores keys, so the shell hands focus back to this view.
+    last_focus: std::cell::Cell<Option<EngineViewId>>,
+    /// The chrome page has loaded and sent `chrome_ready`; until then there is
+    /// no `window.hiwaveChrome` to call.
+    chrome_ready: bool,
+    /// Stable ids for the tab strip (a tab is an engine view; the page wants a number).
+    tab_ids: HashMap<EngineViewId, u64>,
+    chrome_synced: Option<ChromeSnapshot>,
+    /// The request filter the engine runs; kept so the chrome can show its count
+    /// and switch it off.
+    shield: Arc<crate::shield_adapter::ShieldInterceptHandler>,
+    shield_enabled: bool,
+    /// The page on the content thread (`HIWAVE_CONTENT_THREAD=1`). `None`: pages
+    /// load on the window thread, as before.
+    pages: HashMap<u64, ContentPage>,
+    /// Which page is which tab, in order, and the active one. `None` unless the
+    /// content thread is on.
+    page_tabs: Option<TabModel<u64>>,
+    /// Which snapshots of the active tab are a new visit for the history.
+    visits: chrome_data::VisitTracker,
+    /// A find on the content thread whose answer has not come back yet, with the
+    /// query the chrome sent (the answer is echoed with that, never the page's).
+    pending_find: RefCell<Option<(tokio::sync::oneshot::Receiver<Result<String, String>>, String)>>,
+    /// The page (not a chrome view) has the keyboard.
+    page_focused: std::cell::Cell<bool>,
 }
 
 impl NativeBrowser {
@@ -97,31 +179,44 @@ impl NativeBrowser {
     pub fn new() -> Result<Self, String> {
         info!("Initializing native Win32 browser");
 
-        // Create the engine
-        let engine = EngineBuilder::new()
-            .user_agent(
-                // Finding 4 from the macOS live demo, ported: the bare
-                // "HiWave/1.0 RustKit/1.0" UA is scraper-shaped — Wikimedia
-                // 429'd it and eBay challenged it. Safari-shaped with an
-                // HONEST Windows platform string plus the HiWave token: sites
-                // get a recognisable engine family, and we stay identifiable
-                // rather than impersonating Chrome outright.
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/605.1.15                  (KHTML, like Gecko) Version/17.4 Safari/605.1.15 HiWave/1.0",
-            )
-            .javascript_enabled(true)
-            .cookies_enabled(true)
+        // The request filter. The engine gets it through an interceptor; we keep a
+        // handle for the blocked-request count and the on/off switch.
+        let shield = Arc::new(crate::shield_adapter::ShieldInterceptHandler::new());
+
+        // Create the engine. The chrome and shelf live here; with the content thread
+        // on, the page gets its own engine from the same settings.
+        let engine = engine_builder(&shield)
             .build()
             .map_err(|e| format!("Failed to create engine: {}", e))?;
 
         // Initialize app state
-        let app_state = Arc::new(
-            AppState::with_defaults()
-                .map_err(|e| format!("Failed to initialize app state: {}", e))?,
-        );
+        // The native shell keeps its own workspace file: it cannot restore the default build's
+        // tabs, and must not delete them either.
+        let mut state = AppState::with_workspace_state_file(shell_tabs::state_file(content_page::enabled()))
+            .map_err(|e| format!("Failed to initialize app state: {}", e))?;
+        // Tabs an earlier native session saved are reopened by `restore_session` once the
+        // views exist (their pages load when first shown). The content-thread path (an
+        // opt-in experiment) restores nothing but still saves its tabs, so it drops them
+        // instead, or every such session would add its tabs to the file for ever.
+        if content_page::enabled() {
+            let dropped = shell_tabs::drop_unreopenable_tabs(&mut state);
+            if dropped > 0 {
+                info!(dropped, "Dropped tabs saved by an earlier native session (content-thread path)");
+                if let Err(e) = state.save_workspace_state() {
+                    warn!(error = %e, "Failed to persist workspace state");
+                }
+            }
+        }
+        let app_state = Arc::new(Mutex::new(state));
 
         Ok(Self {
             viewhost: ViewHost::new(),
             engine: RefCell::new(engine),
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("Failed to create page runtime: {e}"))?,
+            live_clocks: RefCell::new(HashMap::new()),
             views: HashMap::new(),
             engine_view_types: HashMap::new(),
             event_queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -131,8 +226,25 @@ impl NativeBrowser {
             window_height: 800,
             chrome_height: CHROME_HEIGHT_DEFAULT,
             shelf_height: SHELF_HEIGHT_DEFAULT,
-            sidebar_width: SIDEBAR_WIDTH,
-            sidebar_open: true,
+            sidebar_width: 0,
+            right_panel_open: false,
+            focus_bar: None,
+            mirrored_tabs: std::collections::HashSet::new(),
+            needs_settle: false,
+            last_workspaces: String::new(),
+            pending_load: HashMap::new(),
+            shelf_scope: "workspace".to_string(),
+            last_focus: std::cell::Cell::new(None),
+            chrome_ready: false,
+            tab_ids: HashMap::new(),
+            chrome_synced: None,
+            shield,
+            shield_enabled: true,
+            pages: HashMap::new(),
+            page_tabs: None,
+            pending_find: RefCell::new(None),
+            visits: chrome_data::VisitTracker::default(),
+            page_focused: std::cell::Cell::new(false),
         })
     }
 
@@ -151,9 +263,17 @@ impl NativeBrowser {
             debug!(?event, "View event received");
         });
 
+        // Lay out against the window as it really is, not the size asked for:
+        // the client area is smaller than the outer size by the frame.
+        self.sync_window_size();
+
         // Create the three views
         self.create_views(hwnd)?;
         self.subscribe_to_events();
+        if let Some(page) = self.page() {
+            page.grab_keyboard();
+            self.page_focused.set(true);
+        }
         // Focus the content view. WITHOUT THIS, KEYBOARD SHORTCUTS DO NOT
         // WORK AT ALL: Win32 delivers WM_KEYDOWN to the FOCUSED window, the
         // main window proc handles no keys, and only the child-view proc
@@ -161,28 +281,70 @@ impl NativeBrowser {
         // to a window that dropped it. Found by pressing Ctrl+T at a running
         // browser and reading the log — the unit tests were all green.
         if let Some(&content) = self.views.get(&ViewType::Content) {
-            if let Err(e) = self.engine.borrow().focus_view(content) {
-                warn!(error = %e, "Failed to focus the content view");
+            match self.engine.borrow().focus_view(content) {
+                Ok(()) => self.last_focus.set(Some(content)),
+                Err(e) => warn!(error = %e, "Failed to focus the content view"),
             }
         }
 
         // Load initial content
         self.load_initial_content()?;
+        self.restore_session();
 
         info!("Native browser initialized");
         Ok(())
+    }
+
+    /// The active page, when the content thread is on.
+    fn page(&self) -> Option<&ContentPage> {
+        let tabs = self.page_tabs.as_ref()?;
+        self.pages.get(&tabs.active_view())
+    }
+
+    /// The page whose window reports its input under `host_view`.
+    fn page_for_viewhost(&self, host_view: rustkit_viewhost::ViewId) -> Option<&ContentPage> {
+        self.pages.values().find(|page| page.viewhost_id() == host_view)
+    }
+
+    /// Start a page on its own thread at the content bounds.
+    fn spawn_page(&mut self) -> Result<u64, String> {
+        let parent = self.viewhost.get_main_hwnd().ok_or("no main window")?;
+        let bounds = to_bounds(self.layout().content);
+        let page = ContentPage::spawn(parent, bounds, engine_builder(&self.shield), self.nav_guard())?;
+        let id = shell_tabs::alloc_tab_id();
+        self.pages.insert(id, page);
+        // Child windows do not stack in creation order here: keep the chrome under them.
+        if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
+            lower_view(&self.engine.borrow(), chrome_id);
+        }
+        Ok(id)
+    }
+
+    /// Show the page that became active and hide the one that stopped being.
+    fn apply_page_switch(&mut self, switch: TabSwitch<u64>) {
+        // A find still waiting was asked of the tab being left; its answer must not
+        // reach the find bar for the new one.
+        *self.pending_find.borrow_mut() = None;
+        if let Some(previous) = self.pages.get(&switch.previous) {
+            previous.set_visible(false);
+        }
+        if let Some(current) = self.pages.get(&switch.current) {
+            current.set_visible(true);
+            current.grab_keyboard();
+            self.page_focused.set(true);
+        }
     }
 
     /// Create Chrome, Content, and Shelf views.
     fn create_views(&mut self, parent: HWND) -> Result<(), String> {
         let mut engine = self.engine.borrow_mut();
 
-        // Calculate initial bounds
-        // Chrome view covers the sidebar area (left column, full height)
-        // The chrome.html contains the sidebar UI
-        let chrome_bounds = Bounds::new(0, 0, self.sidebar_width, self.window_height);
-        let content_bounds = self.calculate_content_bounds();
-        let shelf_bounds = self.calculate_shelf_bounds();
+        // The chrome view spans the window; content and shelf are created
+        // after it so they sit on top (see native/layout.rs).
+        let Layout { chrome, content, shelf } = self.layout();
+        let chrome_bounds = to_bounds(chrome);
+        let content_bounds = to_bounds(content);
+        let shelf_bounds = to_bounds(shelf);
 
         // Create Chrome view (tabs, address bar, toolbar)
         let chrome_id = engine
@@ -192,14 +354,25 @@ impl NativeBrowser {
         self.engine_view_types.insert(chrome_id, ViewType::Chrome);
         debug!(?chrome_id, "Chrome view created");
 
-        // Create Content view (web page rendering)
-        let content_id = engine
-            .create_view(parent, content_bounds)
-            .map_err(|e| format!("Failed to create Content view: {}", e))?;
-        self.views.insert(ViewType::Content, content_id);
-        self.engine_view_types.insert(content_id, ViewType::Content);
-        self.tabs = Some(TabModel::new(content_id));
-        debug!(?content_id, "Content view created");
+        // Create Content view (web page rendering). With the content thread on, the
+        // page is not an engine view of this engine: it runs on its own thread and
+        // this window only shows what it publishes.
+        let content_id = if content_page::enabled() {
+            let page = ContentPage::spawn(parent, content_bounds, engine_builder(&self.shield), self.nav_guard())?;
+            let id = shell_tabs::alloc_tab_id();
+            self.pages.insert(id, page);
+            self.page_tabs = Some(TabModel::new(id));
+            None
+        } else {
+            let content_id = engine
+                .create_view(parent, content_bounds)
+                .map_err(|e| format!("Failed to create Content view: {}", e))?;
+            self.views.insert(ViewType::Content, content_id);
+            self.engine_view_types.insert(content_id, ViewType::Content);
+            self.tabs = Some(TabModel::new(content_id));
+            debug!(?content_id, "Content view created");
+            Some(content_id)
+        };
 
         // Create Shelf view (command palette, hidden by default)
         let shelf_id = engine
@@ -209,7 +382,12 @@ impl NativeBrowser {
         self.engine_view_types.insert(shelf_id, ViewType::Shelf);
         debug!(?shelf_id, "Shelf view created");
         
-        info!(chrome = ?chrome_id, content = ?content_id, shelf = ?shelf_id, "All views created");
+        // The chrome view spans the window, so it must sit UNDER the content view.
+        // Child windows do not stack in creation order here (the chrome view, made
+        // first, ended up on top and hid the page), so say so explicitly.
+        lower_view(&engine, chrome_id);
+
+        info!(chrome = ?chrome_id, content = ?content_id, on_content_thread = self.page_tabs.is_some(), shelf = ?shelf_id, "All views created");
 
         Ok(())
     }
@@ -220,6 +398,11 @@ impl NativeBrowser {
 
         // Load Chrome UI
         if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
+            // The app's own documents are the only ones given window.ipc, and the
+            // engine drops IPC from every other view (CH3.A7). It must be set
+            // BEFORE the load: the bridge is built with the document. Without it
+            // the toolbar, tabs, sidebar and shelf all talk to nobody.
+            engine.set_app_owned(chrome_id, true);
             engine
                 .load_html(chrome_id, CHROME_HTML)
                 .map_err(|e| format!("Failed to load Chrome HTML: {}", e))?;
@@ -228,6 +411,7 @@ impl NativeBrowser {
 
         // Load Shelf UI
         if let Some(&shelf_id) = self.views.get(&ViewType::Shelf) {
+            engine.set_app_owned(shelf_id, true);
             engine
                 .load_html(shelf_id, SHELF_HTML)
                 .map_err(|e| format!("Failed to load Shelf HTML: {}", e))?;
@@ -235,7 +419,9 @@ impl NativeBrowser {
         }
 
         // Load About page in content view
-        if let Some(&content_id) = self.views.get(&ViewType::Content) {
+        if let Some(page) = self.page() {
+            page.load_html(ABOUT_HTML);
+        } else if let Some(&content_id) = self.views.get(&ViewType::Content) {
             engine
                 .load_html(content_id, ABOUT_HTML)
                 .map_err(|e| format!("Failed to load About HTML: {}", e))?;
@@ -246,84 +432,311 @@ impl NativeBrowser {
         Ok(())
     }
 
-    /// Calculate bounds for the content view.
-    fn calculate_content_bounds(&self) -> Bounds {
-        let x = if self.sidebar_open {
-            self.sidebar_width as i32
-        } else {
-            0
-        };
-        let y = 0; // Content starts at top (no toolbar in native mode)
-        let width = if self.sidebar_open {
-            self.window_width.saturating_sub(self.sidebar_width)
-        } else {
-            self.window_width
-        };
-        let height = self
-            .window_height
-            .saturating_sub(self.shelf_height);
-
-        Bounds::new(x, y, width, height)
-    }
-
-    /// Calculate bounds for the shelf view.
-    fn calculate_shelf_bounds(&self) -> Bounds {
-        let x = if self.sidebar_open {
-            self.sidebar_width as i32
-        } else {
-            0
-        };
-        let y = (self.window_height - self.shelf_height) as i32;
-        let width = if self.sidebar_open {
-            self.window_width.saturating_sub(self.sidebar_width)
-        } else {
-            self.window_width
-        };
-
-        Bounds::new(x, y, width, self.shelf_height)
+    /// Where each view goes for the current window and panel state.
+    fn layout(&self) -> Layout {
+        layout::compute(LayoutInput {
+            window_width: self.window_width,
+            window_height: self.window_height,
+            chrome_height: self.chrome_height,
+            shelf_height: self.shelf_height,
+            sidebar_width: self.sidebar_width,
+            right_panel_open: self.right_panel_open,
+            focus_bar: self.focus_bar,
+        })
     }
 
     /// Update layout after window resize or layout change.
     fn update_layout(&self) {
         let mut engine = self.engine.borrow_mut();
+        let Layout { chrome, content, shelf } = self.layout();
 
-        // Update Chrome view (sidebar area - left column, full height)
+        let mut targets = vec![
+            (ViewType::Chrome, chrome, self.views.get(&ViewType::Chrome).copied()),
+            (ViewType::Shelf, shelf, self.views.get(&ViewType::Shelf).copied()),
+        ];
+        // Every tab is its own content view; only the active one is shown, but
+        // a background tab must already have the right size when it is
+        // switched to, or it comes back at whatever the window used to be.
+        match self.tabs.as_ref() {
+            Some(tabs) => targets.extend(tabs.views().iter().map(|&id| (ViewType::Content, content, Some(id)))),
+            None => targets.push((ViewType::Content, content, self.views.get(&ViewType::Content).copied())),
+        }
+
+        for (view_type, rect, id) in targets {
+            let Some(id) = id else { continue };
+            if let Err(e) = engine.resize_view(id, to_bounds(rect)) {
+                warn!(?view_type, error = %e, "Failed to resize view");
+            }
+        }
+        for page in self.pages.values() {
+            page.resize(to_bounds(content));
+        }
         if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
-            let width = if self.sidebar_open { self.sidebar_width } else { 0 };
-            let bounds = Bounds::new(0, 0, width, self.window_height);
-            if let Err(e) = engine.resize_view(chrome_id, bounds) {
-                warn!(error = %e, "Failed to resize Chrome view");
-            }
+            lower_view(&engine, chrome_id);
         }
+    }
 
-        // Update Content view
-        if let Some(&content_id) = self.views.get(&ViewType::Content) {
-            let bounds = self.calculate_content_bounds();
-            if let Err(e) = engine.resize_view(content_id, bounds) {
-                warn!(error = %e, "Failed to resize Content view");
-            }
+    /// Follow the window's real client size. Nothing else tells this shell the
+    /// window was resized or maximised, so the run loop calls this every turn;
+    /// it does nothing unless the size changed. A minimised window reports
+    /// 0x0, which is ignored so the views keep their size for the restore.
+    fn sync_window_size(&mut self) {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+        let Some(hwnd) = self.viewhost.get_main_hwnd() else {
+            return;
+        };
+        let mut rect = RECT::default();
+        // SAFETY: `hwnd` is the live main window this browser created, and
+        // `rect` is a valid out-pointer for the duration of the call.
+        if unsafe { GetClientRect(hwnd, &mut rect) }.is_err() {
+            return;
         }
-
-        // Update Shelf view
-        if let Some(&shelf_id) = self.views.get(&ViewType::Shelf) {
-            let bounds = self.calculate_shelf_bounds();
-            if let Err(e) = engine.resize_view(shelf_id, bounds) {
-                warn!(error = %e, "Failed to resize Shelf view");
-            }
+        let (width, height) = (
+            (rect.right - rect.left).max(0) as u32,
+            (rect.bottom - rect.top).max(0) as u32,
+        );
+        if width == 0 || height == 0 {
+            return;
+        }
+        if (width, height) != (self.window_width, self.window_height) {
+            self.on_resize(width, height);
         }
     }
 
     /// Handle window resize event.
-    #[allow(dead_code)]
     pub fn on_resize(&mut self, width: u32, height: u32) {
         self.window_width = width;
         self.window_height = height;
+        // Before the views exist (first call, from init) there is nothing to move.
+        if !self.views.is_empty() {
+            self.update_layout();
+        }
+    }
+
+    /// Enter or leave focus mode (the state lives in the shared app state, the layout
+    /// here), then tell the chrome so it hides or shows its own bars.
+    fn set_focus_mode(&mut self, active: Option<bool>) {
+        let (now, config) = {
+            let Ok(mut state) = self.app_state.lock() else {
+                return;
+            };
+            match active {
+                Some(true) => state.focus_mode.enter(),
+                Some(false) => state.focus_mode.exit(),
+                None => state.focus_mode.toggle(),
+            }
+            let c = &state.focus_mode_config;
+            (
+                state.focus_mode.active,
+                serde_json::json!({
+                    "show_progress_bar": c.show_progress_bar,
+                    "hide_cursor": c.hide_cursor,
+                    "cursor_hide_delay_secs": c.cursor_hide_delay_secs,
+                }),
+            )
+        };
+        self.focus_bar = now.then_some(layout::FOCUS_REVEAL_HEIGHT);
+        self.update_layout();
+        let script = if now {
+            format!("if(window.hiwaveChrome) {{ hiwaveChrome.setFocusMode(true, {config}); }}")
+        } else {
+            "if(window.hiwaveChrome) { hiwaveChrome.setFocusMode(false); }".to_string()
+        };
+        self.run_chrome_script(&script);
+    }
+
+    /// Send the sidebar its workspaces. `force` sends even when nothing changed (the
+    /// chrome asked); otherwise only a changed list is sent.
+    fn sync_workspaces(&mut self, force: bool) {
+        let script = match self.app_state.lock() {
+            Ok(state) => chrome_data::workspaces_script(&state),
+            Err(_) => return,
+        };
+        if force || script != self.last_workspaces {
+            self.run_chrome_script(&script);
+            self.last_workspaces = script;
+        }
+    }
+
+    /// Send the sidebar its shelf, for the scope it last asked for.
+    fn sync_shelf(&self) {
+        let script = match self.app_state.lock() {
+            Ok(state) => chrome_data::shelf_script(&state, &self.shelf_scope),
+            Err(_) => return,
+        };
+        self.run_chrome_script(&script);
+    }
+
+    /// How many tabs this shell has open.
+    fn native_tab_count(&self) -> usize {
+        if let Some(tabs) = self.page_tabs.as_ref() {
+            return tabs.count();
+        }
+        self.tabs.as_ref().map(|t| t.count()).unwrap_or(0)
+    }
+
+    /// Put a tab on its workspace's shelf and close it here. The shared model drops the tab
+    /// when it is shelved; if this shell kept it open the next turn would add it back, so
+    /// the last tab is replaced by a new one first (the strip never empties).
+    fn shelve_tab(&mut self, id: u64) {
+        let shelved = match self.app_state.lock() {
+            Ok(mut state) => matches!(state.add_to_shelf(hiwave_core::types::TabId(id)), Ok(Some(_))),
+            Err(_) => false,
+        };
+        if !shelved {
+            return;
+        }
+        // The strip shows the active workspace's tabs: if this is the only one, open another
+        // first (counting every workspace's tabs would show a neighbour's page for a tick).
+        let in_workspace = self
+            .app_state
+            .lock()
+            .map(|state| shell_tabs::active_workspace_view(&state, &self.mirrored_tabs).visible.len())
+            .unwrap_or_else(|_| self.native_tab_count());
+        if in_workspace <= 1 {
+            self.new_tab();
+        }
+        self.close_tab_by_id(id);
+        self.mirrored_tabs.remove(&id);
+        self.save_and_sync_workspaces();
+    }
+
+    /// Reopen a shelved page in a new tab of its workspace (or the one it was dropped on).
+    fn restore_shelf_item(&mut self, item: &str, workspace: Option<u64>) {
+        let target = workspace.map(hiwave_core::types::WorkspaceId);
+        // Decide first: an item that cannot open stays on the shelf.
+        let plan = match self.app_state.lock() {
+            Ok(state) => shell_tabs::peek_shelf_item(&state, item, target).map(|(url, _)| {
+                let kind = shell_tabs::restore_kind(&state, &url);
+                (url, kind)
+            }),
+            Err(_) => None,
+        };
+        let Some((url, kind)) = plan else {
+            return;
+        };
+        match kind {
+            shell_tabs::RestoreKind::Blocked => {
+                warn!(url, "Shelf restore refused: the domain is on the user's blocklist; the item stays on the shelf");
+                return;
+            }
+            shell_tabs::RestoreKind::Unopenable => {
+                warn!(url, "Shelf restore refused: the shell cannot open this address; the item stays on the shelf");
+                return;
+            }
+            shell_tabs::RestoreKind::Page | shell_tabs::RestoreKind::StartPage => {}
+        }
+        let taken = match self.app_state.lock() {
+            Ok(mut state) => shell_tabs::take_from_shelf_undoable(&mut state, item, target),
+            Err(_) => None,
+        };
+        let Some(taken) = taken else {
+            return;
+        };
+        let (url, workspace) = (taken.url.clone(), taken.workspace);
+        // The workspace is active now. Tabs it kept from an earlier session get their views
+        // first (they load when shown), so the restore never leaves one blank behind it.
+        self.adopt_workspace_tabs(workspace);
+        // The new tab lands in it on the next turn. When no tab could be made, the item goes
+        // back on the shelf: navigating would load the page over whichever tab is showing.
+        if !self.open_tab_checked() {
+            warn!(url, "Shelf restore could not open a tab; the item stays on the shelf");
+            if let Ok(mut state) = self.app_state.lock() {
+                shell_tabs::put_back_on_shelf(&mut state, taken);
+            }
+            self.needs_settle = true;
+        } else if kind == shell_tabs::RestoreKind::Page {
+            self.navigate(&url);
+        }
+        self.save_and_sync_workspaces();
+    }
+
+    /// Save the shared workspace state, then refresh the sidebar.
+    fn save_and_sync_workspaces(&mut self) {
+        if let Ok(state) = self.app_state.lock() {
+            if let Err(e) = state.save_workspace_state() {
+                warn!(error = %e, "Failed to persist workspace state");
+            }
+        }
+        self.sync_workspaces(true);
+        self.sync_shelf();
+    }
+
+    /// Send the blocklist panel its domains.
+    fn sync_blocklist(&self) {
+        let script = match self.app_state.lock() {
+            Ok(state) => chrome_data::blocklist_script(&state),
+            Err(_) => return,
+        };
+        self.run_chrome_script(&script);
+    }
+
+    /// Whether the user has blocked this address's domain.
+    fn user_blocked(&self, url: &str) -> bool {
+        self.app_state.lock().map(|s| chrome_data::url_is_blocked(&s, url)).unwrap_or(false)
+    }
+
+    /// The blocklist check a content-thread page asks before each of its navigations.
+    fn nav_guard(&self) -> content_page::NavGuard {
+        let state = Arc::clone(&self.app_state);
+        std::rc::Rc::new(move |url: &str| state.lock().map(|s| chrome_data::url_is_blocked(&s, url)).unwrap_or(false))
+    }
+
+    /// Block the domain of the tab the chrome calls `id`, then close the tab. The
+    /// address comes from the rows the chrome was last told about.
+    fn block_and_close(&mut self, id: u64) {
+        let url = self
+            .chrome_synced
+            .as_ref()
+            .and_then(|s| s.tabs.iter().find(|t| t.id == id))
+            .map(|t| t.url.clone());
+        let Some(domain) = url.as_deref().and_then(crate::state::UserBlocklist::extract_domain) else {
+            warn!(id, "block_and_close: the tab has no domain to block");
+            return;
+        };
+        if let Ok(mut state) = self.app_state.lock() {
+            if let Err(e) = state.block_domain(domain.clone()) {
+                warn!(error = %e, "Failed to save the blocklist");
+            }
+        }
+        info!(%domain, id, "Blocked the domain and closed its tab");
+        // The last tab cannot be closed (the strip never empties), which would leave the
+        // blocked page on screen: replace it with a new tab first (Pollux's R1 note on #130).
+        let open_tabs = self.page_tabs.as_ref().map(|t| t.count()).or_else(|| self.tabs.as_ref().map(|t| t.count())).unwrap_or(0);
+        if open_tabs <= 1 {
+            self.new_tab();
+        }
+        self.close_tab_by_id(id);
+        self.sync_blocklist();
+    }
+
+    /// The peek: a taller chrome strip while the mouse is at the top in focus mode.
+    fn set_focus_peek(&mut self, show: bool) {
+        if self.focus_bar.is_none() {
+            return;
+        }
+        if let Ok(mut state) = self.app_state.lock() {
+            if show {
+                state.focus_mode.show_peek();
+            } else {
+                state.focus_mode.hide_peek();
+            }
+        }
+        self.focus_bar = Some(if show { layout::FOCUS_PEEK_HEIGHT } else { layout::FOCUS_REVEAL_HEIGHT });
         self.update_layout();
     }
 
     /// Expand the Chrome UI (for overlays).
     pub fn expand_chrome(&mut self) {
         self.chrome_height = CHROME_HEIGHT_EXPANDED;
+        self.update_layout();
+    }
+
+    /// Expand the chrome a little, for the tab actions panel.
+    pub fn expand_chrome_small(&mut self) {
+        self.chrome_height = CHROME_HEIGHT_SMALL;
         self.update_layout();
     }
 
@@ -347,7 +760,25 @@ impl NativeBrowser {
 
     /// Toggle sidebar visibility.
     pub fn toggle_sidebar(&mut self) {
-        self.sidebar_open = !self.sidebar_open;
+        let open = self.sidebar_width == 0;
+        self.set_sidebar_open(open);
+    }
+
+    /// Open the sidebar at its default width, or close it.
+    pub fn set_sidebar_open(&mut self, open: bool) {
+        self.sidebar_width = if open { SIDEBAR_WIDTH } else { 0 };
+        self.update_layout();
+    }
+
+    /// Set the sidebar's width (the chrome sends this while it is dragged).
+    pub fn set_sidebar_width(&mut self, width: u32) {
+        self.sidebar_width = width;
+        self.update_layout();
+    }
+
+    /// Open or close the right-hand panel.
+    pub fn set_right_panel_open(&mut self, open: bool) {
+        self.right_panel_open = open;
         self.update_layout();
     }
 
@@ -364,6 +795,10 @@ impl NativeBrowser {
     /// `rustkit-net::fetch` has no cancellation surface yet. The bytes arrive
     /// and are discarded. Stop-as-observed, not stop-as-transport.
     pub fn stop_loading(&self) {
+        if let Some(page) = self.page() {
+            page.stop();
+            return;
+        }
         if let Some(&content_id) = self.views.get(&ViewType::Content) {
             let mut engine = self.engine.borrow_mut();
             if engine.stop(content_id) {
@@ -403,36 +838,76 @@ impl NativeBrowser {
         self.views.insert(ViewType::Content, switch.current);
         self.engine_view_types
             .insert(switch.current, ViewType::Content);
+        // A restored tab is loaded the first time it is shown.
+        if let Some(url) = self.tab_ids.get(&switch.current).and_then(|id| self.pending_load.remove(id)) {
+            self.load_restored(&url);
+        }
         // Focus follows the active tab, or the next shortcut goes to a window
         // that is no longer showing.
-        if let Err(e) = self.engine.borrow().focus_view(switch.current) {
-            warn!(error = %e, "Failed to focus the incoming tab");
+        match self.engine.borrow().focus_view(switch.current) {
+            Ok(()) => self.last_focus.set(Some(switch.current)),
+            Err(e) => warn!(error = %e, "Failed to focus the incoming tab"),
         }
     }
 
     /// Open a new tab and select it.
     fn new_tab(&mut self) {
+        self.open_tab();
+    }
+
+    /// Open a new tab and select it; whether a tab was made (either path). Callers that then
+    /// navigate must check this: a failed creation leaves the old tab active, and navigating
+    /// would load the page over it.
+    fn open_tab_checked(&mut self) -> bool {
+        let count = |s: &Self| s.page_tabs.as_ref().map(|t| t.count()).or_else(|| s.tabs.as_ref().map(|t| t.count()));
+        let before = count(self);
+        self.open_tab();
+        count(self) > before
+    }
+
+    /// Open a new tab and select it; the view it created. `None` when no view was made
+    /// (the content-thread path has no engine view, and a creation can fail): callers that
+    /// label or navigate the new tab must not do it to whatever tab was already active.
+    fn open_tab(&mut self) -> Option<EngineViewId> {
+        if self.page_tabs.is_some() {
+            match self.spawn_page() {
+                Ok(id) => {
+                    if let Some(tabs) = self.page_tabs.as_mut() {
+                        let switch = tabs.push(id);
+                        let count = tabs.count();
+                        self.apply_page_switch(switch);
+                        info!(id, count, "New tab (content thread)");
+                    }
+                }
+                Err(e) => error!(error = %e, "Failed to start a page for the new tab"),
+            }
+            return None;
+        }
         let Some(parent) = self.viewhost.get_main_hwnd() else {
             warn!("No main window — cannot open a tab");
-            return;
+            return None;
         };
-        let bounds = self.calculate_content_bounds();
+        let bounds = to_bounds(self.layout().content);
         let created = self.engine.borrow_mut().create_view(parent, bounds);
+        if let Some(&chrome_id) = self.views.get(&ViewType::Chrome) {
+            lower_view(&self.engine.borrow(), chrome_id);
+        }
         let view = match created {
             Ok(v) => v,
             Err(e) => {
                 error!(error = %e, "Failed to create a view for the new tab");
-                return;
+                return None;
             }
         };
         let Some(tabs) = self.tabs.as_mut() else {
             warn!("Tab model not initialised — cannot open a tab");
-            return;
+            return None;
         };
         let switch = tabs.push(view);
         let count = tabs.count();
         self.apply_switch(switch);
         info!(?view, count, "New tab");
+        Some(view)
     }
 
     /// Close the active tab.
@@ -443,6 +918,20 @@ impl NativeBrowser {
     /// `active_view()` total. Wire the quit at the window layer when the
     /// product calls for it.
     fn close_active_tab(&mut self) {
+        if let Some(tabs) = self.page_tabs.as_mut() {
+            let Some((closed, switch)) = tabs.close_active() else {
+                debug!("Refusing to close the last tab");
+                return;
+            };
+            let count = tabs.count();
+            self.apply_page_switch(switch);
+            // After the switch, so the replacement is already showing.
+            if let Some(page) = self.pages.remove(&closed) {
+                page.close();
+            }
+            info!(closed, count, "Tab closed (content thread)");
+            return;
+        }
         let Some(tabs) = self.tabs.as_mut() else {
             return;
         };
@@ -461,8 +950,32 @@ impl NativeBrowser {
         info!(?closed, count, "Tab closed");
     }
 
+    /// Ctrl+1..9 / Ctrl+9: the nth tab of the strip, which shows the active workspace's tabs
+    /// only (`None` = the last one). Counting every tab would pick one from another
+    /// workspace. The strip is what the chrome was last told.
+    fn activate_visible_tab(&mut self, nth: Option<usize>) {
+        let ids: Vec<u64> = match self.chrome_synced.as_ref() {
+            Some(s) => s.tabs.iter().map(|t| t.id).collect(),
+            None => return,
+        };
+        let id = match nth {
+            Some(n) => ids.get(n).copied(),
+            None => ids.last().copied(),
+        };
+        if let Some(index) = id.and_then(|id| self.tab_index_for_id(id)) {
+            self.activate_tab_by_index(index);
+        }
+    }
+
     /// Select a tab by index (Ctrl+1..9).
     fn activate_tab_by_index(&mut self, index: usize) {
+        if let Some(tabs) = self.page_tabs.as_mut() {
+            if let Some(switch) = tabs.activate(index) {
+                self.apply_page_switch(switch);
+                debug!(index, "Tab activated (content thread)");
+            }
+            return;
+        }
         let Some(tabs) = self.tabs.as_mut() else {
             return;
         };
@@ -527,7 +1040,9 @@ impl NativeBrowser {
             } = &event
             {
                 if key.event_type == KeyEventType::KeyDown {
-                    if let Some(shortcut) = shortcuts::resolve(key.key_code, key.modifiers) {
+                    if let Some(shortcut) = shortcuts::resolve(key.key_code, key.modifiers)
+                        .filter(|s| !self.chrome_owns_escape(*s))
+                    {
                         debug!(?shortcut, "Shortcut");
                         self.run_shortcut(shortcut);
                         // Claimed by the shell; the page never sees it.
@@ -535,37 +1050,872 @@ impl NativeBrowser {
                     }
                 }
             }
-            self.engine.borrow_mut().handle_view_event(event);
+            // Input on the content-thread page goes to the page, not the engine.
+            if let ViewEvent::Input { view_id, event: inner } = &event {
+                if let Some(page) = self.page_for_viewhost(*view_id) {
+                    self.route_page_input(page, inner);
+                    continue;
+                }
+            }
+            // The engine's own mouse handling ignores the secondary button: the shell
+            // asks for the `contextmenu` sequence itself (this is what opens the tab
+            // actions panel, the chrome's menus and a page's own contextmenu handlers).
+            if let ViewEvent::Input {
+                event: InputEvent::Mouse(mouse),
+                ..
+            } = &event
+            {
+                if mouse.button == MouseButton::Secondary
+                    && matches!(mouse.event_type, MouseEventType::MouseDown | MouseEventType::MouseUp)
+                    && self.secondary_click(mouse)
+                {
+                    continue;
+                }
+            }
+            // A click gives the view it landed on the keyboard focus. Win32 sends
+            // key messages only to the focused window, and nothing moved focus off
+            // the page at startup, so typing in the chrome (the address bar) went
+            // to the page.
+            if let ViewEvent::Input {
+                event: InputEvent::Mouse(mouse),
+                ..
+            } = &event
+            {
+                if mouse.event_type == MouseEventType::MouseDown {
+                    self.focus_clicked_view();
+                }
+            }
+            // Text goes to the engine's editor. handle_view_event only fires DOM
+            // key events; it never types into a field.
+            if let ViewEvent::Input {
+                event: InputEvent::Key(key),
+                ..
+            } = &event
+            {
+                if self.route_text_key(key) {
+                    continue;
+                }
+            }
+            let navigation = self.engine.borrow_mut().handle_view_event(event);
+            if let Some((id, url)) = navigation {
+                self.navigate_view(id, &url);
+            }
         }
+    }
+
+    /// Escape means "stop loading" only for the page. With one of the app's own views
+    /// focused (the chrome: the find box, the address bar; or the shelf, the command
+    /// palette) it belongs to that view's page, which closes its own UI on it.
+    fn chrome_owns_escape(&self, shortcut: Shortcut) -> bool {
+        shortcut == Shortcut::Stop
+            && !self.page_focused.get()
+            && self.focused_view().is_some_and(|focused| {
+                [ViewType::Chrome, ViewType::Shelf]
+                    .iter()
+                    .any(|kind| self.views.get(kind) == Some(&focused))
+            })
+    }
+
+    /// A secondary-button press or release on an engine view. Returns true when it was
+    /// delivered. The view is the window under the cursor (the viewhost ids on events do
+    /// not resolve in this shell's engine; see `engine_view_for_hwnd`).
+    fn secondary_click(&self, mouse: &rustkit_core::MouseEvent) -> bool {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, WindowFromPoint};
+
+        let mut pt = POINT::default();
+        // SAFETY: `pt` is a valid out-pointer.
+        if unsafe { GetCursorPos(&mut pt) }.is_err() {
+            return false;
+        }
+        // SAFETY: plain query by screen point.
+        let Some(id) = self.engine_view_for_hwnd(unsafe { WindowFromPoint(pt) }) else {
+            return false;
+        };
+        let (x, y) = (mouse.position.x as f32, mouse.position.y as f32);
+        // A right-click focuses what it lands on, as in Chrome (a text field takes the
+        // caret), so the keyboard goes there too.
+        if mouse.event_type == MouseEventType::MouseDown {
+            self.focus_clicked_view();
+        }
+        let mut engine = self.engine.borrow_mut();
+        if mouse.event_type == MouseEventType::MouseDown {
+            // `true` means no listener cancelled the contextmenu event: the browser should
+            // show its own menu. There is no native menu yet, so it is dropped here. This
+            // is where one would be opened.
+            let _show_browser_menu = engine.context_menu_at_point(id, x, y);
+        } else {
+            engine.context_menu_release(id, x, y);
+        }
+        true
+    }
+
+    /// Deliver mouse and key input from the content-thread page's window to the page.
+    fn route_page_input(&self, page: &ContentPage, input: &InputEvent) {
+        match input {
+            InputEvent::Mouse(m) => {
+                let (x, y) = (m.position.x as f32, m.position.y as f32);
+                match m.event_type {
+                    MouseEventType::MouseDown if m.button == MouseButton::Primary => {
+                        // Win32 does not move focus to a child window on a click.
+                        page.grab_keyboard();
+                        self.page_focused.set(true);
+                        page.mouse_down(x, y, m.click_count.max(1), m.modifiers.shift);
+                    }
+                    MouseEventType::MouseUp if m.button == MouseButton::Primary => page.click(x, y),
+                    // Right-click: the page's own contextmenu handlers run (no native menu yet).
+                    MouseEventType::MouseDown if m.button == MouseButton::Secondary => {
+                        // A right-click focuses what it lands on, as a left click does.
+                        page.grab_keyboard();
+                        self.page_focused.set(true);
+                        page.secondary_down(x, y);
+                    }
+                    MouseEventType::MouseUp if m.button == MouseButton::Secondary => page.secondary_up(x, y),
+                    MouseEventType::MouseMove | MouseEventType::MouseEnter => page.mouse_move(x, y),
+                    MouseEventType::MouseLeave => page.mouse_leave(),
+                    // ViewHost reports notches (120 native units); the page takes pixels.
+                    MouseEventType::Wheel => page.scroll_at(x, y, m.delta.x as f32 * 120.0, m.delta.y as f32 * 120.0),
+                    _ => {}
+                }
+            }
+            InputEvent::Key(key) => {
+                let mods = key.modifiers;
+                match key_action(key) {
+                    KeyAction::Send(vk, text) => page.key(vk, &text, mods.ctrl, mods.shift, mods.alt),
+                    KeyAction::Pass if key.event_type == KeyEventType::KeyUp => {
+                        page.key_up(key.key_code as u32, "", mods.ctrl, mods.shift, mods.alt)
+                    }
+                    _ => {}
+                }
+            }
+            InputEvent::Focus(_) => {}
+        }
+    }
+
+    /// The engine view whose window is `hwnd`, if it is one of ours. Child
+    /// windows are identified by handle: the engine owns its own ViewHost, so
+    /// the viewhost view ids on input events do not resolve in this shell's.
+    fn engine_view_for_hwnd(&self, hwnd: HWND) -> Option<EngineViewId> {
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let engine = self.engine.borrow();
+        self.engine_view_types
+            .keys()
+            .copied()
+            .find(|&id| engine.get_view_hwnd(id).map(|h| h == hwnd).unwrap_or(false))
+    }
+
+    /// The view that has the keyboard focus (key messages go only to it).
+    fn focused_view(&self) -> Option<EngineViewId> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        // SAFETY: GetFocus has no preconditions; this runs on the window's own thread.
+        self.engine_view_for_hwnd(unsafe { GetFocus() })
+    }
+
+    /// Remember which view has the focus, and give it back if it landed on the
+    /// bare main window. Only acts when the main window itself is the focus
+    /// window, so it never takes focus from another application.
+    fn restore_focus(&self) {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        // SAFETY: GetFocus has no preconditions; this runs on the window's own thread.
+        let focus = unsafe { GetFocus() };
+        if let Some(id) = self.engine_view_for_hwnd(focus) {
+            self.last_focus.set(Some(id));
+            self.page_focused.set(false);
+            return;
+        }
+        if self.pages.values().any(|page| page.hwnd() == focus) {
+            self.page_focused.set(true);
+            return;
+        }
+        let Some(main) = self.viewhost.get_main_hwnd() else {
+            return;
+        };
+        if focus != main {
+            return;
+        }
+        if let (Some(page), true) = (self.page(), self.page_focused.get()) {
+            page.grab_keyboard();
+            return;
+        }
+        if let Some(id) = self.last_focus.get() {
+            if self.engine_view_types.contains_key(&id) {
+                let _ = self.engine.borrow().focus_view(id);
+            }
+        }
+    }
+
+    /// Give the keyboard focus to the view under the mouse (the one just
+    /// clicked). Win32 does not move focus to a child window on a click.
+    fn focus_clicked_view(&self) {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, WindowFromPoint};
+
+        let mut pt = POINT::default();
+        // SAFETY: `pt` is a valid out-pointer.
+        if unsafe { GetCursorPos(&mut pt) }.is_err() {
+            return;
+        }
+        // SAFETY: plain query by screen point.
+        let Some(id) = self.engine_view_for_hwnd(unsafe { WindowFromPoint(pt) }) else {
+            return;
+        };
+        match self.engine.borrow().focus_view(id) {
+            Ok(()) => {
+                self.last_focus.set(Some(id));
+                self.page_focused.set(false);
+            }
+            Err(e) => warn!(error = %e, "Failed to focus the clicked view"),
+        }
+    }
+
+    /// Deliver a key to the engine's text editor. Returns true when the event
+    /// was handled here and must not also go to `handle_view_event` (which
+    /// would fire the same DOM key event a second time); false for key-up.
+    ///
+    /// Same split as the macOS app: editing and navigation keys go as a virtual
+    /// key with no text, typed characters as text with no key, and Ctrl+A/C/V/X/Z
+    /// as the letter with Ctrl set. Printable keys arrive twice on Win32 (WM_KEYDOWN
+    /// and then WM_CHAR); only the WM_CHAR half types.
+    fn route_text_key(&mut self, key: &KeyEvent) -> bool {
+        let (vk, text) = match key_action(key) {
+            KeyAction::Pass => return false,
+            KeyAction::Ignore => return true,
+            KeyAction::Send(vk, text) => (vk, text),
+        };
+
+        let Some(id) = self.focused_view().or_else(|| self.last_focus.get()) else {
+            return false;
+        };
+        let m = key.modifiers;
+
+        // Enter goes through the engine's form submission first, in every view:
+        // that is what fires Enter's keydown, which is how the chrome's address
+        // bar hears it (handle_text_key fires none for Enter). A page's form
+        // that submits to a URL navigates, as on macOS; if nothing took the
+        // key, Enter's default (a newline in a textarea, a pick in a select)
+        // falls through to handle_text_key.
+        if vk == 0x0D {
+            let submitted = self.engine.borrow_mut().submit_focused_form(id);
+            if let Some(url) = submitted {
+                if self.engine_view_types.get(&id) == Some(&ViewType::Content) {
+                    info!(%url, "Form submitted");
+                    self.navigate_view(id, &url);
+                }
+                return true;
+            }
+        }
+
+        let changed = self
+            .engine
+            .borrow_mut()
+            .handle_text_key(id, vk, &text, m.ctrl, m.shift, m.alt);
+        if changed {
+            if let Err(e) = self.engine.borrow_mut().relayout(id) {
+                warn!(error = %e, "Relayout after a key failed");
+            }
+        }
+        true
     }
 
     fn run_shortcut(&mut self, shortcut: Shortcut) {
+        // Focus mode hides the chrome: a chord that types into it must leave focus mode
+        // first, or the keystrokes would go into UI that is not on screen.
+        if self.focus_bar.is_some() && shortcuts::needs_chrome_visible(shortcut) {
+            self.set_focus_mode(Some(false));
+        }
         match shortcut {
             Shortcut::NewTab => self.new_tab(),
             Shortcut::CloseTab => self.close_active_tab(),
-            Shortcut::ActivateTab(i) => self.activate_tab_by_index(i),
-            Shortcut::ActivateLastTab => {
-                if let Some(last) = self.tabs.as_ref().map(|t| t.count() - 1) {
-                    self.activate_tab_by_index(last);
-                }
-            }
+            Shortcut::ActivateTab(i) => self.activate_visible_tab(Some(i)),
+            Shortcut::ActivateLastTab => self.activate_visible_tab(None),
             Shortcut::Back => self.traverse("back"),
             Shortcut::Forward => self.traverse("forward"),
             Shortcut::Reload => self.traverse("reload"),
-            Shortcut::Stop => self.stop_loading(),
+            Shortcut::Stop => {
+                let loading = self.chrome_synced.as_ref().is_some_and(|s| s.loading);
+                if shortcuts::escape_leaves_focus_mode(self.focus_bar.is_some(), loading) {
+                    self.set_focus_mode(Some(false));
+                } else {
+                    self.stop_loading();
+                }
+            }
+            Shortcut::Find => self.send_chrome_chord(0x46, "f"),
+            Shortcut::FocusAddressBar => self.send_chrome_chord(0x4C, "l"),
+            Shortcut::ToggleSidebar => self.send_chrome_chord(0x42, "b"),
+            Shortcut::CommandPalette => self.send_chrome_chord(0x4B, "k"),
+            Shortcut::History => self.send_chrome_chord(0x48, "h"),
+            Shortcut::FocusMode => self.set_focus_mode(None),
         }
     }
 
+    /// Deliver Ctrl+<key> to the chrome page as a keyboard event, the way typing it
+    /// there would, and move the keyboard focus to the chrome so what is typed next
+    /// lands in the field the page just focused. The page owns these chords (find,
+    /// address bar, sidebar, command palette) in its own keydown handler.
+    fn send_chrome_chord(&mut self, vk: u32, key: &str) {
+        let Some(&chrome_id) = self.views.get(&ViewType::Chrome) else {
+            return;
+        };
+        if self.engine.borrow().focus_view(chrome_id).is_ok() {
+            self.last_focus.set(Some(chrome_id));
+            self.page_focused.set(false);
+        }
+        let changed = self.engine.borrow_mut().handle_text_key(chrome_id, vk, key, true, false, false);
+        if changed {
+            if let Err(e) = self.engine.borrow_mut().relayout(chrome_id) {
+                warn!(error = %e, "Relayout after a chrome chord failed");
+            }
+        }
+    }
+
+    /// Find `query` in the active page and tell the chrome's find bar how many
+    /// matches there are. The helper highlights matches in the page itself.
+    fn find_in_page(&self, query: &str, case_sensitive: bool, direction: &str) {
+        let payload = serde_json::json!({
+            "query": query,
+            "case_sensitive": case_sensitive,
+            "direction": direction,
+        });
+        let script = format!(
+            "{FIND_IN_PAGE_HELPER}\n(() => {{ const r = window.__hiwaveFind && window.__hiwaveFind.run({payload}); return r ? JSON.stringify(r) : 'null'; }})();"
+        );
+
+        // On the content thread the answer comes back later: remember the query and
+        // collect it in `poll_find`. A newer find replaces an older one still waiting.
+        //
+        // `page.eval` runs a script WE wrote (the bundled find helper plus the query
+        // as a JSON-escaped literal, never concatenated text) inside the page, the
+        // same as the engine's `execute_script` does for the window-thread path. No
+        // page-supplied text becomes code here; the page's ANSWER is the untrusted
+        // part, and `show_find_result` reduces it to two numbers before the chrome
+        // sees it.
+        if let Some(page) = self.page() {
+            *self.pending_find.borrow_mut() = Some((page.eval(&script), query.to_string()));
+            return;
+        }
+
+        let Some(&content_id) = self.views.get(&ViewType::Content) else {
+            return;
+        };
+        let out = self.engine.borrow_mut().execute_script(content_id, &script);
+        self.show_find_result(out.ok(), query);
+    }
+
+    /// Tell the find bar what the helper found. The helper ran in the PAGE, so its
+    /// answer is page-controlled: only numbers parsed out of it, and the query the
+    /// chrome itself sent, reach the chrome.
+    fn show_find_result(&self, answer: Option<String>, query: &str) {
+        match answer.and_then(|o| script_string(&o)).and_then(|raw| find_state_payload(&raw, query)) {
+            Some(state) => self.run_chrome_script(&format!(
+                "if(window.hiwaveChrome) {{ hiwaveChrome.updateFindState({state}); }}"
+            )),
+            None => debug!("find_in_page produced no result"),
+        }
+    }
+
+    /// Collect a content-thread find's answer if it has arrived. Never waits.
+    fn poll_find(&self) {
+        use tokio::sync::oneshot::error::TryRecvError;
+        let outcome = {
+            let mut slot = self.pending_find.borrow_mut();
+            let Some((rx, query)) = slot.as_mut() else {
+                return;
+            };
+            match rx.try_recv() {
+                Ok(answer) => {
+                    let query = query.clone();
+                    *slot = None;
+                    Some((answer, query))
+                }
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Closed) => {
+                    *slot = None;
+                    None
+                }
+            }
+        };
+        if let Some((answer, query)) = outcome {
+            self.show_find_result(answer.ok(), &query);
+        }
+    }
+
+    /// A command on the shared app state (history, downloads). These are the calls the
+    /// WebView2 shell's handlers make; its `ipc` module is not built here (it needs the
+    /// WebView platform layer), so the two that change state are made directly.
+    fn app_data_command(&self, cmd: &str) {
+        let Ok(mut state) = self.app_state.lock() else {
+            return;
+        };
+        let script = match cmd {
+            "clear_visit_history" => {
+                if let Err(e) = state.clear_visit_history() {
+                    warn!(error = %e, "Failed to clear the history");
+                }
+                chrome_data::history_script(&state)
+            }
+            "clear_downloads" => {
+                state.clear_download_history();
+                if let Err(e) = state.save_workspace_state() {
+                    warn!(error = %e, "Failed to persist the download history");
+                }
+                chrome_data::downloads_script(&state)
+            }
+            "get_visit_history" => chrome_data::history_script(&state),
+            _ => chrome_data::downloads_script(&state),
+        };
+        drop(state);
+        self.run_chrome_script(&script);
+    }
+
+    /// Write the active page to the history when `VisitTracker` says it is a new visit.
+    fn record_visit_if_new(&mut self, tab: Option<u64>, url: &str, title: &str, loading: bool) {
+        if !self.visits.should_record(tab, url, title, loading) {
+            return;
+        }
+        if let Ok(mut state) = self.app_state.lock() {
+            if let Err(e) = state.record_visit(url, Some(title.to_string()), None) {
+                warn!(error = %e, "Failed to write the history entry");
+            }
+        }
+    }
+
+    /// Run a script in the chrome page.
+    fn run_chrome_script(&self, script: &str) {
+        let Some(&chrome_id) = self.views.get(&ViewType::Chrome) else {
+            return;
+        };
+        if let Err(e) = self.engine.borrow_mut().execute_script(chrome_id, script) {
+            debug!(error = %e, "Chrome script failed");
+        }
+    }
+
+    /// The tab id the page uses for `view`, assigned on first sight.
+    fn tab_id_for(&mut self, view: EngineViewId) -> u64 {
+        *self.tab_ids.entry(view).or_insert_with(shell_tabs::alloc_tab_id)
+    }
+
+    /// Open a view for each tab of `workspace` that is in the shared model but not here
+    /// (restored from a previous session), under the id the model already has. Pages load
+    /// when their tab is first shown. Returns the workspace's own active tab, if restored.
+    /// The engine-view path only: the content-thread path (an experiment) restores nothing.
+    fn adopt_workspace_tabs(&mut self, workspace: hiwave_core::types::WorkspaceId) -> Option<u64> {
+        if self.page_tabs.is_some() {
+            return None;
+        }
+        let (saved, active) = match self.app_state.lock() {
+            Ok(state) => shell_tabs::unowned_tabs(&state, &self.mirrored_tabs, workspace),
+            Err(_) => return None,
+        };
+        let mut opened: Vec<(EngineViewId, u64, String)> = Vec::new();
+        let adopted = shell_tabs::adopt_each(
+            &saved,
+            || {
+                let view = self.open_tab();
+                if view.is_none() {
+                    warn!("Could not open a view for a saved tab; it and the rest stay saved");
+                }
+                view
+            },
+            |view, tab| opened.push((view, tab.id, tab.url.clone())),
+        );
+        for (view, id, url) in opened {
+            self.tab_ids.insert(view, id);
+            self.mirrored_tabs.insert(id);
+            self.pending_load.insert(id, url);
+        }
+        if !adopted.is_empty() {
+            info!(opened = adopted.len(), saved = saved.len(), "Restored tabs opened");
+        }
+        // Only a tab that got a view can be the one to show.
+        active.filter(|id| adopted.contains(id)).or_else(|| adopted.first().copied())
+    }
+
+    /// Load a restored tab's page into the content view that is showing. The saved address
+    /// is parsed (`shell_tabs::restore_action`), never run through the typed-address
+    /// resolver; the app's own start page is the About document.
+    fn load_restored(&self, saved: &str) {
+        let Some(&content_id) = self.views.get(&ViewType::Content) else {
+            return;
+        };
+        match shell_tabs::restore_action(saved) {
+            shell_tabs::Restore::About => {
+                if let Err(e) = self.engine.borrow_mut().load_html(content_id, ABOUT_HTML) {
+                    warn!(error = %e, "Failed to load the About page into a restored tab");
+                }
+            }
+            // `navigate_view` still checks the blocklist.
+            shell_tabs::Restore::Page(url) => self.navigate_view(content_id, &url),
+            shell_tabs::Restore::Nothing => {}
+        }
+    }
+
+    /// Load the active tab's page if it is a restored tab that has not loaded yet. Showing a
+    /// tab loads it (see `apply_switch`), but activating the tab that is already showing is a
+    /// no-op, so a tab made active by being opened has to be loaded by hand.
+    fn load_pending_for_active(&mut self) {
+        let Some(id) = self.active_native_id() else {
+            return;
+        };
+        if let Some(url) = self.pending_load.remove(&id) {
+            self.load_restored(&url);
+        }
+    }
+
+    /// Reopen the previous session's tabs in the active workspace: the first start page tab
+    /// is dropped when there is something to restore, and the workspace's own active tab is
+    /// shown.
+    fn restore_session(&mut self) {
+        let Some(workspace) = self.app_state.lock().ok().and_then(|s| s.shell.get_active_workspace().map(|w| w.id)) else {
+            return;
+        };
+        let start_view = self.tabs.as_ref().map(|t| t.active_view());
+        let Some(active) = self.adopt_workspace_tabs(workspace) else {
+            return;
+        };
+        if let Some(view) = start_view {
+            let start_id = self.tab_id_for(view);
+            self.close_tab_by_id(start_id);
+        }
+        if let Some(index) = self.tab_index_for_id(active) {
+            self.activate_tab_by_index(index);
+        }
+        self.load_pending_for_active();
+    }
+
+    /// The id the chrome knows the active tab by.
+    fn active_native_id(&self) -> Option<u64> {
+        if let Some(tabs) = self.page_tabs.as_ref() {
+            return Some(tabs.active_view());
+        }
+        let tabs = self.tabs.as_ref()?;
+        self.tab_ids.get(&tabs.active_view()).copied()
+    }
+
+    /// After the active workspace changed, or a tab left it: make the active tab one the
+    /// workspace shows (its own active tab, else its first), or open a new tab in it.
+    fn settle_workspace(&mut self) {
+        // Tabs this workspace kept from an earlier session get their views first, so every way
+        // of switching to it (the sidebar, deleting the active workspace, a click on another
+        // workspace's tab) reopens them, not only the activate_workspace command.
+        let active_ws = self.app_state.lock().ok().and_then(|s| s.shell.get_active_workspace().map(|w| w.id));
+        if let Some(own) = active_ws.and_then(|ws| self.adopt_workspace_tabs(ws)) {
+            if let Some(index) = self.tab_index_for_id(own) {
+                self.activate_tab_by_index(index);
+            }
+            self.load_pending_for_active();
+        }
+        let view = match self.app_state.lock() {
+            Ok(state) => shell_tabs::active_workspace_view(&state, &self.mirrored_tabs),
+            Err(_) => return,
+        };
+        match shell_tabs::after_switch(&view, self.active_native_id()) {
+            shell_tabs::AfterSwitch::Keep => {}
+            shell_tabs::AfterSwitch::Activate(id) => {
+                if let Some(index) = self.tab_index_for_id(id) {
+                    self.activate_tab_by_index(index);
+                }
+            }
+            shell_tabs::AfterSwitch::NewTab => self.new_tab(),
+        }
+    }
+
+    /// The position in the tab strip of the tab the page calls `id`.
+    fn tab_index_for_id(&self, id: u64) -> Option<usize> {
+        if let Some(tabs) = self.page_tabs.as_ref() {
+            return tabs.views().iter().position(|page| *page == id);
+        }
+        let tabs = self.tabs.as_ref()?;
+        tabs.views()
+            .iter()
+            .position(|view| self.tab_ids.get(view) == Some(&id))
+    }
+
+    /// Close the tab the page calls `id`, active or not.
+    fn close_tab_by_id(&mut self, id: u64) {
+        let Some(index) = self.tab_index_for_id(id) else {
+            return;
+        };
+        // A restored tab that was never shown is closed unloaded: activating it below must not
+        // load its page first (a blocking load on the UI thread, just to close it).
+        self.pending_load.remove(&id);
+        let active = self.tabs.as_ref().map(|t| t.active_index());
+        if active != Some(index) {
+            // Closing is defined on the active tab: make it the active one first.
+            self.activate_tab_by_index(index);
+        }
+        self.close_active_tab();
+    }
+
+    /// Close the tabs the page calls `ids`. The strip never empties, so when they are all
+    /// the tabs there are, a new one opens first.
+    fn close_tabs_by_id(&mut self, ids: &[u64]) {
+        if ids.is_empty() {
+            return;
+        }
+        let open = self.page_tabs.as_ref().map(|t| t.count()).or_else(|| self.tabs.as_ref().map(|t| t.count())).unwrap_or(0);
+        let closing = ids.iter().filter(|id| self.tab_index_for_id(**id).is_some()).count();
+        if open <= closing {
+            self.new_tab();
+        }
+        for id in ids {
+            self.close_tab_by_id(*id);
+        }
+    }
+
+    /// Minimise, maximise/restore or close the main window.
+    fn window_command(&self, cmd: &str) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsZoomed, PostMessageW, ShowWindow, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, WM_CLOSE,
+        };
+        let Some(hwnd) = self.viewhost.get_main_hwnd() else {
+            return;
+        };
+        // SAFETY: `hwnd` is the live main window this browser created.
+        unsafe {
+            match cmd {
+                "window_close" => {
+                    let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+                "window_minimize" => {
+                    let _ = ShowWindow(hwnd, SW_MINIMIZE);
+                }
+                _ => {
+                    let _ = ShowWindow(hwnd, if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE });
+                }
+            }
+        }
+    }
+
+    /// Tell the chrome page what changed: the tab strip, the address bar, the
+    /// page title and the back/forward buttons. Compares against what it was
+    /// last told and does nothing when it is current.
+    fn sync_chrome(&mut self) {
+        if !self.chrome_ready {
+            return;
+        }
+        if let Some(tabs) = self.page_tabs.as_ref() {
+            let active = tabs.active_view();
+            let rows: Vec<TabRow> = tabs
+                .views()
+                .iter()
+                .filter_map(|id| self.pages.get(id).map(|page| (*id, page.state())))
+                .map(|(id, state)| TabRow {
+                    id,
+                    locked: false,
+                    title: state.title.clone().unwrap_or_else(|| "New Tab".to_string()),
+                    url: state.url.clone().unwrap_or_default(),
+                    active: id == active,
+                })
+                .collect();
+            let state = self.pages.get(&active).map(|page| page.state()).unwrap_or_default();
+            let now = ChromeSnapshot {
+                url: state.url.clone().unwrap_or_default(),
+                title: state.title.clone().unwrap_or_else(|| "New Tab".to_string()),
+                tabs: rows,
+                can_go_back: state.can_go_back,
+                can_go_forward: state.can_go_forward,
+                shield_enabled: self.shield_enabled,
+                shield_blocked: self.shield.blocked_count(),
+                loading: state.loading,
+            };
+            self.push_snapshot(now);
+            return;
+        }
+        let Some(tabs) = self.tabs.as_ref() else {
+            return;
+        };
+        let views: Vec<EngineViewId> = tabs.views().to_vec();
+        let active = tabs.active_view();
+
+        let mut rows = Vec::with_capacity(views.len());
+        let (mut url, mut title, mut can_go_back, mut can_go_forward) =
+            (String::new(), String::new(), false, false);
+        {
+            let engine = self.engine.borrow();
+            for &view in &views {
+                let page_url = engine.get_url(view).map(|u| u.to_string()).unwrap_or_default();
+                let page_title = engine
+                    .get_title(view)
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .unwrap_or_else(|| "New Tab".to_string());
+                if view == active {
+                    title = page_title.clone();
+                    can_go_back = engine.can_go_back(view);
+                    can_go_forward = engine.can_go_forward(view);
+                }
+                // The start page is loaded from a string, so the engine calls it
+                // about:blank; the page's own name for it is hiwave://about.
+                let page_url = if page_url == "about:blank" && page_title == ABOUT_TITLE {
+                    "hiwave://about".to_string()
+                } else {
+                    page_url
+                };
+                if view == active {
+                    url = page_url.clone();
+                }
+                rows.push((view, page_title, page_url));
+            }
+        }
+        let rows: Vec<TabRow> = rows
+            .into_iter()
+            .map(|(view, title, url)| {
+                let id = self.tab_id_for(view);
+                TabRow {
+                    id,
+                    locked: false,
+                    title,
+                    url,
+                    active: view == active,
+                }
+            })
+            .collect();
+
+        let now = ChromeSnapshot {
+            tabs: rows,
+            url,
+            title,
+            can_go_back,
+            can_go_forward,
+            shield_enabled: self.shield_enabled,
+            shield_blocked: self.shield.blocked_count(),
+            loading: false,
+        };
+        self.push_snapshot(now);
+    }
+
+    /// Keep the shared `BrowserShell` in step with this shell's tabs, save it when it
+    /// changed, and take each tab's lock flag from it (the lock lives in the model).
+    fn mirror_tabs(&mut self, rows: &mut Vec<TabRow>) {
+        let Ok(mut state) = self.app_state.lock() else {
+            return;
+        };
+        // A restored tab that has not loaded yet shows a blank page: its saved address and
+        // title stay as they are (and are what the strip shows) until it is first shown.
+        for row in rows.iter_mut() {
+            if let Some(url) = self.pending_load.get(&row.id) {
+                row.url = url.clone();
+                if let Some(saved) = state.shell.get_tab(hiwave_core::types::TabId(row.id)) {
+                    row.title = saved.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| url.clone());
+                }
+            }
+        }
+        let tabs: Vec<shell_tabs::NativeTab> = rows
+            .iter()
+            .map(|r| shell_tabs::NativeTab {
+                id: r.id,
+                url: r.url.clone(),
+                title: r.title.clone(),
+                active: r.active,
+            })
+            .collect();
+        let done = shell_tabs::reconcile(&mut state, &mut self.mirrored_tabs, &tabs);
+        if done.changed {
+            if let Err(e) = state.save_workspace_state() {
+                warn!(error = %e, "Failed to persist workspace state");
+            }
+        }
+        for row in rows.iter_mut() {
+            row.locked = done.locked.contains(&row.id);
+        }
+        // The strip shows the active workspace's tabs only.
+        let view = shell_tabs::active_workspace_view(&state, &self.mirrored_tabs);
+        drop(state);
+        // Whatever closed or switched a tab (Ctrl+W, block-and-close, a workspace delete),
+        // the visible page must belong to the workspace the strip shows.
+        if let Some(active) = rows.iter().find(|r| r.active) {
+            if !view.visible.contains(&active.id) {
+                self.needs_settle = true;
+            }
+        }
+        rows.retain(|r| view.visible.contains(&r.id));
+        // Tabs came, went or changed: the sidebar lists them under their workspaces.
+        if done.changed {
+            self.sync_workspaces(false);
+        }
+    }
+
+    /// Tell the chrome what differs between `now` and what it was last told.
+    fn push_snapshot(&mut self, mut now: ChromeSnapshot) {
+        // The tab that is active, before the strip is filtered to the active workspace.
+        let active_tab = now.tabs.iter().find(|r| r.active).map(|r| r.id);
+        self.mirror_tabs(&mut now.tabs);
+        if std::mem::take(&mut self.needs_settle) {
+            self.settle_workspace();
+            // The strip was filtered to the new workspace before the settle: mark its active
+            // tab now, or it draws one tick with no active tab.
+            let active = self.active_native_id();
+            for row in now.tabs.iter_mut() {
+                row.active = Some(row.id) == active;
+            }
+        }
+        self.record_visit_if_new(active_tab, &now.url, &now.title, now.loading);
+        if self.chrome_synced.as_ref() == Some(&now) {
+            return;
+        }
+        let before = self.chrome_synced.clone();
+        let mut script = String::from("if(window.hiwaveChrome){");
+        if before.as_ref().map(|b| &b.tabs) != Some(&now.tabs) {
+            let tabs_json: Vec<serde_json::Value> = now
+                .tabs
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": r.id,
+                        "title": r.title,
+                        "url": r.url,
+                        "is_active": r.active,
+                        "locked": r.locked,
+                        "last_visited": 0,
+                        "decay_level": 0
+                    })
+                })
+                .collect();
+            script.push_str(&format!("hiwaveChrome.renderTabs({});", serde_json::Value::Array(tabs_json)));
+        }
+        if before.as_ref().map(|b| &b.url) != Some(&now.url) {
+            script.push_str(&format!("hiwaveChrome.updateUrl({});", serde_json::Value::String(now.url.clone())));
+        }
+        if before.as_ref().map(|b| &b.title) != Some(&now.title) {
+            script.push_str(&format!("hiwaveChrome.updateTitle({});", serde_json::Value::String(now.title.clone())));
+        }
+        if before.as_ref().map(|b| (b.can_go_back, b.can_go_forward)) != Some((now.can_go_back, now.can_go_forward)) {
+            script.push_str(&format!("hiwaveChrome.updateNavState({}, {});", now.can_go_back, now.can_go_forward));
+        }
+        if before.as_ref().map(|b| (b.shield_enabled, b.shield_blocked)) != Some((now.shield_enabled, now.shield_blocked)) {
+            // The chrome adds the two counts together, so the filter's one count goes
+            // in as requests and trackers stays 0 (it does not tell them apart).
+            script.push_str(&format!(
+                "hiwaveChrome.updateShieldStats({{\"enabled\":{},\"requests_blocked\":{},\"trackers_blocked\":0}});",
+                now.shield_enabled, now.shield_blocked
+            ));
+        }
+        if before.as_ref().map(|b| b.loading) != Some(now.loading) {
+            script.push_str(&format!("hiwaveChrome.setLoading({});", now.loading));
+        }
+        script.push('}');
+        self.run_chrome_script(&script);
+        self.chrome_synced = Some(now);
+    }
+
     fn traverse(&self, direction: &str) {
+        if let Some(page) = self.page() {
+            match direction {
+                "back" => page.go_back(),
+                "forward" => page.go_forward(),
+                "reload" => page.reload(),
+                _ => {}
+            }
+            return;
+        }
         let Some(&content_id) = self.views.get(&ViewType::Content) else {
             return;
         };
         let mut engine = self.engine.borrow_mut();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create runtime");
-        rt.block_on(async {
+        self.runtime.block_on(async {
             let result = match direction {
                 "back" => engine.go_back(content_id).await,
                 "forward" => engine.go_forward(content_id).await,
@@ -580,29 +1930,76 @@ impl NativeBrowser {
                 Err(e) => error!(error = %e, direction, "History traversal failed"),
             }
         });
+        self.live_clocks.borrow_mut().insert(content_id, Instant::now());
     }
 
     pub fn navigate(&self, url: &str) {
+        // The address bar sends what was typed; turn it into a URL (a host gets
+        // https://, other text is a search) the way the WebView2 shell does.
+        let Some(url) = super::address::resolve(url) else {
+            debug!(input = url, "Nothing to navigate to");
+            return;
+        };
+        if self.user_blocked(&url) {
+            warn!(url, "Navigation refused: the domain is on the user's blocklist");
+            return;
+        }
+        if let Some(page) = self.page() {
+            match url::Url::parse(&url) {
+                Ok(parsed) => page.navigate(parsed),
+                Err(e) => warn!(error = %e, url, "Invalid URL"),
+            }
+            return;
+        }
         if let Some(&content_id) = self.views.get(&ViewType::Content) {
-            match url::Url::parse(url) {
-                Ok(parsed) => {
-                    let mut engine = self.engine.borrow_mut();
-                    // Create a runtime for the async operation
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("Failed to create runtime");
+            self.navigate_view(content_id, &url);
+        }
+    }
 
-                    rt.block_on(async {
-                        if let Err(e) = engine.load_url(content_id, parsed).await {
-                            error!(error = %e, url, "Failed to navigate");
-                        }
-                    });
-                }
-                Err(e) => {
-                    warn!(error = %e, url, "Invalid URL");
+    fn navigate_view(&self, content_id: EngineViewId, url: &str) {
+        // Every engine-view navigation ends here: the address bar, a link click, a form
+        // submit and a script's location change.
+        if self.user_blocked(url) {
+            warn!(url, "Navigation refused: the domain is on the user's blocklist");
+            return;
+        }
+        match url::Url::parse(url) {
+            Ok(parsed) => {
+                let mut engine = self.engine.borrow_mut();
+                self.runtime.block_on(async {
+                    if let Err(e) = engine.load_url(content_id, parsed).await {
+                        error!(error = %e, url, "Failed to navigate");
+                    }
+                });
+                self.live_clocks.borrow_mut().insert(content_id, Instant::now());
+            }
+            Err(e) => {
+                warn!(error = %e, url, "Invalid URL");
+            }
+        }
+    }
+
+    /// Advance all documents, including background tabs, before dispatching
+    /// input so a timer created by a click starts at the click's time.
+    fn pump_live_views(&self) {
+        let mut navigations = Vec::new();
+        {
+            let mut engine = self.engine.borrow_mut();
+            let mut clocks = self.live_clocks.borrow_mut();
+            clocks.retain(|id, _| self.engine_view_types.contains_key(id));
+            for &id in self.engine_view_types.keys() {
+                let now = Instant::now();
+                let clock = clocks.entry(id).or_insert(now);
+                let elapsed_ms = now.duration_since(*clock).as_millis() as u64;
+                *clock += Duration::from_millis(elapsed_ms);
+                self.runtime.block_on(engine.pump_live(id, elapsed_ms));
+                if let Some(url) = engine.take_script_navigation(id) {
+                    navigations.push((id, url));
                 }
             }
+        }
+        for (id, url) in navigations {
+            self.navigate_view(id, &url);
         }
     }
 
@@ -634,14 +2031,31 @@ impl NativeBrowser {
                 break;
             }
 
-            // Render all views
-            self.engine.borrow_mut().render_all_views();
+            // Follow the window if it was resized or maximised
+            self.sync_window_size();
+
+            // Keep keyboard focus on a view
+            self.restore_focus();
+
+            self.pump_live_views();
 
             // Process any IPC messages from views
             self.process_ipc_messages();
 
             // Run any keyboard shortcuts pressed since the last frame
             self.process_input_events();
+
+            // Take what the content-thread page published and draw it
+            for page in self.pages.values() {
+                page.pump();
+            }
+            self.poll_find();
+
+            // Keep the tab strip, address bar and nav buttons current
+            self.sync_chrome();
+
+            self.pump_live_views();
+            self.engine.borrow_mut().render_changed_views();
 
             // Small sleep to prevent busy-waiting (target ~60fps)
             std::thread::sleep(std::time::Duration::from_millis(16));
@@ -738,12 +2152,263 @@ impl NativeBrowser {
                 self.collapse_shelf();
             }
             "toggle_sidebar" => {
-                debug!(open = !self.sidebar_open, "Sidebar toggled");
+                debug!(open = self.sidebar_width == 0, "Sidebar toggled");
                 self.toggle_sidebar();
+            }
+            // chrome.html owns the sidebar's state and tells the shell, so the
+            // content view can make room for it (same messages the WebView2
+            // shell handles).
+            "set_sidebar_open" => {
+                if let Some(open) = json.get("open").and_then(|v| v.as_bool()) {
+                    self.set_sidebar_open(open);
+                }
+            }
+            "set_sidebar_width" => {
+                if let Some(width) = json.get("width").and_then(|v| v.as_f64()) {
+                    self.set_sidebar_width(width.max(0.0) as u32);
+                }
+            }
+            "set_right_panel_open" => {
+                if let Some(open) = json.get("open").and_then(|v| v.as_bool()) {
+                    self.set_right_panel_open(open);
+                }
             }
             "chrome_ready" => {
                 info!("Chrome UI initialized and ready");
-                // TODO: Send initial state to Chrome UI
+                self.chrome_ready = true;
+                // Whatever the page had is gone with its load: tell it everything.
+                self.chrome_synced = None;
+            }
+            // The tab strip asks for its tabs; forget what it was told so the next
+            // sync sends them all.
+            "get_tabs" => self.chrome_synced = None,
+            "create_tab" => {
+                // A failed creation leaves the old tab active: navigating would load over it.
+                if self.open_tab_checked() {
+                    if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+                        if !url.is_empty() {
+                            self.navigate(url);
+                        }
+                    }
+                } else {
+                    warn!("create_tab: no tab could be opened");
+                }
+            }
+            "close_tab" => match tab_id_of(&json) {
+                Some(id) => self.close_tab_by_id(id),
+                None => warn!("close_tab without an id"),
+            },
+            "activate_tab" => match tab_id_of(&json) {
+                Some(id) => {
+                    // The sidebar lists every workspace's tabs: a click on one under another
+                    // workspace goes to that workspace first.
+                    let switched = self
+                        .app_state
+                        .lock()
+                        .map(|mut state| shell_tabs::switch_to_tab_workspace(&mut state, id))
+                        .unwrap_or(false);
+                    // A saved tab of that workspace has no view until the workspace is adopted.
+                    if switched {
+                        let ws = self.app_state.lock().ok().and_then(|s| s.shell.get_active_workspace().map(|w| w.id));
+                        if let Some(ws) = ws {
+                            self.adopt_workspace_tabs(ws);
+                        }
+                    }
+                    if let Some(index) = self.tab_index_for_id(id) {
+                        self.activate_tab_by_index(index);
+                        self.load_pending_for_active();
+                    }
+                    if switched {
+                        self.save_and_sync_workspaces();
+                    }
+                }
+                None => warn!("activate_tab without an id"),
+            },
+            // The chrome draws its own title-bar buttons.
+            "window_close" | "window_minimize" | "window_toggle_maximize" => {
+                self.window_command(cmd);
+            }
+            // The page keeps its sidebar width; answer with the default so it
+            // starts from a known width (nothing persists it in this shell yet).
+            "get_sidebar_width" => {
+                let script = format!(
+                    "if(window.hiwaveChrome && window.hiwaveChrome.setSidebarWidth) {{ window.hiwaveChrome.setSidebarWidth({}); }}",
+                    SIDEBAR_WIDTH
+                );
+                self.run_chrome_script(&script);
+            }
+            "save_sidebar_width" => {}
+            "expand_chrome_small" => self.expand_chrome_small(),
+            // The mode selector's choice is not acted on yet (the WebView2 shell only logs it).
+            "set_mode" => debug!(mode = json.get("mode").and_then(|v| v.as_str()), "Mode selected"),
+            "lock_page" | "unlock_page" => {
+                if let Some(id) = tab_ref_of(&json) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        let id = hiwave_core::types::TabId(id);
+                        let done = if cmd == "lock_page" { state.lock_tab(id) } else { state.unlock_tab(id) };
+                        match done {
+                            Ok(()) => {
+                                if let Err(e) = state.save_workspace_state() {
+                                    warn!(error = %e, "Failed to persist workspace state");
+                                }
+                            }
+                            Err(e) => warn!(error = %e, id = id.0, "Could not change the tab's lock"),
+                        }
+                    }
+                }
+            }
+            "get_workspaces" => self.sync_workspaces(true),
+            "get_shelf" => {
+                if let Some(scope) = json.get("scope").and_then(|v| v.as_str()) {
+                    self.shelf_scope = if scope == "all" { "all" } else { "workspace" }.to_string();
+                }
+                self.sync_shelf();
+            }
+            "add_to_shelf" => {
+                if let Some(id) = json.get("tab_id").and_then(id_value) {
+                    self.shelve_tab(id);
+                }
+            }
+            "restore_from_shelf" => {
+                let item = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let workspace = json.get("workspace_id").and_then(id_value);
+                if !item.is_empty() {
+                    self.restore_shelf_item(&item, workspace);
+                }
+            }
+            "activate_workspace" => {
+                if let Some(id) = json.get("id").and_then(id_value) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        if let Err(e) = state.shell.set_active_workspace(hiwave_core::types::WorkspaceId(id)) {
+                            warn!(error = %e, "Could not activate the workspace");
+                        }
+                    }
+                    self.settle_workspace();
+                    self.save_and_sync_workspaces();
+                }
+            }
+            "create_workspace" => {
+                let name = json.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                if !name.is_empty() {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        state.shell.create_workspace(name.clone());
+                        state.ensure_workspace_shelf(&name);
+                    }
+                    self.save_and_sync_workspaces();
+                }
+            }
+            "rename_workspace" => {
+                let id = json.get("id").and_then(id_value);
+                let name = json.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+                if let (Some(id), false) = (id, name.is_empty()) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        let id = hiwave_core::types::WorkspaceId(id);
+                        let old = state.shell.get_workspace(id).map(|w| w.name.clone());
+                        if state.shell.rename_workspace(id, name.clone()).is_ok() {
+                            // The shelf is kept under the workspace's name.
+                            if let Some(items) = old.and_then(|o| state.shelves.remove(&o)) {
+                                state.shelves.insert(name, items);
+                            }
+                        }
+                    }
+                    self.save_and_sync_workspaces();
+                }
+            }
+            "delete_workspace" => {
+                if let Some(id) = json.get("id").and_then(id_value) {
+                    // The tabs open in the workspace go with it: the model drops them, so a
+                    // view left open would be adopted into another workspace next tick.
+                    let mut doomed: Vec<u64> = Vec::new();
+                    if let Ok(mut state) = self.app_state.lock() {
+                        let id = hiwave_core::types::WorkspaceId(id);
+                        let name = state.shell.get_workspace(id).map(|w| w.name.clone());
+                        let owned: Vec<u64> = state
+                            .shell
+                            .get_workspace(id)
+                            .map(|w| w.tabs.iter().map(|t| t.0).filter(|t| self.mirrored_tabs.contains(t)).collect())
+                            .unwrap_or_default();
+                        match state.shell.delete_workspace(id) {
+                            Ok(()) => {
+                                doomed = owned;
+                                if let Some(name) = name {
+                                    state.remove_workspace_shelf(&name);
+                                }
+                            }
+                            Err(e) => warn!(error = %e, "Could not delete the workspace"),
+                        }
+                    }
+                    self.close_tabs_by_id(&doomed);
+                    self.settle_workspace();
+                    self.save_and_sync_workspaces();
+                }
+            }
+            "move_tab_to_workspace" => {
+                let tab = json.get("tab_id").and_then(id_value);
+                let workspace = json.get("workspace_id").and_then(id_value);
+                if let (Some(tab), Some(workspace)) = (tab, workspace) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        let moved = state.shell.move_tab_to_workspace(
+                            hiwave_core::types::TabId(tab),
+                            hiwave_core::types::WorkspaceId(workspace),
+                        );
+                        if let Err(e) = moved {
+                            warn!(error = %e, "Could not move the tab");
+                        }
+                    }
+                    self.settle_workspace();
+                    self.save_and_sync_workspaces();
+                }
+            }
+            "get_blocklist" => self.sync_blocklist(),
+            "unblock_domain" => {
+                if let Some(domain) = json.get("domain").and_then(|v| v.as_str()) {
+                    if let Ok(mut state) = self.app_state.lock() {
+                        if let Err(e) = state.unblock_domain(domain) {
+                            warn!(error = %e, "Failed to unblock the domain");
+                        }
+                    }
+                }
+                self.sync_blocklist();
+            }
+            "block_and_close" => {
+                if let Some(id) = tab_id_of(&json) {
+                    self.block_and_close(id);
+                }
+            }
+            "enter_focus_mode" => self.set_focus_mode(Some(true)),
+            "exit_focus_mode" => self.set_focus_mode(Some(false)),
+            "toggle_focus_mode" => self.set_focus_mode(None),
+            "show_focus_peek" => self.set_focus_peek(true),
+            "hide_focus_peek" => self.set_focus_peek(false),
+            "get_focus_mode_status" => {
+                let status = self.app_state.lock().ok().map(|s| {
+                    serde_json::json!({
+                        "active": s.focus_mode.active,
+                        "peek_visible": s.focus_mode.peek_visible,
+                        "scroll_progress": s.focus_mode.scroll_progress,
+                    })
+                });
+                if let Some(status) = status {
+                    self.run_chrome_script(&chrome_data::chrome_call("updateFocusModeStatus", &status));
+                }
+            }
+            // The panels' data lives in the shared app state: run the shared handler,
+            // then send the panel its new data.
+            "get_visit_history" | "clear_visit_history" | "get_downloads" | "clear_downloads" => {
+                self.app_data_command(cmd);
+            }
+            "find_in_page" => {
+                let query = json.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                let case_sensitive = json.get("case_sensitive").and_then(|v| v.as_bool()).unwrap_or(false);
+                let direction = json.get("direction").and_then(|v| v.as_str()).unwrap_or("next");
+                self.find_in_page(query, case_sensitive, direction);
+            }
+            // The shield button: the chrome tracks its own state and says what it is now.
+            "toggle_shield" => {
+                if let Some(enabled) = json.get("enabled").and_then(|v| v.as_bool()) {
+                    self.shield.set_enabled(enabled);
+                    self.shield_enabled = enabled;
+                }
             }
             "log" => {
                 // JavaScript console log forwarding
@@ -775,6 +2440,151 @@ impl Drop for NativeBrowser {
             }
         }
     }
+}
+
+/// The text of a script result. The engine reports a string as `String("...")`.
+fn script_string(result: &str) -> Option<String> {
+    let inner = result.strip_prefix("String(")?.strip_suffix(')')?;
+    serde_json::from_str::<String>(inner).ok().filter(|s| s != "null")
+}
+
+/// What a key event means for a text editor, before anyone knows who has the focus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeyAction {
+    /// Not ours to act on (key-up): leave it for the generic path.
+    Pass,
+    /// Nothing to do, and it must not reach the generic path either.
+    Ignore,
+    /// Send this virtual key and text to the editor.
+    Send(u32, String),
+}
+
+/// Same split as the macOS app: editing and navigation keys go as a virtual key
+/// with no text, typed characters as text with no key, and Ctrl+A/C/V/X/Z as the
+/// letter with Ctrl set. Printable keys arrive twice on Win32 (WM_KEYDOWN and then
+/// WM_CHAR); only the WM_CHAR half types.
+fn key_action(key: &KeyEvent) -> KeyAction {
+    match key.event_type {
+        KeyEventType::KeyUp => KeyAction::Pass,
+        KeyEventType::KeyDown => {
+            let vk = key.key_code as u32;
+            let m = key.modifiers;
+            match vk {
+                // Backspace, Tab, Enter, Escape, PgUp..Down, End, Home, arrows, Delete
+                0x08 | 0x09 | 0x0D | 0x1B | 0x21..=0x28 | 0x2E => KeyAction::Send(vk, String::new()),
+                // Ctrl+A, C, V, X, Z
+                0x41 | 0x43 | 0x56 | 0x58 | 0x5A if m.ctrl && !m.alt => {
+                    KeyAction::Send(0, ((vk as u8 + 32) as char).to_string())
+                }
+                // A printable key: its WM_CHAR types it.
+                _ => KeyAction::Ignore,
+            }
+        }
+        KeyEventType::Input => {
+            // Tab and Enter also come as WM_CHAR; their key-down already acted.
+            if key.key.is_empty() || key.key == "\r" || key.key == "\t" {
+                KeyAction::Ignore
+            } else {
+                KeyAction::Send(0, key.key.clone())
+            }
+        }
+    }
+}
+
+/// What the chrome's find bar is told, built from the find helper's answer.
+///
+/// The helper runs inside the page, so a page can make it return anything. This
+/// parses the answer and keeps only the two numbers, then re-serialises them with
+/// `query` (the text the chrome sent, not anything the page said). The result is
+/// plain JSON data; no page-supplied text can become script in the chrome.
+fn find_state_payload(raw: &str, query: &str) -> Option<serde_json::Value> {
+    let answer: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let count = answer.get("count")?.as_i64()?.clamp(0, 1_000_000);
+    let index = answer.get("index")?.as_i64()?.clamp(-1, 1_000_000);
+    Some(serde_json::json!({ "count": count, "index": index, "query": query }))
+}
+
+/// The engine settings every page engine here uses (the chrome's, and the content
+/// thread's when it is on).
+fn engine_builder(shield: &Arc<crate::shield_adapter::ShieldInterceptHandler>) -> EngineBuilder {
+    let mut interceptor = rustkit_net::RequestInterceptor::new();
+    interceptor.add_handler(shield.clone());
+    EngineBuilder::new()
+        .user_agent(
+            // Finding 4 from the macOS live demo, ported: the bare
+            // "HiWave/1.0 RustKit/1.0" UA is scraper-shaped — Wikimedia
+            // 429'd it and eBay challenged it. Safari-shaped with an
+            // HONEST Windows platform string plus the HiWave token: sites
+            // get a recognisable engine family, and we stay identifiable
+            // rather than impersonating Chrome outright.
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/605.1.15                  (KHTML, like Gecko) Version/17.4 Safari/605.1.15 HiWave/1.0",
+        )
+        .javascript_enabled(true)
+        .cookies_enabled(true)
+        .script_budget_ms(script_budget_ms())
+        .interrupt_scripts_at_budget(true)
+        // The event loop loads what a page's script asks for (`take_script_navigation`), so a
+        // page that has asked to leave is not kept waiting for images its scripts added, and
+        // its queued fetches are not sent (LAT17). Without this the engine's leave-early
+        // branches never fire: macOS sets it (webview_rustkit.rs), this builder did not.
+        .follows_script_navigation(true)
+        .request_interceptor(interceptor)
+}
+
+/// A workspace or tab id as the chrome sends it: a number or a numeric string.
+fn id_value(v: &serde_json::Value) -> Option<u64> {
+    v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// The tab a tab-actions command names (`tab_id`; the tab strip's own commands use `id`).
+fn tab_ref_of(json: &serde_json::Value) -> Option<u64> {
+    let id = json.get("tab_id")?;
+    id.as_u64().or_else(|| id.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// The tab id in a chrome message. The page sends it as a number or a string.
+fn tab_id_of(json: &serde_json::Value) -> Option<u64> {
+    let id = json.get("id")?;
+    id.as_u64().or_else(|| id.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// Send a view's window to the bottom of its siblings' z-order.
+fn lower_view(engine: &Engine, id: EngineViewId) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    let Ok(hwnd) = engine.get_view_hwnd(id) else {
+        return;
+    };
+    // SAFETY: `hwnd` is a live child window owned by the engine; no size or
+    // position is touched, only the z-order.
+    let _ = unsafe {
+        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+    };
+}
+
+/// How long a page's scripts may run, in milliseconds.
+///
+/// Pages load on the window thread in this shell, so every millisecond a script
+/// runs is a millisecond the window is frozen. 5 s is the parity board's own
+/// budget. (macOS lets pages run for 60 s because its content thread keeps the
+/// window alive; this shell has no such thread yet.) `HIWAVE_SCRIPT_BUDGET_MS`
+/// overrides it.
+fn script_budget_ms() -> u64 {
+    parse_budget(std::env::var("HIWAVE_SCRIPT_BUDGET_MS").ok().as_deref())
+}
+
+fn parse_budget(value: Option<&str>) -> u64 {
+    const DEFAULT_MS: u64 = 5_000;
+    value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .unwrap_or(DEFAULT_MS)
+}
+
+/// A layout rectangle as the engine's view bounds.
+fn to_bounds(r: layout::Rect) -> Bounds {
+    Bounds::new(r.x, r.y, r.width, r.height)
 }
 
 /// Print startup banner with build info.
@@ -893,8 +2703,10 @@ fn run_screenshot_mode(config: super::screenshot_harness::ScreenshotConfig) -> R
     for frame in 0..config.wait_frames {
         // Process messages and render
         browser.viewhost.pump_messages();
-        browser.engine.borrow_mut().render_all_views();
+        browser.pump_live_views();
         browser.process_ipc_messages();
+        browser.process_input_events();
+        browser.engine.borrow_mut().render_changed_views();
         
         debug!(frame, "Frame rendered");
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1046,3 +2858,211 @@ fn chrono_lite_timestamp() -> String {
     super::screenshot_harness::utc_timestamp_from_secs(secs)
 }
 
+#[cfg(test)]
+mod chrome_message_tests {
+    use super::{find_state_payload, key_action, parse_budget, tab_id_of, tab_ref_of, KeyAction};
+    use rustkit_core::input::{KeyCode, KeyEvent, KeyEventType, Modifiers};
+    use serde_json::json;
+
+    #[test]
+    fn a_tab_id_may_be_a_number_or_a_string() {
+        assert_eq!(tab_id_of(&json!({"cmd": "close_tab", "id": 7})), Some(7));
+        assert_eq!(tab_id_of(&json!({"cmd": "close_tab", "id": "12"})), Some(12));
+    }
+
+    #[test]
+    fn the_tab_actions_name_their_tab_with_tab_id() {
+        assert_eq!(tab_ref_of(&json!({"cmd": "lock_page", "tab_id": "4"})), Some(4));
+        assert_eq!(tab_ref_of(&json!({"cmd": "lock_page", "tab_id": 9})), Some(9));
+        // The tab strip's own commands use `id`; the two must not be confused.
+        assert_eq!(tab_ref_of(&json!({"cmd": "close_tab", "id": 4})), None);
+        assert_eq!(tab_ref_of(&json!({"tab_id": "x"})), None);
+    }
+
+    #[test]
+    fn a_missing_or_malformed_tab_id_is_none() {
+        assert_eq!(tab_id_of(&json!({"cmd": "close_tab"})), None);
+        assert_eq!(tab_id_of(&json!({"id": "not a number"})), None);
+        assert_eq!(tab_id_of(&json!({"id": -3})), None);
+    }
+
+    #[test]
+    fn the_script_budget_defaults_to_five_seconds_and_can_be_overridden() {
+        assert_eq!(parse_budget(None), 5_000);
+        assert_eq!(parse_budget(Some("15000")), 15_000);
+        assert_eq!(parse_budget(Some(" 2500 ")), 2_500);
+    }
+
+    #[test]
+    fn a_bad_script_budget_falls_back_to_the_default() {
+        assert_eq!(parse_budget(Some("")), 5_000);
+        assert_eq!(parse_budget(Some("abc")), 5_000);
+        assert_eq!(parse_budget(Some("0")), 5_000);
+        assert_eq!(parse_budget(Some("-1")), 5_000);
+    }
+
+    #[test]
+    fn a_find_answer_becomes_only_two_numbers_and_the_chromes_own_query() {
+        let state = find_state_payload(r#"{"count":4,"index":0,"query":"needle"}"#, "needle").unwrap();
+        assert_eq!(state, json!({"count": 4, "index": 0, "query": "needle"}));
+    }
+
+    #[test]
+    fn a_hostile_find_answer_cannot_put_page_text_into_the_chrome() {
+        // A page can make the helper say anything. Extra fields are dropped and the
+        // page's own "query" is ignored in favour of the one the chrome sent.
+        let hostile = r#"{"count":2,"index":1,"query":"1);window.ipc.postMessage('x')//","evil":"</script>"}"#;
+        let state = find_state_payload(hostile, "safe").unwrap();
+        assert_eq!(state, json!({"count": 2, "index": 1, "query": "safe"}));
+        let rendered = state.to_string();
+        assert!(!rendered.contains("ipc") && !rendered.contains("evil"), "{rendered}");
+    }
+
+    #[test]
+    fn a_find_answer_that_is_not_two_numbers_is_rejected() {
+        assert!(find_state_payload("1);alert(1)//", "q").is_none());
+        assert!(find_state_payload(r#"{"count":"1);x","index":0}"#, "q").is_none());
+        assert!(find_state_payload(r#"{"count":3}"#, "q").is_none());
+    }
+
+    #[test]
+    fn find_counts_are_clamped() {
+        let state = find_state_payload(r#"{"count":-5,"index":99999999999}"#, "q").unwrap();
+        assert_eq!(state, json!({"count": 0, "index": 1_000_000, "query": "q"}));
+    }
+
+    fn down(code: KeyCode, ctrl: bool) -> KeyEvent {
+        KeyEvent::new(KeyEventType::KeyDown, code, Modifiers { ctrl, ..Default::default() })
+    }
+
+    #[test]
+    fn editing_keys_go_as_a_virtual_key_with_no_text() {
+        assert_eq!(key_action(&down(KeyCode::Backspace, false)), KeyAction::Send(0x08, String::new()));
+        assert_eq!(key_action(&down(KeyCode::ArrowLeft, false)), KeyAction::Send(0x25, String::new()));
+        assert_eq!(key_action(&down(KeyCode::Enter, false)), KeyAction::Send(0x0D, String::new()));
+    }
+
+    #[test]
+    fn ctrl_a_c_v_x_z_go_as_the_lowercase_letter() {
+        assert_eq!(key_action(&down(KeyCode::KeyA, true)), KeyAction::Send(0, "a".to_string()));
+        assert_eq!(key_action(&down(KeyCode::KeyV, true)), KeyAction::Send(0, "v".to_string()));
+    }
+
+    #[test]
+    fn a_printable_key_down_is_left_to_its_char_message() {
+        assert_eq!(key_action(&down(KeyCode::KeyA, false)), KeyAction::Ignore);
+        assert_eq!(key_action(&down(KeyCode::KeyQ, true)), KeyAction::Ignore, "Ctrl+Q is not an editing chord");
+    }
+
+    #[test]
+    fn a_typed_character_goes_as_text_but_tab_and_enter_chars_do_not() {
+        assert_eq!(key_action(&KeyEvent::input('x')), KeyAction::Send(0, "x".to_string()));
+        assert_eq!(key_action(&KeyEvent::input('\r')), KeyAction::Ignore);
+        assert_eq!(key_action(&KeyEvent::input('\t')), KeyAction::Ignore);
+    }
+
+    #[test]
+    fn a_key_up_is_passed_on() {
+        assert_eq!(key_action(&KeyEvent::new(KeyEventType::KeyUp, KeyCode::KeyA, Modifiers::default())), KeyAction::Pass);
+    }
+}
+
+#[cfg(test)]
+mod script_navigation_tests {
+    use super::engine_builder;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn shield() -> Arc<crate::shield_adapter::ShieldInterceptHandler> {
+        Arc::new(crate::shield_adapter::ShieldInterceptHandler::new())
+    }
+
+    #[test]
+    fn the_native_builder_follows_a_pages_own_navigation() {
+        assert!(engine_builder(&shield()).config().follows_script_navigation);
+        assert!(!rustkit_engine::EngineConfig::default().follows_script_navigation);
+    }
+
+    /// A page whose first script leaves, then adds an image the server holds for 2 s.
+    const LEAVES: &str = "<html><body><p>leaving</p><script>location.href = '/next';</script><script>var i = document.createElement('img'); i.src = '/slow.png'; document.body.appendChild(i);</script></body></html>";
+    const STAYS: &str = "<html><body><p>staying</p><script>var i = document.createElement('img'); i.src = '/slowstay.png'; document.body.appendChild(i);</script></body></html>";
+
+    /// Five pages, four left while loading: each leaves without asking for its slow image, and the
+    /// last one stays and does fetch its own.
+    ///
+    /// The signal is "did not wait for the slow image": that image answers after 10 s, and a
+    /// leaving page must come back in under 5 s (half of it) and must not have requested it at
+    /// all. The old bound (1 s) measured the machine as much as the engine: the full native test
+    /// run executes tests in parallel, and CI saw 1.67 s.
+    #[test]
+    fn four_pages_left_mid_load_leave_at_once_and_the_fifth_finishes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let slow_hits = Arc::new(AtomicUsize::new(0));
+        let hits = slow_hits.clone();
+        let stay_count = Arc::new(AtomicUsize::new(0));
+        let stay_hits = stay_count.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let hits = hits.clone();
+                let stay_hits = stay_hits.clone();
+                std::thread::spawn(move || {
+                    let mut stream = stream;
+                    let mut buf = [0u8; 2048];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let (ctype, body): (&str, Vec<u8>) = if path.starts_with("/slowstay") {
+                        stay_hits.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_secs(2));
+                        ("image/png", Vec::new())
+                    } else if path.starts_with("/slow") {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_secs(10));
+                        ("image/png", Vec::new())
+                    } else if path.starts_with("/stay") {
+                        ("text/html", STAYS.as_bytes().to_vec())
+                    } else {
+                        ("text/html", LEAVES.as_bytes().to_vec())
+                    };
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&body);
+                });
+            }
+        });
+
+        let mut engine = engine_builder(&shield()).build().expect("engine");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        for page in 0..4 {
+            let view = engine
+                .create_headless_view(rustkit_viewhost::Bounds { x: 0, y: 0, width: 200, height: 100 })
+                .expect("view");
+            let url = url::Url::parse(&format!("http://127.0.0.1:{port}/leave{page}")).unwrap();
+            let started = Instant::now();
+            rt.block_on(engine.load_url(view, url)).expect("load");
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "page {page} took {:?}: it waited for an image that answers after 10 s",
+                started.elapsed()
+            );
+            assert!(engine.take_script_navigation(view).is_some_and(|u| u.ends_with("/next")), "page {page} asked to leave");
+        }
+        assert_eq!(slow_hits.load(Ordering::SeqCst), 0, "no left page asked for its image");
+
+        let view = engine
+            .create_headless_view(rustkit_viewhost::Bounds { x: 0, y: 0, width: 200, height: 100 })
+            .expect("view");
+        let url = url::Url::parse(&format!("http://127.0.0.1:{port}/stay")).unwrap();
+        rt.block_on(engine.load_url(view, url)).expect("load");
+        assert_eq!(engine.take_script_navigation(view), None);
+        assert_eq!(stay_count.load(Ordering::SeqCst), 1, "the page that stayed fetched its image");
+        assert_eq!(slow_hits.load(Ordering::SeqCst), 0, "and still no left page asked for its image");
+    }
+}

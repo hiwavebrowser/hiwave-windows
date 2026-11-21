@@ -1,0 +1,146 @@
+{
+  "chrome": "148.0.7778.216",
+  "container_width": 400,
+  "cases": [
+    {
+      "label": "img beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;width:150px;height:40px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=100,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "img beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><img id=e style=\"display:block;width:150px;height:40px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px\"></div>",
+      "want": "f=300,0,100,80 e=0,0,150,40 n=0,40,400,10"
+    },
+    {
+      "label": "img too wide moves below the float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;width:350px;height:40px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=0,80,350,40 n=0,120,400,10"
+    },
+    {
+      "label": "img exactly fits",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;width:300px;height:40px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "f=0,0,100,80 e=100,0,300,40"
+    },
+    {
+      "label": "img at its natural size beside a float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "f=0,0,100,80 e=100,0,10,10"
+    },
+    {
+      "label": "img with a left margin beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;width:150px;height:40px;margin-left:20px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "f=0,0,100,80 e=100,0,150,40"
+    },
+    {
+      "label": "img with a right margin beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><img id=e style=\"display:block;width:150px;height:40px;margin-right:20px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "f=300,0,100,80 e=0,0,150,40"
+    },
+    {
+      "label": "img past a short float then a wide one",
+      "body": "<div id=f style=\"float:left;width:100px;height:30px\"></div><div id=g style=\"float:left;clear:left;width:300px;height:30px\"></div><img id=e style=\"display:block;width:250px;height:40px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "f=0,0,100,30 g=0,30,300,30 e=0,60,250,40"
+    },
+    {
+      "label": "img with a margin-left:auto beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;width:150px;height:40px;margin-left:auto\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "f=0,0,100,80 e=250,0,150,40"
+    },
+    {
+      "label": "svg beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><svg id=e style=\"display:block\" width=150 height=40></svg>",
+      "want": "f=0,0,100,80 e=100,0,150,40"
+    },
+    {
+      "label": "overflow hidden block beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><div id=e style=\"overflow:hidden;height:40px\"></div><div id=n style=\"height:10px\"></div>",
+      "want": "f=0,0,100,80 e=100,0,300,40 n=0,40,400,10"
+    },
+    {
+      "label": "overflow hidden block beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><div id=e style=\"overflow:hidden;height:40px\"></div>",
+      "want": "f=300,0,100,80 e=0,0,300,40"
+    },
+    {
+      "label": "overflow hidden block too wide moves below",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><div id=e style=\"overflow:hidden;width:350px;height:40px\"></div>",
+      "want": "f=0,0,100,80 e=0,80,350,40"
+    },
+    {
+      "label": "flow-root block beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><div id=e style=\"display:flow-root;height:40px\"></div>",
+      "want": "f=0,0,100,80 e=100,0,300,40"
+    },
+    {
+      "label": "table beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><table id=e style=\"border-spacing:0;width:150px;height:40px\"><tr><td style=\"padding:0\"></td></tr></table>",
+      "want": "f=0,0,100,80 e=100,0,150,40"
+    },
+    {
+      "label": "auto-width table beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><table id=e style=\"border-spacing:0;height:40px\"><tr><td style=\"padding:0;width:60px\"></td></tr></table>",
+      "want": "f=0,0,100,80 e=100,0,60,40"
+    },
+    {
+      "label": "table too wide moves below",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><table id=e style=\"border-spacing:0;width:350px;height:40px\"><tr><td style=\"padding:0\"></td></tr></table>",
+      "want": "f=0,0,100,80 e=0,80,350,40"
+    },
+    {
+      "label": "plain block still overlaps the float (control)",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><div id=e style=\"height:40px\"></div>",
+      "want": "f=0,0,100,80 e=0,0,400,40"
+    },
+    {
+      "label": "img block margin-top after a margined div, beside a float",
+      "body": "<div id=a style=\"height:20px;margin-bottom:30px\"></div><div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;width:150px;height:40px;margin-top:12px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px\"></div>",
+      "want": "a=0,0,400,20 f=0,50,100,80 e=100,50,150,40 n=0,90,400,10"
+    },
+    {
+      "label": "img block with clear:left after a float",
+      "body": "<div id=a style=\"height:20px;margin-bottom:30px\"></div><div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;width:150px;height:40px;margin-top:12px;clear:left\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px\"></div>",
+      "want": "a=0,0,400,20 f=0,50,100,80 e=0,130,150,40 n=0,170,400,10"
+    },
+    {
+      "label": "overflow hidden block with margin-left beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><div id=e style=\"overflow:hidden;height:40px;margin-left:20px\"></div>",
+      "want": "f=0,0,100,80 e=100,0,300,40"
+    },
+    {
+      "label": "overflow hidden block with margin-left past a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><div id=e style=\"overflow:hidden;height:40px;margin-left:150px\"></div>",
+      "want": "f=0,0,100,80 e=150,0,250,40"
+    },
+    {
+      "label": "overflow hidden block with margin-right beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><div id=e style=\"overflow:hidden;height:40px;margin-right:20px\"></div>",
+      "want": "f=300,0,100,80 e=0,0,300,40"
+    },
+    {
+      "label": "img margin 0 auto beside a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;width:150px;height:40px;margin:0 auto\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "f=0,0,100,80 e=175,0,150,40"
+    },
+    {
+      "label": "img negative margin-left beside a right float",
+      "body": "<div id=f style=\"float:right;width:100px;height:80px\"></div><img id=e style=\"display:block;width:150px;height:40px;margin-left:-20px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "f=300,0,100,80 e=0,0,150,40"
+    },
+    {
+      "label": "img negative margin-left moved below a left float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><img id=e style=\"display:block;width:350px;height:40px;margin-left:-20px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "f=0,0,100,80 e=-20,80,350,40"
+    },
+    {
+      "label": "inline img with clear beside a float",
+      "body": "<div id=f style=\"float:left;width:100px;height:80px\"></div><div id=w>text <img id=e style=\"clear:both;width:20px;height:20px;vertical-align:top\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"> more</div>",
+      "want": "f=0,0,100,80 w=0,0,400,20 e=128,0,20,20"
+    },
+    {
+      "label": "img block float:left after a block img",
+      "body": "<img id=e style=\"display:block;width:50px;height:20px;margin-bottom:15px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><img id=g style=\"float:left;width:50px;height:20px;margin-top:5px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px\"></div>",
+      "want": "e=0,0,50,20 g=0,40,50,20 n=0,35,400,10"
+    }
+  ]
+}

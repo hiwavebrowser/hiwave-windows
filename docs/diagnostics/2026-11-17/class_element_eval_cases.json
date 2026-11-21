@@ -1,0 +1,111 @@
+{
+ "note": "A direct eval inside a class element (method, accessor, field, private field, static field, static block) reading or writing a binding of an enclosing scope.",
+ "cases": [
+  {
+   "name": "method_reads_outer_let",
+   "js": "{ let x = 1; class C { m() { return eval('x'); } } new C().m() }",
+   "chrome": "1"
+  },
+  {
+   "name": "getter_reads_outer_let",
+   "js": "{ let x = 1; class C { get g() { return eval('x'); } } new C().g }",
+   "chrome": "1"
+  },
+  {
+   "name": "setter_writes_outer_let",
+   "js": "{ let x = 1; class C { set s(v) { eval('x = v'); } } new C().s = 5; x }",
+   "chrome": "5"
+  },
+  {
+   "name": "static_method_reads_outer_const",
+   "js": "{ const x = 'k'; class C { static m() { return eval('x'); } } C.m() }",
+   "chrome": "k"
+  },
+  {
+   "name": "field_reads_outer_let",
+   "js": "{ let x = 1; class C { f = eval('x'); } new C().f }",
+   "chrome": "1"
+  },
+  {
+   "name": "static_field_reads_outer_let",
+   "js": "{ let x = 2; class C { static f = eval('x'); } C.f }",
+   "chrome": "2"
+  },
+  {
+   "name": "private_field_reads_outer_let",
+   "js": "{ let x = 3; class C { #f = eval('x'); get f() { return this.#f; } } new C().f }",
+   "chrome": "3"
+  },
+  {
+   "name": "static_block_reads_outer_let",
+   "js": "{ let x = 4; let r; class C { static { r = eval('x'); } } r }",
+   "chrome": "4"
+  },
+  {
+   "name": "method_in_function_reads_function_let",
+   "js": "(function () { let x = 5; class C { m() { return eval('x'); } } return new C().m(); })()",
+   "chrome": "5"
+  },
+  {
+   "name": "arrow_in_field_reads_outer_let",
+   "js": "{ let x = 6; class C { f = () => eval('x'); } new C().f() }",
+   "chrome": "6"
+  },
+  {
+   "name": "method_eval_var_stays_in_the_eval",
+   "js": "{ class C { m() { eval('var y = 7'); try { return y; } catch (e) { return e.constructor.name; } } } new C().m() }",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "anonymous_class_static_field_reads_its_let_before_init",
+   "js": "{ try { let C = class { static field = eval('C'); }; 'none'; } catch (e) { e.constructor.name } }",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "anonymous_class_static_arrow_reads_its_let",
+   "js": "{ let C = class { static field = () => eval('C'); }; C.field() === C }",
+   "chrome": "true"
+  },
+  {
+   "name": "named_class_static_field_reads_inner_name",
+   "js": "{ class C { static field = eval('C'); } C.field === C }",
+   "chrome": "true"
+  },
+  {
+   "name": "named_class_expression_static_field_reads_inner_name",
+   "js": "{ let C = class Inner { static field = eval('Inner'); }; C.field === C }",
+   "chrome": "true"
+  },
+  {
+   "name": "inner_name_after_outer_reassigned",
+   "js": "{ let C = class Inner { static field = () => eval('Inner'); }; const D = C; C = null; D.field() === D }",
+   "chrome": "true"
+  },
+  {
+   "name": "nested_class_method_reads_outer_let",
+   "js": "{ let x = 8; class A { m() { class B { n() { return eval('x'); } } return new B().n(); } } new A().m() }",
+   "chrome": "8"
+  },
+  {
+   "name": "class_in_method_field_reads_method_let",
+   "js": "{ class A { m() { let y = 9; class B { f = eval('y'); } return new B().f; } } new A().m() }",
+   "chrome": "9"
+  },
+  {
+   "name": "computed_key_reads_outer_let",
+   "js": "{ let x = 'k10'; class C { [eval('x')]() { return 10; } } new C().k10() }",
+   "chrome": "10"
+  },
+  {
+   "name": "computed_static_key_reads_outer_let",
+   "js": "{ let x = 'k11'; class C { static [eval('x')] = 11; } C.k11 }",
+   "chrome": "11"
+  },
+  {
+   "name": "class_expression_method_reads_outer_let",
+   "js": "{ let x = 12; const C = class { m() { return eval('x'); } }; new C().m() }",
+   "chrome": "12"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

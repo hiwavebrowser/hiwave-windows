@@ -1,0 +1,96 @@
+<!doctype html>
+<!-- parity-freeze.js fixture (scripts/tests/test_parity_freeze.py): two
+     rAF-driven canvases that only reach their final frame (solid green) if
+     animation frames keep coming and the frozen clock advances per frame.
+     Values go out through window.__hiwaveBoard.calls(), which
+     chrome_board.mjs writes to chrome.json as ipc_calls. -->
+<html>
+<head>
+<style>
+  html, body { margin: 0; background: #fff; }
+  canvas { position: absolute; top: 20px; }
+  #byFrames { left: 20px; }
+  #byClock { left: 240px; }
+</style>
+</head>
+<body>
+<canvas id="byFrames" width="200" height="100"></canvas>
+<canvas id="byClock" width="200" height="100"></canvas>
+<div id="observed" style="display:none; position:absolute; top:130px; width:50px; height:10px"></div>
+<script>
+  const log = { dateAtLoad: Date.now(), dateAgain: Date.now(), timestamps: [], cancelledRan: false };
+  window.__hiwaveBoard = { calls: () => [log], errors: [] };
+
+  // A loop counted in frames: 60 frames, a growing red bar, green on the last.
+  const a = document.getElementById('byFrames').getContext('2d');
+  let n = 0;
+  function byFrames(ts) {
+    n += 1;
+    log.timestamps.push(ts);
+    a.clearRect(0, 0, 200, 100);
+    if (n < 60) {
+      a.fillStyle = '#f00';
+      a.fillRect(0, 0, (200 * n) / 60, 100);
+      requestAnimationFrame(byFrames);
+    } else {
+      a.fillStyle = '#0f0';
+      a.fillRect(0, 0, 200, 100);
+      log.framesByFrames = n;
+    }
+  }
+  requestAnimationFrame(byFrames);
+
+  // A loop timed by Date.now(), the way Chart.js's animator runs: 1 s long,
+  // green only once the clock says the time is up.
+  const b = document.getElementById('byClock').getContext('2d');
+  const start = Date.now();
+  let m = 0;
+  function byClock() {
+    m += 1;
+    const p = Math.min(1, (Date.now() - start) / 1000);
+    b.clearRect(0, 0, 200, 100);
+    b.fillStyle = p < 1 ? '#f00' : '#0f0';
+    b.fillRect(0, 0, p < 1 ? 200 * p : 200, 100);
+    if (p < 1) requestAnimationFrame(byClock);
+    else { log.framesByClock = m; log.dateAtEnd = Date.now(); }
+  }
+  requestAnimationFrame(byClock);
+
+  // Chrome's order within one rendering update: animation frame callbacks,
+  // then ResizeObserver deliveries (#1361 pinned "A1 ro A2 ... " on Chrome 148).
+  // Chart.js resizes from a ResizeObserver; its animator runs on rAF.
+  // Started after load, as the report page's period click is: a frame
+  // round asked for, then the observed box shown, in one task.
+  log.order = [];
+  let k = 0;
+  function orderLoop() {
+    k += 1;
+    log.order.push('A' + k);
+    if (k < 10) requestAnimationFrame(orderLoop);
+  }
+  const observed = document.getElementById('observed');
+  new ResizeObserver((entries) => {
+    if (entries[0].contentRect.width > 0) log.order.push('ro');
+  }).observe(observed);
+  window.addEventListener('load', () => setTimeout(() => {
+    requestAnimationFrame(orderLoop);
+    observed.style.display = 'block';
+  }, 30));
+
+  // A callback cancelled by an earlier callback of the same frame does not
+  // run (HTML: it is skipped when its turn comes).
+  log.siblingCancelledRan = false;
+  let siblingId = 0;
+  requestAnimationFrame(() => cancelAnimationFrame(siblingId));
+  siblingId = requestAnimationFrame(() => { log.siblingCancelledRan = true; });
+
+  // The frame timestamp is on performance.now()'s scale (ms since the time
+  // origin), not the epoch: libraries subtract one from the other.
+  requestAnimationFrame((ts) => { log.firstFrameTs = ts; log.perfAtFirstFrame = performance.now(); });
+
+  // A cancelled frame callback never runs.
+  const id = requestAnimationFrame(() => { log.cancelledRan = true; });
+  cancelAnimationFrame(id);
+</script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "chrome": "Chrome for Testing 148.0.7778.216 (probe148.cjs)",
+ "cases": [
+  {
+   "name": "a-percent-calc-height-item-in-the-auto-row-of-a-definite-grid",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;height:600px;grid-template-rows:auto 1fr\"><div id=a style=\"height:calc(50% + 0px)\">x</div><div id=b></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:600 a:0:0:1280:9 b:0:18:1280:582 after:0:600:1280:18"
+  },
+  {
+   "name": "a-percent-height-item-in-the-auto-row-of-a-definite-grid",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;height:600px;grid-template-rows:auto 1fr\"><div id=a style=\"height:50%\">x</div><div id=b></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:600 a:0:0:1280:9 b:0:18:1280:582 after:0:600:1280:18"
+  },
+  {
+   "name": "a-percent-minus-px-calc-height-item-in-the-auto-row-of-a-definite-grid",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;height:600px;grid-template-rows:auto 1fr\"><div id=a style=\"height:calc(50% - 20px)\">x</div><div id=b></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:600 a:0:0:1280:0 b:0:18:1280:582 after:0:600:1280:18"
+  },
+  {
+   "name": "a-percent-calc-height-item-in-an-auto-row-of-an-auto-grid",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;height:auto;grid-template-rows:auto 1fr\"><div id=a style=\"height:calc(50% + 10px)\">x</div><div id=b></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:18 a:0:0:1280:19 b:0:18:1280:0 after:0:18:1280:18"
+  },
+  {
+   "name": "a-px-calc-height-item-in-the-auto-row-of-a-definite-grid",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;height:600px;grid-template-rows:auto 1fr\"><div id=a style=\"height:calc(100px + 20px)\">x</div><div id=b></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:600 a:0:0:1280:120 b:0:120:1280:480 after:0:600:1280:18"
+  },
+  {
+   "name": "a-percent-calc-height-item-in-a-fixed-row",
+   "html": "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}*{box-sizing:border-box}</style></head><body><div id=g style=\"display:grid;height:600px;grid-template-rows:200px 1fr\"><div id=a style=\"height:calc(50% + 0px)\">x</div><div id=b></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:600 a:0:0:1280:100 b:0:200:1280:400 after:0:600:1280:18"
+  }
+ ]
+}

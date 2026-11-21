@@ -93,11 +93,12 @@ impl Default for TransitionId {
 // ==================== Timing Functions ====================
 
 /// CSS timing function (easing).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum TimingFunction {
     /// Linear interpolation.
     Linear,
     /// Default ease (0.25, 0.1, 0.25, 1.0).
+    #[default]
     Ease,
     /// Ease in (0.42, 0, 1, 1).
     EaseIn,
@@ -109,12 +110,6 @@ pub enum TimingFunction {
     CubicBezier(f64, f64, f64, f64),
     /// Step function.
     Steps(u32, StepPosition),
-}
-
-impl Default for TimingFunction {
-    fn default() -> Self {
-        TimingFunction::Ease
-    }
 }
 
 impl TimingFunction {

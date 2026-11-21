@@ -1,0 +1,319 @@
+//! IPC hardening: content pages can only reach the commands they need. The analytics commands are
+//! answered for the app's own report page and for nothing else, and "the report page" is a
+//! DOCUMENT, not a URL: the app embeds a fresh random nonce into the report HTML each time it
+//! loads it, the page sends the nonce with every request, and a request is answered only when it
+//! carries the nonce of the report most recently loaded. A page that is not that document does
+//! not know the nonce, whatever it navigates to or sends first.
+
+use std::sync::Mutex;
+
+/// The placeholder in `ui/report.html` the app replaces with the nonce.
+pub(crate) const NONCE_PLACEHOLDER: &str = "__HIWAVE_REPORT_NONCE__";
+
+/// The nonce of the report page loaded last (`None` before any).
+static REPORT_NONCE: Mutex<Option<String>> = Mutex::new(None);
+
+/// A fresh nonce for a report load; the previous one stops being accepted.
+pub(crate) fn new_report_nonce() -> String {
+    use rand::Rng;
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill(&mut bytes);
+    let nonce: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    if let Ok(mut current) = REPORT_NONCE.lock() {
+        *current = Some(nonce.clone());
+    }
+    nonce
+}
+
+/// Whether a request's nonce is the current report's. Both must exist and be equal.
+pub(crate) fn nonce_matches(message: Option<&str>, current: Option<&str>) -> bool {
+    match (message, current) {
+        (Some(a), Some(b)) if !a.is_empty() && a.len() == b.len() => {
+            // No early exit on the first differing byte.
+            a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+        }
+        _ => false,
+    }
+}
+
+/// Whether a content-page analytics request is answered.
+pub(crate) fn analytics_allowed(message_nonce: Option<&str>) -> bool {
+    let current = REPORT_NONCE.lock().ok().and_then(|c| c.clone());
+    nonce_matches(message_nonce, current.as_deref())
+}
+
+/// A URL as it may be logged: a `data:` URL (how the app loads its own pages, the report with its
+/// nonce included) is logged by size only; anything else as scheme, host, port and path as the URL
+/// parser reads them, without its query, fragment or userinfo (upstream CH3.A6), cut to a sane
+/// length. A URL that does not parse is logged by size only.
+pub(crate) fn url_for_log(url: &str) -> String {
+    let url = url.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control());
+    // `get`, not a slice: byte 5 may sit inside a multi-byte character.
+    if url.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:")) {
+        return format!("data: URL ({} bytes)", url.len());
+    }
+    let shown = match url::Url::parse(url) {
+        Ok(parsed) => match parsed.host_str() {
+            Some(host) => {
+                let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+                format!("{}://{}{}{}", parsed.scheme(), host, port, parsed.path())
+            }
+            None => format!("{}:{}", parsed.scheme(), parsed.path()),
+        },
+        Err(_) => return format!("unparsed URL ({} bytes)", url.len()),
+    };
+    let url = shown.as_str();
+    if url.len() > 200 {
+        let mut cut = 200;
+        while !url.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        return format!("{}... ({} bytes)", &url[..cut], url.len());
+    }
+    url.to_string()
+}
+
+/// Whether the content view follows a navigation the PAGE started (the webview's navigation
+/// handler sees only those: the browser opens its own pages with `load_html`, never by navigating
+/// the webview to a `hiwave:` URL).
+pub(crate) fn page_navigation_allowed(url: &str) -> bool {
+    !is_browser_page_url(url)
+}
+
+/// Whether `url` names one of the browser's own pages: the `hiwave:` scheme, in any case, read as
+/// the URL parser reads it: ASCII tabs and newlines anywhere are dropped, and leading whitespace
+/// and control characters skipped. Both the prefix and the parsed scheme are checked.
+pub(crate) fn is_browser_page_url(url: &str) -> bool {
+    let cleaned: String = url.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    let cleaned = cleaned.trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control());
+    cleaned.get(..7).is_some_and(|scheme| scheme.eq_ignore_ascii_case("hiwave:"))
+        || url::Url::parse(cleaned).is_ok_and(|u| u.scheme() == "hiwave")
+}
+
+/// The console line Chrome writes when a page tries to load one of the browser's own pages.
+pub(crate) fn refused_navigation_console_line(url: &str) -> String {
+    format!("Not allowed to load local resource: {url}")
+}
+
+/// How the content view loads the restored active tab's URL at startup.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StartupLoad {
+    /// The new-tab page the view is created with: nothing more to load.
+    NewTab,
+    /// One of the browser's own pages, opened the way the browser's UI opens it
+    /// (`UserEvent::Navigate`, which loads it with `load_html`): a restore is the browser's
+    /// navigation, not the page's, so it must not reach the content navigation handler.
+    BrowserPage,
+    /// A web URL, loaded into the view.
+    Web,
+}
+
+/// How startup loads the restored active tab's `url` (`is_new_tab`: the app's new-tab check).
+pub(crate) fn startup_load(url: &str, is_new_tab: bool) -> StartupLoad {
+    if is_new_tab {
+        StartupLoad::NewTab
+    } else if is_browser_page_url(url) {
+        StartupLoad::BrowserPage
+    } else {
+        StartupLoad::Web
+    }
+}
+
+/// Whether a page's new-window request (`window.open`, a `target=_blank` link) becomes a new tab
+/// at `url`.
+pub(crate) fn new_window_tab_allowed(url: &str) -> bool {
+    new_tab_url_allowed(Some(url))
+}
+
+/// Whether a page's `create_tab` is served: no URL (Ctrl+T, the new-tab page) or an http(s) URL
+/// (the context menu's links, images and search). Any other scheme (`javascript:`, `file:`,
+/// `data:`, the app's own `hiwave:` pages) is not opened from a page.
+pub(crate) fn new_tab_url_allowed(url: Option<&str>) -> bool {
+    match url {
+        None => true,
+        Some(url) => url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")),
+    }
+}
+
+/// The report HTML with this load's nonce embedded.
+pub(crate) fn with_nonce(html: &str, nonce: &str) -> String {
+    html.replace(NONCE_PLACEHOLDER, nonce)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_page_opens_a_new_tab_only_at_a_web_url_or_none() {
+        assert!(new_tab_url_allowed(None));
+        for ok in ["https://example.com/a?b", "http://example.com", "HTTPS://Example.com"] {
+            assert!(new_tab_url_allowed(Some(ok)), "{ok}");
+        }
+        for no in ["javascript:alert(1)", "file:///C:/Windows/win.ini", "data:text/html,x", "hiwave://report", "about:blank", "ms-settings:", "", "not a url"] {
+            assert!(!new_tab_url_allowed(Some(no)), "{no}");
+        }
+    }
+
+    use super::*;
+
+    /// The browser's own pages (`hiwave://about`, `hiwave://report`, the new-tab page) open only
+    /// from the browser's UI (address bar, menus, session restore), as Chrome's chrome:// pages
+    /// do: a page that navigates itself there is refused (Chrome: "Not allowed to load local
+    /// resource"), and a web page's new window opens only at a web URL, as its `create_tab` does.
+    #[test]
+    fn a_page_cannot_open_the_browsers_own_pages() {
+        for no in ["hiwave://about", "hiwave://report", "hiwave://newtab", "HIWAVE://Report", "hiwave:settings", " hiwave://about"] {
+            assert!(!page_navigation_allowed(no), "{no}");
+        }
+        // The URL parser drops ASCII tabs and newlines anywhere in a URL, so these name the
+        // `hiwave:` scheme too: the check is the parsed scheme, not only a prefix.
+        for no in ["hi\twave://about", "hiwave\n://report", "h\ri\twave:settings"] {
+            assert!(!page_navigation_allowed(no), "{no:?}");
+        }
+        for ok in ["https://example.com/a", "http://example.com", "about:blank", "about:srcdoc"] {
+            assert!(page_navigation_allowed(ok), "{ok}");
+        }
+        for no in ["hiwave://report", "hiwave://about", "javascript:alert(1)", "file:///C:/x", "data:text/html,x", "ms-settings:"] {
+            assert!(!new_window_tab_allowed(no), "{no}");
+        }
+        for ok in ["https://example.com/a?b", "http://example.com"] {
+            assert!(new_window_tab_allowed(ok), "{ok}");
+        }
+        assert_eq!(
+            refused_navigation_console_line("hiwave://report"),
+            "Not allowed to load local resource: hiwave://report"
+        );
+    }
+
+    /// A tab showing About or Report stores hiwave://about / hiwave://report and the session
+    /// keeps it; restoring it at startup is the browser's navigation and must open the page
+    /// through the browser's path. Loading it into the view sent it through the content
+    /// navigation handler, which refuses a hiwave: URL (Talos, cross-check of this PR).
+    #[test]
+    fn a_restored_browser_page_opens_through_the_browsers_path() {
+        for url in ["hiwave://about", "hiwave://report", "HIWAVE://about"] {
+            assert_eq!(startup_load(url, false), StartupLoad::BrowserPage, "{url}");
+        }
+        assert_eq!(startup_load("hiwave://newtab", true), StartupLoad::NewTab);
+        assert_eq!(startup_load("about:blank", true), StartupLoad::NewTab);
+        assert_eq!(startup_load("https://example.com/", false), StartupLoad::Web);
+    }
+
+    #[test]
+    fn url_for_log_does_not_panic_when_byte_five_is_inside_a_multibyte_char() {
+        // Atlas on #153: `url[..5]` panics if byte 5 is not a char boundary. "abc" + one 3-byte
+        // character (bytes 3..6) puts byte 5 inside it.
+        let url = "abc\u{20AC}tail";
+        assert!(!url.is_char_boundary(5));
+        assert_eq!(url_for_log(url), format!("unparsed URL ({} bytes)", url.len()));
+        assert_eq!(url_for_log("DATA:text/html,x"), "data: URL (16 bytes)");
+    }
+    #[test]
+    fn a_logged_url_is_scheme_host_and_path() {
+        assert_eq!(url_for_log("https://user:pw@example.com/a/b?token=SECRET#frag"), "https://example.com/a/b");
+        assert_eq!(url_for_log("http://x.test/?q=1"), "http://x.test/");
+        assert_eq!(url_for_log("https://example.com/p#section"), "https://example.com/p");
+        assert_eq!(url_for_log("hiwave://report"), "hiwave://report");
+        assert_eq!(url_for_log("https://example.com:8443/a?x"), "https://example.com:8443/a");
+        assert_eq!(url_for_log("about:blank"), "about:blank");
+    }
+
+    /// The URL parser decides where the userinfo ends, as the browser does: a backslash is a path
+    /// separator in an http(s) URL, so a hand-split at the first '/' would keep the password.
+    #[test]
+    fn a_logged_url_follows_the_url_parser_not_a_hand_split() {
+        let logged = url_for_log("https://user:SECRET@example.com" ) ;
+        assert_eq!(logged, "https://example.com/");
+        let logged = url_for_log(&format!("https://user:SECRET@evil.test{}p", '\\'));
+        assert_eq!(logged, "https://evil.test/p");
+        assert_eq!(url_for_log("  data:text/html,secret"), "data: URL (21 bytes)");
+        assert_eq!(url_for_log("not a url SECRET"), "unparsed URL (16 bytes)");
+    }
+
+    /// No page URL goes to the log whole: every log call that formats a URL passes it through
+    /// `url_for_log` (or `page_url_for_log`, which keeps it whole only on request).
+    #[test]
+    fn no_log_call_formats_a_bare_url() {
+        for (file, source) in [("main.rs", MAIN), ("ipc/commands.rs", include_str!("ipc/commands.rs"))] {
+            let source = source.replace("\r\n", "\n");
+            let production = source.split("#[cfg(test)]" ).next().unwrap_or("");
+            let mut bare = Vec::new();
+            for mac in ["info!(", "warn!(", "debug!(", "trace!(", "error!("] {
+                for (at, _) in production.match_indices(mac) {
+                    let call = production[at..].split(");").next().unwrap_or("");
+                    // A match arm's call ends at `),` on its line.
+                    let call = call.split("),\n").next().unwrap_or(call);
+                    for arg in call.split(',').skip(1) {
+                        let arg = arg.trim().trim_start_matches('&');
+                        if ["url", "url.clone()", "u", "nav_url", "initial_url"].contains(&arg) {
+                            bare.push(call.lines().next().unwrap_or("").trim().to_string());
+                        }
+                    }
+                }
+            }
+            assert!(bare.is_empty(), "{file}: a URL is logged whole: {bare:?}");
+        }
+    }
+
+    const MAIN: &str = include_str!("main.rs");
+    const REPORT: &str = include_str!("ui/report.html");
+
+    #[test]
+    fn a_nonce_matches_only_itself() {
+        assert!(nonce_matches(Some("abc123"), Some("abc123")));
+        assert!(!nonce_matches(None, Some("abc123")));
+        assert!(!nonce_matches(Some("abc123"), None));
+        assert!(!nonce_matches(None, None));
+        assert!(!nonce_matches(Some("abc124"), Some("abc123")));
+        assert!(!nonce_matches(Some("abc12"), Some("abc123")));
+        assert!(!nonce_matches(Some(""), Some("")), "an empty nonce never matches");
+    }
+
+    #[test]
+    fn a_data_url_is_logged_by_size_and_a_long_one_is_cut() {
+        let report = format!("data:text/html;charset=utf-8,<script>const REPORT_NONCE = '{}'</script>", "ab12".repeat(8));
+        let logged = url_for_log(&report);
+        assert!(!logged.contains("ab12") && !logged.contains("REPORT_NONCE"), "no page content: {logged}");
+        assert!(logged.starts_with("data: URL ("));
+        assert_eq!(url_for_log("https://example.com/a"), "https://example.com/a");
+        let long = format!("https://example.com/{}", "x".repeat(500));
+        assert!(url_for_log(&long).len() < 260);
+    }
+
+    #[test]
+    fn the_content_navigation_log_does_not_print_the_whole_url() {
+        assert!(!MAIN.contains("\"Content navigating to: {}\", url)"), "a data: URL (the report page) must not be logged whole");
+    }
+
+    #[test]
+    fn each_report_load_gets_its_own_nonce_and_the_old_one_stops_working() {
+        let first = new_report_nonce();
+        assert_eq!(first.len(), 32);
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(analytics_allowed(Some(&first)));
+        let second = new_report_nonce();
+        assert_ne!(first, second);
+        assert!(!analytics_allowed(Some(&first)), "the previous load's nonce is no longer accepted");
+        assert!(analytics_allowed(Some(&second)));
+        assert!(!analytics_allowed(None), "a request with no nonce is dropped");
+        assert!(!analytics_allowed(Some("hiwave://report")), "a URL is not a nonce");
+    }
+
+    #[test]
+    fn the_report_page_carries_the_placeholder_and_sends_it_with_every_request() {
+        assert!(REPORT.contains(NONCE_PLACEHOLDER), "the report HTML has the placeholder the app replaces");
+        assert!(REPORT.contains("nonce: REPORT_NONCE"), "every report request carries the nonce");
+        let html = with_nonce(REPORT, "deadbeef");
+        assert!(!html.contains(NONCE_PLACEHOLDER) && html.contains("'deadbeef'"));
+    }
+
+    #[test]
+    fn the_content_analytics_arm_checks_the_nonce_and_does_not_log_the_message() {
+        let start = MAIN.find("| IpcMessage::ExportAnalyticsData { .. } => {").expect("analytics arm");
+        let arm = &MAIN[start..];
+        let end = arm.find("_ => {}").expect("end of the arm");
+        let arm = &arm[..end];
+        assert!(arm.contains("analytics_allowed"), "the arm must check the nonce:\n{arm}");
+        assert!(!arm.contains("get_active_tab"), "the gate is not a URL:\n{arm}");
+        assert!(!arm.contains("{:?}\", msg"), "the arm must not log the message:\n{arm}");
+    }
+}

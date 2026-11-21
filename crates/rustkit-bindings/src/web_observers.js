@@ -7,6 +7,9 @@
 // no scrolling and no user resizing, and does not yet feed DOM mutation or
 // layout geometry into script; wiring real records belongs with those
 // features. Each name is only defined when nothing has defined it.
+// With a document, MutationObserver is replaced by the one that records
+// and delivers (web_mutation_observer.js), as the IntersectionObserver and
+// ResizeObserver are (web_observers_live.js).
 (function (g) {
     function def(name, value) {
         if (g[name] === undefined) {

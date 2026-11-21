@@ -1,0 +1,155 @@
+{
+ "cases": [
+  {
+   "name": "hole-proto-getter",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } Array.prototype[1] = 'P'; var a = [0,,2]; var r = a[1] + ',' + a[f(1)]; delete Array.prototype[1]; r",
+   "chrome": "P,P"
+  },
+  {
+   "name": "sparse",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var a = []; a[100] = 'x'; a[f(100)] + ',' + a[5] + ',' + a.length",
+   "chrome": "x,undefined,101"
+  },
+  {
+   "name": "frozen-sloppy",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var a = Object.freeze([1,2,3]); a[f(1)] = 9; String(a[1])",
+   "chrome": "2"
+  },
+  {
+   "name": "frozen-strict",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } (function(){ 'use strict'; var a = Object.freeze([1,2,3]); try { a[f(1)] = 9 } catch (e) { return e.name + a[1] } })()",
+   "chrome": "TypeError2"
+  },
+  {
+   "name": "non-extensible-append",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var a = Object.preventExtensions([1,2]); a[f(2)] = 3; a[f(0)] = 7; a.length + ',' + a[2] + ',' + a[0]",
+   "chrome": "2,undefined,7"
+  },
+  {
+   "name": "non-writable-element",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var a = [1,2,3]; Object.defineProperty(a, 1, {writable:false}); a[f(1)] = 9; String(a[1])",
+   "chrome": "2"
+  },
+  {
+   "name": "accessor-element",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var a = [1,2,3]; var log = []; Object.defineProperty(a, 1, {get(){log.push('g'); return 'G'}, set(v){log.push('s'+v)}}); a[f(1)] = 5; String(a[f(1)]) + log.join()",
+   "chrome": "Gs5,g"
+  },
+  {
+   "name": "array-subclass",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } class B extends Array {} var b = B.from([1,2,3]); b[f(1)] + ',' + (b[f(1)] = 8) + ',' + b[1]",
+   "chrome": "2,8,8"
+  },
+  {
+   "name": "append-through-proto-setter",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var log = []; Object.defineProperty(Array.prototype, 3, {set(v){ log.push(v) }, configurable: true}); var a = [1,2,3]; a[f(3)] = 'x'; var r = a.length + ',' + log.join() + ',' + a.hasOwnProperty(3); delete Array.prototype[3]; r",
+   "chrome": "3,x,false"
+  },
+  {
+   "name": "append-plain",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var a = [1,2,3]; a[f(3)] = 'x'; a[f(5)] = 'y'; a.length + ',' + a.join('|')",
+   "chrome": "6,1|2|3|x||y"
+  },
+  {
+   "name": "clamped",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var c = new Uint8ClampedArray(2); c[f(0)] = 300; c[f(1)] = -5; c[0] + ',' + c[1]",
+   "chrome": "255,0"
+  },
+  {
+   "name": "bigint-number-set",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var b = new BigInt64Array(1); var r; try { b[f(0)] = 1 } catch (e) { r = e.name } b[f(0)] = 5n; r + ',' + String(b[0])",
+   "chrome": "TypeError,5"
+  },
+  {
+   "name": "typed-valueOf",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var u = new Uint8Array(2); var log = []; u[f(0)] = { valueOf() { log.push('v'); return 3; } }; u[f(9)] = { valueOf() { log.push('o'); return 1; } }; u[0] + ',' + log.join()",
+   "chrome": "3,v,o"
+  },
+  {
+   "name": "typed-receiver",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var u = new Uint8Array(2); var o = Object.create(u); o[f(0)] = 7; u[0] + ',' + Object.keys(o).join()",
+   "chrome": "0,0"
+  },
+  {
+   "name": "typed-nan-float",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var x = new Float32Array(2); x[f(0)] = NaN; x[f(1)] = 1.5; String(x[0]) + ',' + x[1]",
+   "chrome": "NaN,1.5"
+  },
+  {
+   "name": "typed-detached",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var u = new Uint8Array(new ArrayBuffer(4, {maxByteLength: 8})); u.buffer.resize(2); var r = u[f(1)] + ',' + String(u[f(3)]); u.buffer.resize(8); r + ',' + String(u[f(3)])",
+   "chrome": "0,undefined,0"
+  },
+  {
+   "name": "string-index",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var s = 'h\\u00e9llo'; s[f(1)] + '|' + s[f(10)] + '|' + s[-0] + '|' + '\\ud83d\\ude00'[f(0)].length",
+   "chrome": "é|undefined|h|1"
+  },
+  {
+   "name": "string-wrapper",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var s = new String('abc'); s[f(1)] + s[f(7)]",
+   "chrome": "bundefined"
+  },
+  {
+   "name": "arguments-mapped",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } function g(a, b) { arguments[f(0)] = 'z'; return a } g(1, 2)",
+   "chrome": "z"
+  },
+  {
+   "name": "arguments-read",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } String((function(){ return arguments[f(1)] })(1,2,3))",
+   "chrome": "2"
+  },
+  {
+   "name": "proxy-of-array",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var p = new Proxy([1,2,3], { get(t, k, r) { return 'P' + String(k) } }); p[f(1)] + ',' + p[1]",
+   "chrome": "P1,P1"
+  },
+  {
+   "name": "number-base",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var n = 5; String(n[f(0)]) + String(true[f(1)])",
+   "chrome": "undefinedundefined"
+  },
+  {
+   "name": "null-base-throws",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var r; try { null[f(0)] } catch (e) { r = e.name } r",
+   "chrome": "TypeError"
+  },
+  {
+   "name": "compound",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var a = [1,2,3]; a[f(1)] += 10; a[f(2)]++; var u = new Uint8Array([1,2]); u[f(0)] += 5; u[f(1)] <<= 2; a.join() + '|' + u.join()",
+   "chrome": "1,12,4|6,8"
+  },
+  {
+   "name": "loop-fill",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var a = []; for (var i = 0; i < 20; i += 1.0) a[i + 0.0] = i * 2; var u = new Int16Array(20); for (var j = 0; j < 20; j++) u[(j + 0.5) - 0.5] = a[j] - 5; a.length + ',' + u[19] + ',' + a[19]",
+   "chrome": "20,33,38"
+  },
+  {
+   "name": "string-oob-proto",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } String.prototype[5] = 'P'; var r = 'abc'[f(5)] + ',' + 'abc'[f(1)] + ',' + 'abc'[f(2)]; delete String.prototype[5]; r",
+   "chrome": "P,b,c"
+  },
+  {
+   "name": "string-oob-plain",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } String(('abc')[f(5)]) + ',' + String('abc'[f(3)])",
+   "chrome": "undefined,undefined"
+  },
+  {
+   "name": "super-set-array-home",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var arr = [1,2,3]; var obj = { __proto__: arr, m() { super[f(1)] = 'x'; } }; obj.m(); String(arr[1]) + ',' + obj.hasOwnProperty(1) + ',' + obj[1]",
+   "chrome": "2,true,x"
+  },
+  {
+   "name": "super-set-array-home-append",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var arr = [1,2,3]; var obj = { __proto__: arr, m() { super[f(3)] = 'y'; } }; obj.m(); arr.length + ',' + obj.hasOwnProperty(3)",
+   "chrome": "3,true"
+  },
+  {
+   "name": "reflect-set-array-receiver",
+   "js": "function f(x) { return (x + 0.5) - 0.5; } var arr = [1,2,3]; var other = {}; Reflect.set(arr, f(1), 'z', other); String(arr[1]) + ',' + other[1]",
+   "chrome": "2,z"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

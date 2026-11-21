@@ -11,10 +11,24 @@ pub enum InterceptAction {
     Allow,
     /// Block the request.
     Block,
+    /// Block the request, saying which filter list and rule refused it
+    /// (dev-tools T2: the event log's `failure.blocked_by`).
+    BlockedBy(BlockReason),
     /// Redirect to a different URL.
     Redirect(Url),
     /// Modify the request.
     Modify(Box<Request>),
+}
+
+/// Which list, and which of its rules, refused a request. Both are the
+/// filter list's own public text, never the page's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockReason {
+    /// The list's name (`EasyList`, `EasyPrivacy`), or the handler's own
+    /// name for a verdict from no list (`domain-floor`).
+    pub list: String,
+    /// The rule as written in the list, when the handler knows it.
+    pub rule: Option<String>,
 }
 
 /// Handler for intercepting requests.
@@ -120,6 +134,7 @@ pub enum RuleAction {
 
 /// Request interceptor with configurable rules.
 pub struct RequestInterceptor {
+    allowed_origin: Option<url::Origin>,
     rules: Vec<InterceptRule>,
     default_action: InterceptAction,
     handlers: Vec<Arc<dyn InterceptHandler>>,
@@ -129,10 +144,20 @@ impl RequestInterceptor {
     /// Create a new interceptor.
     pub fn new() -> Self {
         Self {
+            allowed_origin: None,
             rules: Vec::new(),
             default_action: InterceptAction::Allow,
             handlers: Vec::new(),
         }
+    }
+
+    /// Restrict original requests before transport URL rewriting.
+    pub fn restrict_origin(&mut self, origin: url::Origin) {
+        self.allowed_origin = Some(origin);
+    }
+
+    pub(crate) fn permits_origin(&self, url: &Url) -> bool {
+        self.allowed_origin.as_ref().is_none_or(|origin| *origin == url.origin())
     }
 
     /// Set the default action for non-matching requests.
@@ -186,7 +211,7 @@ impl RequestInterceptor {
 
     /// Intercept a request.
     pub async fn intercept(&self, request: &Request) -> InterceptAction {
-        trace!(url = %request.url, "Intercepting request");
+        trace!(url = %crate::origin_for_log(&request.url), "Intercepting request");
 
         // Check custom handlers first
         for handler in &self.handlers {
@@ -194,7 +219,7 @@ impl RequestInterceptor {
             match action {
                 InterceptAction::Allow => continue,
                 other => {
-                    debug!(url = %request.url, action = ?other, "Handler intercepted");
+                    debug!(url = %crate::origin_for_log(&request.url), action = ?other, "Handler intercepted");
                     return other;
                 }
             }
@@ -214,7 +239,7 @@ impl RequestInterceptor {
                         }
                     }
                 };
-                debug!(url = %request.url, pattern = %rule.pattern.pattern, action = ?action, "Rule matched");
+                debug!(url = %crate::origin_for_log(&request.url), pattern = %rule.pattern.pattern, action = ?action, "Rule matched");
                 return action;
             }
         }
@@ -247,6 +272,7 @@ mod tests {
             referrer: None,
             referrer_policy: Default::default(),
             destination: crate::RequestDestination::Other,
+            is_replay_proxied: false,
         }
     }
 

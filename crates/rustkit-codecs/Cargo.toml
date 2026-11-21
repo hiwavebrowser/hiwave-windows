@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "RustKit-owned image codec layer (PNG/JPEG/GIF subset) to replace the image crate"
 authors = ["HiWave Team"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 thiserror = "1.0"

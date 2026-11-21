@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Common utilities, error types, and logging for RustKit"
 authors = ["HiWave Team"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 # Error handling

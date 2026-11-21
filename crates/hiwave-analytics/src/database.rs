@@ -10,8 +10,9 @@ const SCHEMA_VERSION: i32 = 2;
 
 /// Initialize or open the analytics database
 pub fn init_database(path: &Path) -> HiWaveResult<Connection> {
-    let conn = Connection::open(path)
-        .map_err(|e| HiWaveError::analytics(format!("Failed to open analytics database: {}", e)))?;
+    let conn = Connection::open(path).map_err(|e| {
+        HiWaveError::analytics(format!("Failed to open analytics database: {}", e))
+    })?;
 
     // Enable foreign keys
     conn.execute("PRAGMA foreign_keys = ON", [])
@@ -50,8 +51,6 @@ pub fn init_database(path: &Path) -> HiWaveResult<Connection> {
 fn migrate_database(conn: &Connection, from_version: i32) -> HiWaveResult<()> {
     if from_version < 1 {
         create_schema_v1(conn)?;
-        // Fresh DB is created at the current schema version; no further migrations needed.
-        return Ok(());
     }
 
     if from_version < 2 {
@@ -139,20 +138,47 @@ fn create_schema_v1(conn: &Connection) -> HiWaveResult<()> {
     Ok(())
 }
 
+/// Check if a column exists in a table.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+    let query = format!("PRAGMA table_info({})", table);
+    match conn.prepare(&query) {
+        Ok(mut stmt) => {
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1));
+            if let Ok(rows) = rows {
+                for col in rows.flatten() {
+                    if col == column {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
 /// Migrate to schema version 2 (add time_saved and bandwidth_saved)
 fn migrate_to_v2(conn: &Connection) -> HiWaveResult<()> {
-    // Add new columns to daily_stats table
-    conn.execute(
-        "ALTER TABLE daily_stats ADD COLUMN time_saved INTEGER DEFAULT 0",
-        [],
-    )
-    .map_err(|e| HiWaveError::analytics(format!("Failed to add time_saved column: {}", e)))?;
+    // Check if columns already exist (they may be in the initial schema)
+    let has_time_saved = column_exists(conn, "daily_stats", "time_saved");
+    let has_bandwidth_saved = column_exists(conn, "daily_stats", "bandwidth_saved");
+    
+    // Add new columns to daily_stats table if they don't exist
+    if !has_time_saved {
+        conn.execute(
+            "ALTER TABLE daily_stats ADD COLUMN time_saved INTEGER DEFAULT 0",
+            [],
+        )
+        .map_err(|e| HiWaveError::analytics(format!("Failed to add time_saved column: {}", e)))?;
+    }
 
-    conn.execute(
-        "ALTER TABLE daily_stats ADD COLUMN bandwidth_saved INTEGER DEFAULT 0",
-        [],
-    )
-    .map_err(|e| HiWaveError::analytics(format!("Failed to add bandwidth_saved column: {}", e)))?;
+    if !has_bandwidth_saved {
+        conn.execute(
+            "ALTER TABLE daily_stats ADD COLUMN bandwidth_saved INTEGER DEFAULT 0",
+            [],
+        )
+        .map_err(|e| HiWaveError::analytics(format!("Failed to add bandwidth_saved column: {}", e)))?;
+    }
 
     // Add columns to archive table if it exists
     let archive_exists: bool = conn
@@ -204,7 +230,9 @@ pub fn insert_event(
             Some(serde_json::json!({ "duration_secs": duration_secs }).to_string()),
         ),
         AnalyticsEvent::TabToShelf { domain } => ("tab_to_shelf", Some(domain.as_str()), None),
-        AnalyticsEvent::TabFromShelf { domain } => ("tab_from_shelf", Some(domain.as_str()), None),
+        AnalyticsEvent::TabFromShelf { domain } => {
+            ("tab_from_shelf", Some(domain.as_str()), None)
+        }
         AnalyticsEvent::WorkspaceSwitch { from, to } => (
             "workspace_switch",
             None,
@@ -282,8 +310,11 @@ pub fn get_or_create_today_stats(conn: &Connection) -> HiWaveResult<DailyStats> 
     }
 
     // Create new entry
-    conn.execute("INSERT INTO daily_stats (date) VALUES (?)", [&today])
-        .map_err(|e| HiWaveError::analytics(e.to_string()))?;
+    conn.execute(
+        "INSERT INTO daily_stats (date) VALUES (?)",
+        [&today],
+    )
+    .map_err(|e| HiWaveError::analytics(e.to_string()))?;
 
     get_daily_stats(conn, &today)
 }
@@ -300,12 +331,7 @@ pub fn increment_daily_stat(conn: &Connection, date: &str, field: &str) -> HiWav
 }
 
 /// Add time to a daily stat field
-pub fn add_daily_time(
-    conn: &Connection,
-    date: &str,
-    field: &str,
-    seconds: i64,
-) -> HiWaveResult<()> {
+pub fn add_daily_time(conn: &Connection, date: &str, field: &str, seconds: i64) -> HiWaveResult<()> {
     let query = format!(
         "UPDATE daily_stats SET {} = {} + ? WHERE date = ?",
         field, field
@@ -574,11 +600,7 @@ pub fn increment_domain_trackers(conn: &Connection, domain: &str) -> HiWaveResul
 }
 
 /// Update workspace stats (increment counts)
-pub fn update_workspace_stats(
-    conn: &Connection,
-    workspace_id: &str,
-    event_type: &str,
-) -> HiWaveResult<()> {
+pub fn update_workspace_stats(conn: &Connection, workspace_id: &str, event_type: &str) -> HiWaveResult<()> {
     match event_type {
         "tab_opened" => {
             conn.execute(

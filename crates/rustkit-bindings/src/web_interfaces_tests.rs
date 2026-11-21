@@ -53,6 +53,84 @@ fn elements_are_instances_of_their_tags_interface() {
     assert_eq!(ev(&b, "var t1; try { new HTMLAnchorElement(); t1 = 'no throw'; } catch (e) { t1 = e.name + ':' + e.message; } t1"), "TypeError:Illegal constructor");
 }
 
+/// github.com's landing page asks `canvas.getContext("webgl")` to see whether
+/// it may show its 3D scene and calls `video.load()` on its hero video, both
+/// in effects. Each threw "not a callable function", an error boundary caught
+/// it and mounted the whole page again, on every turn of the live loop.
+///
+/// Chromium 143: `getContext('webgl')` is null and `getContext('2d')` a
+/// CanvasRenderingContext2D (web_canvas.js); on a `<video>` with no source
+/// `load()` and `pause()` return undefined, `paused` is true, `readyState` 0,
+/// `canPlayType('x/y')` "", `currentTime` 0, `duration` NaN, `ended` false,
+/// and `play()` returns a promise that rejects with a DOMException.
+#[test]
+fn a_canvas_has_no_webgl_context_and_a_media_element_plays_nothing_without_throwing() {
+    let b = bound();
+    b.evaluate("document.body.innerHTML = '<canvas id=\"c\"></canvas><video id=\"v\"></video><audio id=\"au2\"></audio>';").unwrap();
+    assert_eq!(
+        ev(&b, "var c = document.getElementById('c'); String([typeof c.getContext, c.getContext('webgl'), Object.prototype.toString.call(c.getContext('2d')), document.createElement('canvas').getContext('experimental-webgl')].join())"),
+        "function,,[object CanvasRenderingContext2D],"
+    );
+    // The page's own check, as written.
+    assert_eq!(
+        ev(&b, "var e = document.createElement('canvas'), t = e.getContext('webgl') || e.getContext('experimental-webgl'); String(!!(t && t instanceof WebGLRenderingContext))"),
+        "false"
+    );
+    assert_eq!(
+        ev(&b, "var v = document.getElementById('v'); String([typeof v.load, v.load(), typeof v.pause, v.pause(), v.paused, v.readyState, JSON.stringify(v.canPlayType('video/mp4')), v.currentTime, v.duration, v.ended].join())"),
+        "function,,function,,true,0,\"\",0,NaN,false"
+    );
+    assert_eq!(
+        ev(&b, "String([HTMLMediaElement.HAVE_NOTHING, HTMLMediaElement.HAVE_METADATA, HTMLMediaElement.HAVE_CURRENT_DATA, HTMLMediaElement.HAVE_FUTURE_DATA, HTMLMediaElement.HAVE_ENOUGH_DATA, v.HAVE_CURRENT_DATA].join())"),
+        "0,1,2,3,4,2"
+    );
+    // An <audio> and a created element answer the same; a <div> has none of it.
+    assert_eq!(
+        ev(&b, "String([typeof document.getElementById('au2').play, document.createElement('video').paused, typeof document.createElement('div').play, typeof document.createElement('div').getContext].join())"),
+        "function,true,undefined,undefined"
+    );
+    b.evaluate("var played = 'pending', p = v.play(); p.then(function () { played = 'resolved'; }, function (e) { played = e.name + ':' + (e instanceof DOMException); });").unwrap();
+    assert_eq!(ev(&b, "Object.prototype.toString.call(p) + ' ' + played"), "[object Promise] NotSupportedError:true");
+}
+
+/// `MediaError` is the interface a media element's `error` would be. Pages
+/// read the code constants; there is no playback, so nothing constructs one
+/// and `error` stays null.
+#[test]
+fn media_error_exists_with_its_code_constants() {
+    let b = bound();
+    assert_eq!(
+        ev(&b, "[typeof MediaError, MediaError.MEDIA_ERR_ABORTED, MediaError.MEDIA_ERR_NETWORK, MediaError.MEDIA_ERR_DECODE, MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED, MediaError.prototype.MEDIA_ERR_ABORTED].join()"),
+        "function,1,2,3,4,1"
+    );
+    assert_eq!(
+        ev(&b, "var t; try { new MediaError(); t = 'no throw'; } catch (e) { t = e.name + ':' + e.message; } t"),
+        "TypeError:Illegal constructor"
+    );
+    assert_eq!(ev(&b, "String(document.getElementById('vi').error)"), "null");
+    assert_eq!(ev(&b, "String(document.createElement('audio').error)"), "null");
+}
+
+/// A timestamp with more than three fractional digits, or an offset written
+/// `+HHMM`, used to be Invalid Date. `toISOString` then throws RangeError
+/// Invalid time value.
+#[test]
+fn iso_dates_with_a_long_fraction_or_a_basic_offset_parse() {
+    let b = bound();
+    assert_eq!(
+        ev(&b, "new Date('2024-10-16T18:22:11.123000+0000').toISOString()"),
+        "2024-10-16T18:22:11.123Z"
+    );
+    assert_eq!(ev(&b, "String(new Date('2024-10-16T18:22:11.1Z').getUTCMilliseconds())"), "100");
+    assert_eq!(ev(&b, "new Date('2024-10-16T18:22:11.1234Z').toISOString()"), "2024-10-16T18:22:11.123Z");
+    assert_eq!(ev(&b, "new Date('2024-10-16 18:22:11Z').toISOString()"), "2024-10-16T18:22:11.000Z");
+    assert_eq!(ev(&b, "String(isNaN(Date.parse('not-a-date')))"), "true");
+    assert_eq!(
+        ev(&b, "new Date('2020-06-08T09:16:15.779-07:30').toISOString()"),
+        "2020-06-08T16:46:15.779Z"
+    );
+}
+
 #[test]
 fn event_subclasses_extend_event_with_their_init_members() {
     let b = bound();
@@ -112,9 +190,105 @@ fn existing_singletons_get_their_interfaces_and_the_rest_are_interface_only() {
     assert_eq!(ev(&b, "var t; try { new ShadowRoot(); t = 'no throw'; } catch (e) { t = e.name; } t"), "TypeError");
     assert_eq!(ev(&b, "var w; try { new Window(); w = 'no throw'; } catch (e) { w = e.name; } w"), "TypeError");
     // Constructors for features the engine does not have stay UNDEFINED, so
-    // `typeof Worker` style feature detection keeps working.
+    // `typeof WebAssembly` style feature detection keeps working.
     assert_eq!(
-        ev(&b, "[typeof Worker, typeof WebAssembly, typeof Notification, typeof AudioContext, typeof OffscreenCanvas, typeof BroadcastChannel, typeof MessageChannel].join()"),
-        "undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+        ev(&b, "[typeof WebAssembly, typeof Notification, typeof AudioContext, typeof OffscreenCanvas, typeof BroadcastChannel].join()"),
+        "undefined,undefined,undefined,undefined,undefined"
+    );
+}
+
+#[test]
+fn cdatasection_and_processinginstruction_interfaces_exist() {
+    let b = bound();
+    assert_eq!(
+        ev(&b, "[typeof CDATASection, typeof ProcessingInstruction].join()"),
+        "function,function"
+    );
+    assert_eq!(
+        ev(&b, "[CDATASection.prototype instanceof Text, CDATASection.prototype instanceof CharacterData, CDATASection.prototype instanceof Node].join()"),
+        "true,true,true"
+    );
+    assert_eq!(
+        ev(&b, "[ProcessingInstruction.prototype instanceof CharacterData, ProcessingInstruction.prototype instanceof Node].join()"),
+        "true,true"
+    );
+    assert_eq!(
+        ev(&b, "var t1; try { new CDATASection(); t1 = 'no throw'; } catch (e) { t1 = e.name; } t1"),
+        "TypeError"
+    );
+    assert_eq!(
+        ev(&b, "var t2; try { new ProcessingInstruction(); t2 = 'no throw'; } catch (e) { t2 = e.name; } t2"),
+        "TypeError"
+    );
+    // YouTube webcomponents-sd Tag 878 iteration
+    assert_eq!(
+        ev(&b, "['Document','DocumentFragment','Element','Text','Comment','CDATASection','ProcessingInstruction'].every(function(a){ return typeof Object.create(window[a].prototype) === 'object'; })"),
+        "true"
+    );
+}
+
+#[test]
+fn window_inherits_from_window_prototype_and_event_target_prototype() {
+    let b = bound();
+    // 1. Object.getPrototypeOf(window) === Window.prototype
+    assert_eq!(
+        ev(&b, "String(Object.getPrototypeOf(window) === Window.prototype)"),
+        "true"
+    );
+    // 2. window instanceof Window
+    assert_eq!(
+        ev(&b, "String(window instanceof Window)"),
+        "true"
+    );
+    // 3. window instanceof EventTarget
+    assert_eq!(
+        ev(&b, "String(window instanceof EventTarget)"),
+        "true"
+    );
+    // 4. a property defined on EventTarget.prototype is visible on window
+    assert_eq!(
+        ev(&b, "EventTarget.prototype.__custom_test_prop = 'from_event_target'; window.__custom_test_prop"),
+        "from_event_target"
+    );
+    // 5. webcomponents-sd __shady_native_addEventListener pattern works on window
+    assert_eq!(
+        ev(&b, "var called = false; EventTarget.prototype.__shady_native_addEventListener = function() { called = true; }; window.__shady_native_addEventListener('test', function(){}, true); String(called)"),
+        "true"
+    );
+}
+
+
+/// The interfaces the SVG transform DOM adds (#1171), as Chrome for Testing 148.0.7778.216 has them: each a
+/// global function that cannot be constructed, inheriting from what Chrome's does, and the paint servers'
+/// elements instances of theirs. There is no published list of global names in this repository; this pins
+/// the seven.
+#[test]
+fn the_svg_transform_and_paint_server_interfaces_exist_as_in_chrome() {
+    let bindings = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+    bindings
+        .set_document(Rc::new(
+            Document::parse_html(
+                "<!DOCTYPE html><svg><linearGradient id=lg></linearGradient><radialGradient id=rg></radialGradient><pattern id=pt></pattern></svg>",
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        ev(
+            &bindings,
+            "var names = ['SVGTransform', 'SVGTransformList', 'SVGAnimatedTransformList', 'SVGGradientElement', \
+               'SVGLinearGradientElement', 'SVGRadialGradientElement', 'SVGPatternElement']; \
+             var out = names.map(function (n) { var C = window[n], t; try { new C(); t = 'no'; } catch (e) { t = e.name; } \
+               return n + ':' + typeof C + ':' + t + ':' + Object.getPrototypeOf(C.prototype).constructor.name; }); \
+             var $ = function (i) { return document.getElementById(i); }; \
+             out.push([$('lg') instanceof SVGLinearGradientElement, $('lg') instanceof SVGGradientElement, \
+               $('rg') instanceof SVGRadialGradientElement, $('pt') instanceof SVGPatternElement, \
+               $('pt') instanceof SVGGradientElement].join(',')); \
+             out.join(' ')"
+        ),
+        "SVGTransform:function:TypeError:Object SVGTransformList:function:TypeError:Object \
+         SVGAnimatedTransformList:function:TypeError:Object SVGGradientElement:function:TypeError:SVGElement \
+         SVGLinearGradientElement:function:TypeError:SVGGradientElement SVGRadialGradientElement:function:TypeError:SVGGradientElement \
+         SVGPatternElement:function:TypeError:SVGElement true,true,true,true,false"
     );
 }

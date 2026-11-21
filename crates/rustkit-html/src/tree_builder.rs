@@ -3,7 +3,7 @@
 //! Implements a simplified HTML5 tree construction algorithm with
 //! insertion modes and error recovery.
 
-use crate::tokenizer::Token;
+use crate::tokenizer::{Token, Tokenizer};
 use crate::{ParseResult, TreeSink};
 use tracing::trace;
 
@@ -167,11 +167,27 @@ pub struct TreeBuilder<S: TreeSink> {
     fragment_context: Option<FragmentContext>,
     /// Head element pointer (for implicit head handling)
     head_element: Option<S::NodeId>,
+    /// The html element, target of a later `<html>` start tag's attributes
+    /// (HTML §13.2.6.4.7). Kept here because `</html>` may pop it.
+    html_element: Option<S::NodeId>,
+    /// The body element, target of a later `<body>` start tag's attributes
+    /// (HTML §13.2.6.4.7). Kept here because `</body>` pops it.
+    body_element: Option<S::NodeId>,
     /// Form element pointer (for form owner tracking).
     /// Required for spec-compliant form association (HTML5 § 4.10.18.3).
     /// Currently unused but needed when form control elements track their owner form.
     #[allow(dead_code)]
     form_element: Option<S::NodeId>,
+    /// The scripting flag (HTML §13.2.3.5). On for a page that runs script:
+    /// `<noscript>` then holds text and builds no elements.
+    scripting: bool,
+    /// The stack depth of the raw text or RCDATA element the "in head"
+    /// rules opened last (`title`, `style`, `script`, `noframes`, and
+    /// `noscript` with scripting on), while it may still be open. The spec
+    /// parses such an element's contents in the "text" insertion mode; the
+    /// "in head" rules do that here, from whichever mode opened it (see
+    /// `process_token`).
+    head_raw_text_depth: Option<usize>,
 }
 
 impl<S: TreeSink> TreeBuilder<S> {
@@ -191,6 +207,10 @@ impl<S: TreeSink> TreeBuilder<S> {
             quirks_mode: QuirksMode::NoQuirks,
             fragment_context: None,
             head_element: None,
+            html_element: None,
+            scripting: false,
+            head_raw_text_depth: None,
+            body_element: None,
             form_element: None,
         }
     }
@@ -239,6 +259,10 @@ impl<S: TreeSink> TreeBuilder<S> {
             quirks_mode: QuirksMode::NoQuirks,
             fragment_context: Some(context),
             head_element: None,
+            html_element: None,
+            scripting: false,
+            head_raw_text_depth: None,
+            body_element: None,
             form_element: None,
         }
     }
@@ -351,12 +375,7 @@ impl<S: TreeSink> TreeBuilder<S> {
     /// Find the index of the last table element in the stack.
     #[allow(dead_code)]
     fn find_last_table_index(&self) -> Option<usize> {
-        for i in (0..self.open_elements.len()).rev() {
-            if self.open_elements[i].0 == "table" {
-                return Some(i);
-            }
-        }
-        None
+        (0..self.open_elements.len()).rev().find(|&i| self.open_elements[i].0 == "table")
     }
 
     /// Get the foster parent location (element before table, or table's parent).
@@ -424,6 +443,46 @@ impl<S: TreeSink> TreeBuilder<S> {
             }
         }
         self.mode = InsertionMode::InRow;
+    }
+
+    /// Pop elements, closing each in the sink, until a `tag_name` element
+    /// has been popped. `pop_until` only pops the builder's stack, which
+    /// leaves the sink's stack (and so the sink's insertion point) behind.
+    fn pop_until_closed(&mut self, tag_name: &str) {
+        while let Some((name, _)) = self.open_elements.pop() {
+            self.sink.end_element(name.clone());
+            if name == tag_name {
+                break;
+            }
+        }
+    }
+
+    /// The table to foster-parent before, when foster parenting is enabled
+    /// and the current node is a table, tbody, tfoot, thead or tr
+    /// (§13.2.6.1, "appropriate place for inserting a node").
+    fn foster_parent_table(&self) -> Option<S::NodeId> {
+        if !self.foster_parenting
+            || !matches!(
+                self.current_node_name(),
+                Some("table" | "tbody" | "tfoot" | "thead" | "tr")
+            )
+        {
+            return None;
+        }
+        let table_idx = self.find_last_table_index()?;
+        let table = self.open_elements[table_idx].1.clone();
+        // A table with no parent: leave the node where it is.
+        self.sink.get_parent(table.clone())?;
+        Some(table)
+    }
+
+    /// Move a just-inserted element to the foster parent location. The
+    /// element stays on the sink's stack, so its children follow it.
+    fn foster_parent_element(&mut self, table: Option<S::NodeId>, node: &S::NodeId) {
+        if let Some(table) = table {
+            self.sink.remove_from_parent(node.clone());
+            self.sink.foster_parent(table, node.clone());
+        }
     }
 
     // ==================== ADOPTION AGENCY ALGORITHM ====================
@@ -723,8 +782,32 @@ impl<S: TreeSink> TreeBuilder<S> {
         Ok(self.sink)
     }
 
+    pub(super) fn parse(mut self, html: &str, scripting: bool) -> ParseResult<S> {
+        self.scripting = scripting;
+        Tokenizer::new(html).for_each_token(scripting, |token| self.process_token(token))?;
+        Ok(self.sink)
+    }
+
     fn process_token(&mut self, token: Token) -> ParseResult<()> {
         trace!(mode = ?self.mode, token = ?token, "Processing token");
+
+        // A raw text or RCDATA element the "in head" rules opened is the
+        // current node: its characters and its own end tag are those rules'
+        // in every mode (the spec's "text" mode, §13.2.6.4.8). The modes
+        // that borrow "in head" for the start tag otherwise got the text
+        // back: "in frameset" dropped it and ignored `</noframes>`, so the
+        // next `</frameset>` closed the noframes; "after head" implied the
+        // body inside a late `<style>`.
+        if let Some(depth) = self.head_raw_text_depth {
+            if self.open_elements.len() != depth {
+                self.head_raw_text_depth = None;
+            } else if matches!(token, Token::Character(_)) {
+                return self.handle_in_head(token);
+            } else if matches!((&token, self.current_node_name()), (Token::EndTag { name }, Some(open)) if name == open) {
+                self.head_raw_text_depth = None;
+                return self.handle_in_head(token);
+            }
+        }
 
         match self.mode {
             InsertionMode::Initial => self.handle_initial(token)?,
@@ -811,24 +894,24 @@ impl<S: TreeSink> TreeBuilder<S> {
         }
 
         // HTML 4.01 Transitional/Frameset without system identifier = quirks
-        if public_lower.contains("html 4.01") && system_id.is_empty() {
-            if public_lower.contains("transitional") || public_lower.contains("frameset") {
-                return QuirksMode::Quirks;
-            }
+        if public_lower.contains("html 4.01") && system_id.is_empty()
+            && (public_lower.contains("transitional") || public_lower.contains("frameset"))
+        {
+            return QuirksMode::Quirks;
         }
 
         // XHTML 1.0 Transitional/Frameset = limited quirks
-        if public_lower.contains("xhtml 1.0") {
-            if public_lower.contains("transitional") || public_lower.contains("frameset") {
-                return QuirksMode::LimitedQuirks;
-            }
+        if public_lower.contains("xhtml 1.0")
+            && (public_lower.contains("transitional") || public_lower.contains("frameset"))
+        {
+            return QuirksMode::LimitedQuirks;
         }
 
         // HTML 4.01 Transitional/Frameset with system identifier = limited quirks
-        if public_lower.contains("html 4.01") && !system_id.is_empty() {
-            if public_lower.contains("transitional") || public_lower.contains("frameset") {
-                return QuirksMode::LimitedQuirks;
-            }
+        if public_lower.contains("html 4.01") && !system_id.is_empty()
+            && (public_lower.contains("transitional") || public_lower.contains("frameset"))
+        {
+            return QuirksMode::LimitedQuirks;
         }
 
         // Default to no quirks for valid doctypes
@@ -841,6 +924,7 @@ impl<S: TreeSink> TreeBuilder<S> {
                 name, attrs, self_closing: _
             } if name == "html" => {
                 let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
+                self.html_element = Some(node_id.clone());
                 self.open_elements.push((name, node_id));
                 self.mode = InsertionMode::BeforeHead;
             }
@@ -853,6 +937,7 @@ impl<S: TreeSink> TreeBuilder<S> {
             _ => {
                 // Implied html start tag
                 let node_id = self.sink.start_element("html".to_string(), vec![], false);
+                self.html_element = Some(node_id.clone());
                 self.open_elements.push(("html".to_string(), node_id));
                 self.mode = InsertionMode::BeforeHead;
                 self.process_token(token)?;
@@ -863,10 +948,15 @@ impl<S: TreeSink> TreeBuilder<S> {
 
     fn handle_before_head(&mut self, token: Token) -> ParseResult<()> {
         match token {
+            // §13.2.6.4.3: start tag "html" is processed using "in body".
+            Token::StartTag { ref name, .. } if name == "html" => {
+                self.handle_in_body(token)?;
+            }
             Token::StartTag {
                 name, attrs, self_closing: _
             } if name == "head" => {
                 let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
+                self.head_element = Some(node_id.clone());
                 self.open_elements.push((name, node_id));
                 self.mode = InsertionMode::InHead;
             }
@@ -879,6 +969,7 @@ impl<S: TreeSink> TreeBuilder<S> {
             _ => {
                 // Implied head start tag
                 let node_id = self.sink.start_element("head".to_string(), vec![], false);
+                self.head_element = Some(node_id.clone());
                 self.open_elements.push(("head".to_string(), node_id));
                 self.mode = InsertionMode::InHead;
                 self.process_token(token)?;
@@ -889,6 +980,11 @@ impl<S: TreeSink> TreeBuilder<S> {
 
     fn handle_in_head(&mut self, token: Token) -> ParseResult<()> {
         match token {
+            // §13.2.6.4.4: start tag "html" is processed using "in body".
+            Token::StartTag { ref name, .. } if name == "html" => {
+                self.flush_text();
+                self.handle_in_body(token)?;
+            }
             Token::Character(ch) => {
                 // Add all characters to the text buffer (whitespace and non-whitespace)
                 self.text_buffer.push(ch);
@@ -905,12 +1001,67 @@ impl<S: TreeSink> TreeBuilder<S> {
             }
             Token::StartTag {
                 name, attrs, self_closing: _
-            } if matches!(name.as_str(), "title" | "style" | "script") => {
+            } if matches!(name.as_str(), "title" | "style" | "script" | "noframes") => {
                 let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
                 self.open_elements.push((name, node_id));
-                // Note: In a full implementation, we'd switch to RCDATA/RAWTEXT mode here
+                // No "text" mode here: `process_token` sends this element's
+                // text and end tag back to these rules from any mode.
+                self.head_raw_text_depth = Some(self.open_elements.len());
             }
-            Token::EndTag { name } if matches!(name.as_str(), "title" | "style" | "script") => {
+            // §13.2.6.4.4 "noscript": with scripting on, a raw text element
+            // (the tokenizer hands its contents over as characters); with it
+            // off, an element whose few allowed children are parsed "in
+            // head noscript".
+            Token::StartTag {
+                name, attrs, self_closing: _
+            } if name == "noscript" => {
+                self.flush_text();
+                let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
+                self.open_elements.push((name, node_id));
+                if self.scripting {
+                    self.head_raw_text_depth = Some(self.open_elements.len());
+                } else {
+                    self.mode = InsertionMode::InHeadNoscript;
+                }
+            }
+            // §13.2.6.4.4 "template": insert it and parse its contents "in
+            // template"; the head stays open under it.
+            Token::StartTag {
+                name, attrs, self_closing: _
+            } if name == "template" => {
+                self.flush_text();
+                let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
+                self.open_elements.push((name, node_id));
+                // A marker, so formatting opened inside the template is not
+                // reconstructed after it.
+                self.push_formatting_marker();
+                self.mode = InsertionMode::InTemplate;
+                self.template_insertion_modes.push(InsertionMode::InTemplate);
+            }
+            // §13.2.6.4.4 end tag "template": with a template open, close
+            // everything up to it and go back to the mode its parent has
+            // ("in head" for one in the head). Without one, ignored.
+            Token::EndTag { name } if name == "template" => {
+                self.flush_text();
+                if self.open_elements.iter().any(|(n, _)| n == "template") {
+                    while let Some((tag_name, _)) = self.open_elements.pop() {
+                        self.sink.end_element(tag_name.clone());
+                        if tag_name == "template" {
+                            break;
+                        }
+                    }
+                    self.clear_active_formatting_to_marker();
+                    self.template_insertion_modes.pop();
+                    self.reset_insertion_mode();
+                }
+            }
+            Token::EndTag { name } if name == "noscript" && self.scripting => {
+                self.flush_text();
+                if let Some((tag_name, _)) = self.open_elements.pop() {
+                    self.sink.end_element(tag_name);
+                }
+            }
+            Token::EndTag { name } if matches!(name.as_str(), "title" | "style" | "script" | "noframes") => {
                 self.flush_text();
                 if let Some((tag_name, _)) = self.open_elements.pop() {
                     self.sink.end_element(tag_name);
@@ -960,12 +1111,57 @@ impl<S: TreeSink> TreeBuilder<S> {
                 name, attrs, self_closing: _
             } if name == "body" => {
                 let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
+                self.body_element = Some(node_id.clone());
                 self.open_elements.push((name, node_id));
                 self.mode = InsertionMode::InBody;
+            }
+            // §13.2.6.4.6: start tag "html" is processed using "in body".
+            Token::StartTag { ref name, .. } if name == "html" => {
+                self.handle_in_body(token)?;
+            }
+            // §13.2.6.4.6: a head element after `</head>` (parse error) goes
+            // into the head: the head is open again for it, then taken off
+            // the stack wherever it is (a template stays open above it).
+            Token::StartTag { ref name, .. }
+                if self.head_element.is_some()
+                    && matches!(
+                        name.as_str(),
+                        "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes" | "script" | "style" | "template" | "title"
+                    ) =>
+            {
+                self.flush_text();
+                let head = self.head_element.clone().expect("head");
+                self.sink.reopen(head.clone());
+                self.open_elements.push(("head".to_string(), head.clone()));
+                self.handle_in_head(token)?;
+                if let Some(at) = self.open_elements.iter().rposition(|(n, _)| n == "head") {
+                    self.open_elements.remove(at);
+                    // A raw text element opened above the head is one
+                    // entry lower now.
+                    if let Some(depth) = self.head_raw_text_depth.as_mut().filter(|d| **d > at) {
+                        *depth -= 1;
+                    }
+                }
+                self.sink.remove_open(head);
+            }
+            // §13.2.6.4.6: end tag "template" is processed using "in head".
+            Token::EndTag { ref name } if name == "template" => {
+                self.handle_in_head(token)?;
+            }
+            // HTML §13.2.6.4.6, start tag "frameset": insert the element and
+            // switch to "in frameset". No body is implied: the frameset is
+            // the html element's child, the document's body element (§3.1.3).
+            Token::StartTag {
+                name, attrs, self_closing: _
+            } if name == "frameset" => {
+                let node_id = self.sink.start_element(name.clone(), attrs.into_iter().collect(), false);
+                self.open_elements.push((name, node_id));
+                self.mode = InsertionMode::InFrameset;
             }
             _ => {
                 // Implied body start tag
                 let node_id = self.sink.start_element("body".to_string(), vec![], false);
+                self.body_element = Some(node_id.clone());
                 self.open_elements.push(("body".to_string(), node_id));
                 self.mode = InsertionMode::InBody;
                 self.process_token(token)?;
@@ -1009,14 +1205,41 @@ impl<S: TreeSink> TreeBuilder<S> {
                 // Flush any pending text before starting a new element
                 self.flush_text();
 
+                // §13.2.6.4.7, start tags "html" and "body" once that
+                // element exists: a parse error. The attributes the element
+                // lacks are added to it and no element is created. Nesting a
+                // second body kept its UA `margin: 8px` (S11, gmail).
+                if name == "html" || name == "body" {
+                    self.merge_into_existing(&name, attrs);
+                    return Ok(());
+                }
+
+                // §13.2.6.4.7: a "template" start tag is processed using the
+                // "in head" rules (its own mode, a formatting marker), the
+                // same rules its end tag takes.
+                if name == "template" {
+                    return self.handle_in_head(Token::StartTag { name, attrs, self_closing });
+                }
+
+                // §13.2.6.4.7: these start tags are a parse error "in
+                // body" and are ignored (a stray <td> makes no cell).
+                if matches!(
+                    name.as_str(),
+                    "caption" | "col" | "colgroup" | "frame" | "head" | "tbody" | "td" | "tfoot" | "th" | "thead" | "tr"
+                ) {
+                    return Ok(());
+                }
+
                 // Handle table specially - switch to InTable mode
                 if name == "table" {
                     self.close_p_element();
+                    let foster = self.foster_parent_table();
                     let node_id = self.sink.start_element(
                         name.clone(),
                         attrs.into_iter().collect(),
                         false,
                     );
+                    self.foster_parent_element(foster, &node_id);
                     self.open_elements.push((name, node_id));
                     // Push marker when entering table (scope boundary)
                     self.push_formatting_marker();
@@ -1032,7 +1255,9 @@ impl<S: TreeSink> TreeBuilder<S> {
                     }
                     self.reconstruct_active_formatting();
                     let attrs_vec: Vec<(String, String)> = attrs.into_iter().collect();
+                    let foster = self.foster_parent_table();
                     let node_id = self.sink.start_element(name.clone(), attrs_vec, false);
+                    self.foster_parent_element(foster, &node_id);
                     self.open_elements.push((name, node_id));
                     self.push_formatting_marker();
                     return Ok(());
@@ -1046,7 +1271,9 @@ impl<S: TreeSink> TreeBuilder<S> {
                     }
                     self.reconstruct_active_formatting();
                     let attrs_vec: Vec<(String, String)> = attrs.into_iter().collect();
+                    let foster = self.foster_parent_table();
                     let node_id = self.sink.start_element(name.clone(), attrs_vec.clone(), false);
+                    self.foster_parent_element(foster, &node_id);
                     self.open_elements.push((name.clone(), node_id.clone()));
                     self.push_formatting_element(name, attrs_vec, node_id);
                     return Ok(());
@@ -1064,11 +1291,13 @@ impl<S: TreeSink> TreeBuilder<S> {
 
                 let is_void = VOID_ELEMENTS.contains(&name.as_str());
                 let attrs_vec: Vec<(String, String)> = attrs.into_iter().collect();
+                let foster = self.foster_parent_table();
                 let node_id = self.sink.start_element(
                     name.clone(),
                     attrs_vec.clone(),
                     self_closing || is_void,
                 );
+                self.foster_parent_element(foster, &node_id);
 
                 if !is_void && !self_closing {
                     self.open_elements.push((name.clone(), node_id.clone()));
@@ -1083,6 +1312,11 @@ impl<S: TreeSink> TreeBuilder<S> {
                     }
                 }
             }
+            // §13.2.6.4.7: end tag "template" is processed using "in head".
+            Token::EndTag { ref name } if name == "template" => {
+                self.flush_text();
+                self.handle_in_head(token)?;
+            }
             Token::EndTag { name } => {
                 self.flush_text();
 
@@ -1095,6 +1329,13 @@ impl<S: TreeSink> TreeBuilder<S> {
                 // Find matching open element
                 let mut found = false;
                 for i in (0..self.open_elements.len()).rev() {
+                    // §13.2.6.4.7 "any other end tag": an open template is
+                    // special, so nothing below it is reached (`</head>`
+                    // inside a template in the head is ignored, not a close
+                    // of the head and the template with it).
+                    if self.open_elements[i].0 == "template" && name != "template" {
+                        break;
+                    }
                     if self.open_elements[i].0 == name {
                         // Close all elements up to and including this one
                         for _ in i..self.open_elements.len() {
@@ -1129,18 +1370,61 @@ impl<S: TreeSink> TreeBuilder<S> {
         Ok(())
     }
 
+    /// The "in body" start tag `html` / `body` steps (HTML §13.2.6.4.7):
+    /// ignored inside a template and in fragment parsing (where the html
+    /// element is the fragment's own root and the stack's second element is
+    /// not a body); otherwise each attribute not already present is added
+    /// to the existing element. A frameset document has no body to add to.
+    fn merge_into_existing(&mut self, name: &str, attrs: impl IntoIterator<Item = (String, String)>) {
+        self.sink.parse_error(&format!("unexpected <{}> start tag in body", name));
+        if self.fragment_context.is_some() || self.open_elements.iter().any(|(n, _)| n == "template") {
+            return;
+        }
+        let target = if name == "html" {
+            self.html_element.clone()
+        } else {
+            self.body_element.clone()
+        };
+        if let Some(target) = target {
+            let attrs: Vec<(String, String)> = attrs.into_iter().collect();
+            if !attrs.is_empty() {
+                self.sink.add_attrs_if_missing(target, attrs);
+            }
+        }
+    }
+
     // ==================== TABLE MODE HANDLERS ====================
 
     fn handle_in_table(&mut self, token: Token) -> ParseResult<()> {
+        // Text buffered inside a fostered element (the only way text is
+        // buffered in this mode) belongs there; write it out before this
+        // token pops anything.
+        if !matches!(token, Token::Character(_)) {
+            self.flush_text();
+        }
         match &token {
-            Token::Character(ch) if ch.is_whitespace() => {
-                // Switch to InTableText mode to accumulate whitespace
-                self.original_mode = Some(InsertionMode::InTable);
+            // §13.2.6.4.9: a character token while the current node is a
+            // table, tbody, tfoot, thead or tr starts "in table text". The
+            // original insertion mode is the mode that dispatched here: "in
+            // table body" and "in row" fall through to this handler, and
+            // returning to "in table" instead made the next <tr> open a new
+            // tbody (#621).
+            Token::Character(ch)
+                if matches!(
+                    self.current_node_name(),
+                    Some("table" | "tbody" | "tfoot" | "thead" | "tr")
+                ) =>
+            {
+                self.original_mode = Some(self.mode);
                 self.mode = InsertionMode::InTableText;
-                self.pending_table_chars.push(*ch);
+                if *ch != '\0' {
+                    self.pending_table_chars.push(*ch);
+                }
             }
             Token::Character(_) => {
-                // Non-whitespace character - foster parent it
+                // Anything else: "in body" with foster parenting enabled.
+                // The current node is not a table element here (e.g. a
+                // fostered <div>), so the text goes into it.
                 self.foster_parenting = true;
                 self.handle_in_body(token)?;
                 self.foster_parenting = false;
@@ -1207,10 +1491,23 @@ impl<S: TreeSink> TreeBuilder<S> {
                     "table" => {
                         // Parse error - close current table and reprocess
                         if self.has_element_in_table_scope("table") {
-                            self.pop_until("table");
+                            self.pop_until_closed("table");
                             self.reset_insertion_mode();
                             self.process_token(token)?;
                         }
+                    }
+                    "style" | "script" | "template" => {
+                        // §13.2.6.4.9: processed using the "in head" rules,
+                        // i.e. inserted in place, not foster-parented.
+                        self.handle_in_body(token)?;
+                    }
+                    "input"
+                        if attrs
+                            .iter()
+                            .any(|(k, v)| k == "type" && v.eq_ignore_ascii_case("hidden")) =>
+                    {
+                        // §13.2.6.4.9: a hidden input is inserted in place.
+                        self.handle_in_body(token)?;
                     }
                     _ => {
                         // Anything else - foster parent
@@ -1224,8 +1521,9 @@ impl<S: TreeSink> TreeBuilder<S> {
                 match name.as_str() {
                     "table" => {
                         if self.has_element_in_table_scope("table") {
-                            self.pop_until("table");
-                            self.sink.end_element("table".to_string());
+                            // Close everything above the table in the sink
+                            // too (e.g. a fostered element left open).
+                            self.pop_until_closed("table");
                             self.reset_insertion_mode();
                         }
                     }
@@ -1261,16 +1559,22 @@ impl<S: TreeSink> TreeBuilder<S> {
             _ => {
                 // Process pending characters
                 let chars: Vec<char> = std::mem::take(&mut self.pending_table_chars);
-                let has_non_whitespace = chars.iter().any(|c| !c.is_whitespace());
+                // "ASCII whitespace": tab, LF, FF, CR, space.
+                let has_non_whitespace = chars.iter().any(|c| !c.is_ascii_whitespace());
 
                 if has_non_whitespace {
-                    // Foster parent all characters
-                    self.foster_parenting = true;
-                    for ch in chars {
-                        self.text_buffer.push(ch);
-                    }
+                    // §13.2.6.4.10: foster-parent all of them, before the
+                    // table. (Reconstructing active formatting elements
+                    // first, as "in body" would, is not done here.)
                     self.flush_text();
+                    self.foster_parenting = true;
+                    let table = self.foster_parent_table();
                     self.foster_parenting = false;
+                    let text: String = chars.into_iter().collect();
+                    match table {
+                        Some(table) => self.sink.foster_parent_text(table, text),
+                        None => self.sink.text(text),
+                    }
                 } else {
                     // Insert whitespace normally
                     for ch in chars {
@@ -1391,6 +1695,12 @@ impl<S: TreeSink> TreeBuilder<S> {
     }
 
     fn handle_in_table_body(&mut self, token: Token) -> ParseResult<()> {
+        // Text buffered inside a fostered element (the only way text is
+        // buffered in this mode) belongs there; write it out before this
+        // token pops anything.
+        if !matches!(token, Token::Character(_)) {
+            self.flush_text();
+        }
         match &token {
             Token::StartTag { name, attrs, .. } if name == "tr" => {
                 self.clear_stack_to_table_body_context();
@@ -1462,6 +1772,12 @@ impl<S: TreeSink> TreeBuilder<S> {
     }
 
     fn handle_in_row(&mut self, token: Token) -> ParseResult<()> {
+        // Text buffered inside a fostered element (the only way text is
+        // buffered in this mode) belongs there; write it out before this
+        // token pops anything.
+        if !matches!(token, Token::Character(_)) {
+            self.flush_text();
+        }
         match &token {
             Token::StartTag { name, attrs, .. } if TABLE_CELL_ELEMENTS.contains(&name.as_str()) => {
                 self.clear_stack_to_table_row_context();
@@ -1883,7 +2199,12 @@ impl<S: TreeSink> TreeBuilder<S> {
             }
             Token::EndTag { name } => {
                 match name.as_str() {
-                    "template" => {
+                    // `title`/`style`/`script` were opened by the "in head"
+                    // rules, whose raw-text end (the spec's "text" mode)
+                    // closes them; there is no text mode here, so their end
+                    // tag goes back to those rules. Ignored, a template's
+                    // `<style>` swallowed everything after it.
+                    "template" | "title" | "style" | "script" => {
                         self.handle_in_head(token)?;
                     }
                     _ => {
@@ -1903,6 +2224,7 @@ impl<S: TreeSink> TreeBuilder<S> {
                             break;
                         }
                     }
+                    self.clear_active_formatting_to_marker();
                     self.template_insertion_modes.pop();
                     self.reset_insertion_mode();
                     self.process_token(token)?;
@@ -2099,7 +2421,18 @@ impl<S: TreeSink> TreeBuilder<S> {
     // ==================== IN HEAD NOSCRIPT HANDLER ====================
 
     fn handle_in_head_noscript(&mut self, token: Token) -> ParseResult<()> {
+        // Inside a `<style>` this mode handed to "in head", its text and
+        // its end tag never get here (`process_token`). What is left is the
+        // end of the file in an unclosed one: "in head" ignores it, so the
+        // pending text stays the style's rather than the noscript's.
+        if self.open_elements.last().is_some_and(|(tag, _)| tag != "noscript") {
+            return self.handle_in_head(token);
+        }
         match &token {
+            // §13.2.6.4.5: start tag "html" is processed using "in body".
+            Token::StartTag { name, .. } if name == "html" => {
+                self.handle_in_body(token)?;
+            }
             Token::Comment(data) => {
                 self.sink.comment(data.clone());
             }
@@ -2197,6 +2530,25 @@ impl<S: TreeSink> TreeBuilder<S> {
 /// Build a DOM tree from tokens (full document parsing).
 pub fn build_tree<S: TreeSink>(tokens: Vec<Token>, sink: S) -> ParseResult<S> {
     let builder = TreeBuilder::new(sink);
+    builder.build(tokens)
+}
+
+/// `build_tree` with the scripting flag of the tokens' tokenizer.
+pub fn build_tree_scripted<S: TreeSink>(tokens: Vec<Token>, sink: S, scripting: bool) -> ParseResult<S> {
+    let mut builder = TreeBuilder::new(sink);
+    builder.scripting = scripting;
+    builder.build(tokens)
+}
+
+/// `build_tree_fragment` with the scripting flag of the tokens' tokenizer.
+pub fn build_tree_fragment_scripted<S: TreeSink>(
+    tokens: Vec<Token>,
+    sink: S,
+    context: FragmentContext,
+    scripting: bool,
+) -> ParseResult<S> {
+    let mut builder = TreeBuilder::new_fragment(sink, context);
+    builder.scripting = scripting;
     builder.build(tokens)
 }
 
@@ -2309,6 +2661,26 @@ mod tests {
         assert!(result.events.contains(&"start:body".to_string()));
     }
 
+    /// HTML §13.2.6.4.6 "after head", start tag `frameset`: insert the
+    /// element and switch to "in frameset". No body is implied, so the
+    /// frameset is a child of `html` (the document's body element, §3.1.3),
+    /// not of an implicit `<body>`.
+    #[test]
+    fn frameset_after_head_is_a_child_of_html_without_an_implied_body() {
+        let html = "<html><head></head><frameset cols='*'><frame src='a'></frameset></html>";
+        let tokens = tokenize(html).unwrap();
+        let sink = TestSink::new();
+        let result = build_tree(tokens, sink).unwrap();
+        assert!(
+            !result.events.iter().any(|e| e == "start:body"),
+            "a frameset document has no body: {:?}",
+            result.events
+        );
+        let end_head = result.events.iter().position(|e| e == "end:head").expect("end:head");
+        assert_eq!(result.events.get(end_head + 1).map(String::as_str), Some("start:frameset[cols=*]"));
+        assert_eq!(result.events.get(end_head + 2).map(String::as_str), Some("start:frame[src=a]"));
+    }
+
     #[test]
     fn pre_drops_the_newline_right_after_its_start_tag_only() {
         // HTML §13.2.6.4.7: `<pre>\n` — the first LF is ignored; every later
@@ -2323,6 +2695,74 @@ mod tests {
             .filter(|e| e.starts_with("text:"))
             .collect();
         assert_eq!(texts, ["text:first\n\nthird\n", "text:\nx"]);
+    }
+
+    fn events_of(html: &str) -> Vec<String> {
+        build_tree(tokenize(html).unwrap(), TestSink::new()).unwrap().events
+    }
+
+    fn count(events: &[String], prefix: &str) -> usize {
+        events.iter().filter(|e| e.starts_with(prefix)).count()
+    }
+
+    /// HTML §13.2.6.4.7 "in body", start tag `body`: a parse error; the
+    /// attributes go onto the existing body and NO element is created. A
+    /// nested second body kept the UA `margin: 8px` on gmail's sign-in page
+    /// (S11), pushing the page root to x=8.
+    #[test]
+    fn a_second_body_start_tag_creates_no_element() {
+        let events = events_of("<body class=a><body class=b id=x>hello</body>");
+        assert_eq!(count(&events, "start:body"), 1, "{:?}", events);
+        let body = events.iter().position(|e| e.starts_with("start:body")).unwrap();
+        assert_eq!(events[body], "start:body[class=a]", "{:?}", events);
+        // The text after the second tag lands in the one body.
+        assert_eq!(events.get(body + 1).map(String::as_str), Some("text:hello"), "{:?}", events);
+    }
+
+    /// Same with the second body deep inside content and after `</body>`.
+    #[test]
+    fn a_second_body_start_tag_anywhere_creates_no_element() {
+        for html in [
+            "<html><head></head><body><div><p>a<body id=y>b</p></div></body></html>",
+            "<html><body>a</body><body id=y>b</html>",
+            "<body>a<table><tr><td><body id=y>b</td></tr></table>",
+        ] {
+            let events = events_of(html);
+            assert_eq!(count(&events, "start:body"), 1, "{}: {:?}", html, events);
+        }
+    }
+
+    /// HTML §13.2.6.4.7 "in body", start tag `html`: a parse error; the
+    /// attributes go onto the html element and no element is created. The
+    /// same rule is reached from "before head", "in head", "after head",
+    /// "after body" and "after after body".
+    #[test]
+    fn a_second_html_start_tag_creates_no_element() {
+        for html in [
+            "<html><body><html lang=en>x</body></html>",
+            "<html><head><html lang=en></head><body>x</body></html>",
+            "<html><html lang=en><head></head><body>x</body></html>",
+            "<html><head></head><html lang=en><body>x</body></html>",
+            "<html><body>x</body><html lang=en></html>",
+            "<html><body>x</body></html><html lang=en>",
+        ] {
+            let events = events_of(html);
+            assert_eq!(count(&events, "start:html"), 1, "{}: {:?}", html, events);
+            assert_eq!(count(&events, "start:body"), 1, "{}: {:?}", html, events);
+        }
+    }
+
+    /// "in frameset" and "after frameset" already route a start tag `html`
+    /// to "in body": it merges and creates nothing there either.
+    #[test]
+    fn a_second_html_start_tag_in_a_frameset_document_creates_no_element() {
+        for html in [
+            "<html><frameset><html lang=en><frame></frameset></html>",
+            "<html><frameset></frameset><html lang=en></html>",
+        ] {
+            let events = events_of(html);
+            assert_eq!(count(&events, "start:html"), 1, "{}: {:?}", html, events);
+        }
     }
 
     #[test]
@@ -2382,6 +2822,137 @@ mod tests {
         
         // Should recover gracefully
         assert!(!result.events.is_empty());
+    }
+
+    /// A raw-text element the "in head" rules opened from another mode
+    /// keeps its characters and its own end tag in every mode (the spec's
+    /// "text" insertion mode). Without the stack-depth guard, "in frameset"
+    /// dropped the text and ignored `</noframes>`, so the next `</frameset>`
+    /// closed the noframes and the frames landed inside it (#1120 / batch 76).
+    #[test]
+    fn noframes_in_a_frameset_keeps_its_text_and_end_tag() {
+        let events = events_of(
+            "<html><head></head><frameset cols='50%,50%'>\
+             <noframes>Your browser does not support frames.</noframes>\
+             <frame src='a.html'><frame src='b.html'></frameset></html>",
+        );
+        let start = events
+            .iter()
+            .position(|e| e == "start:noframes")
+            .expect("noframes opens");
+        assert_eq!(
+            events.get(start + 1).map(String::as_str),
+            Some("text:Your browser does not support frames."),
+            "frameset mode must not drop noframes text: {:?}",
+            events
+        );
+        assert_eq!(
+            events.get(start + 2).map(String::as_str),
+            Some("end:noframes"),
+            "frameset mode must honour </noframes>: {:?}",
+            events
+        );
+        let end = start + 2;
+        assert_eq!(
+            events.get(end + 1).map(String::as_str),
+            Some("start:frame[src=a.html]"),
+            "frames come after the closed noframes, not inside it: {:?}",
+            events
+        );
+        let frames = events
+            .iter()
+            .filter(|e| e.starts_with("start:frame["))
+            .count();
+        assert_eq!(frames, 2, "{:?}", events);
+        assert_eq!(count(&events, "end:noframes"), 1, "{:?}", events);
+    }
+
+    /// Same guard from "after frameset" and "after after frameset".
+    #[test]
+    fn noframes_after_a_frameset_keeps_its_text_and_end_tag() {
+        for html in [
+            "<html><frameset><frame src='a'></frameset><noframes>after <b>x</b></noframes></html>",
+            "<html><frameset><frame src='a'></frameset></html><noframes>late</noframes>",
+        ] {
+            let events = events_of(html);
+            let start = events
+                .iter()
+                .position(|e| e == "start:noframes")
+                .unwrap_or_else(|| panic!("noframes opens in {html}: {events:?}"));
+            let text = events.get(start + 1).map(String::as_str);
+            assert!(
+                text == Some("text:after <b>x</b>") || text == Some("text:late"),
+                "noframes text kept ({html}): {:?}",
+                events
+            );
+            assert_eq!(
+                events.get(start + 2).map(String::as_str),
+                Some("end:noframes"),
+                "</noframes> kept ({html}): {:?}",
+                events
+            );
+            // RAWTEXT: the `<b>` inside noframes is text, not an element.
+            assert_eq!(count(&events, "start:b"), 0, "{html}: {:?}", events);
+        }
+    }
+
+    /// A late `<style>` after `</head>` is put back into the head; its text
+    /// and end tag must stay with it. Without the guard the first character
+    /// implied a body inside the style (#1120 / earlier R1).
+    #[test]
+    fn a_style_after_head_keeps_its_text_and_end_tag_in_the_head() {
+        let events = events_of(
+            "<html><head><title>t</title></head><style>p{color:red}</style>\
+             <body><p>x</p><div>d</div></body></html>",
+        );
+        assert!(
+            events.iter().any(|e| e == "end:head"),
+            "head still closes: {:?}",
+            events
+        );
+        let style = events
+            .iter()
+            .position(|e| e == "start:style")
+            .expect("style opens");
+        assert_eq!(
+            events.get(style + 1).map(String::as_str),
+            Some("text:p{color:red}"),
+            "style text must not imply a body: {:?}",
+            events
+        );
+        assert_eq!(
+            events.get(style + 2).map(String::as_str),
+            Some("end:style"),
+            "{:?}",
+            events
+        );
+        // Body content is still body content.
+        assert!(events.iter().any(|e| e == "start:p"), "{:?}", events);
+        assert!(events.iter().any(|e| e == "start:div"), "{:?}", events);
+    }
+
+    /// `<noframes>` after `</head>` is the same raw-text path as `<style>`.
+    #[test]
+    fn a_noframes_after_head_keeps_its_text_in_the_head() {
+        let events = events_of(
+            "<html><head></head><noframes>n</noframes><body><p>x</p></body></html>",
+        );
+        let start = events
+            .iter()
+            .position(|e| e == "start:noframes")
+            .expect("noframes");
+        assert_eq!(
+            events.get(start + 1).map(String::as_str),
+            Some("text:n"),
+            "{:?}",
+            events
+        );
+        assert_eq!(
+            events.get(start + 2).map(String::as_str),
+            Some("end:noframes"),
+            "{:?}",
+            events
+        );
     }
 }
 

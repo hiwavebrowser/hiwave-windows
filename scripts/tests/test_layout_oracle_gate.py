@@ -292,6 +292,29 @@ def test_a_box_rustkit_never_emitted_is_a_failure():
     assert result["compared"] == 1, "the box that WAS present must still be scored"
 
 
+def test_class_whitespace_does_not_break_the_join():
+    """chrome.html has `class="workspace-tab  locked"` (two spaces).
+
+    Chrome's capture keys it with the raw className (`div.workspace-tab  locked`);
+    the engine's mirror collapses class whitespace (`div.workspace-tab locked`).
+    Whitespace inside a class attribute carries no meaning, so the join must not
+    turn one element into a missing_box plus a phantom_box (measured on all 21
+    chrome board rows, 2026-11-07: 3 + 3 join failures each).
+    """
+    chrome = chrome_doc(
+        chrome_el("body > div.workspace-tab  locked:nth-of-type(3)", "div", rect(0, 0, 10, 10)),
+        chrome_el("body > div.workspace-tab  locked:nth-of-type(3) > span.title", "span", rect(0, 0, 5, 5)),
+    )
+    rustkit = rk_doc(
+        rk_box("body > div.workspace-tab locked:nth-of-type(3)", "div", rect(0, 0, 10, 10)),
+        rk_box("body > div.workspace-tab locked:nth-of-type(3) > span.title", "span", rect(0, 0, 5, 5)),
+    )
+    result = compare_case("t", chrome, rustkit)
+    assert result["join_failures"] == 0, result["receipts"]
+    assert result["compared"] == 2
+    assert result["green"]
+
+
 def test_a_duplicate_selector_is_reported_not_first_matched():
     """Two boxes claiming one selector: scoring either one is a coin flip.
 

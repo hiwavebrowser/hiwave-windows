@@ -1,0 +1,159 @@
+{
+ "viewport": [
+  800,
+  600
+ ],
+ "chrome": "143.0.7499.4",
+ "cases": [
+  {
+   "name": "plain",
+   "html": "<!doctype html><html><head><style></style></head><body><div style='height:3000px;background:#c00'></div></body></html>",
+   "chrome_wheel_y": 2416,
+   "chrome_script_y": 2416
+  },
+  {
+   "name": "html-body-height-100pc",
+   "html": "<!doctype html><html><head><style>html,body{height:100%}</style></head><body><div style='height:3000px;background:#c00'></div></body></html>",
+   "chrome_wheel_y": 2408,
+   "chrome_script_y": 2408
+  },
+  {
+   "name": "body-height-100vh",
+   "html": "<!doctype html><html><head><style>body{height:100vh;margin:0}</style></head><body><div style='height:3000px;background:#c00'></div></body></html>",
+   "chrome_wheel_y": 2400,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "wrapper-height-100pc",
+   "html": "<!doctype html><html><head><style>html,body,#app{height:100%;margin:0}</style></head><body><div id='app'><div style='height:3000px;background:#c00'></div></div></body></html>",
+   "chrome_wheel_y": 2400,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "body-flex-min-height",
+   "html": "<!doctype html><html><head><style>body{min-height:100vh;display:flex;flex-direction:column;margin:0}</style></head><body><div style='height:3000px;background:#c00'></div></body></html>",
+   "chrome_wheel_y": 2400,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "html-body-overflow-x-hidden",
+   "html": "<!doctype html><html><head><style>html,body{height:100%;overflow-x:hidden}</style></head><body><div style='height:3000px;background:#c00'></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 8
+  },
+  {
+   "name": "abspos",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='position:absolute;top:0;left:0;width:10px;height:3000px'></div></body></html>",
+   "chrome_wheel_y": 2400,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "abspos-in-relative",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='position:relative;height:100px;margin-top:50px'><div style='position:absolute;top:20px;left:0;width:10px;height:3000px'></div></div></body></html>",
+   "chrome_wheel_y": 2470,
+   "chrome_script_y": 2470
+  },
+  {
+   "name": "relative-top",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='position:relative;top:2000px;height:500px'></div></body></html>",
+   "chrome_wheel_y": 1900,
+   "chrome_script_y": 1900
+  },
+  {
+   "name": "float",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='float:left;width:10px;height:3000px'></div></body></html>",
+   "chrome_wheel_y": 2400,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "margin-bottom",
+   "html": "<!doctype html><html><head><style></style></head><body><div style='height:100px;margin-bottom:3000px'></div></body></html>",
+   "chrome_wheel_y": 2508,
+   "chrome_script_y": 2508
+  },
+  {
+   "name": "fixed",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='position:fixed;top:0;height:3000px;width:10px'></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 0
+  },
+  {
+   "name": "clipped-by-overflow-hidden",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='height:200px;overflow:hidden'><div style='height:3000px;background:#c00'></div></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 0
+  },
+  {
+   "name": "inside-a-scroller",
+   "html": "<!doctype html><html><head><style>html,body{height:100%;margin:0}</style></head><body><div style='height:100%;overflow:auto'><div style='height:3000px;background:#c00'></div></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 0
+  },
+  {
+   "name": "overflows-a-short-box",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='height:200px'><div style='height:3000px;background:#c00'></div></div><div style='height:50px'></div></body></html>",
+   "chrome_wheel_y": 2400,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "display-none",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='display:none'><div style='height:3000px;background:#c00'></div></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 0
+  },
+  {
+   "name": "visibility-hidden",
+   "html": "<!doctype html><html><head><style>html,body{height:100%;margin:0}</style></head><body><div style='visibility:hidden'><div style='height:3000px;background:#c00'></div></div></body></html>",
+   "chrome_wheel_y": 2400,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "negative-top",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='position:absolute;top:-3000px;height:3000px;width:10px'></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 0
+  },
+  {
+   "name": "body-overflow-hidden",
+   "html": "<!doctype html><html><head><style>body{margin:0;overflow:hidden}</style></head><body><div style='height:3000px;background:#c00'></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "html-overflow-hidden",
+   "html": "<!doctype html><html><head><style>html{overflow:hidden}body{margin:0}</style></head><body><div style='height:3000px;background:#c00'></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "html-body-100pc-body-overflow-auto",
+   "html": "<!doctype html><html><head><style>html,body{height:100%;margin:0}body{overflow:auto}</style></head><body><div style='height:3000px;background:#c00'></div></body></html>",
+   "chrome_wheel_y": 2400,
+   "chrome_script_y": 2400
+  },
+  {
+   "name": "html-100pc-overflow-hidden-body-scrolls",
+   "html": "<!doctype html><html><head><style>html{height:100%;overflow:hidden}body{height:100%;margin:0;overflow:auto}</style></head><body><div style='height:3000px;background:#c00'></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 0
+  },
+  {
+   "name": "translate-down",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='height:500px;transform:translateY(2000px)'></div></body></html>",
+   "chrome_wheel_y": 1900,
+   "chrome_script_y": 1900
+  },
+  {
+   "name": "short-page",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div style='height:100px'></div></body></html>",
+   "chrome_wheel_y": 0,
+   "chrome_script_y": 0
+  },
+  {
+   "name": "two-tall-in-a-full-height-box",
+   "html": "<!doctype html><html><head><style>html,body{height:100%;margin:0}</style></head><body><div style='height:100%'><div style='height:1000px'></div><div style='height:1000px'></div></div><p style='margin:0;height:40px'>after</p></body></html>",
+   "chrome_wheel_y": 1400,
+   "chrome_script_y": 1400
+  }
+ ]
+}

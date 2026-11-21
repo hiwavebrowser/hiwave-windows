@@ -1,0 +1,150 @@
+{
+ "cases": [
+  {
+   "name": "let-postfix-string-value",
+   "js": "function f() { let s = '5'; let r = s++; return typeof r + ':' + r + ':' + typeof s + ':' + s } f()",
+   "chrome": "number:5:number:6"
+  },
+  {
+   "name": "let-postfix-undefined-value",
+   "js": "function f() { let u; let r = u++; return String(r) + ':' + String(u) } f()",
+   "chrome": "NaN:NaN"
+  },
+  {
+   "name": "let-postfix-dec-string-arith",
+   "js": "function f() { let n = '5'; let id = n--; return String(id + 1) + ':' + n } f()",
+   "chrome": "6:4"
+  },
+  {
+   "name": "let-postfix-object-valueOf",
+   "js": "function f() { let o = { valueOf() { return '7' } }; let r = o++; return typeof r + ':' + r + ':' + o } f()",
+   "chrome": "number:7:8"
+  },
+  {
+   "name": "let-postfix-bigint",
+   "js": "function f() { let b = 1n; let r = b++; return typeof r + ':' + r + ':' + b } f()",
+   "chrome": "bigint:1:2"
+  },
+  {
+   "name": "let-prefix-string",
+   "js": "function f() { let s = '5'; let r = ++s; return typeof r + ':' + r + ':' + typeof s + ':' + s } f()",
+   "chrome": "number:6:number:6"
+  },
+  {
+   "name": "let-throwing-valueOf-postfix-discard",
+   "js": "function f() { let x = { valueOf() { throw new Error('no') } }; try { x++ } catch (e) {} return typeof x } f()",
+   "chrome": "object"
+  },
+  {
+   "name": "let-throwing-valueOf-postfix-value",
+   "js": "function f() { let x = { valueOf() { throw new Error('no') } }; var r = 'none'; try { r = x++ } catch (e) {} return typeof x + ':' + r } f()",
+   "chrome": "object:none"
+  },
+  {
+   "name": "let-throwing-valueOf-prefix",
+   "js": "function f() { let x = { valueOf() { throw new Error('no') } }; try { ++x } catch (e) {} return typeof x } f()",
+   "chrome": "object"
+  },
+  {
+   "name": "let-throwing-valueOf-dec",
+   "js": "function f() { let x = { valueOf() { throw new Error('no') } }; try { x-- } catch (e) {} try { --x } catch (e) {} return typeof x } f()",
+   "chrome": "object"
+  },
+  {
+   "name": "let-symbol-update",
+   "js": "function f() { let s = Symbol('q'); var r; try { s++ } catch (e) { r = e.name } return r + ':' + typeof s } f()",
+   "chrome": "TypeError:symbol"
+  },
+  {
+   "name": "let-postfix-in-expression",
+   "js": "function f() { let s = '2'; return String(s++ + s++) + ':' + s } f()",
+   "chrome": "5:4"
+  },
+  {
+   "name": "var-postfix-string-value",
+   "js": "function f() { var s = '5'; var r = s++; return typeof r + ':' + r + ':' + typeof s + ':' + s } f()",
+   "chrome": "number:5:number:6"
+  },
+  {
+   "name": "var-postfix-undefined-value",
+   "js": "function f() { var u; var r = u++; return String(r) + ':' + String(u) } f()",
+   "chrome": "NaN:NaN"
+  },
+  {
+   "name": "var-postfix-dec-string-arith",
+   "js": "function f() { var n = '5'; var id = n--; return String(id + 1) + ':' + n } f()",
+   "chrome": "6:4"
+  },
+  {
+   "name": "var-postfix-object-valueOf",
+   "js": "function f() { var o = { valueOf() { return '7' } }; var r = o++; return typeof r + ':' + r + ':' + o } f()",
+   "chrome": "number:7:8"
+  },
+  {
+   "name": "var-postfix-bigint",
+   "js": "function f() { var b = 1n; var r = b++; return typeof r + ':' + r + ':' + b } f()",
+   "chrome": "bigint:1:2"
+  },
+  {
+   "name": "var-prefix-string",
+   "js": "function f() { var s = '5'; var r = ++s; return typeof r + ':' + r + ':' + typeof s + ':' + s } f()",
+   "chrome": "number:6:number:6"
+  },
+  {
+   "name": "var-throwing-valueOf-postfix-discard",
+   "js": "function f() { var x = { valueOf() { throw new Error('no') } }; try { x++ } catch (e) {} return typeof x } f()",
+   "chrome": "object"
+  },
+  {
+   "name": "var-throwing-valueOf-postfix-value",
+   "js": "function f() { var x = { valueOf() { throw new Error('no') } }; var r = 'none'; try { r = x++ } catch (e) {} return typeof x + ':' + r } f()",
+   "chrome": "object:none"
+  },
+  {
+   "name": "var-throwing-valueOf-prefix",
+   "js": "function f() { var x = { valueOf() { throw new Error('no') } }; try { ++x } catch (e) {} return typeof x } f()",
+   "chrome": "object"
+  },
+  {
+   "name": "var-throwing-valueOf-dec",
+   "js": "function f() { var x = { valueOf() { throw new Error('no') } }; try { x-- } catch (e) {} try { --x } catch (e) {} return typeof x } f()",
+   "chrome": "object"
+  },
+  {
+   "name": "var-symbol-update",
+   "js": "function f() { var s = Symbol('q'); var r; try { s++ } catch (e) { r = e.name } return r + ':' + typeof s } f()",
+   "chrome": "TypeError:symbol"
+  },
+  {
+   "name": "var-postfix-in-expression",
+   "js": "function f() { var s = '2'; return String(s++ + s++) + ':' + s } f()",
+   "chrome": "5:4"
+  },
+  {
+   "name": "param-postfix-string-value",
+   "js": "function f(p) { var r = p++; return typeof r + ':' + r + ':' + p } f('5')",
+   "chrome": "number:5:6"
+  },
+  {
+   "name": "param-throwing-valueOf",
+   "js": "function f(p) { try { p++ } catch (e) {} return typeof p } f({ valueOf() { throw 1 } })",
+   "chrome": "object"
+  },
+  {
+   "name": "global-postfix-string-value",
+   "js": "var gs = '5'; var gr = gs++; typeof gr + ':' + gr + ':' + gs",
+   "chrome": "number:5:6"
+  },
+  {
+   "name": "global-throwing-valueOf",
+   "js": "var gx = { valueOf() { throw 1 } }; try { gx++ } catch (e) {} typeof gx",
+   "chrome": "object"
+  },
+  {
+   "name": "member-postfix-string-value",
+   "js": "var mo = { v: '5' }; var mr = mo.v++; typeof mr + ':' + mr + ':' + mo.v",
+   "chrome": "number:5:6"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

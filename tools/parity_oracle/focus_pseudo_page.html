@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><style>
+body { margin: 0; font: 16px/20px sans-serif; }
+#f { height: 60px; padding: 4px; background: rgb(255, 255, 255); }
+#f:focus-within { background: rgb(255, 255, 0); }
+input { border: 2px solid rgb(0, 0, 255); outline: none; }
+input:focus { border-color: rgb(255, 0, 0); }
+#b { width: 80px; height: 24px; outline: none; background: rgb(221, 221, 221); }
+#b:focus { background: rgb(0, 255, 255); }
+#b:focus-visible { outline: 3px solid rgb(0, 128, 0); }
+#d { height: 40px; }
+</style></head><body>
+<form id="f"><input id="i"></form>
+<div style="height: 30px"><button id="b">Go</button></div>
+<div id="d">plain text</div>
+</body></html>

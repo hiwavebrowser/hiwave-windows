@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>What dispatchEvent takes</title></head><body><p id="p">x</p>
+<script>
+// EventTarget.dispatchEvent(event) takes an Event (DOM 2.9, Web IDL): an
+// object made by one of the Event constructors. Anything else is a TypeError.
+var lines = [], p = document.getElementById('p'), heard = [];
+p.addEventListener('x', function (e) { heard.push(e.type + ':' + e.isTrusted + ':' + (e.target === p)); });
+function line(label, f) { var v; heard = []; try { v = f(); } catch (e) { v = 'THROWS ' + e.name; } lines.push(label + ': ' + v + (heard.length ? ' heard=[' + heard.join(' ') + ']' : '')); }
+line('an Event', function () { return p.dispatchEvent(new Event('x')); });
+line('a CustomEvent', function () { return p.dispatchEvent(new CustomEvent('x', { detail: 1 })); });
+line('a MouseEvent', function () { return p.dispatchEvent(new MouseEvent('x')); });
+line('a subclass instance', function () { class Mine extends Event {} return p.dispatchEvent(new Mine('x')); });
+line('document.createEvent', function () { var e = document.createEvent('Event'); e.initEvent('x', true, true); return p.dispatchEvent(e); });
+line('no argument', function () { return p.dispatchEvent(); });
+line('null', function () { return p.dispatchEvent(null); });
+line('a string', function () { return p.dispatchEvent('x'); });
+line('an object with a type', function () { return p.dispatchEvent({ type: 'x', bubbles: false, isTrusted: true }); });
+line('an object with the Event prototype', function () { var o = Object.create(Event.prototype); return p.dispatchEvent(o); });
+line('a Proxy of an Event', function () { return p.dispatchEvent(new Proxy(new Event('x'), {})); });
+line('a Proxy of an Event that answers every read', function () { return p.dispatchEvent(new Proxy(new Event('x'), { get: function (t, k) { return k === 'isTrusted' ? true : t[k]; } })); });
+line('an Event of another document', function () { var d = new DOMParser().parseFromString('<p>y</p>', 'text/html'); var e = d.createEvent('Event'); e.initEvent('x', false, false); return p.dispatchEvent(e); });
+line('the same Event twice', function () { var e = new Event('x'); return p.dispatchEvent(e) + ' ' + p.dispatchEvent(e); });
+line('on window', function () { return window.dispatchEvent({ type: 'x' }); });
+line('on document', function () { return document.dispatchEvent({ type: 'x' }); });
+line('on an EventTarget', function () { return new EventTarget().dispatchEvent({ type: 'x' }); });
+// isTrusted (DOM 2.2): an own accessor of the event with no setter, not configurable.
+line('isTrusted of a made event', function () { var e = new Event('x'), d = Object.getOwnPropertyDescriptor(e, 'isTrusted'); return e.isTrusted + ' own=' + !!d + ' get=' + typeof (d && d.get) + ' set=' + typeof (d && d.set) + ' enumerable=' + (d && d.enumerable) + ' configurable=' + (d && d.configurable) + ' on-prototype=' + ('isTrusted' in Event.prototype); });
+line('assigning isTrusted', function () { var e = new Event('x'); e.isTrusted = true; return e.isTrusted; });
+line('assigning isTrusted in strict code', function () { 'use strict'; var e = new Event('x'); e.isTrusted = true; return e.isTrusted; });
+line('defining isTrusted', function () { var e = new Event('x'); Object.defineProperty(e, 'isTrusted', { value: true }); return e.isTrusted; });
+line('deleting isTrusted', function () { var e = new Event('x'); return (delete e.isTrusted) + ' ' + e.isTrusted; });
+line('a subclass with its own isTrusted', function () { class Mine extends Event { get isTrusted() { return true; } } var e = new Mine('x'); p.dispatchEvent(e); return e.isTrusted; });
+window.report = function () { return lines.join('\n'); };
+</script></body></html>

@@ -1,0 +1,75 @@
+{
+ "cases": [
+  {
+   "name": "let-assign-skipped-case",
+   "js": "function f(x) { var r = 'none'; switch (x) { case 0: let z = 1; break; case 1: try { z = 2 } catch (e) { r = e.name } } return r } f(1)",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-read-skipped-case",
+   "js": "function f(x) { var r = 'none'; switch (x) { case 0: let z = 1; break; case 1: try { r = String(z) } catch (e) { r = e.name } } return r } f(1)",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-read-skipped-case-no-leak",
+   "js": "function f(x) { var secret = 'S3CRET', r = 'none'; switch (x) { case 0: let z = 9; break; case 1: try { r = String(z) } catch (e) { r = e.name } } return r } f(1)",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-fallthrough-initialised",
+   "js": "function f(x) { var r; switch (x) { case 0: let z = 'zero'; case 1: r = String(z); } return r } f(0)",
+   "chrome": "zero"
+  },
+  {
+   "name": "let-same-case-after-decl",
+   "js": "function f(x) { switch (x) { case 1: let z = 'one'; return z } } f(1)",
+   "chrome": "one"
+  },
+  {
+   "name": "const-read-skipped-case",
+   "js": "function f(x) { var r = 'none'; switch (x) { case 0: const k = 1; break; default: try { r = String(k) } catch (e) { r = e.name } } return r } f(5)",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "class-read-skipped-case",
+   "js": "function f(x) { var r = 'none'; switch (x) { case 0: class C {} break; case 1: try { r = typeof C } catch (e) { r = e.name } } return r } f(1)",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "typeof-skipped-case",
+   "js": "function f(x) { var r = 'none'; switch (x) { case 0: let z = 1; break; case 1: try { r = typeof z } catch (e) { r = e.name } } return r } f(1)",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "function-decl-in-case-hoisted",
+   "js": "function f(x) { switch (x) { case 0: function g() { return 'g' } break; case 1: return typeof g } } f(1)",
+   "chrome": "function"
+  },
+  {
+   "name": "closure-captures-case-let",
+   "js": "function f(x) { var fs = []; switch (x) { case 0: let z = 'cap'; fs.push(function () { return z }); break; } return fs[0]() } f(0)",
+   "chrome": "cap"
+  },
+  {
+   "name": "switch-in-loop-fresh-binding",
+   "js": "function f() { var out = []; for (var i = 0; i < 3; i++) { switch (i % 2) { case 0: let z = 'even' + i; out.push(z); break; case 1: try { out.push(z) } catch (e) { out.push(e.name) } } } return out.join() } f()",
+   "chrome": "even0,ReferenceError,even2"
+  },
+  {
+   "name": "compound-in-skipped-case",
+   "js": "function f(x) { var r = 'none'; switch (x) { case 0: let z = 1; break; case 1: try { z += 1 } catch (e) { r = e.name } } return r } f(1)",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "update-in-skipped-case",
+   "js": "function f(x) { var r = 'none'; switch (x) { case 0: let z = 1; break; case 1: try { z++ } catch (e) { r = e.name } } return r } f(1)",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-normal-path",
+   "js": "function f(x) { switch (x) { case 0: let z = 'a'; z += 'b'; z = z + 'c'; return z } } f(0)",
+   "chrome": "abc"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

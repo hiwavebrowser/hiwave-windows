@@ -1,0 +1,38 @@
+# WHL3: the wheel's sequence rules, legacy mousewheel, and the shared dispatch path's cancellation.
+# Chrome for Testing 148.0.7778.216, headless 800x600, Playwright: constructed() on a fresh page; then, each on a
+# fresh page, wheelSetup(mode), three mouse.wheel(0, 100) at (50, 100), after(mode); then a click on the checkbox,
+# a click in the field and typing 'aqb', a click on the button, formReport(). Each block is that page's report().
+initEvent after preventDefault: true -> false
+initCustomEvent after preventDefault: false
+initEvent to not cancelable after preventDefault: false cancelable=false
+cancelable assigned: false
+strict cancelable assign: TypeError
+cancelable descriptor: get=function set=undefined
+initEvent during dispatch: w true true returned false
+-- wheel cancels the first
+wheel 1 cancelable=true
+wheel 2 cancelable=true
+wheel 3 cancelable=true
+wheel cancels the first: box scrollTop=200 scrollY=0
+-- mousewheel only
+mousewheel mousewheel cancelable=true wheelDelta=-120 ctor=WheelEvent trusted=true
+mousewheel mousewheel cancelable=true wheelDelta=-120 ctor=WheelEvent trusted=true
+mousewheel mousewheel cancelable=true wheelDelta=-120 ctor=WheelEvent trusted=true
+mousewheel only: box scrollTop=0 scrollY=0
+-- mousewheel and wheel
+wheel heard
+wheel heard
+wheel heard
+mousewheel and wheel: box scrollTop=300 scrollY=0
+-- mousewheel on document, wheel on box
+box wheel heard
+document mousewheel heard
+box wheel heard
+document mousewheel heard
+box wheel heard
+document mousewheel heard
+mousewheel on document, wheel on box: box scrollTop=300 scrollY=0
+click cancelled, checked during: true
+keydown q cancelled
+submit cancelled
+checkbox checked after: false; submitted: 0; input value: "ab"

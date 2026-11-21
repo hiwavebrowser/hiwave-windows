@@ -4,13 +4,16 @@ version = "0.1.0"
 edition = "2021"
 description = "Browser engine orchestration layer for RustKit"
 authors = ["HiWave Team"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [features]
 default = []
 # Headless mode: Enables offscreen rendering without window surfaces
 # Useful for testing, CI/CD, and server-side rendering
 headless = []
+# MEDIA-AVF step 3: `EngineBuilder::avfoundation_media`, media elements' players on the
+# main-thread MediaHost (docs/design/MEDIA_AVF.md §3.2). Off until Milestone 1 step 6.
+media-avf = ["rustkit-media/media-avf"]
 
 [dependencies]
 # RustKit crates
@@ -23,16 +26,26 @@ rustkit-layout = { path = "../rustkit-layout" }
 rustkit-js = { path = "../rustkit-js" }
 rustkit-bindings = { path = "../rustkit-bindings" }
 rustkit-net = { path = "../rustkit-net" }
+rustkit-http = { path = "../rustkit-http" }
 rustkit-image = { path = "../rustkit-image" }
 rustkit-svg = { path = "../rustkit-svg" }
+# MEDIA-AVF: <video> / <audio> (wired from M1 step 2; step 1 adds the dependency and
+# its notices).
+rustkit-media = { path = "../rustkit-media" }
 rustkit-renderer = { path = "../rustkit-renderer" }
+# The presenter names the texture a frame is drawn into
+wgpu = "24"
 
 # Async runtime
-tokio = { version = "1.42", features = ["sync", "time", "rt"] }
+tokio = { version = "1.42", features = ["sync", "time", "rt", "rt-multi-thread"] }
 futures = "0.3"
 
 # URL handling
 url = "2.5"
+
+# Script-network bridge (script_net.rs): request/response types
+http = "1.2"
+bytes = "1.9"
 
 # data: URI payloads (@font-face src)
 base64 = "0.22"
@@ -44,13 +57,49 @@ thiserror = "1.0"
 tracing = "0.1"
 
 # JSON serialization
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# The console file's open flags and owner check (console_file.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Windows (conditional)
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation"] }
 
+# The system clipboard (NSPasteboard, CH2.E3).
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+objc = "0.2"
+
 [dev-dependencies]
+# The engine's tests share one wgpu device (`Compositor::share_device`, T41b).
+rustkit-compositor = { path = "../rustkit-compositor", features = ["test-support"] }
+# Only to force a collection in navigation_release_tests (M2).
+boa_gc = "0.22"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
 
+# tests/macos_live_click.rs makes a real NSWindow and sends it NSEvents.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+cocoa = "0.25"
+objc = "0.2"
+raw-window-handle = "0.6"
+
+# Makes an NSWindow, which AppKit only allows on the main thread, so it runs
+# without the test harness.
+[[test]]
+name = "macos_live_click"
+harness = false
+
+
+# CH2.E35: makes an NSWindow (main thread only), so no test harness.
+[[test]]
+name = "macos_window_surface_drop"
+harness = false
+
+# M1e: a Cmd edit chord whose wait ran out edits once (NSWindow, no harness).
+[[test]]
+name = "macos_chord_timeout_edit"
+harness = false

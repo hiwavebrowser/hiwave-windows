@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "GPU display list renderer for RustKit browser engine"
 authors = ["HiWave Team"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 # RustKit crates
@@ -12,6 +12,8 @@ rustkit-layout = { path = "../rustkit-layout" }
 rustkit-css = { path = "../rustkit-css" }
 # rustkit-svg = { path = "../rustkit-svg" }
 rustkit-common = { path = "../rustkit-common" }
+# GPU canvas A1: the recording the canvas replay lowers (canvas_gpu.rs)
+rustkit-canvas = { path = "../rustkit-canvas" }
 
 # GPU rendering
 wgpu = "24"
@@ -47,4 +49,11 @@ windows-numerics = "0.2"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# GPU device for the scroll-cost tests
+pollster = "0.4"
+# GPU-GRADIENT: the Chrome pin scripts run through the real bindings (canvas_gpu_chrome_tests.rs)
+rustkit-bindings = { path = "../rustkit-bindings" }
+rustkit-js = { path = "../rustkit-js" }
+rustkit-dom = { path = "../rustkit-dom" }
+serde_json = "1"
 

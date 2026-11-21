@@ -40,7 +40,7 @@ OUTPUT_DIR = REPO_ROOT / "parity-baseline"
 # (gradient-no-radius / gradient-radius-only existed only here). Edit the
 # registry, not a table.
 sys.path.insert(0, str(Path(__file__).parent))
-from parity_lib import BUILTINS, WEBSUITE, MICRO_TESTS  # noqa: E402
+from parity_lib import BUILTINS, WEBSUITE, MICRO_TESTS, capture_args_for  # noqa: E402
 
 # Thresholds live in parity_lib (single source, next to the registry) —
 # this file carried a divergence-prone copy until the T6 collapse.
@@ -90,6 +90,7 @@ def run_rustkit_capture(case_id: str, html_path: str, width: int, height: int) -
         "--height", str(height),
         "--dump-frame", str(frame_path),
         "--dump-layout", str(layout_path),
+        *capture_args_for(html_path),
     ]
     
     try:

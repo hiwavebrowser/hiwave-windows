@@ -1,0 +1,29 @@
+<!doctype html>
+<html><head><meta charset="utf-8"></head><body>
+<svg id="pic" width="10" height="10"><title>svg title</title></svg>
+<script>
+// document.title (HTML 3.1.3): the first HTML <title> in the document; set,
+// it writes that element, making one in the head when there is none.
+var lines = [];
+function line(label, f) { var v; try { v = f(); } catch (e) { v = 'THROWS ' + e.name; } lines.push(label + ': ' + v); }
+var q = function () { return document.querySelectorAll('head title, body > title').length; };
+var d = Object.getOwnPropertyDescriptor(Document.prototype, 'title');
+line('accessor', function () { return (d ? typeof d.get + ' ' + typeof d.set : 'none') + ' own=' + document.hasOwnProperty('title'); });
+line('no title', function () { return JSON.stringify(document.title) + ' titles=' + q(); });
+line('set x', function () { document.title = 'x'; var t = document.head.lastChild; return JSON.stringify(document.title) + ' titles=' + q() + ' last-of-head=' + t.localName + ' ns=' + t.namespaceURI + ' text=' + JSON.stringify(t.textContent) + ' kids=' + t.childNodes.length; });
+line('set y', function () { document.title = 'y'; var t = document.querySelector('head title'); return JSON.stringify(document.title) + ' titles=' + q() + ' text=' + JSON.stringify(t.textContent) + ' kids=' + t.childNodes.length; });
+line('whitespace', function () { document.querySelector('head title').textContent = '  a \n\t b\f c\r  '; return JSON.stringify(document.title); });
+line('other spaces stay', function () { document.querySelector('head title').textContent = ' a  b '; return 'char codes ' + Array.prototype.map.call(document.title, function (c) { return c.charCodeAt(0); }).join(','); });
+line('set keeps spaces in the element', function () { document.title = '  p   q  '; return JSON.stringify(document.querySelector('head title').textContent) + ' ' + JSON.stringify(document.title); });
+line('set empty', function () { document.title = ''; var t = document.querySelector('head title'); return JSON.stringify(document.title) + ' titles=' + q() + ' kids=' + t.childNodes.length; });
+line('set null, 5', function () { document.title = null; var a = document.title; document.title = 5; return JSON.stringify(a) + ' ' + JSON.stringify(document.title); });
+line('element children are not its text', function () { var t = document.querySelector('head title'); t.textContent = 'p'; var s = document.createElement('span'); s.textContent = 'IN'; t.appendChild(s); t.appendChild(document.createTextNode('q')); return JSON.stringify(document.title) + ' kids=' + t.childNodes.length; });
+line('set replaces all children', function () { document.title = 'z'; var t = document.querySelector('head title'); return JSON.stringify(t.innerHTML) + ' kids=' + t.childNodes.length; });
+line('first in tree order', function () { var t2 = document.createElement('title'); t2.textContent = 'second'; document.head.appendChild(t2); var a = document.title; document.head.insertBefore(t2, document.head.firstChild); return JSON.stringify(a) + ' ' + JSON.stringify(document.title); });
+line('a title in the body counts', function () { Array.prototype.slice.call(document.querySelectorAll('head title')).forEach(function (t) { t.remove(); }); var a = document.title; var t3 = document.createElement('title'); t3.textContent = 'in body'; document.body.appendChild(t3); var b = document.title; document.title = 'set in body'; return JSON.stringify(a) + ' ' + JSON.stringify(b) + ' ' + JSON.stringify(t3.textContent) + ' head-titles=' + document.querySelectorAll('head title').length; });
+line('no head', function () { document.body.querySelector('title').remove(); document.head.remove(); document.title = 'nowhere'; return JSON.stringify(document.title) + ' titles=' + document.querySelectorAll('html > head').length + '/' + document.getElementsByTagName('title').length; });
+line('parsed document', function () { var p = new DOMParser().parseFromString('<title>  one \n two </title><p>x</p>', 'text/html'); var a = p.title; p.title = 'three'; return JSON.stringify(a) + ' ' + JSON.stringify(p.title) + ' ' + JSON.stringify(p.head.innerHTML); });
+line('parsed document without one', function () { var p = new DOMParser().parseFromString('<p>x</p>', 'text/html'); var a = p.title; p.title = 'made'; return JSON.stringify(a) + ' ' + JSON.stringify(p.head.innerHTML); });
+line('this page is untouched by them', function () { return JSON.stringify(document.title); });
+window.report = function () { return lines.join('\n'); };
+</script></body></html>

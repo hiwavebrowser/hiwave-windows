@@ -3,9 +3,9 @@
         return;
     }
 
-    const matchClass = 'hiwave-find-match';
+    const matchClass = 'zen-find-match';
     const activeClass = 'active';
-    const styleId = 'hiwave-find-style';
+    const styleId = 'zen-find-style';
     const skipTags = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'INPUT'];
 
     function installStyle() {
@@ -32,17 +32,35 @@
         return value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
     }
 
-    function clearHighlights() {
-        const highlighted = Array.from(document.querySelectorAll(`.${matchClass}`));
-        highlighted.forEach((elem) => {
-            const parent = elem.parentNode;
-            if (!parent) {
-                return;
+    // Take a mark out and put its text back where it came from. highlightRange splits the
+    // matched text node into <node>, <mark>, <tail>, so the mark's neighbours are text nodes
+    // the find created: fold the mark and the tail back into the first, and the page's own
+    // text nodes (and their identity) are left as they were. Nothing is normalized.
+    function unwrap(mark) {
+        const parent = mark.parentNode;
+        if (!parent) {
+            return;
+        }
+        const text = mark.textContent || '';
+        const prev = mark.previousSibling;
+        const next = mark.nextSibling;
+        if (prev && prev.nodeType === 3) {
+            prev.data += text;
+            parent.removeChild(mark);
+            if (next && next.nodeType === 3) {
+                prev.data += next.data;
+                parent.removeChild(next);
             }
-            const text = document.createTextNode(elem.textContent || '');
-            parent.replaceChild(text, elem);
-            parent.normalize();
-        });
+        } else if (next && next.nodeType === 3) {
+            next.data = text + next.data;
+            parent.removeChild(mark);
+        } else {
+            parent.replaceChild(document.createTextNode(text), mark);
+        }
+    }
+
+    function clearHighlights() {
+        Array.from(document.querySelectorAll(`.${matchClass}`)).forEach(unwrap);
     }
 
     function highlightRange(node, start, end) {
@@ -101,7 +119,6 @@
             window.__hiwaveFind.matches.push(...marks);
         });
 
-        document.body.normalize();
     }
 
     function scrollToMatch(element) {
@@ -111,7 +128,7 @@
         element.scrollIntoView({ block: 'center', behavior: 'auto' });
     }
 
-    const hiwaveFind = {
+    const zenFind = {
         matches: [],
         currentIndex: -1,
         lastQuery: '',
@@ -178,5 +195,5 @@
         },
     };
 
-    window.__hiwaveFind = hiwaveFind;
+    window.__hiwaveFind = zenFind;
 })();

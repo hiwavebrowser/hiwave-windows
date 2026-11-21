@@ -1,0 +1,100 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "text-that-wraps",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:100:100 b:100:0:100:100 after:0:100:1280:20"
+  },
+  {
+   "name": "text-that-wraps-in-both-items",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}</style></head><body><div class=g id=g><div id=a>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div><div id=b>aaaa bbbb cccc</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:100:100 b:100:0:100:100 after:0:100:1280:20"
+  },
+  {
+   "name": "text-that-fits",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 a:0:0:100:20 b:100:0:100:20 after:0:20:1280:20"
+  },
+  {
+   "name": "text-that-wraps-then-a-second-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div><div id=d>z</div><div id=e>w</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:120 a:0:0:100:100 b:100:0:100:100 d:0:100:100:20 e:100:100:100:20 after:0:120:1280:20"
+  },
+  {
+   "name": "text-that-wraps-with-padding",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}#b{padding:10px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:200 a:0:0:100:200 b:100:0:100:200 after:0:200:1280:20"
+  },
+  {
+   "name": "text-that-wraps-in-fr-columns",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}.g{grid-template-columns:1fr 5fr}</style></head><body><div class=g id=g><div id=a>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div><div id=b>yy</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:100:100 b:100:0:500:100 after:0:100:1280:20"
+  },
+  {
+   "name": "a-span-that-wraps",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b><span id=s>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</span></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:100:100 b:100:0:100:100 s:100:1:86:98 after:0:100:1280:20"
+  },
+  {
+   "name": "a-link-that-wraps",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b><a id=s href=#>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</a></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:100:100 b:100:0:100:100 s:100:1:86:98 after:0:100:1280:20"
+  },
+  {
+   "name": "text-that-does-not-wrap",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}#b{white-space:nowrap}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:20 a:0:0:100:20 b:100:0:100:20 after:0:20:1280:20"
+  },
+  {
+   "name": "text-that-wraps-in-a-px-height-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}#b{height:30px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:30 a:0:0:100:30 b:100:0:100:30 after:0:30:1280:20"
+  },
+  {
+   "name": "text-that-wraps-in-a-px-row",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}.g{grid-template-rows:40px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:40 a:0:0:100:40 b:100:0:100:40 after:0:40:1280:20"
+  },
+  {
+   "name": "text-that-wraps-centred",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}.g{align-items:center}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:40:100:20 b:100:0:100:100 after:0:100:1280:20"
+  },
+  {
+   "name": "text-that-wraps-in-a-px-height-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}.g{height:300px}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:300 a:0:0:100:300 b:100:0:100:300 after:0:300:1280:20"
+  },
+  {
+   "name": "text-that-wraps-with-text-align-center",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}#b{text-align:center}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:100:100 b:100:0:100:100 after:0:100:1280:20"
+  },
+  {
+   "name": "text-that-wraps-in-a-flex-item-of-a-grid-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}#b{display:flex}</style></head><body><div class=g id=g><div id=a>x</div><div id=b><div id=s>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:100:100 b:100:0:100:100 s:100:0:100:100 after:0:100:1280:20"
+  },
+  {
+   "name": "text-that-wraps-in-a-relative-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}#b{position:relative}</style></head><body><div class=g id=g><div id=a>x</div><div id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:100:100 b:100:0:100:100 after:0:100:1280:20"
+  },
+  {
+   "name": "a-heading-of-text-that-wraps",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}h2{margin:0;font:inherit}</style></head><body><div class=g id=g><div id=a>x</div><h2 id=b>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</h2></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:600:100 a:0:0:100:100 b:100:0:100:100 after:0:100:1280:20"
+  },
+  {
+   "name": "a-list-of-links",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px monospace}.g{display:grid;width:600px;grid-template-columns:100px 100px}.b{width:100px}ul{display:grid;grid-template-columns:100px 100px;margin:0;padding:0;list-style:none}</style></head><body><ul id=g><li id=a><a id=s href=#>aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii</a></li><li id=b><a href=#>short</a></li></ul><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:1280:100 a:0:0:100:100 s:0:1:86:98 b:100:0:100:100 after:0:100:1280:20"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

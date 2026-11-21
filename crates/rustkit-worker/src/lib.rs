@@ -84,22 +84,18 @@ impl PortId {
 }
 
 /// Worker type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkerType {
+    #[default]
     Classic,
     Module,
 }
 
-impl Default for WorkerType {
-    fn default() -> Self {
-        Self::Classic
-    }
-}
-
 /// Worker state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WorkerState {
     /// Worker is being created.
+    #[default]
     Pending,
     /// Worker is running.
     Running,
@@ -107,12 +103,6 @@ pub enum WorkerState {
     Terminated,
     /// Worker encountered an error.
     Errored,
-}
-
-impl Default for WorkerState {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 // ==================== Structured Clone ====================
@@ -737,7 +727,7 @@ impl WorkerNavigator {
             user_agent: "RustKit/1.0".to_string(),
             app_name: "RustKit".to_string(),
             app_version: "1.0".to_string(),
-            platform: "Win32".to_string(),
+            platform: rustkit_common::NAVIGATOR_PLATFORM.to_string(),
             language: "en-US".to_string(),
             languages: vec!["en-US".to_string(), "en".to_string()],
             online: true,
@@ -868,6 +858,17 @@ mod tests {
         
         assert_eq!(scope.name, "test");
         assert_eq!(scope.location, url);
+    }
+
+    /// A worker's `navigator.platform` is the page's (CB6c): the OS the
+    /// engine runs on, as Chromium names it ("MacIntel" on every Mac). It
+    /// said "Win32" while the page said "MacIntel" after #1069.
+    #[test]
+    fn worker_navigator_platform_names_the_host_os() {
+        // The page's own constant, so the two cannot drift apart on any OS.
+        assert_eq!(WorkerNavigator::new().platform, rustkit_common::NAVIGATOR_PLATFORM);
+        #[cfg(target_os = "macos")]
+        assert_eq!(WorkerNavigator::new().platform, "MacIntel");
     }
 
     #[test]

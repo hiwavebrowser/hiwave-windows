@@ -1,0 +1,115 @@
+Upstream issue: hiwave-macos CH2.E3 (01c33cb2) re-exports input_queue::InputEvent from the
+crate root; the cfg(windows) `use rustkit_core::{.., InputEvent, ..}` then defines the name
+twice (E0252) and rustkit-viewhost does not compile on Windows. The Windows side keeps its
+own type under an alias. Remove after upstream renames one of the two.
+
+--- a/crates/rustkit-viewhost/src/lib.rs
++++ b/crates/rustkit-viewhost/src/lib.rs
+@@ -57,7 +57,7 @@
+ 
+ #[cfg(windows)]
+ use rustkit_core::{
+-    FocusEvent, FocusEventType, InputEvent, KeyCode, KeyEvent, KeyEventType, KeyboardState,
++    FocusEvent, FocusEventType, InputEvent as CoreInputEvent, KeyCode, KeyEvent, KeyEventType, KeyboardState,
+     Modifiers, MouseButton, MouseEvent, MouseEventType, MouseState, Point,
+ };
+ 
+@@ -196,7 +196,7 @@
+     Destroyed { view_id: ViewId },
+     /// Input event from the view (Windows only).
+     #[cfg(windows)]
+-    Input { view_id: ViewId, event: InputEvent },
++    Input { view_id: ViewId, event: CoreInputEvent },
+ }
+ 
+ /// Callback for view events.
+@@ -1319,7 +1319,7 @@
+ 
+                     emit(ViewEvent::Input {
+                         view_id,
+-                        event: InputEvent::Mouse(event),
++                        event: CoreInputEvent::Mouse(event),
+                     });
+                 }
+             }
+@@ -1369,7 +1369,7 @@
+ 
+                     emit(ViewEvent::Input {
+                         view_id,
+-                        event: InputEvent::Mouse(event),
++                        event: CoreInputEvent::Mouse(event),
+                     });
+                 }
+             }
+@@ -1404,7 +1404,7 @@
+ 
+                     emit(ViewEvent::Input {
+                         view_id,
+-                        event: InputEvent::Mouse(event),
++                        event: CoreInputEvent::Mouse(event),
+                     });
+                 }
+             }
+@@ -1443,7 +1443,7 @@
+ 
+                     emit(ViewEvent::Input {
+                         view_id,
+-                        event: InputEvent::Mouse(event),
++                        event: CoreInputEvent::Mouse(event),
+                     });
+                 }
+             }
+@@ -1467,7 +1467,7 @@
+ 
+                     emit(ViewEvent::Input {
+                         view_id,
+-                        event: InputEvent::Mouse(event),
++                        event: CoreInputEvent::Mouse(event),
+                     });
+                 }
+             }
+@@ -1496,7 +1496,7 @@
+ 
+                     emit(ViewEvent::Input {
+                         view_id,
+-                        event: InputEvent::Key(event),
++                        event: CoreInputEvent::Key(event),
+                     });
+                 }
+             }
+@@ -1523,7 +1523,7 @@
+ 
+                     emit(ViewEvent::Input {
+                         view_id,
+-                        event: InputEvent::Key(event),
++                        event: CoreInputEvent::Key(event),
+                     });
+                 }
+             }
+@@ -1547,7 +1547,7 @@
+ 
+                         emit(ViewEvent::Input {
+                             view_id,
+-                            event: InputEvent::Key(event),
++                            event: CoreInputEvent::Key(event),
+                         });
+                     }
+                 }
+@@ -1573,7 +1573,7 @@
+                     emit(ViewEvent::Focused { view_id });
+                     emit(ViewEvent::Input {
+                         view_id,
+-                        event: InputEvent::Focus(event),
++                        event: CoreInputEvent::Focus(event),
+                     });
+                 }
+             }
+@@ -1597,7 +1597,7 @@
+                     emit(ViewEvent::Blurred { view_id });
+                     emit(ViewEvent::Input {
+                         view_id,
+-                        event: InputEvent::Focus(event),
++                        event: CoreInputEvent::Focus(event),
+                     });
+                 }
+             }

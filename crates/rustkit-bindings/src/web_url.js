@@ -134,13 +134,19 @@
                 return { value: kind === 'keys' ? p[0] : kind === 'values' ? p[1] : [p[0], p[1]], done: false };
             }
         };
-        if (typeof Symbol === 'function') it[Symbol.iterator] = function () { return this; };
+        if (typeof Symbol === 'function') {
+            it[Symbol.iterator] = function () { return this; };
+            it[Symbol.toStringTag] = 'URLSearchParams Iterator';
+        }
         return it;
     }
     UP.keys = function () { return iterator(this, 'keys'); };
     UP.values = function () { return iterator(this, 'values'); };
     UP.entries = function () { return iterator(this, 'entries'); };
-    if (typeof Symbol === 'function') UP[Symbol.iterator] = UP.entries;
+    if (typeof Symbol === 'function') {
+        UP[Symbol.iterator] = UP.entries;
+        Object.defineProperty(UP, Symbol.toStringTag, { value: 'URLSearchParams', configurable: true });
+    }
     Object.defineProperty(UP, 'size', { get: function () { return this[LIST].length; }, configurable: true });
 
     var FIELDS = ['href', 'origin', 'protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash'];
@@ -158,7 +164,11 @@
     var UPROTO = URL.prototype;
     function commit(self, field, value) {
         var r = update(self._c.href, field, String(value));
-        if (r === null) return;                       // the standard ignores a value that does not parse
+        if (r === null) {
+            // href is the one setter that throws; the rest ignore a bad value.
+            if (field === 'href') throw new TypeError("Failed to set the 'href' property on 'URL': Invalid URL");
+            return;
+        }
         self._c = JSON.parse(r);
         if (field !== 'search') self._sp[LIST] = parseQuery(self._c.search);
         else self._sp[LIST] = parseQuery(self._c.search);
@@ -175,17 +185,39 @@
         });
     });
     Object.defineProperty(UPROTO, 'searchParams', { get: function () { return this._sp; }, enumerable: true, configurable: true });
+    if (typeof Symbol === 'function') Object.defineProperty(UPROTO, Symbol.toStringTag, { value: 'URL', configurable: true });
     UPROTO.toString = function () { return this._c.href; };
     UPROTO.toJSON = function () { return this._c.href; };
+    function needArg(n, method) {
+        if (n === 0) throw new TypeError("Failed to execute '" + method + "' on 'URL': 1 argument required, but only 0 present.");
+    }
     URL.canParse = function (url, base) {
+        needArg(arguments.length, 'canParse');
         return parse(String(url), base === undefined ? null : String(base)) !== null;
     };
     URL.parse = function (url, base) {
+        needArg(arguments.length, 'parse');
         try { return new URL(url, base); } catch (e) { return null; }
     };
-    var blobCount = 0;
-    URL.createObjectURL = function () { return 'blob:' + (g.location && g.location.origin || 'null') + '/' + (++blobCount); };
-    URL.revokeObjectURL = function () {};
+    // Blob URLs: the bytes behind one are copied into the host's store
+    // here, in the page's turn (anything the page hooked on the way runs
+    // under its own budget), and only a real Blob's own bytes go in.
+    // Anything that is not a Blob (a MediaSource) gets a URL nothing
+    // stands behind.
+    // The host names the URL (`blob:<origin>/<uuid>`, with the origin the
+    // engine knows for this document) and keeps the record for that origin.
+    var blobInternals = g.__rkBlobInternals, blobUrl = __rk.blobUrl, blobRevoke = __rk.blobRevoke, realm = __realm;
+    delete g.__rkBlobInternals;
+    URL.createObjectURL = function (object) {
+        var record = blobInternals ? blobInternals.record(object) : null;
+        var made = record ? blobUrl(realm, record.bytes, record.type) : blobUrl(realm);
+        // Not kept (the store is full): the URL has nothing behind it.
+        if (!made[1]) __rk.unsupported('URL', 'createObjectURL (blob store full)');
+        return made[0];
+    };
+    URL.revokeObjectURL = function (url) {
+        blobRevoke(realm, String(url).split('#')[0]);
+    };
 
     g.URL = URL;
     g.URLSearchParams = URLSearchParams;

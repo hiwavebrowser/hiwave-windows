@@ -5,7 +5,82 @@
 
 use crate::entities;
 use crate::{ParseError, ParseResult};
-use std::collections::HashMap;
+
+/// A start tag's attributes, in source order. A name written twice keeps
+/// its first value and the later ones are dropped (HTML Â§13.2.5.33).
+///
+/// A list searched in order, which is fastest for the handful a tag has;
+/// past `NAME_SET_FROM` attributes the names are also kept in a set, so a
+/// tag with a hundred thousand of them is not a search of the list for
+/// each one.
+#[derive(Debug, Clone, Default)]
+pub struct TagAttrs(Vec<(String, String)>, Option<std::collections::HashSet<String>>);
+
+const NAME_SET_FROM: usize = 32;
+
+impl PartialEq for TagAttrs {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for TagAttrs {}
+
+impl TagAttrs {
+    fn push_first(&mut self, name: String, value: String) {
+        let seen = match &self.1 {
+            Some(names) => names.contains(&name),
+            None => self.0.iter().any(|(n, _)| *n == name),
+        };
+        if seen {
+            return;
+        }
+        if self.0.len() >= NAME_SET_FROM {
+            let all = &self.0;
+            self.1
+                .get_or_insert_with(|| all.iter().map(|(n, _)| n.clone()).collect())
+                .insert(name.clone());
+        }
+        self.0.push((name, value));
+    }
+
+    pub fn get(&self, name: &str) -> Option<&String> {
+        if self.1.as_ref().is_some_and(|names| !names.contains(name)) {
+            return None;
+        }
+        self.0.iter().find(|(n, _)| n == name).map(|(_, v)| v)
+    }
+
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+        self.1 = None;
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
+        self.0.iter().map(|(n, v)| (n, v))
+    }
+}
+
+impl IntoIterator for TagAttrs {
+    type Item = (String, String);
+    type IntoIter = std::vec::IntoIter<(String, String)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 
 /// Token types emitted by the tokenizer.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,7 +94,7 @@ pub enum Token {
     /// Start tag (e.g., `<div>` or `<img />`)
     StartTag {
         name: String,
-        attrs: HashMap<String, String>,
+        attrs: TagAttrs,
         self_closing: bool,
     },
     /// End tag (e.g., `</div>`)
@@ -82,8 +157,11 @@ pub struct Tokenizer {
     return_state: Option<State>,
     /// The name of the last emitted start tag (for RAWTEXT/RCDATA/ScriptData end tag matching)
     last_start_tag_name: String,
+    /// The scripting flag (HTML Â§13.2.3.5): with it on, `<noscript>` holds
+    /// raw text, as `<style>` does.
+    scripting: bool,
     current_tag_name: String,
-    current_attrs: HashMap<String, String>,
+    current_attrs: TagAttrs,
     current_attr_name: String,
     current_attr_value: String,
     self_closing: bool,
@@ -102,8 +180,9 @@ impl Tokenizer {
             state: State::Data,
             return_state: None,
             last_start_tag_name: String::new(),
+            scripting: false,
             current_tag_name: String::new(),
-            current_attrs: HashMap::new(),
+            current_attrs: TagAttrs::default(),
             current_attr_name: String::new(),
             current_attr_value: String::new(),
             self_closing: false,
@@ -180,11 +259,32 @@ impl Tokenizer {
         if !self.current_attr_name.is_empty() {
             let name = std::mem::take(&mut self.current_attr_name);
             let value = std::mem::take(&mut self.current_attr_value);
-            self.current_attrs.insert(name, value);
+            self.current_attrs.push_first(name, value);
         }
     }
 
     pub fn tokenize(mut self) -> ParseResult<Vec<Token>> {
+        self.scan(|_| Ok(()))?;
+        Ok(self.tokens)
+    }
+
+    pub(super) fn for_each_token(
+        mut self,
+        scripting: bool,
+        mut accept: impl FnMut(Token) -> ParseResult<()>,
+    ) -> ParseResult<()> {
+        self.scripting = scripting;
+        self.scan(|tokens| tokens.drain(..).try_for_each(&mut accept))?;
+        self.tokens.into_iter().try_for_each(accept)
+    }
+
+    fn scan(
+        &mut self,
+        mut flush_batch: impl FnMut(&mut Vec<Token>) -> ParseResult<()>,
+    ) -> ParseResult<()> {
+        // A state transition can emit several tokens (e.g. an unknown entity).
+        // Hand off complete transitions and reuse the vector on the parse path.
+        const BATCH_SIZE: usize = 256;
         while self.pos < self.input.len() || self.state != State::Data {
             match self.state {
                 State::Data => self.state_data(),
@@ -226,6 +326,9 @@ impl Tokenizer {
                 State::ScriptData => self.state_script_data(),
             }
 
+            if self.tokens.len() >= BATCH_SIZE {
+                flush_batch(&mut self.tokens)?;
+            }
             // Safety check to prevent infinite loops
             if self.pos > self.input.len() + 100 {
                 return Err(ParseError::TokenizerError(
@@ -235,18 +338,14 @@ impl Tokenizer {
         }
 
         self.emit(Token::Eof);
-        Ok(self.tokens)
+        Ok(())
     }
 
     fn state_data(&mut self) {
         match self.consume() {
             Some('<') => self.state = State::TagOpen,
             Some('&') => {
-                // Decode entity in text content
-                let entity = self.consume_entity();
-                for ch in entity.chars() {
-                    self.emit(Token::Character(ch));
-                }
+                self.consume_entity();
             }
             Some(ch) => self.emit(Token::Character(ch)),
             None => {}
@@ -269,7 +368,11 @@ impl Tokenizer {
                 self.state = State::TagName;
             }
             Some('?') => {
-                self.consume();
+                // HTML: unexpected-question-mark-instead-of-tag-name. The
+                // comment's data starts empty, then the `?` is reconsumed
+                // in the bogus comment state, so `<?lit$1$>` is a comment
+                // whose data is `?lit$1$`. Lit's template markers match that.
+                self.current_comment.clear();
                 self.state = State::BogusComment;
             }
             _ => {
@@ -320,6 +423,7 @@ impl Tokenizer {
             "style" | "xmp" | "iframe" | "noembed" | "noframes" => {
                 self.return_state = Some(State::RawText)
             }
+            "noscript" if self.scripting => self.return_state = Some(State::RawText),
             "textarea" | "title" => self.return_state = Some(State::RcData),
             _ => self.return_state = None,
         }
@@ -456,6 +560,10 @@ impl Tokenizer {
                 self.emit_current_attr();
                 self.finish_start_tag();
             }
+            Some('&') => {
+                self.state = State::AttributeValueUnquoted;
+                self.consume_entity();
+            }
             Some(ch) => {
                 self.current_attr_value.push(ch);
                 self.state = State::AttributeValueUnquoted;
@@ -474,9 +582,7 @@ impl Tokenizer {
                 self.state = State::AfterAttributeName;
             }
             Some('&') => {
-                // Decode entity
-                let entity = self.consume_entity();
-                self.current_attr_value.push_str(&entity);
+                self.consume_entity();
             }
             Some(ch) => {
                 self.current_attr_value.push(ch);
@@ -496,8 +602,7 @@ impl Tokenizer {
                 self.state = State::AfterAttributeName;
             }
             Some('&') => {
-                let entity = self.consume_entity();
-                self.current_attr_value.push_str(&entity);
+                self.consume_entity();
             }
             Some(ch) => {
                 self.current_attr_value.push(ch);
@@ -519,8 +624,7 @@ impl Tokenizer {
             }
             Some('&') => {
                 self.consume();
-                let entity = self.consume_entity();
-                self.current_attr_value.push_str(&entity);
+                self.consume_entity();
             }
             Some('>') => {
                 self.consume();
@@ -539,27 +643,20 @@ impl Tokenizer {
         }
     }
 
-    fn consume_entity(&mut self) -> String {
-        let mut entity_str = String::from("&");
-
-        while let Some(ch) = self.current_char() {
-            if ch == ';' {
-                entity_str.push(ch);
-                self.consume();
-                break;
-            } else if ch.is_alphanumeric() || ch == '#' {
-                entity_str.push(ch);
-                self.consume();
-            } else {
-                break;
-            }
-
-            if entity_str.len() > 32 {
-                break;
-            }
+    fn consume_entity(&mut self) {
+        let in_attribute = !matches!(self.state, State::Data | State::RcData);
+        let mut numeric = [0; 4];
+        let (consumed, value) = entities::reference(
+            self.input[self.pos..].iter().copied(),
+            in_attribute,
+            &mut numeric,
+        );
+        self.pos += consumed;
+        if in_attribute {
+            self.current_attr_value.push_str(value);
+        } else {
+            self.tokens.extend(value.chars().map(Token::Character));
         }
-
-        entities::decode(&entity_str)
     }
 
     fn state_markup_declaration_open(&mut self) {
@@ -588,7 +685,7 @@ impl Tokenizer {
     fn matches_case_insensitive(&self, s: &str) -> bool {
         for (i, expected_ch) in s.chars().enumerate() {
             if let Some(ch) = self.peek_char(i) {
-                if ch.to_ascii_uppercase() != expected_ch.to_ascii_uppercase() {
+                if !ch.eq_ignore_ascii_case(&expected_ch) {
                     return false;
                 }
             } else {
@@ -1039,10 +1136,7 @@ impl Tokenizer {
         // RCDATA mode (for textarea, title)
         match self.consume() {
             Some('&') => {
-                let entity = self.consume_entity();
-                for ch in entity.chars() {
-                    self.emit(Token::Character(ch));
-                }
+                self.consume_entity();
             }
             Some('<') if self.current_char() == Some('/') => {
                 self.consume(); // '/'
@@ -1148,9 +1242,37 @@ pub fn tokenize(input: &str) -> ParseResult<Vec<Token>> {
     tokenizer.tokenize()
 }
 
+/// `tokenize` with the scripting flag: when it is on, the contents of
+/// `<noscript>` are raw text (HTML Â§13.2.6.4.4, Â§13.2.6.4.7).
+pub fn tokenize_scripted(input: &str, scripting: bool) -> ParseResult<Vec<Token>> {
+    let mut tokenizer = Tokenizer::new(input);
+    tokenizer.scripting = scripting;
+    tokenizer.tokenize()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R1 LOW: a start tag with 100,000 attributes (a 1.5 MB tag) is read
+    /// in linear time, source order kept, the first value of a duplicate
+    /// kept.
+    #[test]
+    fn a_start_tag_with_a_hundred_thousand_attributes_is_linear() {
+        let mut html = String::from("<div");
+        for i in 0..100_000 {
+            html.push_str(&format!(" data-a{i}=v"));
+        }
+        html.push_str(" data-a7=later>");
+        let started = std::time::Instant::now();
+        let tokens = tokenize(&html).unwrap();
+        let took = started.elapsed();
+        let Token::StartTag { attrs, .. } = &tokens[0] else { panic!("a start tag") };
+        assert_eq!(attrs.len(), 100_000);
+        assert_eq!(attrs.get("data-a7").map(String::as_str), Some("v"));
+        assert_eq!(attrs.iter().next().map(|(n, _)| n.as_str()), Some("data-a0"));
+        assert!(took < std::time::Duration::from_secs(5), "took {took:?}");
+    }
 
     #[test]
     fn test_simple_tag() {
@@ -1192,6 +1314,16 @@ mod tests {
     fn test_comment() {
         let tokens = tokenize("<!-- comment -->").unwrap();
         assert!(matches!(tokens[0], Token::Comment(ref s) if s == " comment "));
+    }
+
+    /// `<?` is a bogus comment. The `?` is part of the data (HTML tokenizer:
+    /// reconsume in the bogus comment state). Lit writes `<?lit$â€¦$>` and
+    /// matches the comment data `?lit$â€¦$`.
+    #[test]
+    fn test_question_mark_bogus_comment_keeps_the_question_mark() {
+        let tokens = tokenize("<?lit$1$><slot name=\"title\"></slot>").unwrap();
+        assert!(matches!(tokens[0], Token::Comment(ref s) if s == "?lit$1$"), "{tokens:?}");
+        assert!(matches!(tokens[1], Token::StartTag { ref name, .. } if name == "slot"));
     }
 
     #[test]

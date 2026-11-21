@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::text::{PositionedGlyph, TextDirection};
+use rustkit_text::GlyphFace;
 
 fn style_in(family: &str, size: f32, weight: u16) -> ComputedStyle {
     let mut style = ComputedStyle::new();
@@ -209,6 +210,7 @@ fn glyphs_of_one_cluster_share_a_range_and_ranges_count_utf16_units() {
         advance,
         character,
         cluster,
+        face: GlyphFace::Primary,
     };
     let shaped = ShapedRun {
         text: "e\u{301}\u{1D4B3}b".to_string(),
@@ -346,4 +348,55 @@ fn an_ellipsis_cut_cuts_the_run_with_the_characters() {
         run.glyphs.last().map(|g| g.cluster.end),
         Some(text.encode_utf16().count() as u32)
     );
+}
+
+/// §7 "Face identity, Windows": the DirectWrite shaper records the face the
+/// family list resolved to, per weight, and skips a family that is not
+/// installed ("Georgia stays Georgia at paint").
+#[test]
+#[cfg(windows)]
+fn the_windows_run_names_the_face_the_family_list_resolved_to() {
+    let list = "Georgia, 'Times New Roman', serif";
+    let regular = shape_line_run("Wave", &style_in(list, 24.0, 400), 24.0, 0.0).expect("run");
+    assert_eq!(regular.face.postscript_name, "Georgia");
+    let bold = shape_line_run("Wave", &style_in(list, 24.0, 700), 24.0, 0.0).expect("run");
+    assert_eq!(bold.face.postscript_name, "Georgia-Bold");
+    assert_ne!(regular.face.id, bold.face.id, "two faces, two ids");
+    assert_ne!(regular.face.id, 0, "0 means no face");
+
+    let walked = style_in("No Such Family 9f2c, Georgia", 24.0, 400);
+    let walked = shape_line_run("Wave", &walked, 24.0, 0.0).expect("run");
+    assert_eq!(walked.face, regular.face, "the same face under another list");
+
+    let other = shape_line_run("Wave", &style_in("Arial", 24.0, 400), 24.0, 0.0).expect("run");
+    assert_eq!(other.face.postscript_name, "ArialMT");
+    assert_ne!(other.face.id, regular.face.id);
+
+    // The face layout shaped with is what the rasterizer is handed.
+    assert!(rustkit_text::face_by_id(regular.face.id).is_some(), "the face is held");
+    assert!(rustkit_text::face_by_id(regular.face.id ^ 0x5a5a).is_none());
+}
+
+/// The emitter: on Windows too the Text command carries the run, and
+/// `advances` is the run's projection.
+#[test]
+#[cfg(windows)]
+fn the_windows_text_command_carries_the_run() {
+    let style = style_in("Georgia, 'Times New Roman', serif", 16.0, 400);
+    let list = one_line_list("Wave To", &style, ComputedStyle::new());
+    let parts = text_parts(&list);
+    assert!(!parts.is_empty());
+    let commands: Vec<_> = list
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            DisplayCommand::Text { run, .. } => Some(run),
+            _ => None,
+        })
+        .collect();
+    assert!(!commands.is_empty());
+    for run in commands {
+        let run = run.as_deref().expect("a Windows Latin line carries its run");
+        assert_eq!(run.face.postscript_name, "Georgia");
+    }
 }

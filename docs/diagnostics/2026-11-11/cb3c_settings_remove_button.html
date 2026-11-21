@@ -1,0 +1,15 @@
+<!doctype html><!-- settings x3 (board bd10a85d): .blocklist-item .remove-btn is 16 tall in Chrome 143 and 22.8 in RustKit, so
+  #focusBlocklist is 46.8 vs 40 and everything below it on settings.html sits ~7px low (93 of 128 geometry diffs at 1280x800 are that y shift).
+  Button: font-size:16px; line-height:1; padding:0 4px; border:none. #lh1/#p0/#b0 split the three, #all has all of them. Likely B18(3).
+  Measured 2026-11-10 03:05 ET, bd10a85d vs Chrome 143.0.7499.4, 800x600: #rm 17.34x22.8 vs 17.34x16; #rmx 16x22.8 vs 16x16;
+  #lh1 32x22.8 vs 24x22; #p0 32x22.8 vs 12x22; #b0 32x22.8 vs 20x20; #all 32x22.8 vs 8x16; #sp 9.34x16 both; #item 784x30.8 vs 113.47x24. -->
+<style>body{margin:0;font:12.8px Arial}div{margin:8px}
+.i{display:flex;align-items:center;gap:4px;padding:4px 8px;background:#ccc;width:max-content}
+.r{background:none;border:none;padding:0 4px;font-size:16px;line-height:1}</style>
+<div class="i" id="item"><span>example.com</span><button class="r" id="rm">&times;</button></div>
+<div><button class="r" id="rmx">x</button></div>
+<div><button id="lh1" style="font-size:16px;line-height:1">x</button></div>
+<div><button id="p0" style="font-size:16px;padding:0">x</button></div>
+<div><button id="b0" style="font-size:16px;border:none">x</button></div>
+<div><button id="all" style="font-size:16px;line-height:1;padding:0;border:none">x</button></div>
+<div><span id="sp" style="display:inline-block;font-size:16px;line-height:1">&times;</span></div>

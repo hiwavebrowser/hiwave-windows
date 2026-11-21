@@ -374,6 +374,12 @@ impl KeyCode {
             0xA5 => KeyCode::AltRight,
             0x5B => KeyCode::MetaLeft,
             0x5C => KeyCode::MetaRight,
+            // WM_KEYDOWN reports Shift, Ctrl and Alt with the GENERIC codes; the
+            // left/right codes above come only from GetKeyState and hooks. Without
+            // these, a real keyboard never sets a modifier and every chord is dead.
+            0x10 => KeyCode::ShiftLeft,
+            0x11 => KeyCode::ControlLeft,
+            0x12 => KeyCode::AltLeft,
             _ => KeyCode::Unknown,
         }
     }
@@ -1077,6 +1083,20 @@ mod tests {
         assert_eq!(KeyCode::from_vk(0x41), KeyCode::KeyA);
         assert_eq!(KeyCode::from_vk(0x1B), KeyCode::Escape);
         assert_eq!(KeyCode::from_vk(0x0D), KeyCode::Enter);
+    }
+
+    #[test]
+    fn the_generic_modifier_codes_a_real_keyboard_sends_set_the_modifiers() {
+        let mut state = KeyboardState::new();
+        // VK_CONTROL (0x11), VK_SHIFT (0x10), VK_MENU (0x12): what WM_KEYDOWN carries.
+        state.key_down(KeyCode::from_vk(0x11));
+        assert!(state.modifiers().ctrl);
+        state.key_down(KeyCode::from_vk(0x10));
+        assert!(state.modifiers().shift);
+        state.key_down(KeyCode::from_vk(0x12));
+        assert!(state.modifiers().alt);
+        state.key_up(KeyCode::from_vk(0x11));
+        assert!(!state.modifiers().ctrl);
     }
 
     #[test]

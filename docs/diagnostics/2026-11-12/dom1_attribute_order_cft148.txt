@@ -1,0 +1,33 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() after load
+parsed names: id,z,a,class,data-b,m
+parsed attributes[i]: id=p,z=1,a=2,class=c,data-b=3,m=
+parsed iterated: id,z,a,class,data-b,m
+parsed outerHTML: <div id="p" z="1" a="2" class="c" data-b="3" m=""></div>
+duplicate names: id=dup,b=1,a=2,c=4
+svg names: id,viewBox,height,preserveAspectRatio,width | id,stroke,d,fill
+svg outerHTML: <path id="sp" stroke="red" d="M0 0" fill="none"></path>
+input outerHTML: <input id="i" value="v" type="text" name="n" disabled="">
+host innerHTML: <div id="p" z="1" a="2" class="c" data-b="3" m=""></div><span id="dup" b="1" a="2" c="4"></span><svg id="s" viewBox="0 0 1 1" height="1" preserveAspectRatio="none" width="1"><path id="sp" stroke="red" d="M0 0" fill="none"></path></svg><input id="i" value="v" type="text" name="n" disabled="">
+script set: z=1,a=2,m=3
+set existing keeps its place: z=again,a=2,m=3
+remove then add goes last: z=again,m=3,a=back
+id and className append: z=again,m=3,a=back,id=made,class=k
+id again keeps its place: z=again,m=3,a=back,id=made2,class=k
+toggle, dataset, classList, title, style: z=again,m=3,a=back,id=made2,class=k k2,hidden=,data-foo-bar=d,title=t,style=color: red;
+removals: m,a,id,class,data-foo-bar,title,style
+script outerHTML: <div m="3" a="back" id="made2" class="k k2" data-foo-bar="d" title="t" style="color: red;"></div>
+removeNamedItem / setNamedItem: a,id,class,data-foo-bar,title,style,m,first
+setAttributeNS: a,id,class,data-foo-bar,title,style,m,first,xlink:href,plain
+clone names: id=p,z=1,a=2,class=c,data-b=3,m=
+clone outerHTML: <div id="p" z="1" a="2" class="c" data-b="3" m=""></div>
+clone of script element: a,id,class,data-foo-bar,title,style,m,first,xlink:href,plain
+importNode: id,z,a,class,data-b,m
+innerHTML parsed: y=1,href=#,x=2,class=q,id=in | src,alt,width,height
+innerHTML round trip: <a y="1" href="#" x="2" class="q" id="in">t</a><img src="" alt="a" width="1" height="2">
+DOMParser: t,s,r | <p t="1" s="2" r="3">x</p>
+template: q,p,o
+insertAdjacentHTML: n,m,l
+XMLSerializer: <div xmlns="http://www.w3.org/1999/xhtml" id="p" z="1" a="2" class="c" data-b="3" m=""></div>
+many: q,w,r,t,y,u,i,o,p,a,s,d,f,g,h,j,k,l,e
+style set before another attribute: x,style
+html and body:  | 

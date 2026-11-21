@@ -169,6 +169,9 @@ impl InputType {
 }
 
 /// Text editing state for input/textarea elements.
+///
+/// Offsets are byte offsets into the value, always on char boundaries.
+/// `maxlength` counts UTF-16 code units, as HTML does.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct TextEditState {
@@ -176,7 +179,8 @@ pub struct TextEditState {
     value: RefCell<String>,
     /// Current selection.
     selection: Cell<SelectionRange>,
-    /// Selection direction.
+    /// Selection direction: which end is the focus (the end that moves
+    /// when Shift+arrow extends). `Backward` puts the focus at `start`.
     selection_direction: Cell<SelectionDirection>,
     /// Maximum length (None = unlimited).
     max_length: Cell<Option<usize>>,
@@ -192,6 +196,57 @@ pub struct TextEditState {
     pattern: RefCell<Option<String>>,
     /// Whether required for form submission.
     required: Cell<bool>,
+    /// What kind of control this edits (paste and copy rules).
+    kind: Cell<TextControlKind>,
+    /// Undo/redo history.
+    history: RefCell<EditHistory>,
+}
+
+/// The value and selection before or after an edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditSnapshot {
+    value: String,
+    selection: SelectionRange,
+    direction: SelectionDirection,
+}
+
+/// How an edit joins the history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    /// A typed character: joins the open typing entry.
+    Typing,
+    /// A paste, cut, delete or script insertion: its own entry.
+    Discrete,
+}
+
+/// Bounded undo/redo stacks of snapshots taken before each entry.
+#[derive(Debug, Default)]
+struct EditHistory {
+    undo: std::collections::VecDeque<EditSnapshot>,
+    redo: Vec<EditSnapshot>,
+    /// The top undo entry is typing that the next typed character joins.
+    /// Any caret movement or other edit closes it.
+    typing_open: bool,
+}
+
+impl EditHistory {
+    fn record(&mut self, before: EditSnapshot, kind: EditKind) {
+        self.redo.clear();
+        if kind == EditKind::Typing && self.typing_open && !self.undo.is_empty() {
+            return;
+        }
+        self.undo.push_back(before);
+        while self.undo.len() > UNDO_LIMIT {
+            self.undo.pop_front();
+        }
+        self.typing_open = kind == EditKind::Typing;
+    }
+
+    fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.typing_open = false;
+    }
 }
 
 impl Default for TextEditState {
@@ -200,21 +255,97 @@ impl Default for TextEditState {
     }
 }
 
+/// The char boundary before `pos` in `s` (0 at the start).
+fn prev_boundary(s: &str, pos: usize) -> usize {
+    s[..pos.min(s.len())]
+        .char_indices()
+        .next_back()
+        .map_or(0, |(i, _)| i)
+}
+
+/// The char boundary after `pos` in `s` (`s.len()` at the end).
+fn next_boundary(s: &str, pos: usize) -> usize {
+    let pos = pos.min(s.len());
+    s[pos..].chars().next().map_or(pos, |c| pos + c.len_utf8())
+}
+
+/// `pos` moved back onto a char boundary of `s`.
+fn floor_boundary(s: &str, pos: usize) -> usize {
+    let mut pos = pos.min(s.len());
+    while !s.is_char_boundary(pos) {
+        pos -= 1;
+    }
+    pos
+}
+
+/// Characters that make up a word for word movement and deletion.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// The start of the word at or before `pos`: skip non-word chars back,
+/// then word chars.
+fn word_start_before(s: &str, pos: usize) -> usize {
+    let mut i = pos.min(s.len());
+    let before = |i: usize| s[..i].chars().next_back();
+    while before(i).is_some_and(|c| !is_word_char(c)) {
+        i = prev_boundary(s, i);
+    }
+    while before(i).is_some_and(is_word_char) {
+        i = prev_boundary(s, i);
+    }
+    i
+}
+
+/// The end of the word at or after `pos`: skip non-word chars, then word
+/// chars (macOS Option+Right, and delete-word-forward).
+fn word_end_after(s: &str, pos: usize) -> usize {
+    let mut i = pos.min(s.len());
+    let at = |i: usize| s[i..].chars().next();
+    while at(i).is_some_and(|c| !is_word_char(c)) {
+        i = next_boundary(s, i);
+    }
+    while at(i).is_some_and(is_word_char) {
+        i = next_boundary(s, i);
+    }
+    i
+}
+
+/// The start of the next word after `pos`: skip word chars, then the
+/// rest (Windows/Linux Ctrl+Right).
+fn next_word_start(s: &str, pos: usize) -> usize {
+    let mut i = pos.min(s.len());
+    let at = |i: usize| s[i..].chars().next();
+    while at(i).is_some_and(is_word_char) {
+        i = next_boundary(s, i);
+    }
+    while at(i).is_some_and(|c| !is_word_char(c)) {
+        i = next_boundary(s, i);
+    }
+    i
+}
+
+/// Length in UTF-16 code units, the unit of `maxlength`.
+fn utf16_len(s: &str) -> usize {
+    s.chars().map(char::len_utf16).sum()
+}
+
+/// The longest prefix of `s` at most `units` UTF-16 code units long.
+fn utf16_prefix(s: &str, units: usize) -> &str {
+    let mut used = 0;
+    for (i, c) in s.char_indices() {
+        used += c.len_utf16();
+        if used > units {
+            return &s[..i];
+        }
+    }
+    s
+}
+
 impl TextEditState {
     /// Create a new empty text edit state.
     pub fn new() -> Self {
-        Self {
-            value: RefCell::new(String::new()),
-            selection: Cell::new(SelectionRange::caret(0)),
-            selection_direction: Cell::new(SelectionDirection::None),
-            max_length: Cell::new(None),
-            min_length: Cell::new(0),
-            read_only: Cell::new(false),
-            disabled: Cell::new(false),
-            placeholder: RefCell::new(String::new()),
-            pattern: RefCell::new(None),
-            required: Cell::new(false),
-        }
+        Self::with_value(String::new())
     }
 
     /// Create with an initial value.
@@ -232,6 +363,8 @@ impl TextEditState {
             placeholder: RefCell::new(String::new()),
             pattern: RefCell::new(None),
             required: Cell::new(false),
+            kind: Cell::new(TextControlKind::SingleLine),
+            history: RefCell::new(EditHistory::default()),
         }
     }
 
@@ -240,12 +373,15 @@ impl TextEditState {
         self.value.borrow().clone()
     }
 
-    /// Set the value (resets selection to end).
+    /// Set the value (resets selection to end). A value set this way (by
+    /// script, or a form reset) is not undoable and clears the history.
     pub fn set_value(&self, value: impl Into<String>) {
         let text = value.into();
         let len = text.len();
         *self.value.borrow_mut() = text;
         self.selection.set(SelectionRange::caret(len));
+        self.selection_direction.set(SelectionDirection::None);
+        self.history.borrow_mut().clear();
     }
 
     /// Get the current selection.
@@ -253,12 +389,27 @@ impl TextEditState {
         self.selection.get()
     }
 
+    /// The selection's direction (which end Shift+arrow moves).
+    pub fn selection_direction(&self) -> SelectionDirection {
+        self.selection_direction.get()
+    }
+
     /// Set the selection range.
     pub fn set_selection(&self, start: usize, end: usize) {
-        let len = self.value.borrow().len();
-        let start = start.min(len);
-        let end = end.min(len);
+        let value = self.value.borrow();
+        let start = floor_boundary(&value, start);
+        let end = floor_boundary(&value, end);
+        drop(value);
         self.selection.set(SelectionRange::new(start, end));
+        self.selection_direction.set(SelectionDirection::None);
+        self.close_typing();
+    }
+
+    /// Set the selection range and its direction, as script's
+    /// `setSelectionRange(start, end, direction)` does.
+    pub fn set_selection_with_direction(&self, start: usize, end: usize, direction: SelectionDirection) {
+        self.set_selection(start, end);
+        self.selection_direction.set(direction);
     }
 
     /// Get the caret position (selection start).
@@ -266,18 +417,22 @@ impl TextEditState {
         self.selection.get().start
     }
 
+    /// The selection's focus: the end that moves when Shift+arrow extends
+    /// (the caret when collapsed).
+    pub fn focus_position(&self) -> usize {
+        self.anchor_focus().1
+    }
+
     /// Set the caret position.
     pub fn set_caret(&self, position: usize) {
-        let len = self.value.borrow().len();
-        let pos = position.min(len);
-        self.selection.set(SelectionRange::caret(pos));
+        self.place(position, position);
     }
 
     /// Get selected text.
     pub fn selected_text(&self) -> String {
         let sel = self.selection.get().normalize();
         let value = self.value.borrow();
-        if sel.start < value.len() && sel.end <= value.len() {
+        if sel.start <= value.len() && sel.end <= value.len() {
             value[sel.start..sel.end].to_string()
         } else {
             String::new()
@@ -287,7 +442,7 @@ impl TextEditState {
     /// Select all text.
     pub fn select_all(&self) {
         let len = self.value.borrow().len();
-        self.selection.set(SelectionRange::new(0, len));
+        self.place(0, len);
     }
 
     /// Check if the input can be edited.
@@ -295,34 +450,119 @@ impl TextEditState {
         !self.read_only.get() && !self.disabled.get()
     }
 
-    /// Insert text at the current caret position (or replace selection).
+    fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            value: self.value(),
+            selection: self.selection.get(),
+            direction: self.selection_direction.get(),
+        }
+    }
+
+    fn restore(&self, snap: EditSnapshot) {
+        *self.value.borrow_mut() = snap.value;
+        self.selection.set(snap.selection);
+        self.selection_direction.set(snap.direction);
+    }
+
+    fn close_typing(&self) {
+        self.history.borrow_mut().typing_open = false;
+    }
+
+    /// The selection's (anchor, focus).
+    fn anchor_focus(&self) -> (usize, usize) {
+        let sel = self.selection.get().normalize();
+        match self.selection_direction.get() {
+            SelectionDirection::Backward => (sel.end, sel.start),
+            _ => (sel.start, sel.end),
+        }
+    }
+
+    /// Select from `anchor` to `focus` (a caret when equal).
+    fn place(&self, anchor: usize, focus: usize) {
+        let value = self.value.borrow();
+        let anchor = floor_boundary(&value, anchor);
+        let focus = floor_boundary(&value, focus);
+        drop(value);
+        let (sel, dir) = if focus < anchor {
+            (
+                SelectionRange::new(focus, anchor),
+                SelectionDirection::Backward,
+            )
+        } else if focus > anchor {
+            (
+                SelectionRange::new(anchor, focus),
+                SelectionDirection::Forward,
+            )
+        } else {
+            (SelectionRange::caret(focus), SelectionDirection::None)
+        };
+        self.selection.set(sel);
+        self.selection_direction.set(dir);
+        self.close_typing();
+    }
+
+    /// Move the caret to `pos`, or with `extend` move the selection's focus
+    /// there and keep its anchor.
+    pub fn move_caret_to(&self, pos: usize, extend: bool) {
+        if extend {
+            let (anchor, _) = self.anchor_focus();
+            self.place(anchor, pos);
+        } else {
+            self.place(pos, pos);
+        }
+    }
+
+    /// Replace the selection with `text` (already sanitized and fitted),
+    /// recording the edit. The caret ends after the text.
+    fn replace_selection(&self, text: &str, kind: EditKind) {
+        let before = self.snapshot();
+        let sel = self.selection.get().normalize();
+        let mut value = self.value.borrow_mut();
+        let start = floor_boundary(&value, sel.start);
+        let end = floor_boundary(&value, sel.end);
+        value.replace_range(start..end, text);
+        drop(value);
+        self.selection
+            .set(SelectionRange::caret(start + text.len()));
+        self.selection_direction.set(SelectionDirection::None);
+        self.history.borrow_mut().record(before, kind);
+    }
+
+    /// Delete `start..end` as one undoable edit; the caret ends at `start`.
+    fn delete_range(&self, start: usize, end: usize) -> bool {
+        if start >= end {
+            return false;
+        }
+        let before = self.snapshot();
+        self.value.borrow_mut().replace_range(start..end, "");
+        self.selection.set(SelectionRange::caret(start));
+        self.selection_direction.set(SelectionDirection::None);
+        self.history.borrow_mut().record(before, EditKind::Discrete);
+        true
+    }
+
+    /// Room left under `maxlength` once the selection is replaced, in
+    /// UTF-16 code units (`None`: unlimited).
+    fn room(&self) -> Option<usize> {
+        let max = self.max_length.get()?;
+        let sel = self.selection.get().normalize();
+        let value = self.value.borrow();
+        let kept = utf16_len(&value)
+            - utf16_len(&value[sel.start.min(value.len())..sel.end.min(value.len())]);
+        Some(max.saturating_sub(kept))
+    }
+
+    /// Insert text at the current caret position (or replace selection),
+    /// as typing: consecutive typed characters undo together. Refused
+    /// (false) when it would pass `maxlength`.
     pub fn insert_text(&self, text: &str) -> bool {
         if !self.is_editable() {
             return false;
         }
-
-        let sel = self.selection.get().normalize();
-        let mut value = self.value.borrow_mut();
-
-        // Check max length
-        if let Some(max) = self.max_length.get() {
-            let new_len = value.len() - sel.len() + text.len();
-            if new_len > max {
-                return false;
-            }
+        if self.room().is_some_and(|room| utf16_len(text) > room) {
+            return false;
         }
-
-        // Replace selection with new text
-        let start = sel.start.min(value.len());
-        let end = sel.end.min(value.len());
-
-        value.replace_range(start..end, text);
-
-        // Move caret to end of inserted text
-        let new_pos = start + text.len();
-        drop(value);
-        self.selection.set(SelectionRange::caret(new_pos));
-
+        self.replace_selection(text, EditKind::Typing);
         true
     }
 
@@ -331,29 +571,12 @@ impl TextEditState {
         if !self.is_editable() {
             return false;
         }
-
         let sel = self.selection.get().normalize();
-        let mut value = self.value.borrow_mut();
-
         if !sel.is_collapsed() {
-            // Delete selection
-            let start = sel.start.min(value.len());
-            let end = sel.end.min(value.len());
-            value.replace_range(start..end, "");
-            drop(value);
-            self.selection.set(SelectionRange::caret(start));
-        } else if sel.start > 0 {
-            // Delete character before caret
-            let pos = sel.start;
-            let start = pos.saturating_sub(1);
-            value.replace_range(start..pos, "");
-            drop(value);
-            self.selection.set(SelectionRange::caret(start));
-        } else {
-            return false;
+            return self.delete_range(sel.start, sel.end);
         }
-
-        true
+        let start = prev_boundary(&self.value.borrow(), sel.start);
+        self.delete_range(start, sel.start)
     }
 
     /// Delete the selection or character after caret (delete key).
@@ -361,84 +584,50 @@ impl TextEditState {
         if !self.is_editable() {
             return false;
         }
-
         let sel = self.selection.get().normalize();
-        let mut value = self.value.borrow_mut();
-        let len = value.len();
-
         if !sel.is_collapsed() {
-            // Delete selection
-            let start = sel.start.min(len);
-            let end = sel.end.min(len);
-            value.replace_range(start..end, "");
-            drop(value);
-            self.selection.set(SelectionRange::caret(start));
-        } else if sel.start < len {
-            // Delete character after caret
-            let pos = sel.start;
-            let end = (pos + 1).min(len);
-            value.replace_range(pos..end, "");
-            drop(value);
-            // Caret stays in place
-        } else {
-            return false;
+            return self.delete_range(sel.start, sel.end);
         }
-
-        true
+        let end = next_boundary(&self.value.borrow(), sel.start);
+        self.delete_range(sel.start, end)
     }
 
-    /// Move caret left.
+    /// Move caret left (by one character); with `extend_selection`, move
+    /// the selection's focus.
     pub fn move_left(&self, extend_selection: bool) {
-        let sel = self.selection.get();
-        let new_pos = sel.start.saturating_sub(1);
-
-        if extend_selection {
-            self.selection.set(SelectionRange::new(new_pos, sel.end));
-        } else if sel.is_collapsed() {
-            self.selection.set(SelectionRange::caret(new_pos));
-        } else {
+        let sel = self.selection.get().normalize();
+        if !extend_selection && !sel.is_collapsed() {
             // Collapse to start
-            self.selection
-                .set(SelectionRange::caret(sel.normalize().start));
+            self.place(sel.start, sel.start);
+            return;
         }
+        let (_, focus) = self.anchor_focus();
+        let pos = prev_boundary(&self.value.borrow(), focus);
+        self.move_caret_to(pos, extend_selection);
     }
 
-    /// Move caret right.
+    /// Move caret right (by one character).
     pub fn move_right(&self, extend_selection: bool) {
-        let sel = self.selection.get();
-        let len = self.value.borrow().len();
-        let new_pos = (sel.end + 1).min(len);
-
-        if extend_selection {
-            self.selection.set(SelectionRange::new(sel.start, new_pos));
-        } else if sel.is_collapsed() {
-            self.selection.set(SelectionRange::caret(new_pos));
-        } else {
+        let sel = self.selection.get().normalize();
+        if !extend_selection && !sel.is_collapsed() {
             // Collapse to end
-            self.selection
-                .set(SelectionRange::caret(sel.normalize().end));
+            self.place(sel.end, sel.end);
+            return;
         }
+        let (_, focus) = self.anchor_focus();
+        let pos = next_boundary(&self.value.borrow(), focus);
+        self.move_caret_to(pos, extend_selection);
     }
 
     /// Move caret to start.
     pub fn move_to_start(&self, extend_selection: bool) {
-        let sel = self.selection.get();
-        if extend_selection {
-            self.selection.set(SelectionRange::new(0, sel.end));
-        } else {
-            self.selection.set(SelectionRange::caret(0));
-        }
+        self.move_caret_to(0, extend_selection);
     }
 
     /// Move caret to end.
     pub fn move_to_end(&self, extend_selection: bool) {
-        let sel = self.selection.get();
         let len = self.value.borrow().len();
-        if extend_selection {
-            self.selection.set(SelectionRange::new(sel.start, len));
-        } else {
-            self.selection.set(SelectionRange::caret(len));
-        }
+        self.move_caret_to(len, extend_selection);
     }
 
     /// Get/set properties.
@@ -513,6 +702,417 @@ impl TextEditState {
         }
 
         true
+    }
+}
+
+/// How many edits a text control can undo.
+pub const UNDO_LIMIT: usize = 100;
+
+/// What kind of text control a [`TextEditState`] edits: decides what a
+/// paste may insert and whether the text may leave the control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextControlKind {
+    /// A single-line `<input>` (text, search, url, tel, email, ...): a
+    /// paste drops line breaks (the value sanitization algorithm).
+    #[default]
+    SingleLine,
+    /// `<input type=password>`: single-line, and copy/cut are refused.
+    Password,
+    /// `<textarea>`: line breaks are kept (normalized to LF).
+    MultiLine,
+}
+
+/// Which platform's editing key conventions apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyPlatform {
+    /// macOS: Cmd is the command key, Option+arrow moves by word,
+    /// Cmd+arrow moves to the line's ends.
+    Mac,
+    /// Windows/Linux: Ctrl is the command key and Ctrl+arrow moves by word.
+    Other,
+}
+
+impl KeyPlatform {
+    /// The platform this build runs on.
+    pub fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            KeyPlatform::Mac
+        } else {
+            KeyPlatform::Other
+        }
+    }
+}
+
+/// An edit command on a text control: what a shortcut,
+/// `document.execCommand` or the engine asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditCommand {
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+    Undo,
+    Redo,
+    /// Insert (or replace the selection with) this text.
+    InsertText(String),
+    DeleteWordBackward,
+    DeleteWordForward,
+}
+
+impl EditCommand {
+    /// The `document.execCommand` name's command, if supported here.
+    /// Names match ASCII case-insensitively; `insertText` takes `value`.
+    pub fn from_exec_name(name: &str, value: Option<&str>) -> Option<Self> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "copy" => EditCommand::Copy,
+            "cut" => EditCommand::Cut,
+            "paste" => EditCommand::Paste,
+            "selectall" => EditCommand::SelectAll,
+            "undo" => EditCommand::Undo,
+            "redo" => EditCommand::Redo,
+            "inserttext" => EditCommand::InsertText(value.unwrap_or("").to_string()),
+            "forwarddelete" => EditCommand::DeleteWordForward,
+            _ => return None,
+        })
+    }
+
+    /// The Input Events `inputType` of the edit this command makes, `None`
+    /// for one that never changes the value (copy, select-all).
+    pub fn input_type(&self) -> Option<&'static str> {
+        Some(match self {
+            EditCommand::Copy | EditCommand::SelectAll => return None,
+            EditCommand::Cut => "deleteByCut",
+            EditCommand::Paste => "insertFromPaste",
+            EditCommand::Undo => "historyUndo",
+            EditCommand::Redo => "historyRedo",
+            EditCommand::InsertText(_) => "insertText",
+            EditCommand::DeleteWordBackward => "deleteWordBackward",
+            EditCommand::DeleteWordForward => "deleteWordForward",
+        })
+    }
+
+    /// Whether the command can change the control's value.
+    pub fn mutates(&self) -> bool {
+        self.input_type().is_some()
+    }
+}
+
+/// What running an [`EditCommand`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EditOutcome {
+    /// The command applied to this control (it was enabled).
+    pub handled: bool,
+    /// The value changed.
+    pub changed: bool,
+    /// The selection changed (and the value did not).
+    pub selection_changed: bool,
+    /// The `inputType` of the change, when `changed`.
+    pub input_type: Option<&'static str>,
+    /// The `data` of the change's input event (inserted text), when any.
+    pub data: Option<String>,
+}
+
+impl TextEditState {
+    /// What kind of control this edits.
+    pub fn kind(&self) -> TextControlKind {
+        self.kind.get()
+    }
+
+    /// Set what kind of control this edits (`<input type>`/`<textarea>`).
+    pub fn set_kind(&self, kind: TextControlKind) {
+        self.kind.set(kind);
+    }
+
+    /// `text` as this control would hold it: a single-line control drops
+    /// line breaks, a textarea normalizes them to LF (HTML value
+    /// sanitization).
+    pub fn sanitize(&self, text: &str) -> String {
+        match self.kind.get() {
+            TextControlKind::MultiLine => text.replace("\r\n", "\n").replace('\r', "\n"),
+            _ => text.chars().filter(|c| !matches!(c, '\r' | '\n')).collect(),
+        }
+    }
+
+    /// Whether the selection may be copied out (not from a password field).
+    fn may_copy(&self) -> bool {
+        self.kind.get() != TextControlKind::Password && !self.selection.get().is_collapsed()
+    }
+
+    /// Copy the selection to `clipboard`. False (clipboard untouched) for
+    /// an empty selection or a password field.
+    pub fn copy(&self, clipboard: &dyn crate::clipboard::Clipboard) -> bool {
+        if !self.may_copy() {
+            return false;
+        }
+        clipboard.write_text(&self.selected_text());
+        true
+    }
+
+    /// Copy the selection to `clipboard` and delete it (one undo entry).
+    pub fn cut(&self, clipboard: &dyn crate::clipboard::Clipboard) -> bool {
+        if !self.is_editable() || !self.copy(clipboard) {
+            return false;
+        }
+        let sel = self.selection.get().normalize();
+        self.delete_range(sel.start, sel.end)
+    }
+
+    /// Paste the clipboard's text over the selection.
+    pub fn paste(&self, clipboard: &dyn crate::clipboard::Clipboard) -> bool {
+        match clipboard.read_text() {
+            Some(text) => self.paste_text(&text),
+            None => false,
+        }
+    }
+
+    /// Paste `text` over the selection as one undo entry: sanitized for
+    /// this control and truncated to fit `maxlength` (whole characters).
+    /// False when nothing could be inserted.
+    pub fn paste_text(&self, text: &str) -> bool {
+        self.insert_discrete(text).is_some()
+    }
+
+    /// [`Self::paste_text`], answering the text actually inserted.
+    fn insert_discrete(&self, text: &str) -> Option<String> {
+        if !self.is_editable() {
+            return None;
+        }
+        let clean = self.sanitize(text);
+        let fitted = match self.room() {
+            Some(room) => utf16_prefix(&clean, room).to_string(),
+            None => clean,
+        };
+        if fitted.is_empty() && self.selection.get().is_collapsed() {
+            return None;
+        }
+        if fitted.is_empty() && !text.is_empty() {
+            // Nothing fits: browsers leave the selection in place.
+            return None;
+        }
+        self.replace_selection(&fitted, EditKind::Discrete);
+        Some(fitted)
+    }
+
+    /// Undo the last edit. False when there is none.
+    pub fn undo(&self) -> bool {
+        if !self.is_editable() {
+            return false;
+        }
+        let Some(before) = self.history.borrow_mut().undo.pop_back() else {
+            return false;
+        };
+        let now = self.snapshot();
+        self.restore(before);
+        let mut h = self.history.borrow_mut();
+        h.redo.push(now);
+        h.typing_open = false;
+        true
+    }
+
+    /// Redo the last undone edit. False when there is none.
+    pub fn redo(&self) -> bool {
+        if !self.is_editable() {
+            return false;
+        }
+        let Some(after) = self.history.borrow_mut().redo.pop() else {
+            return false;
+        };
+        let now = self.snapshot();
+        self.restore(after);
+        let mut h = self.history.borrow_mut();
+        h.undo.push_back(now);
+        h.typing_open = false;
+        true
+    }
+
+    /// Whether there is an edit to undo.
+    pub fn can_undo(&self) -> bool {
+        self.is_editable() && !self.history.borrow().undo.is_empty()
+    }
+
+    /// Whether there is an undone edit to redo.
+    pub fn can_redo(&self) -> bool {
+        self.is_editable() && !self.history.borrow().redo.is_empty()
+    }
+
+    /// Move the caret (or with `extend` the selection's focus) to the start
+    /// of the word before it.
+    pub fn move_word_left(&self, extend: bool) {
+        let (_, focus) = self.anchor_focus();
+        let pos = word_start_before(&self.value.borrow(), focus);
+        self.move_caret_to(pos, extend);
+    }
+
+    /// Move the caret (or the focus) right by a word: to the end of the
+    /// word on macOS, to the start of the next word elsewhere.
+    pub fn move_word_right(&self, extend: bool, platform: KeyPlatform) {
+        let (_, focus) = self.anchor_focus();
+        let value = self.value.borrow();
+        let pos = match platform {
+            KeyPlatform::Mac => word_end_after(&value, focus),
+            KeyPlatform::Other => next_word_start(&value, focus),
+        };
+        drop(value);
+        self.move_caret_to(pos, extend);
+    }
+
+    /// Delete the selection, or back to the start of the word before the
+    /// caret.
+    pub fn delete_word_backward(&self) -> bool {
+        if !self.is_editable() {
+            return false;
+        }
+        let sel = self.selection.get().normalize();
+        if !sel.is_collapsed() {
+            return self.delete_range(sel.start, sel.end);
+        }
+        let start = word_start_before(&self.value.borrow(), sel.start);
+        self.delete_range(start, sel.start)
+    }
+
+    /// Delete the selection, or up to the end of the word after the caret.
+    pub fn delete_word_forward(&self) -> bool {
+        if !self.is_editable() {
+            return false;
+        }
+        let sel = self.selection.get().normalize();
+        if !sel.is_collapsed() {
+            return self.delete_range(sel.start, sel.end);
+        }
+        let end = word_end_after(&self.value.borrow(), sel.start);
+        self.delete_range(sel.start, end)
+    }
+
+    /// Whether `cmd` is enabled here: it would do something.
+    pub fn can_run(&self, cmd: &EditCommand, clipboard: &dyn crate::clipboard::Clipboard) -> bool {
+        let editable = self.is_editable();
+        let sel = self.selection.get().normalize();
+        match cmd {
+            EditCommand::Copy => self.may_copy(),
+            EditCommand::Cut => editable && self.may_copy(),
+            EditCommand::Paste => editable && clipboard.read_text().is_some_and(|t| !t.is_empty()),
+            EditCommand::SelectAll => true,
+            EditCommand::Undo => self.can_undo(),
+            EditCommand::Redo => self.can_redo(),
+            EditCommand::InsertText(_) => editable,
+            EditCommand::DeleteWordBackward => editable && (!sel.is_collapsed() || sel.start > 0),
+            EditCommand::DeleteWordForward => {
+                editable && (!sel.is_collapsed() || sel.end < self.value.borrow().len())
+            }
+        }
+    }
+
+    /// Run `cmd` on this control. Copy and cut write to `clipboard`, paste
+    /// reads it.
+    pub fn run_command(
+        &self,
+        cmd: &EditCommand,
+        clipboard: &dyn crate::clipboard::Clipboard,
+    ) -> EditOutcome {
+        let before_sel = (self.selection.get(), self.selection_direction.get());
+        let mut data = None;
+        let (handled, changed) = match cmd {
+            // Enabled with an empty selection too (it copies nothing), but
+            // never in a password field.
+            EditCommand::Copy => {
+                self.copy(clipboard);
+                (self.kind.get() != TextControlKind::Password, false)
+            }
+            EditCommand::SelectAll => {
+                self.select_all();
+                (true, false)
+            }
+            EditCommand::Cut => {
+                let done = self.cut(clipboard);
+                (
+                    self.is_editable() && self.kind.get() != TextControlKind::Password,
+                    done,
+                )
+            }
+            EditCommand::Paste => match clipboard.read_text() {
+                Some(text) if self.is_editable() => {
+                    data = self.insert_discrete(&text);
+                    (true, data.is_some())
+                }
+                _ => (false, false),
+            },
+            EditCommand::Undo => {
+                let done = self.undo();
+                (done, done)
+            }
+            EditCommand::Redo => {
+                let done = self.redo();
+                (done, done)
+            }
+            EditCommand::InsertText(text) => {
+                if !self.is_editable() {
+                    (false, false)
+                } else if text.is_empty() {
+                    let sel = self.selection.get().normalize();
+                    let done = self.delete_range(sel.start, sel.end);
+                    (true, done)
+                } else {
+                    data = self.insert_discrete(text);
+                    (true, data.is_some())
+                }
+            }
+            EditCommand::DeleteWordBackward => {
+                let done = self.delete_word_backward();
+                (done, done)
+            }
+            EditCommand::DeleteWordForward => {
+                let done = self.delete_word_forward();
+                (done, done)
+            }
+        };
+        let selection_changed =
+            !changed && before_sel != (self.selection.get(), self.selection_direction.get());
+        EditOutcome {
+            handled,
+            changed,
+            selection_changed,
+            input_type: if changed { cmd.input_type() } else { None },
+            data: if changed { data } else { None },
+        }
+    }
+}
+
+/// The text control kind of `node`, `None` when it is not a text control
+/// (an `<input>` whose type does not edit text, or another element).
+pub fn text_control_kind(node: &crate::Node) -> Option<TextControlKind> {
+    let crate::NodeType::Element { tag_name, .. } = &node.node_type else {
+        return None;
+    };
+    if tag_name.eq_ignore_ascii_case("textarea") {
+        return Some(TextControlKind::MultiLine);
+    }
+    if !tag_name.eq_ignore_ascii_case("input") {
+        return None;
+    }
+    let ty = node
+        .get_attribute("type")
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match InputType::from_str(&ty) {
+        InputType::Password => Some(TextControlKind::Password),
+        t if t.is_text_input() && t != InputType::Number => Some(TextControlKind::SingleLine),
+        _ => None,
+    }
+}
+
+impl TextEditState {
+    /// Take the control's editing attributes from its element: the kind
+    /// (input type / textarea), `maxlength`, `readonly` and `disabled`.
+    pub fn sync_attributes(&self, node: &crate::Node) {
+        if let Some(kind) = text_control_kind(node) {
+            self.set_kind(kind);
+        }
+        self.set_max_length(
+            node.get_attribute("maxlength")
+                .and_then(|v| v.trim().parse::<usize>().ok()),
+        );
+        self.set_read_only(node.get_attribute("readonly").is_some());
+        self.set_disabled(node.get_attribute("disabled").is_some());
     }
 }
 
@@ -680,8 +1280,10 @@ impl Default for TextAreaState {
 impl TextAreaState {
     /// Create a new empty textarea state with default 2 rows, 20 cols.
     pub fn new() -> Self {
+        let edit = TextEditState::new();
+        edit.set_kind(TextControlKind::MultiLine);
         Self {
-            edit: TextEditState::new(),
+            edit,
             rows: Cell::new(2),
             cols: Cell::new(20),
             wrap: Cell::new(WrapMode::Soft),
@@ -690,8 +1292,10 @@ impl TextAreaState {
 
     /// Create with initial value.
     pub fn with_value(value: impl Into<String>) -> Self {
+        let edit = TextEditState::with_value(value);
+        edit.set_kind(TextControlKind::MultiLine);
         Self {
-            edit: TextEditState::with_value(value),
+            edit,
             rows: Cell::new(2),
             cols: Cell::new(20),
             wrap: Cell::new(WrapMode::Soft),
@@ -805,7 +1409,7 @@ impl TextAreaState {
 
     /// Get the current line position.
     pub fn caret_line_position(&self) -> LinePosition {
-        self.offset_to_position(self.edit.caret_position())
+        self.offset_to_position(self.edit.focus_position())
     }
 
     /// Get the length of a specific line.
@@ -829,12 +1433,7 @@ impl TextAreaState {
             column: new_col,
         });
 
-        if extend_selection {
-            let sel = self.edit.selection();
-            self.edit.set_selection(new_offset, sel.end);
-        } else {
-            self.edit.set_caret(new_offset);
-        }
+        self.edit.move_caret_to(new_offset, extend_selection);
     }
 
     /// Move caret down one line.
@@ -855,12 +1454,7 @@ impl TextAreaState {
             column: new_col,
         });
 
-        if extend_selection {
-            let sel = self.edit.selection();
-            self.edit.set_selection(sel.start, new_offset);
-        } else {
-            self.edit.set_caret(new_offset);
-        }
+        self.edit.move_caret_to(new_offset, extend_selection);
     }
 
     /// Move caret to start of current line.
@@ -871,12 +1465,7 @@ impl TextAreaState {
             column: 0,
         });
 
-        if extend_selection {
-            let sel = self.edit.selection();
-            self.edit.set_selection(new_offset, sel.end);
-        } else {
-            self.edit.set_caret(new_offset);
-        }
+        self.edit.move_caret_to(new_offset, extend_selection);
     }
 
     /// Move caret to end of current line.
@@ -888,12 +1477,7 @@ impl TextAreaState {
             column: line_len,
         });
 
-        if extend_selection {
-            let sel = self.edit.selection();
-            self.edit.set_selection(sel.start, new_offset);
-        } else {
-            self.edit.set_caret(new_offset);
-        }
+        self.edit.move_caret_to(new_offset, extend_selection);
     }
 
     /// Insert a newline at the caret.
@@ -1065,32 +1649,26 @@ impl FormState {
         // Resolve action URL relative to base
         let url = if action.is_empty() {
             base_url.to_string()
-        } else if action.starts_with("http://") || action.starts_with("https://") {
-            action
-        } else if action.starts_with('/') {
-            // Absolute path
-            if let Some(origin) = extract_origin(base_url) {
-                format!("{}{}", origin, action)
-            } else {
-                action
-            }
         } else {
-            // Relative path
-            if let Some(base) = base_url.rfind('/') {
-                format!("{}/{}", &base_url[..base], action)
-            } else {
-                action
-            }
+            resolve_url(base_url, &action).unwrap_or(action)
         };
 
         match method {
             FormMethod::Get => {
                 // Append data to URL as query string
                 let query = String::from_utf8_lossy(&FormState::encode_url(entries)).to_string();
-                let final_url = if url.contains('?') {
-                    format!("{}&{}", url, query)
-                } else {
-                    format!("{}?{}", url, query)
+                let final_url = match url::Url::parse(&url) {
+                    // Into the query, ahead of any fragment.
+                    Ok(mut parsed) => {
+                        let joined = match parsed.query() {
+                            Some(existing) => format!("{}&{}", existing, query),
+                            None => query,
+                        };
+                        parsed.set_query(Some(&joined));
+                        parsed.to_string()
+                    }
+                    Err(_) if url.contains('?') => format!("{}&{}", url, query),
+                    Err(_) => format!("{}?{}", url, query),
                 };
 
                 FormSubmission {
@@ -1133,16 +1711,10 @@ impl FormState {
     }
 }
 
-/// Extract the origin (scheme + host + port) from a URL.
-fn extract_origin(url: &str) -> Option<String> {
-    if let Some(idx) = url.find("://") {
-        let rest = &url[idx + 3..];
-        if let Some(path_idx) = rest.find('/') {
-            return Some(format!("{}{}", &url[..idx + 3], &rest[..path_idx]));
-        }
-        return Some(url.to_string());
-    }
-    None
+/// `input` resolved against `base` as the URL Standard says (`//host/path`
+/// keeps only the base's scheme), or `None` when either does not parse.
+pub fn resolve_url(base: &str, input: &str) -> Option<String> {
+    url::Url::parse(base).ok()?.join(input).ok().map(String::from)
 }
 
 /// A prepared form submission ready to be sent.
@@ -1213,9 +1785,84 @@ pub enum KeyHandleResult {
 /// This module bridges key events from rustkit-core to TextEditState operations.
 pub mod keyboard {
     use super::*;
+    use crate::clipboard::Clipboard;
 
-    /// Handle a key event for a single-line text input.
-    /// Returns what action was taken.
+    const VK_BACK: u32 = 0x08;
+    const VK_TAB: u32 = 0x09;
+    const VK_RETURN: u32 = 0x0D;
+    const VK_ESCAPE: u32 = 0x1B;
+    const VK_END: u32 = 0x23;
+    const VK_HOME: u32 = 0x24;
+    const VK_LEFT: u32 = 0x25;
+    const VK_UP: u32 = 0x26;
+    const VK_RIGHT: u32 = 0x27;
+    const VK_DOWN: u32 = 0x28;
+    const VK_DELETE: u32 = 0x2E;
+
+    /// The letter a chord names: the Win32 VK for A-Z, or the typed text
+    /// (the window sends Cmd+C as vk 0 with text "c", or "C" with Shift).
+    fn chord_letter(key_code: u32, key: &str) -> Option<char> {
+        if (0x41..=0x5A).contains(&key_code) {
+            return char::from_u32(key_code).map(|c| c.to_ascii_lowercase());
+        }
+        let mut chars = key.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_lowercase()),
+            _ => None,
+        }
+    }
+
+    /// The edit command a key chord means on `platform`, if it is one
+    /// (clipboard, history, select-all, delete-word). `primary` is the
+    /// command modifier: Cmd on macOS, Ctrl elsewhere.
+    pub fn command_for_key(
+        platform: KeyPlatform,
+        key_code: u32,
+        key: &str,
+        primary: bool,
+        shift: bool,
+        alt: bool,
+    ) -> Option<EditCommand> {
+        if primary && !alt {
+            if let Some(letter) = chord_letter(key_code, key) {
+                return match (letter, shift) {
+                    ('a', false) => Some(EditCommand::SelectAll),
+                    ('c', _) => Some(EditCommand::Copy),
+                    ('x', _) => Some(EditCommand::Cut),
+                    ('v', _) => Some(EditCommand::Paste),
+                    ('z', false) => Some(EditCommand::Undo),
+                    ('z', true) => Some(EditCommand::Redo),
+                    ('y', false) if platform == KeyPlatform::Other => Some(EditCommand::Redo),
+                    _ => None,
+                };
+            }
+        }
+        // Delete by word: Option+Backspace/Delete on macOS, Ctrl elsewhere.
+        let word_mod = match platform {
+            KeyPlatform::Mac => alt && !primary,
+            KeyPlatform::Other => primary && !alt,
+        };
+        match key_code {
+            VK_BACK if word_mod => Some(EditCommand::DeleteWordBackward),
+            VK_DELETE if word_mod => Some(EditCommand::DeleteWordForward),
+            _ => None,
+        }
+    }
+
+    /// An outcome as the key handler's result.
+    fn result_of(out: &EditOutcome) -> KeyHandleResult {
+        if out.changed {
+            KeyHandleResult::ValueChanged
+        } else if out.selection_changed {
+            KeyHandleResult::SelectionChanged
+        } else {
+            KeyHandleResult::Handled
+        }
+    }
+
+    /// Handle a key event for a single-line text input, on this platform,
+    /// copying to and pasting from this thread's default in-memory
+    /// clipboard. Returns what action was taken.
     pub fn handle_input_key(
         state: &TextEditState,
         key_code: u32,
@@ -1224,91 +1871,22 @@ pub mod keyboard {
         shift: bool,
         alt: bool,
     ) -> KeyHandleResult {
-        // Don't handle if Alt is pressed (usually browser shortcuts)
-        if alt {
-            return KeyHandleResult::Unhandled;
-        }
-
-        // Handle keyboard shortcuts (Ctrl+key)
-        if ctrl {
-            return handle_ctrl_key(state, key_code, key);
-        }
-
-        // Handle navigation and editing keys
-        match key_code {
-            // Arrow keys
-            0x25 => {
-                // Left
-                state.move_left(shift);
-                KeyHandleResult::SelectionChanged
-            }
-            0x27 => {
-                // Right
-                state.move_right(shift);
-                KeyHandleResult::SelectionChanged
-            }
-            0x24 => {
-                // Home
-                state.move_to_start(shift);
-                KeyHandleResult::SelectionChanged
-            }
-            0x23 => {
-                // End
-                state.move_to_end(shift);
-                KeyHandleResult::SelectionChanged
-            }
-
-            // Editing keys
-            0x08 => {
-                // Backspace
-                if state.delete_backward() {
-                    KeyHandleResult::ValueChanged
-                } else {
-                    KeyHandleResult::Handled
-                }
-            }
-            0x2E => {
-                // Delete
-                if state.delete_forward() {
-                    KeyHandleResult::ValueChanged
-                } else {
-                    KeyHandleResult::Handled
-                }
-            }
-            0x0D => {
-                // Enter - submit form for single-line input
-                KeyHandleResult::Submit
-            }
-            0x09 => {
-                // Tab - move focus
-                KeyHandleResult::Unhandled
-            }
-            0x1B => {
-                // Escape - typically blur
-                KeyHandleResult::Unhandled
-            }
-
-            // Character input
-            _ => {
-                if !key.is_empty() && key.chars().count() == 1 {
-                    // SAFETY: Checked above that string is non-empty and has exactly 1 char
-                    let ch = key.chars().next().unwrap();
-                    // Filter out control characters
-                    if ch.is_control() {
-                        KeyHandleResult::Unhandled
-                    } else if state.insert_text(key) {
-                        KeyHandleResult::ValueChanged
-                    } else {
-                        KeyHandleResult::Handled
-                    }
-                } else {
-                    KeyHandleResult::Unhandled
-                }
-            }
-        }
+        let clipboard = crate::clipboard::thread_default();
+        handle_key(
+            state,
+            None,
+            &*clipboard,
+            KeyPlatform::current(),
+            key_code,
+            key,
+            ctrl,
+            shift,
+            alt,
+        )
     }
 
-    /// Handle a key event for a multi-line textarea.
+    /// Handle a key event for a multi-line textarea (see
+    /// [`handle_input_key`]).
     pub fn handle_textarea_key(
         state: &TextAreaState,
         key_code: u32,
@@ -1317,284 +1895,136 @@ pub mod keyboard {
         shift: bool,
         alt: bool,
     ) -> KeyHandleResult {
-        if alt {
+        let clipboard = crate::clipboard::thread_default();
+        handle_key(
+            &state.edit,
+            Some(state),
+            &*clipboard,
+            KeyPlatform::current(),
+            key_code,
+            key,
+            ctrl,
+            shift,
+            alt,
+        )
+    }
+
+    /// A key for a text control, with the clipboard and platform explicit.
+    /// `area` is the textarea wrapping `state`, for line movement and
+    /// Enter. `primary` is the command modifier (Cmd on macOS, Ctrl
+    /// elsewhere; the window passes Ctrl-or-Cmd).
+    #[allow(clippy::too_many_arguments)]
+    pub fn handle_key(
+        state: &TextEditState,
+        area: Option<&TextAreaState>,
+        clipboard: &dyn Clipboard,
+        platform: KeyPlatform,
+        key_code: u32,
+        key: &str,
+        primary: bool,
+        shift: bool,
+        alt: bool,
+    ) -> KeyHandleResult {
+        if let Some(cmd) = command_for_key(platform, key_code, key, primary, shift, alt) {
+            return result_of(&state.run_command(&cmd, clipboard));
+        }
+        let mac = platform == KeyPlatform::Mac;
+        // Moving by word: Option+arrow on macOS, Ctrl+arrow elsewhere. Cmd
+        // +arrow on macOS goes to the line's (or the text's) ends.
+        let by_word = if mac {
+            alt && !primary
+        } else {
+            primary && !alt
+        };
+        let to_edge = mac && primary && !alt;
+        let moved = |f: &dyn Fn()| {
+            f();
+            KeyHandleResult::SelectionChanged
+        };
+        match key_code {
+            VK_LEFT if by_word => return moved(&|| state.move_word_left(shift)),
+            VK_RIGHT if by_word => return moved(&|| state.move_word_right(shift, platform)),
+            VK_LEFT if to_edge => {
+                return moved(&|| match area {
+                    Some(a) => a.move_to_line_start(shift),
+                    None => state.move_to_start(shift),
+                })
+            }
+            VK_RIGHT if to_edge => {
+                return moved(&|| match area {
+                    Some(a) => a.move_to_line_end(shift),
+                    None => state.move_to_end(shift),
+                })
+            }
+            // Cmd+Up/Down (macOS) and Ctrl+Home/End: the text's ends.
+            VK_UP if to_edge => return moved(&|| state.move_to_start(shift)),
+            VK_DOWN if to_edge => return moved(&|| state.move_to_end(shift)),
+            VK_HOME if primary && !alt => return moved(&|| state.move_to_start(shift)),
+            VK_END if primary && !alt => return moved(&|| state.move_to_end(shift)),
+            _ => {}
+        }
+        // Other chords are the browser's or the page's (and Option+letter
+        // composition is not modelled).
+        if primary || alt {
             return KeyHandleResult::Unhandled;
         }
 
-        if ctrl {
-            return handle_ctrl_key(&state.edit, key_code, key);
-        }
-
         match key_code {
-            // Arrow keys
-            0x25 => {
-                // Left
-                state.edit.move_left(shift);
-                KeyHandleResult::SelectionChanged
-            }
-            0x27 => {
-                // Right
-                state.edit.move_right(shift);
-                KeyHandleResult::SelectionChanged
-            }
-            0x26 => {
-                // Up - move up a line
-                state.move_up(shift);
-                KeyHandleResult::SelectionChanged
-            }
-            0x28 => {
-                // Down - move down a line
-                state.move_down(shift);
-                KeyHandleResult::SelectionChanged
-            }
-            0x24 => {
-                // Home
-                if ctrl {
-                    state.edit.move_to_start(shift);
-                } else {
-                    state.move_to_line_start(shift);
-                }
-                KeyHandleResult::SelectionChanged
-            }
-            0x23 => {
-                // End
-                if ctrl {
-                    state.edit.move_to_end(shift);
-                } else {
-                    state.move_to_line_end(shift);
-                }
-                KeyHandleResult::SelectionChanged
-            }
-
-            // Editing keys
-            0x08 => {
-                // Backspace
-                if state.edit.delete_backward() {
+            VK_LEFT => moved(&|| state.move_left(shift)),
+            VK_RIGHT => moved(&|| state.move_right(shift)),
+            VK_UP if area.is_some() => moved(&|| area.unwrap().move_up(shift)),
+            VK_DOWN if area.is_some() => moved(&|| area.unwrap().move_down(shift)),
+            VK_HOME => moved(&|| match area {
+                Some(a) => a.move_to_line_start(shift),
+                None => state.move_to_start(shift),
+            }),
+            VK_END => moved(&|| match area {
+                Some(a) => a.move_to_line_end(shift),
+                None => state.move_to_end(shift),
+            }),
+            VK_BACK => {
+                if state.delete_backward() {
                     KeyHandleResult::ValueChanged
                 } else {
                     KeyHandleResult::Handled
                 }
             }
-            0x2E => {
-                // Delete
-                if state.edit.delete_forward() {
+            VK_DELETE => {
+                if state.delete_forward() {
                     KeyHandleResult::ValueChanged
                 } else {
                     KeyHandleResult::Handled
                 }
             }
-            0x0D => {
-                // Enter - insert newline in textarea
-                if state.insert_newline() {
-                    KeyHandleResult::ValueChanged
-                } else {
-                    KeyHandleResult::Handled
-                }
-            }
-            0x09 => {
-                // Tab - could insert tab or move focus
-                KeyHandleResult::Unhandled
-            }
-            0x1B => {
-                // Escape
-                KeyHandleResult::Unhandled
-            }
-
-            // Character input
-            _ => {
-                if !key.is_empty() && key.chars().count() == 1 {
-                    // SAFETY: Checked above that string is non-empty and has exactly 1 char
-                    let ch = key.chars().next().unwrap();
-                    if ch.is_control() {
-                        KeyHandleResult::Unhandled
-                    } else if state.edit.insert_text(key) {
+            VK_RETURN => match area {
+                // Enter inserts a line break in a textarea...
+                Some(a) => {
+                    if a.insert_newline() {
                         KeyHandleResult::ValueChanged
                     } else {
                         KeyHandleResult::Handled
                     }
-                } else {
-                    KeyHandleResult::Unhandled
+                }
+                // ...and submits the form from a single-line input.
+                None => KeyHandleResult::Submit,
+            },
+            // Tab moves focus; Escape typically blurs.
+            VK_TAB | VK_ESCAPE => KeyHandleResult::Unhandled,
+            // Character input
+            _ => {
+                let mut chars = key.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) if !ch.is_control() => {
+                        if state.insert_text(key) {
+                            KeyHandleResult::ValueChanged
+                        } else {
+                            KeyHandleResult::Handled
+                        }
+                    }
+                    _ => KeyHandleResult::Unhandled,
                 }
             }
         }
-    }
-
-    /// Handle Ctrl+key shortcuts.
-    fn handle_ctrl_key(state: &TextEditState, key_code: u32, _key: &str) -> KeyHandleResult {
-        match key_code {
-            // Ctrl+A - Select all
-            0x41 => {
-                state.select_all();
-                KeyHandleResult::SelectionChanged
-            }
-            // Ctrl+C - Copy (handled by OS/clipboard API)
-            0x43 => KeyHandleResult::Unhandled,
-            // Ctrl+V - Paste (handled by OS/clipboard API)
-            0x56 => KeyHandleResult::Unhandled,
-            // Ctrl+X - Cut (handled by OS/clipboard API)
-            0x58 => KeyHandleResult::Unhandled,
-            // Ctrl+Z - Undo (not implemented yet)
-            0x5A => KeyHandleResult::Unhandled,
-            // Ctrl+Y - Redo (not implemented yet)
-            0x59 => KeyHandleResult::Unhandled,
-            // Ctrl+Home - Go to start
-            0x24 => {
-                state.move_to_start(false);
-                KeyHandleResult::SelectionChanged
-            }
-            // Ctrl+End - Go to end
-            0x23 => {
-                state.move_to_end(false);
-                KeyHandleResult::SelectionChanged
-            }
-            // Ctrl+Left - Move word left (simplified: move to start)
-            0x25 => {
-                move_word_left(state);
-                KeyHandleResult::SelectionChanged
-            }
-            // Ctrl+Right - Move word right (simplified: move to end)
-            0x27 => {
-                move_word_right(state);
-                KeyHandleResult::SelectionChanged
-            }
-            // Ctrl+Backspace - Delete word backward
-            0x08 => {
-                if delete_word_backward(state) {
-                    KeyHandleResult::ValueChanged
-                } else {
-                    KeyHandleResult::Handled
-                }
-            }
-            // Ctrl+Delete - Delete word forward
-            0x2E => {
-                if delete_word_forward(state) {
-                    KeyHandleResult::ValueChanged
-                } else {
-                    KeyHandleResult::Handled
-                }
-            }
-            _ => KeyHandleResult::Unhandled,
-        }
-    }
-
-    /// Move caret to the start of the previous word.
-    fn move_word_left(state: &TextEditState) {
-        let value = state.value();
-        let pos = state.caret_position();
-        if pos == 0 {
-            return;
-        }
-
-        let chars: Vec<char> = value.chars().collect();
-        let mut new_pos = pos.saturating_sub(1);
-
-        // Skip whitespace
-        while new_pos > 0 && chars.get(new_pos).is_some_and(|c| c.is_whitespace()) {
-            new_pos -= 1;
-        }
-
-        // Skip word characters
-        while new_pos > 0 && chars.get(new_pos - 1).is_some_and(|c| !c.is_whitespace()) {
-            new_pos -= 1;
-        }
-
-        state.set_caret(new_pos);
-    }
-
-    /// Move caret to the end of the next word.
-    fn move_word_right(state: &TextEditState) {
-        let value = state.value();
-        let pos = state.caret_position();
-        let len = value.chars().count();
-        if pos >= len {
-            return;
-        }
-
-        let chars: Vec<char> = value.chars().collect();
-        let mut new_pos = pos;
-
-        // Skip current word
-        while new_pos < len && chars.get(new_pos).is_some_and(|c| !c.is_whitespace()) {
-            new_pos += 1;
-        }
-
-        // Skip whitespace
-        while new_pos < len && chars.get(new_pos).is_some_and(|c| c.is_whitespace()) {
-            new_pos += 1;
-        }
-
-        state.set_caret(new_pos);
-    }
-
-    /// Delete the word before the caret.
-    fn delete_word_backward(state: &TextEditState) -> bool {
-        if !state.is_editable() {
-            return false;
-        }
-
-        let sel = state.selection();
-        if !sel.is_collapsed() {
-            return state.delete_backward();
-        }
-
-        let value = state.value();
-        let pos = state.caret_position();
-        if pos == 0 {
-            return false;
-        }
-
-        let chars: Vec<char> = value.chars().collect();
-        let mut start = pos.saturating_sub(1);
-
-        // Skip whitespace
-        while start > 0 && chars.get(start).is_some_and(|c| c.is_whitespace()) {
-            start -= 1;
-        }
-
-        // Skip word characters
-        while start > 0 && chars.get(start - 1).is_some_and(|c| !c.is_whitespace()) {
-            start -= 1;
-        }
-
-        // Select and delete
-        state.set_selection(start, pos);
-        state.delete_backward()
-    }
-
-    /// Delete the word after the caret.
-    fn delete_word_forward(state: &TextEditState) -> bool {
-        if !state.is_editable() {
-            return false;
-        }
-
-        let sel = state.selection();
-        if !sel.is_collapsed() {
-            return state.delete_forward();
-        }
-
-        let value = state.value();
-        let pos = state.caret_position();
-        let len = value.chars().count();
-        if pos >= len {
-            return false;
-        }
-
-        let chars: Vec<char> = value.chars().collect();
-        let mut end = pos;
-
-        // Skip word characters
-        while end < len && chars.get(end).is_some_and(|c| !c.is_whitespace()) {
-            end += 1;
-        }
-
-        // Skip whitespace
-        while end < len && chars.get(end).is_some_and(|c| c.is_whitespace()) {
-            end += 1;
-        }
-
-        // Select and delete
-        state.set_selection(pos, end);
-        state.delete_forward()
     }
 }
 
@@ -2028,6 +2458,19 @@ mod tests {
         assert!(submission.body.is_none());
     }
 
+    /// A GET with no successful controls still builds `action?` (HTML form
+    /// submission). Engine #771 depended on this shape after the empty-list
+    /// early return was removed.
+    #[test]
+    fn a_get_with_no_entries_still_appends_an_empty_query() {
+        let form = FormState::new();
+        form.set_action("/search");
+        form.set_method(FormMethod::Get);
+        let submission = form.create_submission("https://example.com/page", &[]);
+        assert_eq!(submission.url, "https://example.com/search?");
+        assert!(submission.body.is_none());
+    }
+
     #[test]
     fn test_form_submission_post() {
         let form = FormState::new();
@@ -2071,16 +2514,531 @@ mod tests {
         assert!(submission.is_self_target());
     }
 
+    /// A protocol-relative action (`//host/path`) takes only its scheme
+    /// from the document (WHATWG URL): the Wikipedia portal's search form.
     #[test]
-    fn test_extract_origin() {
+    fn test_form_submission_protocol_relative_action() {
+        let base = "https://www.wikipedia.org/";
+        let submit = |action: &str, method: FormMethod| {
+            let form = FormState::new();
+            form.set_action(action);
+            form.set_method(method);
+            form.create_submission(base, &[]).url
+        };
         assert_eq!(
-            extract_origin("https://example.com/path/page"),
-            Some("https://example.com".to_string())
+            submit("//www.wikipedia.org/search-redirect.php", FormMethod::Post),
+            "https://www.wikipedia.org/search-redirect.php"
+        );
+        assert_eq!(submit("//example.test", FormMethod::Post), "https://example.test/");
+        assert_eq!(
+            submit("//example.test/path?q#f", FormMethod::Post),
+            "https://example.test/path?q#f"
         );
         assert_eq!(
-            extract_origin("http://localhost:8080/"),
-            Some("http://localhost:8080".to_string())
+            form_with_entry("//www.wikipedia.org/search-redirect.php", base),
+            "https://www.wikipedia.org/search-redirect.php?search=rust"
         );
-        assert_eq!(extract_origin("invalid"), None);
+    }
+
+    /// The other relative forms resolve as the URL Standard says too.
+    #[test]
+    fn test_form_submission_relative_actions() {
+        let base = "https://example.com/dir/page?old#frag";
+        let submit = |action: &str| {
+            let form = FormState::new();
+            form.set_action(action);
+            form.set_method(FormMethod::Post);
+            form.create_submission(base, &[]).url
+        };
+        assert_eq!(submit("next"), "https://example.com/dir/next");
+        assert_eq!(submit("../up"), "https://example.com/up");
+        assert_eq!(submit("?q=1"), "https://example.com/dir/page?q=1");
+        assert_eq!(submit("http://other.test/x"), "http://other.test/x");
+        assert_eq!(submit(""), base);
+    }
+
+    /// A GET submission of one `search=rust` pair to `action`.
+    fn form_with_entry(action: &str, base: &str) -> String {
+        let form = FormState::new();
+        form.set_action(action);
+        form.set_method(FormMethod::Get);
+        let entries = vec![FormDataEntry {
+            name: "search".to_string(),
+            value: FormDataValue::String("rust".to_string()),
+        }];
+        form.create_submission(base, &entries).url
+    }
+
+    #[test]
+    fn test_resolve_url() {
+        let base = "https://www.wikipedia.org/";
+        assert_eq!(resolve_url(base, "//example.test/path").as_deref(), Some("https://example.test/path"));
+        assert_eq!(resolve_url(base, "//example.test").as_deref(), Some("https://example.test/"));
+        assert_eq!(resolve_url(base, "//example.test/p?q#f").as_deref(), Some("https://example.test/p?q#f"));
+        assert_eq!(resolve_url("http://localhost:8080/a/b", "c").as_deref(), Some("http://localhost:8080/a/c"));
+        assert_eq!(resolve_url("invalid", "/x"), None);
+    }
+}
+
+#[cfg(test)]
+mod edit_command_tests {
+    //! CH2.E1: clipboard, cut/copy/paste, undo/redo and word movement in
+    //! text controls, through the same key entry point the engine uses.
+    use super::keyboard::{command_for_key, handle_key};
+    use super::*;
+    use crate::clipboard::{Clipboard, MemoryClipboard};
+
+    const VK_BACK: u32 = 0x08;
+    const VK_DELETE: u32 = 0x2E;
+    const VK_LEFT: u32 = 0x25;
+    const VK_RIGHT: u32 = 0x27;
+    const VK_HOME: u32 = 0x24;
+    const VK_END: u32 = 0x23;
+
+    /// A key on `platform` with the command modifier held (Cmd/Ctrl).
+    fn cmd(
+        s: &TextEditState,
+        cb: &dyn Clipboard,
+        p: KeyPlatform,
+        letter: &str,
+        shift: bool,
+    ) -> KeyHandleResult {
+        // The window delivers Cmd+C as vk 0 + text "c" (hiwave-app).
+        handle_key(s, None, cb, p, 0, letter, true, shift, false)
+    }
+
+    fn key(
+        s: &TextEditState,
+        cb: &dyn Clipboard,
+        p: KeyPlatform,
+        vk: u32,
+        shift: bool,
+        primary: bool,
+        alt: bool,
+    ) -> KeyHandleResult {
+        handle_key(s, None, cb, p, vk, "", primary, shift, alt)
+    }
+
+    fn typed(s: &TextEditState, cb: &dyn Clipboard, text: &str) {
+        for ch in text.chars() {
+            let k = ch.to_string();
+            assert_eq!(
+                handle_key(s, None, cb, KeyPlatform::Mac, 0, &k, false, false, false),
+                KeyHandleResult::ValueChanged
+            );
+        }
+    }
+
+    #[test]
+    fn select_all_copy_end_paste_doubles_the_text() {
+        for p in [KeyPlatform::Mac, KeyPlatform::Other] {
+            let cb = MemoryClipboard::new();
+            let s = TextEditState::with_value("hello");
+            assert_eq!(
+                cmd(&s, &cb, p, "a", false),
+                KeyHandleResult::SelectionChanged
+            );
+            assert_eq!(s.selected_text(), "hello");
+            assert_eq!(cmd(&s, &cb, p, "c", false), KeyHandleResult::Handled);
+            assert_eq!(cb.read_text().as_deref(), Some("hello"));
+            assert_eq!(
+                key(&s, &cb, p, VK_END, false, false, false),
+                KeyHandleResult::SelectionChanged
+            );
+            assert_eq!(cmd(&s, &cb, p, "v", false), KeyHandleResult::ValueChanged);
+            assert_eq!(s.value(), "hellohello", "{p:?}");
+            assert_eq!(s.selection(), SelectionRange::caret(10));
+        }
+    }
+
+    #[test]
+    fn cut_empties_the_field_and_fills_the_clipboard() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::with_value("hello");
+        cmd(&s, &cb, KeyPlatform::Other, "a", false);
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Other, "x", false),
+            KeyHandleResult::ValueChanged
+        );
+        assert_eq!(s.value(), "");
+        assert_eq!(cb.read_text().as_deref(), Some("hello"));
+        // Undo puts the cut text back, selected as it was.
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Other, "z", false),
+            KeyHandleResult::ValueChanged
+        );
+        assert_eq!(s.value(), "hello");
+        assert_eq!(s.selected_text(), "hello");
+    }
+
+    #[test]
+    fn undo_after_typing_restores_empty_and_redo_restores_the_typing() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::new();
+        typed(&s, &cb, "abc");
+        // Consecutive typed characters are one history entry.
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Mac, "z", false),
+            KeyHandleResult::ValueChanged
+        );
+        assert_eq!(s.value(), "");
+        assert!(!s.can_undo());
+        // Cmd+Shift+Z (mac) and Ctrl+Y (elsewhere) redo.
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Mac, "Z", true),
+            KeyHandleResult::ValueChanged
+        );
+        assert_eq!(s.value(), "abc");
+        assert_eq!(s.caret_position(), 3);
+        cmd(&s, &cb, KeyPlatform::Other, "z", false);
+        assert_eq!(s.value(), "");
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Other, "y", false),
+            KeyHandleResult::ValueChanged
+        );
+        assert_eq!(s.value(), "abc");
+        // Nothing left to redo.
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Other, "y", false),
+            KeyHandleResult::Handled
+        );
+    }
+
+    #[test]
+    fn a_paste_and_a_delete_are_their_own_history_entries() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::new();
+        typed(&s, &cb, "ab");
+        cb.write_text("XY");
+        cmd(&s, &cb, KeyPlatform::Mac, "v", false);
+        typed(&s, &cb, "c");
+        key(&s, &cb, KeyPlatform::Mac, VK_BACK, false, false, false);
+        assert_eq!(s.value(), "abXY");
+        let mut seen = Vec::new();
+        while s.undo() {
+            seen.push(s.value());
+        }
+        assert_eq!(seen, ["abXYc", "abXY", "ab", ""]);
+        // A new edit after undo drops the redo branch.
+        typed(&s, &cb, "q");
+        assert!(!s.redo());
+    }
+
+    #[test]
+    fn caret_movement_closes_the_typing_group() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::new();
+        typed(&s, &cb, "ab");
+        key(&s, &cb, KeyPlatform::Other, VK_LEFT, false, false, false);
+        typed(&s, &cb, "c");
+        assert_eq!(s.value(), "acb");
+        assert!(s.undo());
+        assert_eq!(s.value(), "ab");
+        assert!(s.undo());
+        assert_eq!(s.value(), "");
+    }
+
+    #[test]
+    fn history_is_bounded() {
+        let s = TextEditState::new();
+        for _ in 0..(UNDO_LIMIT + 20) {
+            s.paste_text("x");
+        }
+        let mut undos = 0;
+        while s.undo() {
+            undos += 1;
+        }
+        assert_eq!(undos, UNDO_LIMIT);
+        assert_eq!(s.value(), "x".repeat(20));
+    }
+
+    #[test]
+    fn a_paste_past_maxlength_is_truncated() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::with_value("abc");
+        s.set_max_length(Some(5));
+        cb.write_text("12345");
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Mac, "v", false),
+            KeyHandleResult::ValueChanged
+        );
+        assert_eq!(s.value(), "abc12");
+        // Full: a paste inserts nothing and changes nothing.
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Mac, "v", false),
+            KeyHandleResult::Handled
+        );
+        assert_eq!(s.value(), "abc12");
+        // Replacing a selection frees its length; truncation keeps whole chars.
+        s.set_selection(0, 3);
+        cb.write_text("éèêë");
+        cmd(&s, &cb, KeyPlatform::Mac, "v", false);
+        assert_eq!(s.value(), "éèê12");
+    }
+
+    #[test]
+    fn a_single_line_paste_drops_line_breaks_and_a_textarea_keeps_them() {
+        let cb = MemoryClipboard::new();
+        cb.write_text("a\r\nb\nc");
+        let s = TextEditState::new();
+        cmd(&s, &cb, KeyPlatform::Mac, "v", false);
+        assert_eq!(s.value(), "abc");
+        let t = TextAreaState::new();
+        assert_eq!(t.edit.kind(), TextControlKind::MultiLine);
+        handle_key(
+            &t.edit,
+            Some(&t),
+            &cb,
+            KeyPlatform::Mac,
+            0,
+            "v",
+            true,
+            false,
+            false,
+        );
+        assert_eq!(t.value(), "a\nb\nc");
+    }
+
+    #[test]
+    fn a_password_field_refuses_copy_and_cut_but_takes_a_paste() {
+        let cb = MemoryClipboard::new();
+        cb.write_text("before");
+        let s = TextEditState::with_value("secret");
+        s.set_kind(TextControlKind::Password);
+        s.select_all();
+        cmd(&s, &cb, KeyPlatform::Other, "c", false);
+        cmd(&s, &cb, KeyPlatform::Other, "x", false);
+        assert_eq!(cb.read_text().as_deref(), Some("before"));
+        assert_eq!(s.value(), "secret");
+        cmd(&s, &cb, KeyPlatform::Other, "v", false);
+        assert_eq!(s.value(), "before");
+    }
+
+    #[test]
+    fn a_read_only_field_copies_but_does_not_cut_paste_or_undo() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::with_value("fixed");
+        s.set_read_only(true);
+        s.select_all();
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Mac, "c", false),
+            KeyHandleResult::Handled
+        );
+        assert_eq!(cb.read_text().as_deref(), Some("fixed"));
+        cmd(&s, &cb, KeyPlatform::Mac, "x", false);
+        cmd(&s, &cb, KeyPlatform::Mac, "v", false);
+        assert_eq!(s.value(), "fixed");
+    }
+
+    #[test]
+    fn shift_left_twice_selects_two_chars_and_typing_replaces_them() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::with_value("hello");
+        key(&s, &cb, KeyPlatform::Mac, VK_LEFT, true, false, false);
+        key(&s, &cb, KeyPlatform::Mac, VK_LEFT, true, false, false);
+        assert_eq!(s.selected_text(), "lo");
+        typed(&s, &cb, "p");
+        assert_eq!(s.value(), "help");
+        assert_eq!(s.caret_position(), 4);
+    }
+
+    #[test]
+    fn shift_arrows_extend_from_the_anchor_both_ways() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::with_value("hello");
+        s.set_caret(2);
+        key(&s, &cb, KeyPlatform::Other, VK_LEFT, true, false, false);
+        key(&s, &cb, KeyPlatform::Other, VK_RIGHT, true, false, false);
+        key(&s, &cb, KeyPlatform::Other, VK_RIGHT, true, false, false);
+        assert_eq!(s.selection(), SelectionRange::new(2, 3));
+        assert_eq!(s.selected_text(), "l");
+        // Shift+Home from there selects back to the start from the anchor.
+        key(&s, &cb, KeyPlatform::Other, VK_HOME, true, false, false);
+        assert_eq!(s.selected_text(), "he");
+        key(&s, &cb, KeyPlatform::Other, VK_END, true, false, false);
+        assert_eq!(s.selected_text(), "llo");
+        // An arrow without Shift collapses to that side.
+        key(&s, &cb, KeyPlatform::Other, VK_LEFT, false, false, false);
+        assert_eq!(s.selection(), SelectionRange::caret(2));
+    }
+
+    #[test]
+    fn word_movement_uses_option_on_mac_and_ctrl_elsewhere() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::with_value("one two, three");
+        // macOS: Option+Left/Right by word; Cmd+Left/Right to the ends.
+        key(&s, &cb, KeyPlatform::Mac, VK_LEFT, false, false, true);
+        assert_eq!(s.caret_position(), 9);
+        key(&s, &cb, KeyPlatform::Mac, VK_LEFT, false, false, true);
+        assert_eq!(s.caret_position(), 4);
+        key(&s, &cb, KeyPlatform::Mac, VK_RIGHT, false, false, true);
+        assert_eq!(s.caret_position(), 7, "mac moves to the end of the word");
+        key(&s, &cb, KeyPlatform::Mac, VK_LEFT, false, true, false);
+        assert_eq!(s.caret_position(), 0);
+        key(&s, &cb, KeyPlatform::Mac, VK_RIGHT, false, true, false);
+        assert_eq!(s.caret_position(), 14);
+        // Elsewhere: Ctrl+Left/Right by word; Right lands on the next word.
+        s.set_caret(0);
+        key(&s, &cb, KeyPlatform::Other, VK_RIGHT, false, true, false);
+        assert_eq!(s.caret_position(), 4);
+        key(&s, &cb, KeyPlatform::Other, VK_RIGHT, true, true, false);
+        assert_eq!(s.selected_text(), "two, ");
+        // Alt alone does nothing to the caret off macOS.
+        s.set_caret(4);
+        assert_eq!(
+            key(&s, &cb, KeyPlatform::Other, VK_LEFT, false, false, true),
+            KeyHandleResult::Unhandled
+        );
+        assert_eq!(s.caret_position(), 4);
+    }
+
+    #[test]
+    fn word_movement_respects_multibyte_text() {
+        let s = TextEditState::with_value("héllo wörld");
+        s.move_word_left(false);
+        assert_eq!(&s.value()[s.caret_position()..], "wörld");
+        s.move_word_left(true);
+        assert_eq!(s.selected_text(), "héllo ");
+        s.move_left(false);
+        s.move_right(false);
+        assert_eq!(&s.value()[..s.caret_position()], "h");
+        s.move_right(false);
+        assert_eq!(&s.value()[..s.caret_position()], "hé");
+    }
+
+    #[test]
+    fn delete_word_is_option_backspace_on_mac_and_ctrl_backspace_elsewhere() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::with_value("one two three");
+        assert_eq!(
+            key(&s, &cb, KeyPlatform::Mac, VK_BACK, false, false, true),
+            KeyHandleResult::ValueChanged
+        );
+        assert_eq!(s.value(), "one two ");
+        assert_eq!(
+            key(&s, &cb, KeyPlatform::Other, VK_BACK, false, true, false),
+            KeyHandleResult::ValueChanged
+        );
+        assert_eq!(s.value(), "one ");
+        s.set_caret(0);
+        assert_eq!(
+            key(&s, &cb, KeyPlatform::Other, VK_DELETE, false, true, false),
+            KeyHandleResult::ValueChanged
+        );
+        assert_eq!(s.value(), " ");
+        // Each deletion is its own undo step.
+        assert!(s.undo());
+        assert_eq!(s.value(), "one ");
+        assert!(s.undo());
+        assert_eq!(s.value(), "one two ");
+    }
+
+    #[test]
+    fn the_command_modifier_never_types_its_letter() {
+        let cb = MemoryClipboard::new();
+        let s = TextEditState::with_value("ab");
+        assert_eq!(
+            cmd(&s, &cb, KeyPlatform::Mac, "q", false),
+            KeyHandleResult::Unhandled
+        );
+        assert_eq!(s.value(), "ab");
+    }
+
+    #[test]
+    fn chords_map_to_commands_per_platform() {
+        let m = KeyPlatform::Mac;
+        let o = KeyPlatform::Other;
+        assert_eq!(
+            command_for_key(m, 0, "c", true, false, false),
+            Some(EditCommand::Copy)
+        );
+        assert_eq!(
+            command_for_key(o, 0x43, "", true, false, false),
+            Some(EditCommand::Copy)
+        );
+        assert_eq!(
+            command_for_key(o, 0, "X", true, true, false),
+            Some(EditCommand::Cut)
+        );
+        assert_eq!(
+            command_for_key(m, 0, "v", true, false, false),
+            Some(EditCommand::Paste)
+        );
+        assert_eq!(
+            command_for_key(m, 0, "a", true, false, false),
+            Some(EditCommand::SelectAll)
+        );
+        assert_eq!(
+            command_for_key(m, 0, "z", true, false, false),
+            Some(EditCommand::Undo)
+        );
+        assert_eq!(
+            command_for_key(m, 0, "z", true, true, false),
+            Some(EditCommand::Redo)
+        );
+        assert_eq!(
+            command_for_key(o, 0, "y", true, false, false),
+            Some(EditCommand::Redo)
+        );
+        assert_eq!(
+            command_for_key(m, VK_BACK, "", false, false, true),
+            Some(EditCommand::DeleteWordBackward)
+        );
+        assert_eq!(
+            command_for_key(o, VK_DELETE, "", true, false, false),
+            Some(EditCommand::DeleteWordForward)
+        );
+        assert_eq!(command_for_key(m, 0, "c", false, false, false), None);
+        assert_eq!(command_for_key(o, VK_BACK, "", false, false, true), None);
+    }
+
+    #[test]
+    fn exec_command_names_and_input_types() {
+        assert_eq!(
+            EditCommand::from_exec_name("selectAll", None),
+            Some(EditCommand::SelectAll)
+        );
+        assert_eq!(
+            EditCommand::from_exec_name("SELECTALL", None),
+            Some(EditCommand::SelectAll)
+        );
+        assert_eq!(
+            EditCommand::from_exec_name("insertText", Some("hi")),
+            Some(EditCommand::InsertText("hi".into()))
+        );
+        assert_eq!(EditCommand::from_exec_name("bold", None), None);
+        assert_eq!(EditCommand::Paste.input_type(), Some("insertFromPaste"));
+        assert_eq!(EditCommand::Cut.input_type(), Some("deleteByCut"));
+        assert_eq!(EditCommand::Undo.input_type(), Some("historyUndo"));
+        assert_eq!(EditCommand::Redo.input_type(), Some("historyRedo"));
+        assert_eq!(EditCommand::Copy.input_type(), None);
+        assert!(EditCommand::Paste.mutates() && !EditCommand::Copy.mutates());
+    }
+
+    #[test]
+    fn run_command_reports_the_input_event_to_fire() {
+        let cb = MemoryClipboard::new();
+        cb.write_text("zz");
+        let s = TextEditState::with_value("ab");
+        assert!(s.can_run(&EditCommand::Paste, &cb));
+        assert!(!s.can_run(&EditCommand::Redo, &cb));
+        let out = s.run_command(&EditCommand::Paste, &cb);
+        assert!(out.handled && out.changed);
+        assert_eq!(out.input_type, Some("insertFromPaste"));
+        assert_eq!(out.data.as_deref(), Some("zz"));
+        let out = s.run_command(&EditCommand::Undo, &cb);
+        assert_eq!((out.changed, out.input_type), (true, Some("historyUndo")));
+        assert_eq!(s.value(), "ab");
+        let out = s.run_command(&EditCommand::Copy, &cb);
+        assert!(out.handled && !out.changed);
+    }
+
+    #[test]
+    fn setting_the_value_clears_the_history() {
+        let s = TextEditState::new();
+        s.paste_text("abc");
+        s.set_value("script");
+        assert!(!s.can_undo());
+        assert_eq!(s.value(), "script");
     }
 }

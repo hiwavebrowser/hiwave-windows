@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html><head><style>
+body { margin: 0; font: 16px sans-serif; }
+#cmp-host { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2147483647; }
+</style></head>
+<body>
+<article><h1>Headline</h1><p>Article text under the overlay.</p></article>
+<div id="cmp-host"></div>
+<script>
+window.__heard = [];
+var host = document.getElementById('cmp-host');
+var root = host.attachShadow({ mode: 'open' });
+root.innerHTML =
+  '<style>' +
+  '.overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5);' +
+  '  display: flex; align-items: center; justify-content: center; }' +
+  '.dialog { background: #fff; width: 400px; padding: 24px; }' +
+  'button { width: 120px; height: 40px; }' +
+  '</style>' +
+  '<div class="overlay"><div class="dialog" role="dialog"><p>We use cookies.</p>' +
+  '<button data-choice="agree" type="button">Agree</button></div></div>';
+window.__agree = root.querySelector('button');
+// Delegation inside the shadow tree: one listener on the shadow root.
+root.addEventListener('click', function (e) {
+  var b = e.target.closest && e.target.closest('[data-choice]');
+  if (!b) return;
+  __heard.push('click:' + b.getAttribute('data-choice'));
+  host.remove();
+});
+</script>
+</body></html>

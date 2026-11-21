@@ -35,7 +35,10 @@ env:
 jobs:
   collect-metrics:
     runs-on: windows-latest
-    timeout-minutes: 60
+    # 210, not 150: refresh #15's green run took 2 h 23 m (143 of 150 minutes), and a run that
+    # times out reads as red and blocks the stack for nothing. The suite grew (4635 tests, the
+    # renderer now runs in full on the CPU adapter) and the hosted runner is slow under load.
+    timeout-minutes: 210
     permissions:
       contents: write
 
@@ -48,7 +51,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.91.0
 
       - uses: Swatinem/rust-cache@v2
 
@@ -101,6 +104,16 @@ jobs:
               sys.exit(1)
           print(f"OK: {m['tests']['passed']} tests passed, suite complete")
           PY
+
+      # The native-win32 shell (the RustKit window the Windows port is built around) is behind a
+      # cargo feature, and the metrics run above builds and tests default features only, so CI
+      # never compiled or ran a line of src/native/*. Every native change was gated by a local
+      # run alone. This builds hiwave-app with the feature and runs its tests (the shell logic,
+      # the tab/workspace model, the session file). It runs after the metrics are recorded and
+      # fails the job on its own, so a native break still leaves the data point.
+      - name: Native shell tests (native-win32)
+        shell: bash
+        run: cargo test -p hiwave-app --features native-win32
 
       # Runs on EVERY branch so the logic is actually exercised in review; only
       # the final push is master-gated. The previous version gated the whole

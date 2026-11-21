@@ -1,0 +1,13 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() of submit_toggle_trusted.html after the steps in
+# submit_toggle_trusted_tests.rs (user clicks, Enter, script calls, then a page that replaces dispatchEvent).
+user clicks the button: submit:true:b
+Enter in the field: submit:true:b
+user clicks the summary: toggle:true:open
+user clicks the summary again: toggle:true:closed
+b.click(): submit:true:b
+form.requestSubmit(): submit:true:none
+form.requestSubmit(b): submit:true:b
+script sets open: toggle:true:open
+hostile page: user clicks the button: submit:true:b
+hostile page: user clicks the summary: toggle:true:closed
+hits=0

@@ -5,12 +5,13 @@
 // wrappers (dom.rs) exist. A name is only defined when nothing else defines
 // it.
 //
-// What is deliberately NOT defined here: Worker, WebAssembly, Notification,
-// AudioContext, OffscreenCanvas, CanvasRenderingContext2D, BroadcastChannel,
-// MessageChannel, FileReader, Request/Response/Headers, ReadableStream and
+// What is deliberately NOT defined here: WebAssembly, Notification,
+// AudioContext, OffscreenCanvas, BroadcastChannel,
+// MessageChannel, Request/Response/Headers, ReadableStream and
 // friends, Image/Option/Audio, CSS, CustomElementRegistry, Intl. Pages decide
-// what to do by `typeof Worker`; a constructor that exists but does nothing
-// would send them down the wrong path. Those arrive with real behaviour.
+// what to do by `typeof WebAssembly`; a constructor that exists but does nothing
+// would send them down the wrong path. Those arrive with real behaviour
+// (CanvasRenderingContext2D has: web_canvas.js).
 (function (g) {
     var Event = g.Event;
     if (typeof Event !== 'function') return;
@@ -42,7 +43,8 @@
     var EVENTS = [
         ['UIEvent', 'Event', [['view', null, 'any'], ['detail', 0, 'num']]],
         ['MouseEvent', 'UIEvent', [['screenX', 0, 'num'], ['screenY', 0, 'num'], ['clientX', 0, 'num'], ['clientY', 0, 'num'],
-            ['button', 0, 'num'], ['buttons', 0, 'num'], ['relatedTarget', null, 'any']].concat(mods())],
+            ['button', 0, 'num'], ['buttons', 0, 'num'], ['relatedTarget', null, 'any'],
+            ['movementX', 0, 'num'], ['movementY', 0, 'num']].concat(mods())],
         ['KeyboardEvent', 'UIEvent', [['key', '', 'str'], ['code', '', 'str'], ['location', 0, 'num'], ['repeat', false, 'bool'],
             ['isComposing', false, 'bool'], ['keyCode', 0, 'num'], ['charCode', 0, 'num']].concat(mods())],
         ['FocusEvent', 'UIEvent', [['relatedTarget', null, 'any']]],
@@ -64,8 +66,14 @@
         ['ClipboardEvent', 'Event', [['clipboardData', null, 'any']]],
         ['PageTransitionEvent', 'Event', [['persisted', false, 'bool']]],
         ['BeforeUnloadEvent', 'Event', [['returnValue', '', 'str']]],
-        ['MediaQueryListEvent', 'Event', [['media', '', 'str'], ['matches', false, 'bool']]]
+        ['MediaQueryListEvent', 'Event', [['media', '', 'str'], ['matches', false, 'bool']]],
+        ['PromiseRejectionEvent', 'Event', [['promise', null, 'any'], ['reason', undefined, 'any']]],
+        ['SubmitEvent', 'Event', [['submitter', null, 'any']]]
     ];
+    function fieldsOf(name) {
+        for (var n = 0; n < EVENTS.length; n++) if (EVENTS[n][0] === name) return EVENTS[n][2];
+        return [];
+    }
     EVENTS.forEach(function (spec) {
         var name = spec[0], Parent = g[spec[1]], fields = spec[2];
         if (g[name] !== undefined || typeof Parent !== 'function') return;
@@ -84,8 +92,12 @@
             }
         };
         Object.defineProperty(C, 'name', { value: name });
+        // The engine's own reference, on the host object: it builds its
+        // events with these whatever a page puts on the window since.
+        if (name === 'FocusEvent') __rk.FocusEvent = C;
         C.prototype = Object.create(Parent.prototype, { constructor: { value: C, writable: true, configurable: true } });
         Object.defineProperty(C.prototype, Symbol.toStringTag, { value: name, configurable: true });
+        __rk.keepCtor(name, C, spec[1], fields);
         def(name, C);
     });
     var ME = g.MouseEvent;
@@ -93,12 +105,171 @@
         ME.prototype.getModifierState = function (key) {
             return { Control: this.ctrlKey, Shift: this.shiftKey, Alt: this.altKey, Meta: this.metaKey }[key] === true;
         };
-        ['x', 'pageX', 'offsetX'].forEach(function (k) {
+        ['x', 'pageX'].forEach(function (k) {
             Object.defineProperty(ME.prototype, k, { get: function () { return this.clientX; }, configurable: true, enumerable: true });
         });
-        ['y', 'pageY', 'offsetY'].forEach(function (k) {
+        ['y', 'pageY'].forEach(function (k) {
             Object.defineProperty(ME.prototype, k, { get: function () { return this.clientY; }, configurable: true, enumerable: true });
         });
+        // offsetX / offsetY (CSSOM View §9): from the padding edge of the
+        // event's target, worked out when read. For a target inside an
+        // `<svg>` that is the outermost `<svg>`'s (Chrome for Testing 148);
+        // an event that has no target yet answers its client point. The
+        // engine's own events carry the numbers and do not come here.
+        function offsetFrom(e, axis) {
+            var client = axis === 'x' ? e.clientX : e.clientY, t = e.target;
+            if (!t || t.nodeType !== 1 || typeof t.getBoundingClientRect !== 'function') return client;
+            if (t.namespaceURI === 'http://www.w3.org/2000/svg') {
+                for (var n = t; n && n.nodeType === 1 && n.namespaceURI === t.namespaceURI; n = n.parentNode) {
+                    if (n.localName === 'svg') t = n;
+                }
+            }
+            var r = t.getBoundingClientRect();
+            return axis === 'x' ? client - r.left - (t.clientLeft || 0) : client - r.top - (t.clientTop || 0);
+        }
+        // layerX / layerY (legacy): from the border edge of the nearest
+        // positioned element at or above the target, in page coordinates;
+        // the page point when there is none.
+        function layerFrom(e, axis) {
+            var page = axis === 'x' ? e.pageX : e.pageY;
+            for (var n = e.target; n && n.nodeType === 1; n = n.parentNode) {
+                var position = typeof g.getComputedStyle === 'function' ? g.getComputedStyle(n).position : '';
+                if (position && position !== 'static') {
+                    var r = n.getBoundingClientRect();
+                    return axis === 'x' ? page - (r.left + (g.scrollX || 0)) : page - (r.top + (g.scrollY || 0));
+                }
+            }
+            return page;
+        }
+        [['offsetX', offsetFrom, 'x'], ['offsetY', offsetFrom, 'y'], ['layerX', layerFrom, 'x'], ['layerY', layerFrom, 'y']].forEach(function (spec) {
+            Object.defineProperty(ME.prototype, spec[0], {
+                get: function () { return spec[1](this, spec[2]); }, configurable: true, enumerable: true
+            });
+        });
+    }
+    // WheelEvent's legacy deltas and its mode constants (UI Events §5.5;
+    // measured in Chrome for Testing 148, ten inits in the SVG2 fixture):
+    // `wheelDeltaX` / `wheelDeltaY` are what the init gave, else the
+    // event's own deltaX / deltaY with the SAME sign, as whole numbers
+    // (100.7 reads 100, 0.5 reads 0); `wheelDelta` is the Y one, else the X
+    // one, and a `wheelDelta` in the init is not read.
+    var WE = g.WheelEvent;
+    if (WE && !Object.prototype.hasOwnProperty.call(WE.prototype, 'wheelDelta')) {
+        var WHEEL = typeof WeakMap === 'function' ? new WeakMap() : null;
+        var WheelEventWithLegacy = function WheelEvent(type, init) {
+            var e = Reflect.construct(WE, arguments.length < 2 ? [type] : [type, init], new.target || WheelEventWithLegacy);
+            var i = init || {};
+            if (WHEEL) {
+                var whole = function (v) { v = Math.trunc(Number(v)); return isFinite(v) ? v : 0; };
+                WHEEL.set(e, {
+                    x: whole(i.wheelDeltaX === undefined ? e.deltaX : i.wheelDeltaX),
+                    y: whole(i.wheelDeltaY === undefined ? e.deltaY : i.wheelDeltaY)
+                });
+            }
+            return e;
+        };
+        WheelEventWithLegacy.prototype = WE.prototype;
+        Object.defineProperty(WE.prototype, 'constructor', { value: WheelEventWithLegacy, writable: true, configurable: true });
+        Object.setPrototypeOf(WheelEventWithLegacy, Object.getPrototypeOf(WE));
+        var legacy = function (e) { return (WHEEL && WHEEL.get(e)) || { x: Math.trunc(e.deltaX) || 0, y: Math.trunc(e.deltaY) || 0 }; };
+        Object.defineProperty(WE.prototype, 'wheelDeltaX', { get: function () { return legacy(this).x; }, configurable: true, enumerable: true });
+        Object.defineProperty(WE.prototype, 'wheelDeltaY', { get: function () { return legacy(this).y; }, configurable: true, enumerable: true });
+        Object.defineProperty(WE.prototype, 'wheelDelta', {
+            get: function () { var l = legacy(this); return l.y || l.x; }, configurable: true, enumerable: true
+        });
+        [['DOM_DELTA_PIXEL', 0], ['DOM_DELTA_LINE', 1], ['DOM_DELTA_PAGE', 2]].forEach(function (pair) {
+            [WheelEventWithLegacy, WE.prototype].forEach(function (o) {
+                Object.defineProperty(o, pair[0], { value: pair[1], enumerable: true });
+            });
+        });
+        g.WheelEvent = WheelEventWithLegacy;
+        __rk.keepCtor('WheelEvent', WheelEventWithLegacy, 'MouseEvent', fieldsOf('WheelEvent'));
+        // The engine's wheel events get their legacy deltas here, with
+        // built-ins taken at install.
+        var wheelSet = Function.prototype.call.bind(WeakMap.prototype.set), trunc = Math.trunc, finite = isFinite;
+        var hasOwnInit = Function.prototype.call.bind(Object.prototype.hasOwnProperty);
+        __rk.keepFinish('WheelEvent', function (e, i) {
+            if (!WHEEL) return;
+            var x = hasOwnInit(i, 'wheelDeltaX') ? i.wheelDeltaX : e.deltaX;
+            var y = hasOwnInit(i, 'wheelDeltaY') ? i.wheelDeltaY : e.deltaY;
+            x = trunc(x); y = trunc(y);
+            wheelSet(WHEEL, e, { x: finite(x) ? x : 0, y: finite(y) ? y : 0 });
+        });
+    }
+    // UIEvent.which (UI Events §7.3, legacy): a key event's keyCode, a mouse
+    // event's button + 1, else 0. Chrome for Testing 148 has it on
+    // UIEvent.prototype alone, and ignores a `which` in the init dictionary:
+    // `new KeyboardEvent('keyup', { keyCode: 13 }).which` is 13.
+    if (g.UIEvent && !Object.prototype.hasOwnProperty.call(g.UIEvent.prototype, 'which')) {
+        Object.defineProperty(g.UIEvent.prototype, 'which', {
+            // By what the event carries, not by `instanceof`: an event made
+            // with another window's constructor is still a key event here.
+            get: function () {
+                if (typeof this.keyCode === 'number' && typeof this.charCode === 'number') return this.keyCode;
+                if (typeof this.button === 'number') return this.button + 1;
+                return 0;
+            },
+            configurable: true, enumerable: true
+        });
+    }
+    // TextEvent (UI Events §7.2, legacy): what `textInput` is. Script cannot
+    // construct one; `document.createEvent('TextEvent')` and the engine's
+    // own `textInput` (dom.rs `fireTextInput`) make them here, through a
+    // maker on the host object, which no page script holds.
+    if (g.UIEvent && g.TextEvent === undefined) {
+        var makingText = false;
+        var TextEvent = function TextEvent(type, init) {
+            if (!makingText) illegal();
+            g.UIEvent.call(this, type, init);
+            this.data = init && init.data !== undefined ? String(init.data) : '';
+        };
+        TextEvent.prototype = Object.create(g.UIEvent.prototype, { constructor: { value: TextEvent, writable: true, configurable: true } });
+        Object.defineProperty(TextEvent.prototype, Symbol.toStringTag, { value: 'TextEvent', configurable: true });
+        TextEvent.prototype.initTextEvent = function initTextEvent(type, bubbles, cancelable, view, data) {
+            if (__rk.isDispatching(this)) return;
+            this.initEvent(type, !!bubbles, !!cancelable);
+            this.view = view || null;
+            this.data = data === undefined ? 'undefined' : String(data);
+        };
+        def('TextEvent', TextEvent);
+        __rk.keepCtor('TextEvent', TextEvent, 'UIEvent', [['data', '']]);
+        __rk.newTextEvent = function (type, init) {
+            makingText = true;
+            try { return new TextEvent(type, init); } finally { makingText = false; }
+        };
+    }
+    // InputEvent.getTargetRanges() (Input Events §4.1.1): the ranges the
+    // edit will affect, as StaticRanges. A new array of new ranges on every
+    // call, as in Chrome; empty unless the event was made with
+    // `targetRanges`.
+    if (g.InputEvent && g.InputEvent.prototype.getTargetRanges === undefined) {
+        var IE = g.InputEvent, TARGETS = typeof WeakMap === 'function' ? new WeakMap() : null;
+        var InputEventWithRanges = function InputEvent(type, init) {
+            var e = Reflect.construct(IE, arguments.length < 2 ? [type] : [type, init], new.target || InputEventWithRanges);
+            var ranges = init && init.targetRanges;
+            if (ranges != null && TARGETS) {
+                TARGETS.set(e, Array.from(ranges, function (r) {
+                    if (!(g.StaticRange && r instanceof g.StaticRange)) {
+                        throw new TypeError("Failed to construct 'InputEvent': Failed to read the 'targetRanges' property from 'InputEventInit': Failed to convert value to 'StaticRange'.");
+                    }
+                    return r;
+                }));
+            }
+            return e;
+        };
+        InputEventWithRanges.prototype = IE.prototype;
+        Object.defineProperty(IE.prototype, 'constructor', { value: InputEventWithRanges, writable: true, configurable: true });
+        Object.setPrototypeOf(InputEventWithRanges, Object.getPrototypeOf(IE));
+        IE.prototype.getTargetRanges = function getTargetRanges() {
+            if (!(this instanceof IE)) throw new TypeError('Illegal invocation');
+            var ranges = TARGETS && TARGETS.get(this);
+            return (ranges || []).map(function (r) {
+                return new g.StaticRange({ startContainer: r.startContainer, startOffset: r.startOffset,
+                                           endContainer: r.endContainer, endOffset: r.endOffset });
+            });
+        };
+        g.InputEvent = InputEventWithRanges;
+        __rk.keepCtor('InputEvent', InputEventWithRanges, 'UIEvent', fieldsOf('InputEvent'));
     }
     var KE = g.KeyboardEvent;
     if (KE) {
@@ -151,6 +322,8 @@
             DOMRectReadOnly.call(this, x, y, width, height);
         };
         DOMRect.prototype = Object.create(DOMRectReadOnly.prototype, { constructor: { value: DOMRect, writable: true, configurable: true } });
+        Object.defineProperty(DOMRectReadOnly.prototype, Symbol.toStringTag, { value: 'DOMRectReadOnly', configurable: true });
+        Object.defineProperty(DOMRect.prototype, Symbol.toStringTag, { value: 'DOMRect', configurable: true });
         DOMRect.fromRect = function (r) { r = r || {}; return new DOMRect(r.x, r.y, r.width, r.height); };
         def('DOMRect', DOMRect);
     }
@@ -161,9 +334,7 @@
     if (Window === undefined) {
         Window = function Window() { illegal(); };
         if (EventTarget) Object.setPrototypeOf(Window.prototype, EventTarget.prototype);
-        // `window` is the global object, not an instance of a constructor we
-        // could build, so `instanceof Window` is answered by identity.
-        Object.defineProperty(Window, Symbol.hasInstance, { value: function (v) { return v === g; } });
+        Object.setPrototypeOf(g, Window.prototype);
         def('Window', Window);
     }
     function tag(obj, Iface) {
@@ -180,7 +351,7 @@
     tag(g.localStorage, Storage);
     tag(g.sessionStorage, Storage);
     var MQL = iface('MediaQueryList', EventTarget);
-    if (typeof g.matchMedia === 'function' && !g.matchMedia.__rkTagged) {
+    if (typeof g.matchMedia === 'function' && !__rk.matchMediaTagged) {
         var mm = g.matchMedia;
         var tagged = function matchMedia() {
             var r = mm.apply(this, arguments);
@@ -191,13 +362,18 @@
             }
             return r;
         };
-        tagged.__rkTagged = true;
+        __rk.matchMediaTagged = true;
         g.matchMedia = tagged;
     }
     // Interface-only: no instance is produced yet, but `x instanceof Attr`
     // and `typeof ShadowRoot` guards must have a right-hand side.
     iface('ShadowRoot', g.DocumentFragment || Node);
     iface('Attr', Node);
+    iface('CDATASection', g.Text || g.CharacterData || Node);
+    var PI = iface('ProcessingInstruction', g.CharacterData || Node);
+    if (PI && PI.prototype) {
+        Object.defineProperty(PI.prototype, 'target', { get: function () { return ''; }, configurable: true, enumerable: true });
+    }
     iface('NamedNodeMap');
     iface('DOMStringMap');
     var StyleSheet = iface('StyleSheet');

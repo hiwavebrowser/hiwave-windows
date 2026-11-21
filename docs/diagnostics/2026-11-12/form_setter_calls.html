@@ -1,0 +1,86 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Who calls the checked and value setters</title>
+<style>body{margin:0}.row{height:40px;overflow:hidden}.row>*{display:block;margin:0}input[type=checkbox],input[type=radio]{width:30px;height:30px}</style>
+</head><body>
+<div class="row"><input id="box" type="checkbox"></div>
+<div class="row"><label id="lab" for="box2" style="height:40px;width:200px">label for box2</label></div>
+<div class="row"><input id="box2" type="checkbox"></div>
+<div class="row"><input id="r1" type="radio" name="g" checked></div>
+<div class="row"><input id="r2" type="radio" name="g"></div>
+<div class="row"><input id="field" type="text" style="width:200px;height:30px"></div>
+<div class="row"><textarea id="area" style="width:200px;height:30px"></textarea></div>
+<form id="form">
+<div class="row"><input id="ft" type="text" value="default" style="width:200px;height:30px"></div>
+<div class="row"><input id="fc" type="checkbox" checked></div>
+<div class="row"><input id="fr" type="radio" name="h"></div>
+<div class="row"><input id="rst" type="reset" value="Reset" style="width:100px;height:30px"></div>
+</form>
+<form id="nf">
+<div class="row"><input id="nft" type="text" name="reset" value="named" style="width:200px;height:30px"></div>
+<div class="row"><input id="nfb" type="reset" value="Reset named" style="width:100px;height:30px"></div>
+</form>
+<script>
+// The setters script sees on the prototypes, wrapped to count who calls
+// them. A browser changes a control's state for the user (a click, a key,
+// a label, a reset) in its own slots: only script calls these.
+var calls = { 'input.checked': 0, 'input.value': 0, 'textarea.value': 0 };
+function count(proto, name, key) {
+  var d = Object.getOwnPropertyDescriptor(proto, name);
+  Object.defineProperty(proto, name, {
+    configurable: true, enumerable: d.enumerable, get: d.get,
+    set: function (v) { calls[key]++; d.set.call(this, v); }
+  });
+}
+count(HTMLInputElement.prototype, 'checked', 'input.checked');
+count(HTMLInputElement.prototype, 'value', 'input.value');
+count(HTMLTextAreaElement.prototype, 'value', 'textarea.value');
+var $ = function (id) { return document.getElementById(id); };
+var events = [], lines = [];
+['click', 'input', 'change', 'reset'].forEach(function (type) {
+  document.addEventListener(type, function (e) { events.push(type + '@' + (e.target.id || e.target.nodeName) + (e.isTrusted ? '' : '(untrusted)')); }, true);
+});
+// "x,y": the middle of an element, for the driver's mouse.
+window.center = function (id) { var r = $(id).getBoundingClientRect(); return (r.x + r.width / 2) + ',' + (r.y + r.height / 2); };
+// One line per step: the setter calls and events since the last step, and the state now.
+window.step = function (label) {
+  lines.push(label + ': checked-sets=' + calls['input.checked'] + ' value-sets=' + calls['input.value'] + ' textarea-sets=' + calls['textarea.value'] +
+    ' events=[' + events.join(' ') + ']' +
+    ' box=' + $('box').checked + ' box2=' + $('box2').checked + ' r1=' + $('r1').checked + ' r2=' + $('r2').checked +
+    ' field=' + JSON.stringify($('field').value) + ' area=' + JSON.stringify($('area').value) +
+    ' ft=' + JSON.stringify($('ft').value) + ' fc=' + $('fc').checked + ' fr=' + $('fr').checked +
+    ' nft=' + JSON.stringify($('nft').value) + (window.hits === undefined ? '' : ' hits=' + window.hits));
+  calls['input.checked'] = calls['input.value'] = calls['textarea.value'] = 0; events = [];
+};
+// What script does itself, after the user's steps.
+window.scripted = function () {
+  $('box').click(); step('box.click()');
+  $('lab').click(); step('lab.click()');
+  $('r2').click(); step('r2.click()');
+  $('r1').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); step('dispatch click at r1');
+  $('fc').addEventListener('click', function cancel(e) { e.preventDefault(); $('fc').removeEventListener('click', cancel); });
+  $('fc').click(); step('fc.click() cancelled');
+  $('ft').value = 'edited'; $('fc').checked = false; $('fr').checked = true; step('script sets ft, fc, fr');
+  $('form').reset(); step('form.reset()');
+  $('field').value = 'by script'; $('area').value = 'by script'; $('box').checked = false; step('script sets field, area, box');
+  // A cancelled click on a radio gives the group back its checked one; the
+  // listener still sees the new state.
+  $('r2').addEventListener('click', function cancel(e) { events.push('inside:' + this.checked + '/' + $('r1').checked); e.preventDefault(); $('r2').removeEventListener('click', cancel); });
+  $('r2').click(); step('r2.click() cancelled');
+  // Two radios of one name in a tree that is not the document's are a group.
+  var d = document.createElement('div'); d.innerHTML = '<input type="radio" name="g"><input type="radio" name="g">';
+  d.firstChild.checked = true; d.lastChild.click();
+  events.push('detached:' + d.firstChild.checked + '/' + d.lastChild.checked); step('radios in a detached tree');
+};
+// A page that replaces what it can reach. The user's steps after this are
+// the browser's own: none of these is called (`hits` stays 0).
+window.hostile = function () {
+  window.hits = 0;
+  var hit = function () { window.hits++; return true; };
+  $('box2').click = hit; HTMLElement.prototype.click = hit;
+  $('form').reset = hit; $('form').dispatchEvent = hit; HTMLFormElement.prototype.reset = hit;
+  window.Event = function () { hit(); };
+  $('ft').value = 'edited again'; $('nft').value = 'typed';
+  step('the page replaces click, reset, dispatchEvent and Event');
+};
+window.report = function () { return lines.join('\n'); };
+</script></body></html>

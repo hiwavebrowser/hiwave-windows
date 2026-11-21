@@ -1,0 +1,397 @@
+{
+ "about": "CH2.E27: one case list for both copies of the declaration-list rule, rustkit_cssparser::split_declaration_list and the bindings' JS splitDecls (CSSStyleDeclaration over the style attribute). Each input splits into these name/value pairs (a declaration without a colon is skipped). Names are lowercase, none repeats and none is !important, so the CSSOM's dedup and priority handling do not enter. The url-token and end-of-input rows are pinned against Chromium 148.0.7778.216 in tools/parity_oracle/style_attr_declaration_cases.json.",
+ "cases": [
+  {
+   "input": "background-image:url(data:image/svg+xml;base64,AA==);width:10px",
+   "decls": [
+    [
+     "background-image",
+     "url(data:image/svg+xml;base64,AA==)"
+    ],
+    [
+     "width",
+     "10px"
+    ]
+   ]
+  },
+  {
+   "input": "--s:'a;b';width:1px",
+   "decls": [
+    [
+     "--s",
+     "'a;b'"
+    ],
+    [
+     "width",
+     "1px"
+    ]
+   ]
+  },
+  {
+   "input": "a:url(\"x;y\");b:1",
+   "decls": [
+    [
+     "a",
+     "url(\"x;y\")"
+    ],
+    [
+     "b",
+     "1"
+    ]
+   ]
+  },
+  {
+   "input": "--k:f(;);w:1",
+   "decls": [
+    [
+     "--k",
+     "f(;)"
+    ],
+    [
+     "w",
+     "1"
+    ]
+   ]
+  },
+  {
+   "input": "--k:[;];w:1",
+   "decls": [
+    [
+     "--k",
+     "[;]"
+    ],
+    [
+     "w",
+     "1"
+    ]
+   ]
+  },
+  {
+   "input": "--k:{;};w:1",
+   "decls": [
+    [
+     "--k",
+     "{;}"
+    ],
+    [
+     "w",
+     "1"
+    ]
+   ]
+  },
+  {
+   "input": "a:'it\\'s;x';b:1",
+   "decls": [
+    [
+     "a",
+     "'it\\'s;x'"
+    ],
+    [
+     "b",
+     "1"
+    ]
+   ]
+  },
+  {
+   "input": "a:x\\;y;b:1",
+   "decls": [
+    [
+     "a",
+     "x\\;y"
+    ],
+    [
+     "b",
+     "1"
+    ]
+   ]
+  },
+  {
+   "input": "width:20px /* ; */;height:2px",
+   "decls": [
+    [
+     "width",
+     "20px"
+    ],
+    [
+     "height",
+     "2px"
+    ]
+   ]
+  },
+  {
+   "input": "margin:1px/**/2px",
+   "decls": [
+    [
+     "margin",
+     "1px 2px"
+    ]
+   ]
+  },
+  {
+   "input": " ;; color:red ;; ;",
+   "decls": [
+    [
+     "color",
+     "red"
+    ]
+   ]
+  },
+  {
+   "input": "foo;color:red",
+   "decls": [
+    [
+     "color",
+     "red"
+    ]
+   ]
+  },
+  {
+   "input": "a:1);b:2",
+   "decls": [
+    [
+     "a",
+     "1)"
+    ],
+    [
+     "b",
+     "2"
+    ]
+   ]
+  },
+  {
+   "input": "w:1;b:url(data:x;y",
+   "decls": [
+    [
+     "w",
+     "1"
+    ],
+    [
+     "b",
+     "url(data:x;y)"
+    ]
+   ]
+  },
+  {
+   "input": "a:f(];b:1",
+   "decls": [
+    [
+     "a",
+     "f(];b:1)"
+    ]
+   ]
+  },
+  {
+   "input": "a:'open;b:1",
+   "decls": [
+    [
+     "a",
+     "'open;b:1'"
+    ]
+   ]
+  },
+  {
+   "input": "width:35px;background-image:url('data:x;y",
+   "decls": [
+    [
+     "width",
+     "35px"
+    ],
+    [
+     "background-image",
+     "url('data:x;y')"
+    ]
+   ]
+  },
+  {
+   "input": "background-image:url(data:image/svg+xml;utf8,a/*b);width:15px",
+   "decls": [
+    [
+     "background-image",
+     "url(data:image/svg+xml;utf8,a/*b)"
+    ],
+    [
+     "width",
+     "15px"
+    ]
+   ]
+  },
+  {
+   "input": "background-image:url(data:image/svg+xml;utf8,it's);width:23px",
+   "decls": [
+    [
+     "background-image",
+     "url(data:image/svg+xml;utf8,it's)"
+    ],
+    [
+     "width",
+     "23px"
+    ]
+   ]
+  },
+  {
+   "input": "background-image:url(a(b.png);width:24px",
+   "decls": [
+    [
+     "background-image",
+     "url(a(b.png)"
+    ],
+    [
+     "width",
+     "24px"
+    ]
+   ]
+  },
+  {
+   "input": "background-image:url(x/*;*/y.png);width:25px",
+   "decls": [
+    [
+     "background-image",
+     "url(x/*;*/y.png)"
+    ],
+    [
+     "width",
+     "25px"
+    ]
+   ]
+  },
+  {
+   "input": "background-image:URL(data:x;y);width:31px",
+   "decls": [
+    [
+     "background-image",
+     "URL(data:x;y)"
+    ],
+    [
+     "width",
+     "31px"
+    ]
+   ]
+  },
+  {
+   "input": "background-image:url( data:x;y );width:32px",
+   "decls": [
+    [
+     "background-image",
+     "url( data:x;y )"
+    ],
+    [
+     "width",
+     "32px"
+    ]
+   ]
+  },
+  {
+   "input": "background-image:url( 'data:x;y');width:33px",
+   "decls": [
+    [
+     "background-image",
+     "url( 'data:x;y')"
+    ],
+    [
+     "width",
+     "33px"
+    ]
+   ]
+  },
+  {
+   "input": "background-image:url(a\\)b;c.png);width:34px",
+   "decls": [
+    [
+     "background-image",
+     "url(a\\)b;c.png)"
+    ],
+    [
+     "width",
+     "34px"
+    ]
+   ]
+  },
+  {
+   "input": "--f:myurl(a;b);width:36px",
+   "decls": [
+    [
+     "--f",
+     "myurl(a;b)"
+    ],
+    [
+     "width",
+     "36px"
+    ]
+   ]
+  },
+  {
+   "input": "--f:my-url(a';b);width:37px",
+   "decls": [
+    [
+     "--f",
+     "my-url(a';b);width:37px"
+    ]
+   ]
+  },
+  {
+   "input": "width:26px;--s:'abc",
+   "decls": [
+    [
+     "width",
+     "26px"
+    ],
+    [
+     "--s",
+     "'abc"
+    ]
+   ]
+  },
+  {
+   "input": "width:27px;--k:f(a",
+   "decls": [
+    [
+     "width",
+     "27px"
+    ],
+    [
+     "--k",
+     "f(a"
+    ]
+   ]
+  },
+  {
+   "input": "width:28px;--u:url(a",
+   "decls": [
+    [
+     "width",
+     "28px"
+    ],
+    [
+     "--u",
+     "url(a"
+    ]
+   ]
+  },
+  {
+   "input": "--u:url(a;b);width:29px",
+   "decls": [
+    [
+     "--u",
+     "url(a;b)"
+    ],
+    [
+     "width",
+     "29px"
+    ]
+   ]
+  },
+  {
+   "input": "--u:url(a'b);width:30px",
+   "decls": [
+    [
+     "--u",
+     "url(a'b)"
+    ],
+    [
+     "width",
+     "30px"
+    ]
+   ]
+  }
+ ]
+}

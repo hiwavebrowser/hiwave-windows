@@ -889,9 +889,12 @@ Taking back control of my attention with @HiWaveBrowser
             }
         }
 
+        // The app replaces this at load; only this document knows it.
+        const REPORT_NONCE = '__HIWAVE_REPORT_NONCE__';
+
         function sendIpc(cmd, data) {
             return new Promise((resolve, reject) => {
-                const message = { cmd, ...data };
+                const message = { cmd, nonce: REPORT_NONCE, ...data };
                 window.ipc.postMessage(JSON.stringify(message));
 
                 // Listen for response
@@ -922,10 +925,14 @@ Taking back control of my attention with @HiWaveBrowser
             return num.toString();
         }
 
+        // Text or a double- or single-quoted attribute value: & < > " '.
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            return String(text == null ? '' : text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         function showLoading() {

@@ -1,0 +1,131 @@
+{
+ "note": "using / await using declarations outside a block: each case returns a string; no case depends on disposal (Symbol.dispose), which the engine does not implement yet.",
+ "cases": [
+  {
+   "name": "function_body",
+   "js": "(function () { try { return String((function () { using x = null; return 'ok ' + x; })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok null"
+  },
+  {
+   "name": "function_body_undefined",
+   "js": "(function () { try { return String((function () { using x = undefined; return 'ok ' + x; })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok undefined"
+  },
+  {
+   "name": "function_body_two",
+   "js": "(function () { try { return String((function () { using x = null, y = undefined; return 'ok ' + x + ' ' + y; })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok null undefined"
+  },
+  {
+   "name": "arrow_body",
+   "js": "(function () { try { return String((() => { using x = null; return 'ok'; })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok"
+  },
+  {
+   "name": "method_body",
+   "js": "(function () { try { return String(({ m() { using x = null; return 'ok'; } }).m()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok"
+  },
+  {
+   "name": "generator_body",
+   "js": "(function () { try { return String((function* () { using x = null; yield 'ok'; })().next().value); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok"
+  },
+  {
+   "name": "static_block",
+   "js": "(function () { try { return String((function () { var r; class C { static { using x = null; r = 'ok'; } } return r; })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok"
+  },
+  {
+   "name": "closure_reads_before_init",
+   "js": "(function () { try { return String((function () { function f() { return x; } try { f(); return 'read'; } catch (e) { return e.constructor.name; } using x = null; })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "closure_reads_after_init",
+   "js": "(function () { try { return String((function () { function f() { return x; } using x = null; return 'ok ' + f(); })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok null"
+  },
+  {
+   "name": "for_of_in_function",
+   "js": "(function () { try { return String((function () { var n = 0; for (using x of [null, undefined]) n++; return 'ok ' + n; })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok 2"
+  },
+  {
+   "name": "eval_top_level",
+   "js": "(function () { try { return String((function () { eval('using x = null;'); return 'none'; })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "threw SyntaxError"
+  },
+  {
+   "name": "eval_in_block",
+   "js": "(function () { try { return String((function () { return eval('{ using x = null; } \\'ok\\''); })()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok"
+  },
+  {
+   "name": "eval_in_function",
+   "js": "(function () { try { return String(eval('(function () { using x = null; return \\'ok\\'; })()')); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok"
+  },
+  {
+   "name": "script_top_level",
+   "js": "(function () { try { return String((0, eval)('using x = null;')); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "threw SyntaxError"
+  },
+  {
+   "name": "new_function_body",
+   "js": "(function () { try { return String(new Function('using x = null; return \\'ok\\';')()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok"
+  },
+  {
+   "name": "async_function_body",
+   "js": "((async function () { using x = null; return 'ok'; })()).then(String, function (e) { return 'threw ' + e.constructor.name; })",
+   "chrome": "ok"
+  },
+  {
+   "name": "async_await_using",
+   "js": "((async function () { await using x = null; return 'ok'; })()).then(String, function (e) { return 'threw ' + e.constructor.name; })",
+   "chrome": "ok"
+  },
+  {
+   "name": "async_await_using_undefined",
+   "js": "((async function () { await using x = undefined; return 'ok ' + x; })()).then(String, function (e) { return 'threw ' + e.constructor.name; })",
+   "chrome": "ok undefined"
+  },
+  {
+   "name": "async_generator_body",
+   "js": "((async function* () { using x = null; yield 'ok'; })().next().then(function (r) { return r.value; })).then(String, function (e) { return 'threw ' + e.constructor.name; })",
+   "chrome": "ok"
+  },
+  {
+   "name": "switch_case",
+   "js": "(function () { try { return String(new Function(\"switch (1) { case 1: using x = null; }\")); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "threw SyntaxError"
+  },
+  {
+   "name": "switch_default",
+   "js": "(function () { try { return String(new Function(\"switch (1) { default: using x = null; }\")); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "threw SyntaxError"
+  },
+  {
+   "name": "switch_case_in_block",
+   "js": "(function () { try { return String(new Function(\"switch (1) { case 1: { using x = null; } } return 'ok';\")()); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "ok"
+  },
+  {
+   "name": "await_using_in_non_async_function",
+   "js": "(function () { try { return String(new Function(\"await using x = null;\")); } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "threw SyntaxError"
+  },
+  {
+   "name": "indirect_eval_in_function",
+   "js": "(function () { try { (0, eval)('using x = null;'); return 'none'; } catch (e) { return 'threw ' + e.constructor.name; } })()",
+   "chrome": "threw SyntaxError"
+  },
+  {
+   "name": "module_top_level",
+   "js": "import('data:text/javascript,' + encodeURIComponent('using x = null; await using y = undefined; export default \"ok \" + x + \" \" + y;')).then(function (m) { return m.default; }, function (e) { return 'threw ' + e.constructor.name; })",
+   "chrome": "ok null undefined"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

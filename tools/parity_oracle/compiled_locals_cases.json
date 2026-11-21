@@ -1,0 +1,335 @@
+{
+ "cases": [
+  {
+   "name": "mapped-arguments-compound",
+   "js": "function f(a) { a += 1; return arguments[0] + ',' + a } String(f(5))",
+   "chrome": "6,6"
+  },
+  {
+   "name": "mapped-arguments-update",
+   "js": "function f(a) { a++; return arguments[0] + ',' + a } String(f(5))",
+   "chrome": "6,6"
+  },
+  {
+   "name": "mapped-arguments-write-through",
+   "js": "function f(a) { arguments[0] = 9; a += 1; return arguments[0] + ',' + a } String(f(5))",
+   "chrome": "10,10"
+  },
+  {
+   "name": "strict-arguments-unmapped",
+   "js": "function f(a) { 'use strict'; a += 1; return arguments[0] + ',' + a } String(f(5))",
+   "chrome": "5,6"
+  },
+  {
+   "name": "named-fn-expr-update-sloppy",
+   "js": "var g = function h() { h++; return typeof h }; String(g())",
+   "chrome": "function"
+  },
+  {
+   "name": "named-fn-expr-compound-sloppy",
+   "js": "var g = function h() { h += 1; return typeof h }; String(g())",
+   "chrome": "function"
+  },
+  {
+   "name": "named-fn-expr-update-strict",
+   "js": "var g = function h() { 'use strict'; try { h++ } catch (e) { return e.name } }; String(g())",
+   "chrome": "TypeError"
+  },
+  {
+   "name": "named-fn-expr-compound-strict",
+   "js": "var g = function h() { 'use strict'; try { h += 1 } catch (e) { return e.name } }; String(g())",
+   "chrome": "TypeError"
+  },
+  {
+   "name": "const-compound",
+   "js": "function f() { const k = 1; try { k += 1 } catch (e) { return e.name + k } } String(f())",
+   "chrome": "TypeError1"
+  },
+  {
+   "name": "const-update",
+   "js": "function f() { const k = 1; try { k++ } catch (e) { return e.name + k } } String(f())",
+   "chrome": "TypeError1"
+  },
+  {
+   "name": "let-tdz-compound",
+   "js": "function f() { try { x += 1; } catch (e) { return e.name } let x = 0; return 'no' } String(f())",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-tdz-update",
+   "js": "function f() { try { y++; } catch (e) { return e.name } let y = 0; return 'no' } String(f())",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "let-tdz-in-closure",
+   "js": "function f() { var g = function () { try { z += 1 } catch (e) { return e.name } }; var r = g(); let z = 0; return r } String(f())",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "closure-capture",
+   "js": "function f() { var a = 1; function g() { a += 10; } g(); a += 1; a++; return a } String(f())",
+   "chrome": "13"
+  },
+  {
+   "name": "closure-capture-let-loop",
+   "js": "var fs = []; for (let i = 0; i < 3; i++) { fs.push(() => i); } fs.map(f => f()).join()",
+   "chrome": "0,1,2"
+  },
+  {
+   "name": "generator-compound-yield",
+   "js": "function* g() { var x = 1; x += yield 1; x++; return x } var it = g(); it.next(); String(it.next(5).value)",
+   "chrome": "7"
+  },
+  {
+   "name": "generator-update",
+   "js": "function* g() { var x = 1; x++; yield x; x += 2; yield x; } var it = g(); it.next().value + ',' + it.next().value",
+   "chrome": "2,4"
+  },
+  {
+   "name": "try-finally",
+   "js": "function f() { var a = 1; try { a += 1; throw 0 } catch (e) { a += 10 } finally { a++ } return a } String(f())",
+   "chrome": "13"
+  },
+  {
+   "name": "eval-forces-env",
+   "js": "function f() { var a = 1; eval('a += 5'); a++; return a } String(f())",
+   "chrome": "7"
+  },
+  {
+   "name": "with-scope",
+   "js": "var o = {a: 1}; with (o) { a += 2; a++ } String(o.a)",
+   "chrome": "4"
+  },
+  {
+   "name": "destructured-params",
+   "js": "function f({a}, b = 2) { b += a; a++; return a + ',' + b } f({a: 3})",
+   "chrome": "4,5"
+  },
+  {
+   "name": "shifts-and-pow",
+   "js": "function f() { var a = 3; a **= 2; a <<= 1; a >>>= 1; a ^= 5; a |= 8; a &= 13; a %= 7; return a } String(f())",
+   "chrome": "5"
+  },
+  {
+   "name": "string-concat",
+   "js": "function f() { var s = 'a'; s += 1; s += s; return s } f()",
+   "chrome": "a1a1"
+  },
+  {
+   "name": "bigint-mix-throws",
+   "js": "function f() { var n = 1n; try { n += 1 } catch (e) { return e.name } } String(f())",
+   "chrome": "TypeError"
+  },
+  {
+   "name": "compound-rhs-call-mutates-captured",
+   "js": "function f() { var a = 1, c = 0; function bump() { c++; return 10 } a += bump(); a += bump(); return a + ',' + c } f()",
+   "chrome": "21,2"
+  },
+  {
+   "name": "compound-rhs-throws",
+   "js": "function f() { var a = 1; try { a += (function(){ throw new Error('x') })() } catch (e) {} return a } String(f())",
+   "chrome": "1"
+  },
+  {
+   "name": "update-string-to-number",
+   "js": "function f() { var s = '5'; s++; var t = '5'; t += 1; return typeof s + s + typeof t + t } f()",
+   "chrome": "number6string51"
+  },
+  {
+   "name": "update-undefined-null",
+   "js": "function f() { var u; u++; var n = null; n++; var m; m += 1; return String(u) + ',' + n + ',' + m } f()",
+   "chrome": "NaN,1,NaN"
+  },
+  {
+   "name": "member-key-local",
+   "js": "function f() { var o = {x: 1, y: 2}, k = 'x'; var a = o[k]; k = 'y'; return a + ',' + o[k] } f()",
+   "chrome": "1,2"
+  },
+  {
+   "name": "member-target-reassigned-in-key",
+   "js": "function f() { var o = {x: 1}, q = {x: 2}; return o[(o = q, 'x')] + ',' + o.x } f()",
+   "chrome": "1,2"
+  },
+  {
+   "name": "member-target-reassigned-after",
+   "js": "function f() { var o = {x: 1}, q = {x: 2}; var v = o.x; o = q; return v + ',' + o.x } f()",
+   "chrome": "1,2"
+  },
+  {
+   "name": "binary-lhs-then-update-rhs",
+   "js": "function f() { var a = 1; return (a + a++) + ',' + a } f()",
+   "chrome": "2,2"
+  },
+  {
+   "name": "compare-lhs-then-assign-rhs",
+   "js": "function f() { var a = 1; return (a < (a = 5)) + ',' + a } f()",
+   "chrome": "true,5"
+  },
+  {
+   "name": "fused-branch-assign-rhs",
+   "js": "function f() { var a = 1, n = 0; while (a < (a = a + 2) && n < 5) { n++ } return a + ',' + n } f()",
+   "chrome": "13,5"
+  },
+  {
+   "name": "var-init-reads-previous-in-loop",
+   "js": "function f() { for (var i = 0; i < 3; i++) { var acc = acc + i; } return String(acc) } f()",
+   "chrome": "NaN"
+  },
+  {
+   "name": "var-init-call-reads-previous",
+   "js": "function g(v) { return v + 'b' } function f() { var s = 'a'; for (var i = 0; i < 3; i++) { var s = g(s); } return s } f()",
+   "chrome": "abbb"
+  },
+  {
+   "name": "var-init-getter-throws-keeps-old",
+   "js": "function f() { var o = { get bad() { throw new Error('no') } }; var x = 1; try { var x = o.bad; } catch (e) {} return String(x) } f()",
+   "chrome": "1"
+  },
+  {
+   "name": "assign-call-throws-keeps-old",
+   "js": "function t() { throw new Error('no') } function f() { var x = 5; try { x = t(); } catch (e) {} return String(x) } f()",
+   "chrome": "5"
+  },
+  {
+   "name": "assign-binary-throws-keeps-old",
+   "js": "function f() { var x = 5, n = 1n; try { x = n + 1; } catch (e) {} return String(x) } f()",
+   "chrome": "5"
+  },
+  {
+   "name": "assign-self",
+   "js": "function f() { var x = 7; x = x; return String(x) } f()",
+   "chrome": "7"
+  },
+  {
+   "name": "assign-reads-self-in-call",
+   "js": "function g(a, b) { return a * 10 + b } function f() { var x = 2; x = g(x, x + 1); return String(x) } f()",
+   "chrome": "23"
+  },
+  {
+   "name": "assign-new-reads-self",
+   "js": "function P(v) { this.v = v } function f() { var x = 4; x = new P(x); return String(x.v) } f()",
+   "chrome": "4"
+  },
+  {
+   "name": "member-store-local-value",
+   "js": "function f() { var o = {}, a = 3; o.x = a; o[a] = o; a = 9; return o.x + ',' + (o[3] === o) + ',' + Object.keys(o).join('|') } f()",
+   "chrome": "3,true,3|x"
+  },
+  {
+   "name": "member-store-array-self-index",
+   "js": "function f() { var a = [0, 1, 2]; a[a.length] = a.length; a[a[0]] = 'z'; return a.join() } f()",
+   "chrome": "z,1,2,3"
+  },
+  {
+   "name": "member-store-setter-log",
+   "js": "function f() { var log = [], v = 5; var o = { set p(x) { log.push(x) } }; o.p = v; o.p = v + 1; return log.join() } f()",
+   "chrome": "5,6"
+  },
+  {
+   "name": "member-store-frozen-strict",
+   "js": "function f() { 'use strict'; var o = Object.freeze({ x: 1 }); try { o.x = 2 } catch (e) { return e.name + o.x } } f()",
+   "chrome": "TypeError1"
+  },
+  {
+   "name": "member-store-frozen-sloppy",
+   "js": "function f() { var o = Object.freeze({ x: 1 }); o.x = 2; return String(o.x) } f()",
+   "chrome": "1"
+  },
+  {
+   "name": "member-store-null-target",
+   "js": "function f() { var o = null, v = 1; try { o.x = v } catch (e) { return e.name } } f()",
+   "chrome": "TypeError"
+  },
+  {
+   "name": "member-store-key-tostring-order",
+   "js": "function f() { var log = [], o = {}; var k = { toString() { log.push('key'); return 'q' } }; o[k] = (log.push('rhs'), 1); return log.join() + ',' + o.q } f()",
+   "chrome": "rhs,key,1"
+  },
+  {
+   "name": "mapped-arguments-plain-assign",
+   "js": "function f(a) { a = a * 2; return arguments[0] + ',' + a } f(3)",
+   "chrome": "6,6"
+  },
+  {
+   "name": "named-fn-expr-plain-assign-sloppy",
+   "js": "var g = function h() { h = 1; return typeof h }; g()",
+   "chrome": "function"
+  },
+  {
+   "name": "named-fn-expr-plain-assign-strict",
+   "js": "var g = function h() { 'use strict'; try { h = 1 } catch (e) { return e.name } }; g()",
+   "chrome": "TypeError"
+  },
+  {
+   "name": "const-plain-assign",
+   "js": "function f() { const k = 1; try { k = 2 } catch (e) { return e.name + k } } f()",
+   "chrome": "TypeError1"
+  },
+  {
+   "name": "let-tdz-plain-assign",
+   "js": "function f() { var r; try { z = 1 } catch (e) { r = e.name } let z; return r } f()",
+   "chrome": "ReferenceError"
+  },
+  {
+   "name": "closure-sees-plain-assign",
+   "js": "function f() { var a = 1; var g = function () { return a }; a = 5; return String(g()) } f()",
+   "chrome": "5"
+  },
+  {
+   "name": "generator-var-init-yield",
+   "js": "function* g() { var x = 1; var x = yield x; x = x * 2; yield x } var it = g(); it.next(); String(it.next(21).value)",
+   "chrome": "42"
+  },
+  {
+   "name": "async-compound-await",
+   "js": "(async function () { var a = 1; a += await 2; var b = a; b++; var c = '5'; var d = c++; return a + ',' + b + ',' + typeof d + d })()",
+   "chrome": "3,4,number5"
+  },
+  {
+   "name": "async-var-init-await",
+   "js": "(async function () { var x = 3; var x = await Promise.resolve(x * 2); x++; return String(x) })()",
+   "chrome": "7"
+  },
+  {
+   "name": "async-member-store",
+   "js": "(async function () { var o = {}, v = 2; o.p = await v; o.q = v; return o.p + ',' + o.q })()",
+   "chrome": "2,2"
+  },
+  {
+   "name": "throwing-new-keeps-old",
+   "js": "function T() { throw new Error('x') } function f() { var x = 5; try { x = new T() } catch (e) {} return String(x) } f()",
+   "chrome": "5"
+  },
+  {
+   "name": "throwing-new-var-init-keeps-old",
+   "js": "function T() { throw new Error('x') } function f() { var y = 3; try { var y = new T() } catch (e) {} return String(y) } f()",
+   "chrome": "3"
+  },
+  {
+   "name": "destructuring-swap-var",
+   "js": "function f() { var a = 1, b = 2; [a, b] = [b, a]; return a + ',' + b } f()",
+   "chrome": "2,1"
+  },
+  {
+   "name": "destructuring-swap-let",
+   "js": "function f() { let a = 'p', b = 'q'; [a, b] = [b, a]; return a + ',' + b } f()",
+   "chrome": "q,p"
+  },
+  {
+   "name": "destructuring-object-swap",
+   "js": "function f() { var a = 1, b = 2; ({ a, b } = { a: b, b: a }); return a + ',' + b } f()",
+   "chrome": "2,1"
+  },
+  {
+   "name": "postfix-null-boolean",
+   "js": "function f() { var n = null, t = true; var r1 = n++, r2 = t--; return typeof r1 + r1 + ',' + typeof r2 + r2 + ',' + n + ',' + t } f()",
+   "chrome": "number0,number1,1,0"
+  },
+  {
+   "name": "postfix-symbol-keeps",
+   "js": "function f() { var s = Symbol('k'), r = 'none'; try { r = s++ } catch (e) {} return typeof s + ',' + r } f()",
+   "chrome": "symbol,none"
+  }
+ ],
+ "chrome_version": "148.0.7778.216"
+}

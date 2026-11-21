@@ -1,0 +1,105 @@
+{
+ "viewport": [
+  400,
+  600
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "explicit-top-margin-after-p-relative-parent",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#c{position:relative}#a{top:5px;margin-top:7px}</style></head><body><div id=c><p id=p>text</p><div id=a></div></div></body></html>",
+   "chrome_boxes": "c:0:16:400:20 p:0:16:400:20 a:0:28:30:10"
+  },
+  {
+   "name": "abspos-after-inline-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#ib{display:inline-block;width:20px;height:20px;margin-bottom:15px}</style></head><body><div id=c><span id=ib></span><div id=a></div></div></body></html>",
+   "chrome_boxes": "c:0:0:400:39 ib:0:0:20:20 a:0:39:30:10"
+  },
+  {
+   "name": "abspos-after-inline-block-in-body",
+   "html": "<!doctype html><html><head><style>body{margin:8px}#a{position:absolute;width:30px;height:10px}#ib{display:inline-block;width:20px;height:20px;margin-bottom:15px}</style></head><body><span id=ib></span><div id=a></div></body></html>",
+   "chrome_boxes": "ib:8:8:20:20 a:8:47:30:10"
+  },
+  {
+   "name": "abspos-after-text",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=c>text<div id=a></div></div></body></html>",
+   "chrome_boxes": "c:0:0:400:18 a:0:18:30:10"
+  },
+  {
+   "name": "grid-p-then-abspos",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#g{display:grid}</style></head><body><div id=g><p id=p>text</p><div id=a></div></div></body></html>",
+   "chrome_boxes": "g:0:0:400:52 p:0:16:400:20 a:0:0:30:10"
+  },
+  {
+   "name": "grid-p-only",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#g{display:grid}</style></head><body><div id=g><p id=p>text</p></div></body></html>",
+   "chrome_boxes": "g:0:0:400:52 p:0:16:400:20"
+  },
+  {
+   "name": "grid-abspos-relative",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#g{display:grid;position:relative;padding:6px}</style></head><body><div id=g><p id=p>text</p><div id=a></div></div></body></html>",
+   "chrome_boxes": "g:0:0:400:64 p:6:22:388:20 a:0:0:30:10"
+  },
+  {
+   "name": "flex-column-p-then-abspos",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#f{display:flex;flex-direction:column}</style></head><body><div id=f><p id=p>text</p><div id=a></div></div></body></html>",
+   "chrome_boxes": "f:0:0:400:52 p:0:16:400:20 a:0:0:30:10"
+  },
+  {
+   "name": "flex-column-p-only",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#f{display:flex;flex-direction:column}</style></head><body><div id=f><p id=p>text</p></div></body></html>",
+   "chrome_boxes": "f:0:0:400:52 p:0:16:400:20"
+  },
+  {
+   "name": "flex-row-p-then-abspos",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#f{display:flex}</style></head><body><div id=f><p id=p>text</p><div id=a></div></div></body></html>",
+   "chrome_boxes": "f:0:0:400:52 p:0:16:24:20 a:0:0:30:10"
+  },
+  {
+   "name": "grid-padded-static-abspos",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#g{display:grid;padding:6px}</style></head><body><div id=g><p id=p>text</p><div id=a></div></div></body></html>",
+   "chrome_boxes": "g:0:0:400:64 p:6:22:388:20 a:6:6:30:10"
+  },
+  {
+   "name": "grid-two-columns-abspos-between",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#g{display:grid;grid-template-columns:100px 100px}#b{height:30px}</style></head><body><div id=g><div id=b></div><div id=a></div><div id=c>x</div></div></body></html>",
+   "chrome_boxes": "g:0:0:400:30 b:0:0:100:30 a:0:0:30:10 c:100:0:100:30"
+  },
+  {
+   "name": "flex-column-two-p",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#f{display:flex;flex-direction:column}</style></head><body><div id=f><p id=p>text</p><p id=q>more</p></div></body></html>",
+   "chrome_boxes": "f:0:0:400:104 p:0:16:400:20 q:0:68:400:20"
+  },
+  {
+   "name": "flex-column-margined-div",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#a{position:absolute;width:30px;height:10px}#f{display:flex;flex-direction:column}#d{height:20px;margin:10px 0 7px}</style></head><body><div id=f><div id=d></div></div></body></html>",
+   "chrome_boxes": "f:0:0:400:37 d:0:10:400:20"
+  },
+  {
+   "name": "inline-abspos-after-text",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;font:16px/18px monospace}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=c>ab<span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:18 a:19:0:30:10"
+  },
+  {
+   "name": "inline-block-abspos-after-inline-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;line-height:18px}#b{display:inline-block;width:38px;height:40px}#a{position:absolute;display:inline-block;width:30px;height:10px}</style></head><body><div id=c><span id=b></span><span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:44 b:0:0:38:40 a:38:0:30:10"
+  },
+  {
+   "name": "inline-abspos-after-inline-block",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;line-height:18px}#b{display:inline-block;width:38px;height:40px}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=c><span id=b></span><span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:44 b:0:0:38:40 a:38:0:30:10"
+  },
+  {
+   "name": "inline-abspos-between-inline-blocks",
+   "html": "<!doctype html><html><head><style>body{margin:0}#c{position:relative;line-height:18px}#b,#d{display:inline-block;width:38px;height:20px}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=c><span id=b></span><span id=a></span><span id=d></span></div></body></html>",
+   "chrome_boxes": "c:0:0:400:24 b:0:0:38:20 a:38:0:30:10 d:38:0:38:20"
+  },
+  {
+   "name": "inline-abspos-after-p",
+   "html": "<!doctype html><html><head><style>body{margin:0}p{line-height:20px;margin:16px 0}#c{position:relative}#a{position:absolute;width:30px;height:10px}</style></head><body><div id=c><p id=p>text</p><span id=a></span></div></body></html>",
+   "chrome_boxes": "c:0:16:400:20 p:0:16:400:20 a:0:52:30:10"
+  }
+ ],
+ "chrome": "148.0.7778.216"
+}

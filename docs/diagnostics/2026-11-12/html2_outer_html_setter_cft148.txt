@@ -1,0 +1,10 @@
+# HTML2 R1 (third): the outerHTML setter. Chrome for Testing 148.0.7778.216, headless: window.report() of html2_outer_html_setter.html.
+page element: b,i,#text | <b>x</b><i>y</i>! | old parent=null
+element of another document: b | owner=true
+detached element: NoModificationAllowedError | <span></span>
+child of the document: NoModificationAllowedError
+child of a fragment: NoModificationAllowedError | span
+svg child: circle(svg),div | g(svg)
+table row: tr
+empty string: 
+null:  ""

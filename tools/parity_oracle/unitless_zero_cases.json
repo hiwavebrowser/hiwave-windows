@@ -1,0 +1,382 @@
+{
+ "viewport": [
+  400,
+  300
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "margin-p",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}p{margin:0}</style></head><body><div id=a><p id=p>x</p><p id=q>y</p></div></body></html>",
+   "chrome_boxes": "a:0:0:400:40 p:0:0:400:20 q:0:20:400:20"
+  },
+  {
+   "name": "margin-p-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}p{margin:0px}</style></head><body><div id=a><p id=p>x</p><p id=q>y</p></div></body></html>",
+   "chrome_boxes": "a:0:0:400:40 p:0:0:400:20 q:0:20:400:20"
+  },
+  {
+   "name": "margin-top-p",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}p{margin-top:0;margin-bottom:0}</style></head><body><div id=a><p id=p>x</p><p id=q>y</p></div></body></html>",
+   "chrome_boxes": "a:0:0:400:40 p:0:0:400:20 q:0:20:400:20"
+  },
+  {
+   "name": "margin-top-p-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}p{margin-top:0px;margin-bottom:0px}</style></head><body><div id=a><p id=p>x</p><p id=q>y</p></div></body></html>",
+   "chrome_boxes": "a:0:0:400:40 p:0:0:400:20 q:0:20:400:20"
+  },
+  {
+   "name": "margin-body",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}body{margin:0!important}</style></head><body><div id=a style='height:10px'></div></body></html>",
+   "chrome_boxes": "a:0:0:400:10"
+  },
+  {
+   "name": "margin-body-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}body{margin:0px!important}</style></head><body><div id=a style='height:10px'></div></body></html>",
+   "chrome_boxes": "a:0:0:400:10"
+  },
+  {
+   "name": "padding-ul",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}ul{padding:0;margin:0}</style></head><body><ul id=u><li id=l>x</li></ul></body></html>",
+   "chrome_boxes": "u:0:0:400:20 l:0:0:400:20"
+  },
+  {
+   "name": "padding-ul-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}ul{padding:0px;margin:0}</style></head><body><ul id=u><li id=l>x</li></ul></body></html>",
+   "chrome_boxes": "u:0:0:400:20 l:0:0:400:20"
+  },
+  {
+   "name": "padding-left-ul",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}ul{padding-left:0;margin:0}</style></head><body><ul id=u><li id=l>x</li></ul></body></html>",
+   "chrome_boxes": "u:0:0:400:20 l:0:0:400:20"
+  },
+  {
+   "name": "padding-left-ul-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}ul{padding-left:0px;margin:0}</style></head><body><ul id=u><li id=l>x</li></ul></body></html>",
+   "chrome_boxes": "u:0:0:400:20 l:0:0:400:20"
+  },
+  {
+   "name": "border-width-solid",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#b{border:0 solid red;width:50px;height:10px}</style></head><body><div id=b></div><div id=c>y</div></body></html>",
+   "chrome_boxes": "b:0:0:50:10 c:0:10:400:20"
+  },
+  {
+   "name": "border-width-solid-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#b{border:0px solid red;width:50px;height:10px}</style></head><body><div id=b></div><div id=c>y</div></body></html>",
+   "chrome_boxes": "b:0:0:50:10 c:0:10:400:20"
+  },
+  {
+   "name": "border-top-width",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#b{border-style:solid;border-top-width:0;width:50px;height:10px}</style></head><body><div id=b></div><div id=c>y</div></body></html>",
+   "chrome_boxes": "b:0:0:56:13 c:0:13:400:20",
+   "known": "unset border side widths are 0, not medium (3px), under border-style:solid"
+  },
+  {
+   "name": "border-top-width-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#b{border-style:solid;border-top-width:0px;width:50px;height:10px}</style></head><body><div id=b></div><div id=c>y</div></body></html>",
+   "chrome_boxes": "b:0:0:56:13 c:0:13:400:20",
+   "known": "unset border side widths are 0, not medium (3px), under border-style:solid"
+  },
+  {
+   "name": "border-width-input",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}input{border:0;padding:0;width:100px;height:20px;box-sizing:border-box}</style></head><body><input id=i><div id=c>y</div></body></html>",
+   "chrome_boxes": "i:0:1:100:20 c:0:21:400:20",
+   "known": "input with border:0 sits 1px high on its line (baseline), not a zero misread"
+  },
+  {
+   "name": "border-width-input-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}input{border:0px;padding:0;width:100px;height:20px;box-sizing:border-box}</style></head><body><input id=i><div id=c>y</div></body></html>",
+   "chrome_boxes": "i:0:1:100:20 c:0:21:400:20",
+   "known": "input with border:0 sits 1px high on its line (baseline), not a zero misread"
+  },
+  {
+   "name": "inset-top-left-abs",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#r{position:relative;width:200px;height:100px;margin:10px}#t{position:absolute;top:0;left:0;width:10px;height:10px}</style></head><body><div id=r><span>abc</span><div id=t></div></div></body></html>",
+   "chrome_boxes": "r:10:10:200:100 t:10:10:10:10"
+  },
+  {
+   "name": "inset-top-left-abs-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#r{position:relative;width:200px;height:100px;margin:10px}#t{position:absolute;top:0px;left:0px;width:10px;height:10px}</style></head><body><div id=r><span>abc</span><div id=t></div></div></body></html>",
+   "chrome_boxes": "r:10:10:200:100 t:10:10:10:10"
+  },
+  {
+   "name": "inset-right-bottom-abs",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#r{position:relative;width:200px;height:100px;margin:10px}#t{position:absolute;right:0;bottom:0;width:10px;height:10px}</style></head><body><div id=r><div id=t></div></div></body></html>",
+   "chrome_boxes": "r:10:10:200:100 t:200:100:10:10"
+  },
+  {
+   "name": "inset-right-bottom-abs-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#r{position:relative;width:200px;height:100px;margin:10px}#t{position:absolute;right:0px;bottom:0px;width:10px;height:10px}</style></head><body><div id=r><div id=t></div></div></body></html>",
+   "chrome_boxes": "r:10:10:200:100 t:200:100:10:10"
+  },
+  {
+   "name": "inset-all-abs",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#r{position:relative;width:200px;height:100px;margin:10px}#t{position:absolute;top:0;right:0;bottom:0;left:0}</style></head><body><div id=r><div id=t></div></div></body></html>",
+   "chrome_boxes": "r:10:10:200:100 t:10:10:200:100"
+  },
+  {
+   "name": "inset-all-abs-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#r{position:relative;width:200px;height:100px;margin:10px}#t{position:absolute;top:0px;right:0px;bottom:0px;left:0px}</style></head><body><div id=r><div id=t></div></div></body></html>",
+   "chrome_boxes": "r:10:10:200:100 t:10:10:200:100"
+  },
+  {
+   "name": "inset-shorthand-fixed",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{position:fixed;inset:0}</style></head><body><div style='height:30px'></div><div id=t></div></body></html>",
+   "chrome_boxes": "t:0:0:400:300"
+  },
+  {
+   "name": "inset-shorthand-fixed-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{position:fixed;inset:0px}</style></head><body><div style='height:30px'></div><div id=t></div></body></html>",
+   "chrome_boxes": "t:0:0:400:300"
+  },
+  {
+   "name": "inset-rel-top",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{position:relative;top:0;left:0;height:10px}</style></head><body><div style='height:30px'></div><div id=t></div></body></html>",
+   "chrome_boxes": "t:0:30:400:10"
+  },
+  {
+   "name": "inset-rel-top-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{position:relative;top:0px;left:0px;height:10px}</style></head><body><div style='height:30px'></div><div id=t></div></body></html>",
+   "chrome_boxes": "t:0:30:400:10"
+  },
+  {
+   "name": "sticky-top",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#s{position:sticky;top:0;height:10px}</style></head><body><div style='height:30px'></div><div id=s></div><div style='height:900px'></div></body></html>",
+   "chrome_boxes": "s:0:30:400:10"
+  },
+  {
+   "name": "sticky-top-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#s{position:sticky;top:0px;height:10px}</style></head><body><div style='height:30px'></div><div id=s></div><div style='height:900px'></div></body></html>",
+   "chrome_boxes": "s:0:30:400:10"
+  },
+  {
+   "name": "gap-flex",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;gap:0;width:200px}#f>div{width:20px;height:10px}</style></head><body><div id=f><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "f:0:0:200:10 a:0:0:20:10 b:20:0:20:10"
+  },
+  {
+   "name": "gap-flex-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;gap:0px;width:200px}#f>div{width:20px;height:10px}</style></head><body><div id=f><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "f:0:0:200:10 a:0:0:20:10 b:20:0:20:10"
+  },
+  {
+   "name": "column-gap-flex",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;column-gap:0;width:200px}#f>div{width:20px;height:10px}</style></head><body><div id=f><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "f:0:0:200:10 a:0:0:20:10 b:20:0:20:10"
+  },
+  {
+   "name": "column-gap-flex-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;column-gap:0px;width:200px}#f>div{width:20px;height:10px}</style></head><body><div id=f><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "f:0:0:200:10 a:0:0:20:10 b:20:0:20:10"
+  },
+  {
+   "name": "gap-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#g{display:grid;grid-template-columns:20px 20px;gap:0;width:200px}#g>div{height:10px}</style></head><body><div id=g><div id=a></div><div id=b></div><div id=c></div></div></body></html>",
+   "chrome_boxes": "g:0:0:200:20 a:0:0:20:10 b:20:0:20:10 c:0:10:20:10"
+  },
+  {
+   "name": "gap-grid-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#g{display:grid;grid-template-columns:20px 20px;gap:0px;width:200px}#g>div{height:10px}</style></head><body><div id=g><div id=a></div><div id=b></div><div id=c></div></div></body></html>",
+   "chrome_boxes": "g:0:0:200:20 a:0:0:20:10 b:20:0:20:10 c:0:10:20:10"
+  },
+  {
+   "name": "row-gap-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#g{display:grid;grid-template-columns:20px;row-gap:0;width:200px}#g>div{height:10px}</style></head><body><div id=g><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "g:0:0:200:20 a:0:0:20:10 b:0:10:20:10"
+  },
+  {
+   "name": "row-gap-grid-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#g{display:grid;grid-template-columns:20px;row-gap:0px;width:200px}#g>div{height:10px}</style></head><body><div id=g><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "g:0:0:200:20 a:0:0:20:10 b:0:10:20:10"
+  },
+  {
+   "name": "column-gap-multicol",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#m{column-count:2;column-gap:0;width:200px;font:10px/10px Arial}#m>div{height:10px}</style></head><body><div id=m><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "m:0:0:200:10 a:0:0:100:10 b:100:0:100:10"
+  },
+  {
+   "name": "column-gap-multicol-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#m{column-count:2;column-gap:0px;width:200px;font:10px/10px Arial}#m>div{height:10px}</style></head><body><div id=m><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "m:0:0:200:10 a:0:0:100:10 b:100:0:100:10"
+  },
+  {
+   "name": "flex-basis",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;width:200px}#a{flex-basis:0;flex-grow:1;height:10px}#b{width:50px;height:10px}</style></head><body><div id=f><div id=a>xxxxxxxx</div><div id=b></div></div></body></html>",
+   "chrome_boxes": "f:0:0:200:10 a:0:0:150:10 b:150:0:50:10"
+  },
+  {
+   "name": "flex-basis-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;width:200px}#a{flex-basis:0px;flex-grow:1;height:10px}#b{width:50px;height:10px}</style></head><body><div id=f><div id=a>xxxxxxxx</div><div id=b></div></div></body></html>",
+   "chrome_boxes": "f:0:0:200:10 a:0:0:150:10 b:150:0:50:10"
+  },
+  {
+   "name": "flex-shorthand-1-1-0",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;width:200px}#f>div{flex:1 1 0;height:10px}</style></head><body><div id=f><div id=a>xxxxxxxxxxxx</div><div id=b>y</div></div></body></html>",
+   "chrome_boxes": "f:0:0:200:10 a:0:0:100:10 b:100:0:100:10"
+  },
+  {
+   "name": "flex-shorthand-1-1-0-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;width:200px}#f>div{flex:1 1 0px;height:10px}</style></head><body><div id=f><div id=a>xxxxxxxxxxxx</div><div id=b>y</div></div></body></html>",
+   "chrome_boxes": "f:0:0:200:10 a:0:0:100:10 b:100:0:100:10"
+  },
+  {
+   "name": "line-height",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#l{line-height:0;font-size:16px}</style></head><body><div id=l><span>x</span></div><div id=n>y</div></body></html>",
+   "chrome_boxes": "l:0:0:400:0 n:0:0:400:20",
+   "known": "line-height:0 leaves a 5px line box (Chrome 0)"
+  },
+  {
+   "name": "line-height-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#l{line-height:0px;font-size:16px}</style></head><body><div id=l><span>x</span></div><div id=n>y</div></body></html>",
+   "chrome_boxes": "l:0:0:400:0 n:0:0:400:20",
+   "known": "line-height:0 leaves a 5px line box (Chrome 0)"
+  },
+  {
+   "name": "text-indent",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{text-indent:0}#t span{display:inline-block;width:10px;height:10px}</style></head><body><div id=t><span id=s></span></div></body></html>",
+   "chrome_boxes": "t:0:0:400:20 s:0:5:10:10"
+  },
+  {
+   "name": "text-indent-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{text-indent:0px}#t span{display:inline-block;width:10px;height:10px}</style></head><body><div id=t><span id=s></span></div></body></html>",
+   "chrome_boxes": "t:0:0:400:20 s:0:5:10:10"
+  },
+  {
+   "name": "letter-spacing",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{letter-spacing:0;display:inline-block}</style></head><body><div><span id=t>abcdef</span></div></body></html>",
+   "chrome_boxes": "t:0:0:48:20"
+  },
+  {
+   "name": "letter-spacing-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{letter-spacing:0px;display:inline-block}</style></head><body><div><span id=t>abcdef</span></div></body></html>",
+   "chrome_boxes": "t:0:0:48:20"
+  },
+  {
+   "name": "word-spacing",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{word-spacing:0;display:inline-block}</style></head><body><div><span id=t>a b c d</span></div></body></html>",
+   "chrome_boxes": "t:0:0:48:20"
+  },
+  {
+   "name": "word-spacing-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{word-spacing:0px;display:inline-block}</style></head><body><div><span id=t>a b c d</span></div></body></html>",
+   "chrome_boxes": "t:0:0:48:20"
+  },
+  {
+   "name": "border-spacing-table",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}table{border-spacing:0}td{padding:0;width:10px;height:10px}</style></head><body><table id=t><tr><td id=c1></td><td id=c2></td></tr></table></body></html>",
+   "chrome_boxes": "t:0:0:20:10 c1:0:0:10:10 c2:10:0:10:10"
+  },
+  {
+   "name": "border-spacing-table-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}table{border-spacing:0px}td{padding:0;width:10px;height:10px}</style></head><body><table id=t><tr><td id=c1></td><td id=c2></td></tr></table></body></html>",
+   "chrome_boxes": "t:0:0:20:10 c1:0:0:10:10 c2:10:0:10:10"
+  },
+  {
+   "name": "outline-offset",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#o{outline:2px solid red;outline-offset:0;width:10px;height:10px}</style></head><body><div id=o></div></body></html>",
+   "chrome_boxes": "o:0:0:10:10"
+  },
+  {
+   "name": "outline-offset-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#o{outline:2px solid red;outline-offset:0px;width:10px;height:10px}</style></head><body><div id=o></div></body></html>",
+   "chrome_boxes": "o:0:0:10:10"
+  },
+  {
+   "name": "grid-template-zero-track",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#g{display:grid;grid-template-columns:0 1fr;width:200px}#g>div{height:10px}</style></head><body><div id=g><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "g:0:0:200:10 a:0:0:0:10 b:0:0:200:10"
+  },
+  {
+   "name": "grid-template-zero-track-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#g{display:grid;grid-template-columns:0px 1fr;width:200px}#g>div{height:10px}</style></head><body><div id=g><div id=a></div><div id=b></div></div></body></html>",
+   "chrome_boxes": "g:0:0:200:10 a:0:0:0:10 b:0:0:200:10"
+  },
+  {
+   "name": "margin-auto-center",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#c{width:100px;height:10px;margin:0 auto}</style></head><body><div id=c></div></body></html>",
+   "chrome_boxes": "c:150:0:100:10"
+  },
+  {
+   "name": "margin-auto-center-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#c{width:100px;height:10px;margin:0px auto}</style></head><body><div id=c></div></body></html>",
+   "chrome_boxes": "c:150:0:100:10"
+  },
+  {
+   "name": "min-width-flex-item",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;width:100px}#a{min-width:0;flex:1 1 auto;overflow:hidden;height:10px}#a span{display:inline-block;width:300px}</style></head><body><div id=f><div id=a><span></span></div><div id=b style='width:50px;height:10px'></div></div></body></html>",
+   "chrome_boxes": "f:0:0:100:10 a:0:0:86:10 b:86:0:14:10",
+   "known": "min-width:0 flex item does not shrink below its basis share (Chrome 86/14)"
+  },
+  {
+   "name": "min-width-flex-item-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#f{display:flex;width:100px}#a{min-width:0px;flex:1 1 auto;overflow:hidden;height:10px}#a span{display:inline-block;width:300px}</style></head><body><div id=f><div id=a><span></span></div><div id=b style='width:50px;height:10px'></div></div></body></html>",
+   "chrome_boxes": "f:0:0:100:10 a:0:0:86:10 b:86:0:14:10",
+   "known": "min-width:0 flex item does not shrink below its basis share (Chrome 86/14)"
+  },
+  {
+   "name": "vertical-align-length",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#v{vertical-align:0;display:inline-block;width:10px;height:10px}</style></head><body><div id=d><span>x</span><span id=v></span></div></body></html>",
+   "chrome_boxes": "d:0:0:400:20 v:8:5:10:10"
+  },
+  {
+   "name": "vertical-align-length-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#v{vertical-align:0px;display:inline-block;width:10px;height:10px}</style></head><body><div id=d><span>x</span><span id=v></span></div></body></html>",
+   "chrome_boxes": "d:0:0:400:20 v:8:5:10:10"
+  },
+  {
+   "name": "translate-transform",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{transform:translate(0,0);width:10px;height:10px}</style></head><body><div id=t></div></body></html>",
+   "chrome_boxes": "t:0:0:10:10"
+  },
+  {
+   "name": "translate-transform-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}#t{transform:translate(0px,0px);width:10px;height:10px}</style></head><body><div id=t></div></body></html>",
+   "chrome_boxes": "t:0:0:10:10"
+  },
+  {
+   "name": "table-padding-cell",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}table{border-collapse:collapse}td{padding:0;width:10px;height:10px}</style></head><body><table><tr><td id=c1>x</td><td id=c2>y</td></tr></table></body></html>",
+   "chrome_boxes": "c1:0:0:10:20 c2:10:0:10:20"
+  },
+  {
+   "name": "table-padding-cell-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}table{border-collapse:collapse}td{padding:0px;width:10px;height:10px}</style></head><body><table><tr><td id=c1>x</td><td id=c2>y</td></tr></table></body></html>",
+   "chrome_boxes": "c1:0:0:10:20 c2:10:0:10:20"
+  },
+  {
+   "name": "fieldset-padding",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}fieldset{padding:0;margin:0;border:0}</style></head><body><fieldset id=f><div id=d style='height:10px'></div></fieldset></body></html>",
+   "chrome_boxes": "f:0:0:400:10 d:0:0:400:10"
+  },
+  {
+   "name": "fieldset-padding-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}fieldset{padding:0px;margin:0;border:0}</style></head><body><fieldset id=f><div id=d style='height:10px'></div></fieldset></body></html>",
+   "chrome_boxes": "f:0:0:400:10 d:0:0:400:10"
+  },
+  {
+   "name": "h1-margin",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}h1{margin:0}</style></head><body><h1 id=h>x</h1><div id=n>y</div></body></html>",
+   "chrome_boxes": "h:0:0:400:20 n:0:20:400:20",
+   "known": "h1 line box 21px vs Chrome 20 under font:16px/20px"
+  },
+  {
+   "name": "h1-margin-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}h1{margin:0px}</style></head><body><h1 id=h>x</h1><div id=n>y</div></body></html>",
+   "chrome_boxes": "h:0:0:400:20 n:0:20:400:20",
+   "known": "h1 line box 21px vs Chrome 20 under font:16px/20px"
+  },
+  {
+   "name": "button-padding",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}button{padding:0;border:0;font:16px/20px Arial}</style></head><body><button id=b>x</button></body></html>",
+   "chrome_boxes": "b:0:0:8:20",
+   "known": "author padding:0 on <button> does not override the UA padding"
+  },
+  {
+   "name": "button-padding-px",
+   "html": "<!doctype html><html><head><style>body{margin:0;font:16px/20px Arial}button{padding:0px;border:0;font:16px/20px Arial}</style></head><body><button id=b>x</button></body></html>",
+   "chrome_boxes": "b:0:0:8:20",
+   "known": "author padding:0 on <button> does not override the UA padding"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

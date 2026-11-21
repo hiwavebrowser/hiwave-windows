@@ -40,6 +40,20 @@ with open(CASE_REGISTRY_PATH, encoding="utf-8") as _f:
     CASE_REGISTRY = json.load(_f)
 
 
+def capture_args_for(html_path: str) -> List[str]:
+    """Extra parity-capture arguments a registry case asks for (`capture_args`).
+
+    A built-in page that a host loads and then runs its own script on (the
+    Inspector) is captured with `--run-inline-scripts`; Chromium runs it as
+    any page. Looked up by fixture path, since that is what reaches the
+    capture functions.
+    """
+    for c in CASE_REGISTRY["cases"].values():
+        if c["html"] == html_path:
+            return list(c.get("capture_args", []))
+    return []
+
+
 def _cases_for_scope(scope: str) -> List[Tuple[str, str, int, int]]:
     return [
         (cid, c["html"], c["width"], c["height"])
@@ -427,6 +441,7 @@ def run_rustkit_capture(
         "--height", str(height),
         "--dump-frame", str(frame_output),
         "--dump-layout", str(layout_output),
+        *capture_args_for(html_path),
     ]
     
     start = time.time()

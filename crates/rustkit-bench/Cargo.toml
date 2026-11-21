@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Performance benchmarking for RustKit browser engine"
 authors = ["HiWave Team"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 # RustKit crates
@@ -35,8 +35,6 @@ tracing = "0.1"
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-[[bench]]
-name = "rustkit"
-path = "../../benches/rustkit.rs"
-harness = false
+# No [[bench]] target: the one declared here (`../../benches/rustkit.rs`) never existed, and
+# `cargo build --workspace --all-targets` failed on it.
 

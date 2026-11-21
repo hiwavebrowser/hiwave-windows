@@ -1,0 +1,52 @@
+{
+ "viewport": [
+  400,
+  600
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "float-only-children-pct-height",
+   "html": "<!doctype html><html><head><style>body{margin:0}#p{height:200px;width:300px}#f{float:left;width:50px;height:50%}</style></head><body><div id=p><div id=f></div></div></body></html>",
+   "chrome_boxes": "p:0:0:300:200 f:0:0:50:100"
+  },
+  {
+   "name": "two-floats-pct-height",
+   "html": "<!doctype html><html><head><style>body{margin:0}#p{height:200px;width:300px}.f{float:left;width:50px;height:50%}</style></head><body><div id=p><div id=a class=f></div><div id=b class=f></div></div></body></html>",
+   "chrome_boxes": "p:0:0:300:200 a:0:0:50:100 b:50:0:50:100"
+  },
+  {
+   "name": "float-with-inflow-sibling",
+   "html": "<!doctype html><html><head><style>body{margin:0}#p{height:200px;width:300px}#f{float:left;width:50px;height:50%}</style></head><body><div id=p><div id=f></div><div id=s style='height:10px'></div></div></body></html>",
+   "chrome_boxes": "p:0:0:300:200 f:0:0:50:100 s:0:0:300:10"
+  },
+  {
+   "name": "float-right-pct-height",
+   "html": "<!doctype html><html><head><style>body{margin:0}#p{height:200px;width:300px}#f{float:right;width:50px;height:50%}</style></head><body><div id=p><div id=f></div></div></body></html>",
+   "chrome_boxes": "p:0:0:300:200 f:250:0:50:100"
+  },
+  {
+   "name": "float-pct-of-auto-parent",
+   "html": "<!doctype html><html><head><style>body{margin:0}#p{width:300px}#f{float:left;width:50px;height:50%}</style></head><body><div id=p><div id=f></div><div id=s style='height:40px'></div></div></body></html>",
+   "chrome_boxes": "p:0:0:300:40 f:0:0:50:0 s:0:0:300:40"
+  },
+  {
+   "name": "float-nested-pct-chain",
+   "html": "<!doctype html><html><head><style>body{margin:0}#p{height:200px;width:300px}#q{height:50%}#f{float:left;width:50px;height:50%}</style></head><body><div id=p><div id=q><div id=f></div></div></div></body></html>",
+   "chrome_boxes": "p:0:0:300:200 q:0:0:300:100 f:0:0:50:50"
+  },
+  {
+   "name": "float-in-max-height-parent",
+   "html": "<!doctype html><html><head><style>body{margin:0}#p{height:200px;max-height:150px;width:300px}#f{float:left;width:50px;height:100%}</style></head><body><div id=p><div id=f></div></div></body></html>",
+   "chrome_boxes": "p:0:0:300:150 f:0:0:50:150",
+   "known": "every box: a percentage base is the parent's specified height, not its max-height-clamped used height (200 vs 150) - not float-specific"
+  },
+  {
+   "name": "float-min-height-pct",
+   "html": "<!doctype html><html><head><style>body{margin:0}#p{height:200px;width:300px}#f{float:left;width:50px;min-height:25%}</style></head><body><div id=p><div id=f></div></div></body></html>",
+   "chrome_boxes": "p:0:0:300:200 f:0:0:50:50",
+   "known": "every box: min-height % resolves against the viewport (calculate_block_height min-height arm), not the containing block - not float-specific"
+  }
+ ],
+ "chrome": "143.0.7499.4"
+}

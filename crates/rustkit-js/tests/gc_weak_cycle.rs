@@ -5,7 +5,7 @@
 //! setting their mark bit, so a cycle reachable from an ephemeron value was
 //! re-traced forever and the tracer queue grew without bound (tripadvisor,
 //! squarespace, bmw and toyota hung inside `Collector::collect` with RSS in
-//! the GB). The vendored boa_gc (third_party/boa_gc) backports the fix.
+//! the GB). boa_gc 0.22 has the fix upstream; this test keeps it fixed.
 //!
 //! The collection runs on a worker thread; if it has not finished within the
 //! deadline the process exits non-zero instead of letting the runaway tracer

@@ -1,0 +1,3 @@
+# Chrome for Testing 148.0.7778.216, Windows (win64), headless, 800x600: getBoundingClientRect, rounded
+# flex_aspect_ratio_tests extra_page("inherit-em") (body 10px, the default font: Times New Roman here)
+inherit-em c=0,0,200,0 it=0,0,200,0 txt=0,0,800,11

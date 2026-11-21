@@ -412,6 +412,10 @@ pub enum Ineligible {
     /// Refusing is the conservative choice: honouring `Vary` properly means
     /// folding the named headers into the key, which is a key-shape change.
     VariesOnRequestHeaders(String),
+    /// The request asked for a byte range: its answer is part of the resource, and
+    /// the key (the URL) does not say which part. Stored, it would answer a later
+    /// request for the whole resource, or for another range, with the wrong bytes.
+    Ranged,
 }
 
 /// Decide whether a response may be stored at all.
@@ -425,6 +429,9 @@ pub fn cache_eligibility(
     }
     if request_headers.contains_key("authorization") {
         return Some(Ineligible::Credentialed);
+    }
+    if request_headers.contains_key("range") {
+        return Some(Ineligible::Ranged);
     }
     if let Some(cc) = response_headers.get("cache-control").and_then(|v| v.to_str().ok()) {
         if cc.split(',').any(|d| d.trim().eq_ignore_ascii_case("private")) {
@@ -582,6 +589,13 @@ mod tests {
         );
         let off = MemoryCache::with_config(CacheConfig { enabled: false, ..CacheConfig::default() });
         assert!(!off.enabled());
+    }
+
+    #[test]
+    fn test_a_ranged_request_is_not_cached() {
+        let mut request = HeaderMap::new();
+        request.insert("range", "bytes=0-99".parse().unwrap());
+        assert_eq!(cache_eligibility(true, &request, &HeaderMap::new()), Some(Ineligible::Ranged));
     }
 
     #[test]

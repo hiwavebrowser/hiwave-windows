@@ -694,18 +694,13 @@ pub struct DatabaseInfo {
 // ==================== IDBCursor ====================
 
 /// Cursor direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CursorDirection {
+    #[default]
     Next,
     NextUnique,
     Prev,
     PrevUnique,
-}
-
-impl Default for CursorDirection {
-    fn default() -> Self {
-        Self::Next
-    }
 }
 
 /// A cursor for iterating records.

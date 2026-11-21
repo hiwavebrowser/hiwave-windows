@@ -144,6 +144,7 @@ from layout_oracle_gate import (  # noqa: E402
     border_box,
     find_layout_json,
     index_rustkit,
+    join_key,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -644,7 +645,7 @@ def attributable_selectors(
         selector = element.get("selector")
         if not selector:
             continue
-        candidates = index.get(selector, [])
+        candidates = index.get(join_key(selector), [])
         if len(candidates) != 1:
             continue
         actual = border_box(candidates[0][1])

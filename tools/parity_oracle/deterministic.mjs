@@ -32,19 +32,35 @@ function getResetCssWithAbsoluteFontPaths() {
 const RESET_CSS = getResetCssWithAbsoluteFontPaths();
 
 // Campaign pin: PARITY_CHROME_PATH points at the exact Chrome for Testing
-// binary recorded in trench/BASELINE-<os>.md. Without it, captures fall back
-// to Playwright's bundled Chromium, whose version drifts with the npm package
-// — fine for local iteration, invalid for pinned-baseline capture.
-function getPinnedExecutablePath() {
-  const p = process.env.PARITY_CHROME_PATH;
-  if (!p) return undefined;
+// binary recorded in trench/BASELINE-<os>.md. Playwright's bundled Chromium
+// drifts with the npm package, so an output taken with it is not a pinned
+// expectation. An oracle that writes expectations passes { required: true }:
+// without the pin it fails. Otherwise a run without the pin says so on stderr
+// and uses the bundled browser (boards and gates that do not set the pin yet;
+// failing them closed is a follow-up once each sets it). Record
+// browser.version() in any output.
+export function getPinnedExecutablePath({ required = false, env = process.env } = {}) {
+  const p = env.PARITY_CHROME_PATH;
+  if (!p) {
+    if (required) {
+      throw new Error(
+        'PARITY_CHROME_PATH is not set: point it at the pinned Chrome for Testing ' +
+        '(trench/BASELINE-<os>.md); this output is a pinned expectation.'
+      );
+    }
+    console.error(
+      "deterministic.mjs: PARITY_CHROME_PATH is not set; using Playwright's bundled " +
+      'Chromium, which is not the pinned Chrome (not a pinned expectation).'
+    );
+    return undefined;
+  }
   if (!existsSync(p)) {
     throw new Error(`PARITY_CHROME_PATH set but not found: ${p}`);
   }
   return p;
 }
 
-export function getDeterministicLaunchOptions() {
+export function getDeterministicLaunchOptions({ requirePinned = false } = {}) {
   // Note: some flags may be ignored depending on platform/Chromium build.
   // We keep them because they reduce variance in practice.
   const args = [
@@ -65,7 +81,7 @@ export function getDeterministicLaunchOptions() {
 
   return {
     headless: true,
-    executablePath: getPinnedExecutablePath(),
+    executablePath: getPinnedExecutablePath({ required: requirePinned }),
     args,
   };
 }
@@ -121,6 +137,21 @@ export async function createDeterministicContext(browser, width, height, options
   }
 
   return context;
+}
+
+// parity-freeze.js runs animation frames on a virtual clock, one per real
+// rendering update (16.67 ms of page time each). A capture of a page that
+// animates through requestAnimationFrame (Chart.js) must wait for those frames
+// to finish, or it samples whichever frame the wall clock reached. Resolves
+// {frames, settled, capped}: settled is false only if callbacks were still
+// pending at the timeout; capped is true if the page asked for frames past
+// the freeze's budget (an endless loop, stopped at the same frame every run).
+// A page that asks for none resolves within two frames.
+export async function settleAnimationFrames(page, timeoutMs = 30000) {
+  return page.evaluate(
+    (t) => (window.__parityFreeze ? window.__parityFreeze.settle(t) : { frames: null, settled: true, capped: false }),
+    timeoutMs,
+  );
 }
 
 export function shouldApplyParityResetForHtmlPath(htmlPath) {

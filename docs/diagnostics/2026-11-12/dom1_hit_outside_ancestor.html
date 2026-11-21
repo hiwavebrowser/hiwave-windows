@@ -1,0 +1,65 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>DOM1: a box outside its ancestor's box is still hit</title>
+<style>
+html, body { margin: 0; }
+body { height: 30px; font: 12px/14px Times; }
+.stage { position: absolute; width: 150px; height: 20px; background: #ddd; }
+.box { width: 60px; height: 30px; background: #9cf; }
+</style></head><body>
+<!-- 0: an absolute box far below a short body (no positioned ancestor) -->
+<div id="s0" style="height:20px;width:150px"><div id="abs_body" class="box" style="position:absolute;left:20px;top:300px"></div></div>
+<!-- 1: an absolute box below its positioned parent -->
+<div id="s1" class="stage" style="left:200px;top:10px"><div id="abs_rel" class="box" style="position:absolute;left:10px;top:60px"></div></div>
+<!-- 2: a fixed box inside a small box -->
+<div id="s2" class="stage" style="left:400px;top:10px"><div id="fixed" class="box" style="position:fixed;left:410px;top:80px"></div></div>
+<!-- 3: negative margins pull a child above and left of its parent -->
+<div id="s3" class="stage" style="left:620px;top:60px"><div id="neg" class="box" style="margin:-40px 0 0 -30px"></div></div>
+<!-- 4: in-flow content taller than its overflow-visible parent -->
+<div id="s4" class="stage" style="left:10px;top:120px"><div id="tall" class="box" style="height:100px"></div></div>
+<!-- 5: the same under overflow:hidden: the part outside is not hit -->
+<div id="s5" class="stage" style="left:200px;top:120px;overflow:hidden"><div id="clipped" class="box" style="height:100px"></div></div>
+<!-- 6: an absolute box escapes a non-positioned overflow:hidden ancestor -->
+<div id="s6" class="stage" style="left:400px;top:150px"><div id="clip6" style="overflow:hidden;height:20px;width:150px"><div id="abs_escape" class="box" style="position:absolute;left:10px;top:50px"></div></div></div>
+<!-- 7: but not a positioned one -->
+<div id="s7" class="stage" style="left:600px;top:150px;overflow:hidden"><div id="abs_clipped" class="box" style="position:absolute;left:10px;top:50px"></div></div>
+<!-- 8: a dropdown: header > nav (relative) > menu (absolute) > item -->
+<div id="s8" class="stage" style="left:10px;top:260px;height:24px"><div id="nav" style="position:relative;display:inline-block;height:24px;width:70px"><span id="trigger">menu</span><ul id="menu" style="position:absolute;left:0;top:24px;margin:0;padding:0;list-style:none;width:120px;background:#fc9"><li id="item1" style="height:20px">one</li><li id="item2" style="height:20px"><a id="item2_link" href="#" style="display:block;height:20px">two</a></li></ul></div></div>
+<!-- 9: a transformed child outside its parent -->
+<div id="s9" class="stage" style="left:200px;top:260px"><div id="moved" class="box" style="transform:translate(20px,60px)"></div></div>
+<!-- 10: floats in a zero-height parent -->
+<div id="s10" style="position:absolute;left:400px;top:260px;width:150px"><div id="zero"><div id="fl" class="box" style="float:left"></div></div></div>
+<!-- 11: a relatively positioned inline below its line -->
+<div id="s11" class="stage" style="left:600px;top:260px"><span id="rel_inline" style="position:relative;top:50px;background:#9cf">inline text</span></div>
+<!-- 12: two overflowing siblings: the later one is on top; z-index reverses it -->
+<div id="s12" class="stage" style="left:10px;top:400px"><div id="under" class="box" style="position:absolute;left:0;top:40px"></div><div id="over" class="box" style="position:absolute;left:30px;top:50px"></div></div>
+<div id="s13" class="stage" style="left:200px;top:400px"><div id="z_top" class="box" style="position:absolute;left:0;top:40px;z-index:2"></div><div id="z_low" class="box" style="position:absolute;left:30px;top:50px;z-index:1"></div></div>
+<!-- 14: a text field outside its ancestors (focus by click) -->
+<div id="s14" class="stage" style="left:400px;top:400px"><input id="field" style="position:absolute;left:0;top:60px;width:100px"></div>
+<!-- 15: pointer-events:none overflow lets the point through; visibility:hidden too -->
+<div id="s15" class="stage" style="left:600px;top:400px"><div id="no_pe" class="box" style="position:absolute;left:0;top:40px;pointer-events:none"></div><div id="hidden" class="box" style="position:absolute;left:80px;top:40px;visibility:hidden"></div></div>
+<script>
+var POINTS = [
+    ['abs_body', 40, 310], ['abs_body edge', 79, 329], ['beside abs_body', 90, 310],
+    ['abs_rel', 230, 80], ['fixed', 430, 95],
+    ['neg above', 600, 30], ['neg inside stage', 640, 65],
+    ['tall below stage', 30, 200], ['tall right of box', 100, 200],
+    ['clipped inside', 220, 130], ['clipped below', 220, 180],
+    ['abs_escape', 430, 215], ['abs_clipped', 630, 215],
+    ['trigger', 20, 270], ['item1', 30, 292], ['item2', 30, 315], ['right of menu', 140, 292],
+    ['moved', 250, 335], ['moved origin', 220, 265],
+    ['fl', 420, 275], ['rel_inline', 610, 320],
+    ['over', 60, 460], ['under only', 20, 445], ['z_top', 250, 460], ['z_low only', 280, 475],
+    ['field', 450, 470], ['no_pe', 620, 455], ['hidden', 700, 455],
+    ['empty page', 780, 590]
+];
+window.report = function () {
+    return POINTS.map(function (p) {
+        var e = document.elementFromPoint(p[1], p[2]);
+        return p[0] + ' (' + p[1] + ',' + p[2] + '): ' + (e ? (e.id || e.tagName) : 'null');
+    }).concat(['abs_body', 'fixed', 'neg', 'abs_escape', 'menu', 'moved', 'fl', 'field'].map(function (id) {
+        var r = document.getElementById(id).getBoundingClientRect();
+        return 'rect ' + id + ': ' + [r.x, r.y, r.width, r.height].map(function (n) { return Math.round(n * 100) / 100; }).join(' ');
+    })).join('\n');
+};
+</script>
+</body></html>

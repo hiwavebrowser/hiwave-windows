@@ -1,0 +1,20 @@
+# Chrome for Testing 148.0.7778.216, headless, 800x600: window.report() of template_in_head.html
+scripts then script: head=[meta,title,script,template#u,script] body=[p] u.content=[script,script] in head
+then style link meta: head=[template#u,style,link,meta] body=[] u.content=[p] in head
+nested: head=[template#u,script] body=[] u.content=[template#v,i] in head v.content=[b]
+after head: head=[title,template#u] body=[p] u.content=[p] in head
+div inside: head=[template#u,meta] body=[] u.content=[div,span] in head
+no end tag: head=[template#u] body=[] u.content=[p,p] in head
+formatting stays inside: head=[template#u] body=["y"] u.content=[b] in head
+template in body in template: head=[template#o] body=[p] o.content=[div,s] in head u.content=["i"]
+td in body in template: head=[template#o] body=[] o.content=[p] in head u.content=["b"]
+style after head: head=[title,style] body=[p,div]
+script link meta after head: head=[script,link,meta] body=[p,div]
+style after head, no body tag: head=[style] body=[p,div]
+title after head: head=[title] body=[p]
+noframes after head: head=[noframes] body=[p]
+noframes in frameset: html(head frameset(noframes("Your browser does not support frames.") frame frame))
+noframes after frameset: html(head frameset(frame) noframes("after <b>x</b>"))
+noframes after after frameset: html(head frameset(frame) noframes("late"))
+noframes in template: html(head(template(noframes("n <i>x</i>") p("after"))) body)
+style in table in template: html(head body(template(table(style("td{color:red}") tbody(tr(td("c")))) p("after"))))

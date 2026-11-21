@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>WHL1: the user's wheel reaches script before it scrolls</title>
+<style>
+html, body { margin: 0; }
+body { height: 5000px; font: 12px/14px Times; }
+.zone { position: absolute; left: 0; width: 300px; height: 60px; background: #eee; }
+#scroller { position: absolute; left: 400px; top: 0; width: 200px; height: 120px; overflow: auto; }
+#scroller div { height: 1000px; }
+</style></head><body>
+<div id="plain" class="zone" style="top:0">plain listener</div>
+<div id="cancels" class="zone" style="top:70px">preventDefault</div>
+<div id="passive" class="zone" style="top:140px">passive listener that tries</div>
+<div id="handler" class="zone" style="top:210px">onwheel returning false</div>
+<div id="quiet" class="zone" style="top:280px">no listener of its own</div>
+<div id="scroller"><div id="inside">scroller content</div></div>
+<script>
+var log = [];
+function note(where, e) {
+    log.push(where + ': target=' + (e.target.id || e.target.localName) + ' delta=' + e.deltaX + ',' + e.deltaY + ',' + e.deltaZ + ' mode=' + e.deltaMode +
+        ' wheelDelta=' + e.wheelDelta + ',' + e.wheelDeltaX + ',' + e.wheelDeltaY + ' client=' + e.clientX + ',' + e.clientY + ' page=' + e.pageX + ',' + e.pageY +
+        ' offset=' + e.offsetX + ',' + e.offsetY + ' trusted=' + e.isTrusted + ' cancelable=' + e.cancelable + ' bubbles=' + e.bubbles + ' composed=' + e.composed +
+        ' phase=' + e.eventPhase + ' ' + Object.prototype.toString.call(e) + ' detail=' + e.detail + ' buttons=' + e.buttons + ' scrollY=' + window.scrollY);
+}
+document.getElementById('plain').addEventListener('wheel', function (e) { note('plain', e); });
+document.getElementById('cancels').addEventListener('wheel', function (e) { e.preventDefault(); note('cancels', e); log.push('cancels: defaultPrevented=' + e.defaultPrevented); });
+document.getElementById('passive').addEventListener('wheel', function (e) { e.preventDefault(); log.push('passive: defaultPrevented=' + e.defaultPrevented); }, { passive: true });
+document.getElementById('handler').onwheel = function (e) { log.push('handler: ran'); return false; };
+document.getElementById('scroller').addEventListener('wheel', function (e) { log.push('scroller: target=' + e.target.id + ' deltaY=' + e.deltaY + ' scrollTop=' + this.scrollTop); });
+// On the document a wheel listener is passive unless it says otherwise.
+document.addEventListener('wheel', function (e) {
+    if (e.target.id === 'quiet') { e.preventDefault(); log.push('document (passive by default): defaultPrevented=' + e.defaultPrevented); }
+});
+// The probe (and the test) calls this after each wheel has had its effect.
+window.step = function (name) {
+    log.push('after ' + name + ': scrollY=' + window.scrollY + ' scroller=' + document.getElementById('scroller').scrollTop);
+    window.scrollTo(0, 0);
+    document.getElementById('scroller').scrollTop = 0;
+};
+window.report = function () { return log.join('\n'); };
+</script>
+</body></html>

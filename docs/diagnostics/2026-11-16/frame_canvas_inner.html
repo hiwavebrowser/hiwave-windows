@@ -1,0 +1,48 @@
+<!doctype html><html><head><meta charset="utf-8"><title>canvas image in a frame probe: the document</title></head><body>
+<script>
+// What a canvas holds after an image is drawn into it, and whether it can then be read, in whichever
+// document this is: loaded on its own, or as the frame of frame_canvas.html (the answers must be the
+// same). `#other=<origin>` names another origin serving the same files; with `&redirects` after it the
+// redirect cases run too.
+function load(src) { return new Promise(function (ok) { var i = new Image(); i.onload = function () { ok(i); }; i.onerror = function () { ok(null); }; i.src = src; }); }
+function count(x) { var d = x.getImageData(0, 0, 50, 50).data, n = 0; for (var i = 3; i < d.length; i += 4) if (d[i] !== 0) n++; return n; }
+function attempt(f) { try { f(); return "ok"; } catch (e) { return e.name; } }
+function canvas() { var c = document.createElement("canvas"); c.width = 50; c.height = 50; document.body.appendChild(c); return c; }
+(async function () {
+  var out = {}, names = ["frame_canvas_shape.svg", "frame_canvas_shape.png"];
+  for (var q = 0; q < names.length; q++) {
+    var img = await load(names[q]), x = canvas().getContext("2d");
+    x.fillRect(0, 0, 5, 5); var filled = count(x); x.clearRect(0, 0, 50, 50);
+    if (img) x.drawImage(img, 0, 0, 50, 50);
+    out[names[q].split(".").pop()] = img ? { natural: img.naturalWidth + "x" + img.naturalHeight, after_fill: filled, after_image: count(x) } : "error";
+  }
+  var other = (/^#other=([^&]*)/.exec(location.hash) || [])[1], redirects = /&redirects$/.test(location.hash);
+  if (other) {
+    var far = await load(decodeURIComponent(other) + "/frame_canvas_shape.png"), c = canvas(), y = c.getContext("2d");
+    if (!far) out.other_origin = "load-error";
+    else {
+      out.other_origin = { natural: far.naturalWidth + "x" + far.naturalHeight, draw: attempt(function () { y.drawImage(far, 0, 0, 50, 50); }),
+        getImageData: attempt(function () { y.getImageData(0, 0, 1, 1); }), toDataURL: attempt(function () { c.toDataURL(); }) };
+      // A canvas that drew the tainted one is tainted too; one that drew nothing of it is not.
+      var d = canvas(), z = d.getContext("2d"); z.drawImage(c, 0, 0);
+      out.other_origin.through_a_canvas = attempt(function () { z.getImageData(0, 0, 1, 1); });
+      out.other_origin.a_clean_canvas_beside_it = attempt(function () { canvas().getContext("2d").getImageData(0, 0, 1, 1); });
+    }
+  }
+  // An image whose request was redirected: within this origin, from it to the other, and from the
+  // other back to it (the server's `frame_canvas_to_same`, `_to_other` and, on the other origin, `_back`).
+  async function redirected(src) {
+    var img = await load(src), c = canvas(), y = c.getContext("2d");
+    if (!img) return "load-error";
+    y.drawImage(img, 0, 0, 50, 50);
+    return attempt(function () { y.getImageData(0, 0, 1, 1); });
+  }
+  if (other && redirects) {
+    out.redirect_same_to_same = await redirected("frame_canvas_to_same");
+    out.redirect_same_to_other = await redirected("frame_canvas_to_other");
+    out.redirect_other_to_same = await redirected(decodeURIComponent(other) + "/frame_canvas_back");
+  }
+  if (parent !== window) parent.postMessage(JSON.stringify(out), "*");
+  else { window.__out = JSON.stringify({ top: out }); console.log("PROBE " + window.__out); }
+})();
+</script></body></html>

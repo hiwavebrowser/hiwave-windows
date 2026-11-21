@@ -145,6 +145,11 @@ pub fn establishes_bfc(style: &ComputedStyle, float: Float) -> bool {
         return true;
     }
 
+    // A line-clamped -webkit-box is a flow-root (Chrome's computed display).
+    if style.line_clamp().is_some() {
+        return true;
+    }
+
     // display: inline-block creates BFC
     if style.display.is_inline_block() {
         return true;
@@ -152,6 +157,17 @@ pub fn establishes_bfc(style: &ComputedStyle, float: Float) -> bool {
 
     // display: flex/grid containers create BFC for their contents
     if style.display.is_flex() || style.display.is_grid() {
+        return true;
+    }
+
+    // Tables, cells and captions establish a BFC for their contents
+    // (CSS 2.1 §9.4.1, §17.4)
+    if style.display.is_table()
+        || matches!(
+            style.display,
+            rustkit_css::Display::TableCell | rustkit_css::Display::TableCaption
+        )
+    {
         return true;
     }
 

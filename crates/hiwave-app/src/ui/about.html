@@ -104,7 +104,10 @@
             width: 300px;
             height: 300px;
             background: radial-gradient(circle, rgba(6, 182, 212, 0.2) 0%, transparent 70%);
-            animation: heroGlow 3s ease-in-out infinite;
+            /* Twice after the load, then it rests on the glow's first frame. An animation that never
+               ends has the page drawn about 60 times a second for as long as it is open (IDLE-CPU). */
+            opacity: 0.3;
+            animation: heroGlow 3s ease-in-out 2;
             pointer-events: none;
             z-index: 0;
         }
@@ -674,7 +677,7 @@
                 Open Source
             </h2>
             <p>
-                HiWave is open source under MPL-2.0. Verify for yourself.
+                HiWave is open source under AGPL-3.0-or-later. Verify for yourself.
             </p>
             <div class="links">
                 <a href="https://github.com/hiwavebrowser/hiwave" class="link" target="_blank" rel="noopener">
@@ -779,7 +782,7 @@
                 <a href="https://ko-fi.com/hiwavebrowser" target="_blank" rel="noopener">Ko-fi</a>
             </p>
             <p style="margin-top: 16px; font-size: 0.7rem;">
-                © 2024-2026 HiWave. Licensed under MPL-2.0.
+                © 2025-2026 Aleph Null LLC. Licensed under AGPL-3.0-or-later.
             </p>
         </div>
     </div>

@@ -1,0 +1,160 @@
+{
+ "viewport": [
+  600,
+  600
+ ],
+ "boxes": "xywh",
+ "cases": [
+  {
+   "name": "row-center-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:center;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:100:0:300:20"
+  },
+  {
+   "name": "row-flex-end-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:flex-end;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:0:0:300:20"
+  },
+  {
+   "name": "row-space-between-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:space-between;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:200:0:300:20"
+  },
+  {
+   "name": "row-space-around-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:space-around;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:200:0:300:20"
+  },
+  {
+   "name": "row-space-evenly-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:space-evenly;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:200:0:300:20"
+  },
+  {
+   "name": "row-end-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:end;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:0:0:300:20"
+  },
+  {
+   "name": "row-flex-start-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:flex-start;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:200:0:300:20"
+  },
+  {
+   "name": "row-center-two-overflowing-items",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:center;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:100px;height:20px\"></div><div id=i1 style=\"flex:none;width:100px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:150:0:100:20 i1:250:0:100:20"
+  },
+  {
+   "name": "row-flex-end-two-overflowing-items",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:flex-end;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:100px;height:20px\"></div><div id=i1 style=\"flex:none;width:100px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:100:0:100:20 i1:200:0:100:20"
+  },
+  {
+   "name": "row-space-around-two-overflowing-items",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:space-around;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:100px;height:20px\"></div><div id=i1 style=\"flex:none;width:100px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:200:0:100:20 i1:300:0:100:20"
+  },
+  {
+   "name": "column-center-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:column;justify-content:center;width:40px;height:100px;margin-top:200px\"><div id=i0 style=\"flex:none;height:300px;width:20px\"></div></div>",
+   "chrome_boxes": "c:0:200:40:100 i0:0:100:20:300"
+  },
+  {
+   "name": "column-flex-end-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:column;justify-content:flex-end;width:40px;height:100px;margin-top:200px\"><div id=i0 style=\"flex:none;height:300px;width:20px\"></div></div>",
+   "chrome_boxes": "c:0:200:40:100 i0:0:0:20:300"
+  },
+  {
+   "name": "row-reverse-center-overflowing",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:row-reverse;justify-content:center;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:100px;height:20px\"></div><div id=i1 style=\"flex:none;width:100px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:250:0:100:20 i1:150:0:100:20"
+  },
+  {
+   "name": "row-center-overflowing-auto-margin",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:center;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"margin-left:auto;margin-right:auto;flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:100:0:300:20"
+  },
+  {
+   "name": "row-safe-center-one-overflowing-item",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:safe center;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:200:0:300:20"
+  },
+  {
+   "name": "row-center-fits-control",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:center;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:60px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:220:0:60:20"
+  },
+  {
+   "name": "row-center-in-a-zero-width-container",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:center;width:0;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:0:40 i0:50:0:300:20"
+  },
+  {
+   "name": "row-flex-end-in-a-zero-width-container",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:flex-end;width:0;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:0:40 i0:-100:0:300:20"
+  },
+  {
+   "name": "column-center-in-a-zero-height-container",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:column;justify-content:center;width:40px;height:0;margin-top:200px\"><div id=i0 style=\"flex:none;width:20px;height:300px\"></div></div>",
+   "chrome_boxes": "c:0:200:40:0 i0:0:50:20:300"
+  },
+  {
+   "name": "row-reverse-flex-end-overflowing",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:row-reverse;justify-content:flex-end;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:100px;height:20px\"></div><div id=i1 style=\"flex:none;width:100px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:300:0:100:20 i1:200:0:100:20"
+  },
+  {
+   "name": "column-reverse-center-overflowing",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:column-reverse;justify-content:center;width:40px;height:100px;margin-top:200px\"><div id=i0 style=\"flex:none;width:20px;height:100px\"></div><div id=i1 style=\"flex:none;width:20px;height:100px\"></div></div>",
+   "chrome_boxes": "c:0:200:40:100 i0:0:250:20:100 i1:0:150:20:100"
+  },
+  {
+   "name": "column-reverse-flex-end-overflowing",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:column-reverse;justify-content:flex-end;width:40px;height:100px;margin-top:200px\"><div id=i0 style=\"flex:none;width:20px;height:300px\"></div></div>",
+   "chrome_boxes": "c:0:200:40:100 i0:0:200:20:300"
+  },
+  {
+   "name": "row-safe-center-fits",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;justify-content:safe center;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:60px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:220:0:60:20"
+  },
+  {
+   "name": "absolute-explicit-zero-width-center",
+   "html": "<!doctype html><body style=\"margin:0\"><div style=\"position:relative;margin-left:200px;height:40px\"><div id=c style=\"position:absolute;display:flex;justify-content:center;width:0;height:40px\"><div id=i0 style=\"flex:none;width:300px;height:20px\"></div></div></div>",
+   "chrome_boxes": "c:200:0:0:40 i0:50:0:300:20"
+  },
+  {
+   "name": "fixed-inset0-overlay-in-a-zero-size-fixed-wrapper",
+   "html": "<!doctype html><body style=\"margin:0\"><div style=\"position:fixed\"><div id=c style=\"position:fixed;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center\"><div id=i0 style=\"flex:none;width:448px;height:20px\"></div></div></div>",
+   "chrome_boxes": "c:0:0:600:600 i0:76:290:448:20"
+  },
+  {
+   "name": "row-reverse-flex-start-fits",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:row-reverse;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:30px;height:20px\"></div><div id=i1 style=\"flex:none;width:30px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:270:0:30:20 i1:240:0:30:20"
+  },
+  {
+   "name": "row-reverse-flex-end-fits",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:row-reverse;justify-content:flex-end;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:30px;height:20px\"></div><div id=i1 style=\"flex:none;width:30px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:230:0:30:20 i1:200:0:30:20"
+  },
+  {
+   "name": "row-reverse-flex-start-overflowing",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:row-reverse;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:100px;height:20px\"></div><div id=i1 style=\"flex:none;width:100px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:200:0:100:20 i1:100:0:100:20"
+  },
+  {
+   "name": "row-reverse-space-between-overflowing",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:row-reverse;justify-content:space-between;width:100px;height:40px;margin-left:200px\"><div id=i0 style=\"flex:none;width:100px;height:20px\"></div><div id=i1 style=\"flex:none;width:100px;height:20px\"></div></div>",
+   "chrome_boxes": "c:200:0:100:40 i0:200:0:100:20 i1:100:0:100:20"
+  },
+  {
+   "name": "column-reverse-flex-start-fits",
+   "html": "<!doctype html><body style=\"margin:0\"><div id=c style=\"display:flex;flex-direction:column-reverse;width:40px;height:100px;margin-top:200px\"><div id=i0 style=\"flex:none;width:20px;height:30px\"></div></div>",
+   "chrome_boxes": "c:0:200:40:100 i0:0:270:20:30"
+  }
+ ],
+ "chrome": "148.0.7778.216"
+}

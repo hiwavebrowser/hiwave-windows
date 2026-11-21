@@ -3,7 +3,7 @@ name = "rustkit-http"
 version = "0.1.0"
 edition = "2021"
 description = "HTTP client for RustKit browser engine"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 # TLS: rustls with a browser-typical client profile (network lane,
@@ -45,8 +45,17 @@ futures = "0.3"
 # Base64 for auth
 base64 = "0.22"
 
+# Cookie Expires dates
+httpdate = "1"
+
+# Public suffix list: no cookie Domain may be one
+psl = "2"
+
 # Content-Encoding: gzip / deflate
 flate2 = "1"
+# Content-Encoding: br, for servers that send it without being asked. Decode
+# only (Dropbox's decoder, safe Rust in the default build); we never encode.
+brotli-decompressor = "6"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

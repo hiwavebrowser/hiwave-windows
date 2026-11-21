@@ -158,13 +158,17 @@ pub fn decode_png(bytes: &[u8]) -> Result<RgbaImage, CodecError> {
         .next_frame(&mut buf)
         .map_err(|e| CodecError::Decode(e.to_string()))?;
 
-    let buf = buf[..output.buffer_size()].to_vec();
+    // A subframe may occupy only part of the canvas-sized decode buffer.
+    buf.truncate(output.buffer_size());
 
     let width = output.width;
     let height = output.height;
 
     let rgba = match output.color_type {
-        png::ColorType::Rgba => buf,
+        png::ColorType::Rgba => {
+            buf.shrink_to_fit();
+            buf
+        }
         png::ColorType::Rgb => rgb_to_rgba(buf, 255),
         png::ColorType::GrayscaleAlpha => gray_alpha_to_rgba(buf),
         png::ColorType::Grayscale => gray_to_rgba(buf, 255),
@@ -265,37 +269,28 @@ pub fn decode_gif(bytes: &[u8]) -> Result<Vec<Frame>, CodecError> {
 }
 
 fn rgb_to_rgba(rgb: Vec<u8>, alpha: u8) -> Vec<u8> {
-    let mut out = Vec::with_capacity(rgb.len() / 3 * 4);
-    for chunk in rgb.chunks_exact(3) {
-        out.push(chunk[0]);
-        out.push(chunk[1]);
-        out.push(chunk[2]);
-        out.push(alpha);
-    }
-    out
+    let (pixels, _) = rgb.as_chunks::<3>();
+    pixels
+        .iter()
+        .map(|&[r, g, b]| [r, g, b, alpha])
+        .collect::<Vec<_>>()
+        .into_flattened()
 }
 
 fn gray_to_rgba(gray: Vec<u8>, alpha: u8) -> Vec<u8> {
-    let mut out = Vec::with_capacity(gray.len() * 4);
-    for g in gray {
-        out.push(g);
-        out.push(g);
-        out.push(g);
-        out.push(alpha);
-    }
-    out
+    gray.into_iter()
+        .map(|g| [g, g, g, alpha])
+        .collect::<Vec<_>>()
+        .into_flattened()
 }
 
 fn gray_alpha_to_rgba(ga: Vec<u8>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(ga.len() / 2 * 4);
-    for chunk in ga.chunks_exact(2) {
-        let g = chunk[0];
-        out.push(g);
-        out.push(g);
-        out.push(g);
-        out.push(chunk[1]);
-    }
-    out
+    let (pixels, _) = ga.as_chunks::<2>();
+    pixels
+        .iter()
+        .map(|&[g, a]| [g, g, g, a])
+        .collect::<Vec<_>>()
+        .into_flattened()
 }
 
 #[cfg(test)]

@@ -29,12 +29,10 @@ pub struct GlyphKey {
     /// .960/.200/.441/.880 -- arbitrary phases on every line -- which is the
     /// mechanism behind the bimodal text diff tail.
     ///
-    /// PRODUCTION IS FROZEN AT PHASE 0 IN THIS COMMIT, DELIBERATELY. The
-    /// rasterizer still draws a phase-0 bitmap for every phase, so emitting
-    /// multi-phase keys now would mint up to SUBPIXEL_QUANTIZE BYTE-IDENTICAL
-    /// atlas entries per glyph: more memory, more eviction pressure, and not
-    /// one pixel different. The call-site flip belongs in the same commit as
-    /// the rasterizer that can honor it.
+    /// TX3: on macOS the call sites key glyphs by the quarter phase Skia
+    /// rounds each glyph origin to (`skia_glyph_origin`), and the rasterizer
+    /// draws at it (`GlyphRasterizer::with_subpixel`); the bitmap is placed
+    /// on a whole pixel. Elsewhere it is 0.
     pub subpixel_phase: u8,
     /// Which document-registered (`@font-face`) file `font_family` resolves
     /// to, from [`GlyphKey::web_face_for`]; 0 when it is a platform font.
@@ -47,6 +45,127 @@ pub struct GlyphKey {
     /// that declares the same family name with another file reuse the first
     /// document's glyphs.
     pub web_face: u64,
+    /// Which face draws this character (FACE CONTRACT): layout's recorded
+    /// decision when the command carries one, else what the rasterizer's own
+    /// `select_face` decides from the selector after the character. The
+    /// same character takes different bitmaps under different faces (`©` in
+    /// Helvetica, `©️` in Apple Color Emoji), so the face is in the key.
+    pub face: FaceKey,
+    /// The mask's coverage law, from [`coverage_for`]: 0 is the undilated
+    /// outline; `1 + b` is the dilated (CoreGraphics-smoothed) mask with
+    /// Skia's pre-blend for luminance bucket `b` baked in. Glyphs of text
+    /// in different buckets are different bitmaps, as in Skia's strike
+    /// cache (the luminance colour is part of its descriptor).
+    pub coverage: u8,
+    /// An emoji SEQUENCE drawn as one glyph (EM1): the head character and
+    /// the ones layout folded into it (recorded `Ignorable` after it), else
+    /// `None`. A family and its first member are different bitmaps under
+    /// the same `codepoint`, so the cluster is in the key.
+    pub cluster: Option<std::sync::Arc<str>>,
+}
+
+/// How a [`GlyphKey`] names its face (see [`GlyphKey::face`]).
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub enum FaceKey {
+    /// No record from layout (a legacy command without advances): the
+    /// rasterizer decides with `rustkit_text::macos::select_face` on its
+    /// own font, given the variation selector after the character.
+    Auto(rustkit_text::Variation),
+    /// The face layout measured the character in
+    /// (`DisplayCommand::Text::faces`); the rasterizer draws from it and
+    /// decides nothing.
+    Recorded(rustkit_text::GlyphFace),
+}
+
+/// How a character is painted on Windows, from the face layout recorded.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WindowsPaint {
+    /// Colour artwork from Segoe UI Emoji (`rasterize_glyph_directwrite_color`).
+    Colour,
+    /// A coverage mask from the run's own face.
+    Mask,
+    /// A coverage mask from the text fallback face layout measured the
+    /// character in (Segoe UI Symbol): a symbol without Emoji_Presentation,
+    /// which Chrome draws as text, not colour.
+    TextFallback,
+}
+
+/// The text face layout measures a text-presentation symbol in on Windows
+/// (`TextShaper::shape_uncached`), and paint draws it from.
+#[cfg(windows)]
+pub(crate) const WINDOWS_TEXT_SYMBOL_FAMILY: &str = "Segoe UI Symbol";
+
+/// Windows' paint path for `ch`. A recorded fallback face decides (layout's
+/// one decision); without one, an `is_emoji` character keeps the colour path,
+/// as before.
+#[cfg(windows)]
+pub(crate) fn windows_paint(ch: char, face: FaceKey) -> WindowsPaint {
+    match face {
+        FaceKey::Recorded(rustkit_text::GlyphFace::Fallback { emoji: false }) => WindowsPaint::TextFallback,
+        FaceKey::Recorded(rustkit_text::GlyphFace::Fallback { emoji: true }) => WindowsPaint::Colour,
+        _ if rustkit_text::is_emoji(ch) => WindowsPaint::Colour,
+        _ => WindowsPaint::Mask,
+    }
+}
+
+/// Whether `key` must be drawn from the system collection alone: a text fallback layout
+/// measured in the system's Segoe UI Symbol, which a document's `@font-face` of the same name
+/// must not replace (layout measured the system face, and the glyph cache keys it as one).
+#[cfg(windows)]
+pub(crate) fn system_face_only(key: &GlyphKey) -> bool {
+    matches!(key.face, FaceKey::Recorded(rustkit_text::GlyphFace::Fallback { emoji: false }))
+}
+
+#[cfg(all(test, windows))]
+mod windows_paint_tests {
+    use super::*;
+    use rustkit_text::{GlyphFace, Variation};
+
+    /// A symbol layout measured in the text fallback face is a mask from that
+    /// face, never Segoe UI Emoji's colour artwork (U+2699 GEAR: Chrome for
+    /// Testing 148 win64 draws it from Segoe UI Symbol).
+    #[test]
+    fn a_recorded_text_fallback_is_a_mask_from_the_symbol_face() {
+        let gear = '\u{2699}';
+        assert_eq!(windows_paint(gear, FaceKey::Recorded(GlyphFace::Fallback { emoji: false })), WindowsPaint::TextFallback);
+        assert_eq!(windows_paint(gear, FaceKey::Recorded(GlyphFace::Fallback { emoji: true })), WindowsPaint::Colour);
+        // No record (a legacy command): the old rule.
+        assert_eq!(windows_paint(gear, FaceKey::Auto(Variation::None)), WindowsPaint::Colour);
+        assert_eq!(windows_paint('a', FaceKey::Recorded(GlyphFace::Primary)), WindowsPaint::Mask);
+        // The face exists and has ink for the symbol at 14px.
+        let drawn = rasterize_char_for_test(gear, WINDOWS_TEXT_SYMBOL_FAMILY, 14.0, 400).expect("Segoe UI Symbol has U+2699");
+        assert!(drawn.0.iter().any(|&a| a > 0), "no ink");
+        assert!((drawn.3 - 11.8125).abs() < 0.02, "advance {}", drawn.3);
+    }
+
+    /// The text fallback's glyph comes from the system face only; any other key may take a
+    /// document's web face first, as before.
+    #[test]
+    fn a_text_fallback_glyph_is_the_system_face_only() {
+        let key = |face| GlyphKey {
+            cluster: None,
+            codepoint: '\u{2699}',
+            font_family: WINDOWS_TEXT_SYMBOL_FAMILY.to_string(),
+            font_size: 140,
+            font_weight: 400,
+            font_style: 0,
+            subpixel_phase: 0,
+            web_face: 0,
+            coverage: 0,
+            face,
+        };
+        assert!(system_face_only(&key(FaceKey::Recorded(GlyphFace::Fallback { emoji: false }))));
+        assert!(!system_face_only(&key(FaceKey::Recorded(GlyphFace::Fallback { emoji: true }))));
+        assert!(!system_face_only(&key(FaceKey::Recorded(GlyphFace::Primary))));
+        assert!(!system_face_only(&key(FaceKey::Auto(Variation::None))));
+    }
+}
+
+impl Default for FaceKey {
+    fn default() -> Self {
+        FaceKey::Auto(rustkit_text::Variation::None)
+    }
 }
 
 impl GlyphKey {
@@ -66,8 +185,126 @@ pub struct RunGlyphKey {
     pub face: u64,
     pub glyph_id: u16,
     pub font_size: u32, // Fixed-point (size * 10), as `GlyphKey`
-    /// As `GlyphKey::subpixel_phase`, and frozen at 0 for the same reason.
+    /// As `GlyphKey::subpixel_phase`.
     pub subpixel_phase: u8,
+    /// As [`GlyphKey::coverage`].
+    pub coverage: u8,
+}
+
+/// The coverage law for a text run drawn in `rgb`: what Chrome's Skia does
+/// for A8 text on macOS (Chromium 148), for this machine's CoreGraphics
+/// smoothing behaviour (`rustkit_text::macos::smooth_behavior`, Skia's
+/// one-time `SkCTFontGetSmoothBehavior` probe). See [`coverage_for_behavior`].
+pub fn coverage_for(rgb: [u8; 3], undilated: bool) -> u8 {
+    #[cfg(target_os = "macos")]
+    {
+        coverage_for_behavior(rgb, undilated, rustkit_text::macos::smooth_behavior())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (rgb, undilated);
+        0
+    }
+}
+
+/// [`coverage_for`] for a given smoothing behaviour.
+///
+/// - `None` (smoothing has no effect: turned off in System Settings):
+///   `onFilterRec` sets hinting none for everything, so every run takes the
+///   undilated outline. Returns 0.
+///
+/// - `undilated` (`-webkit-font-smoothing: antialiased`, `text-rendering:
+///   geometricPrecision`: Blink sets hinting none): the outline's coverage,
+///   no pre-blend (`SkTypeface_Mac::onFilterRec` calls `ignorePreBlend`
+///   for unhinted A8 since `SK_GAMMA_APPLY_TO_A8` is not defined on mac).
+///   Returns 0.
+/// - otherwise the smoothed mask (`SkScalerContext_Mac::generateImage`)
+///   and the mask pre-blend of the luminance colour halved ("CoreGraphics
+///   smoothed text without subpixel coverage blitting goes from a gamma of
+///   2.0 for black foreground to a gamma of 1.0 for white foreground"),
+///   canonicalised to 3 bits (`SkTMaskGamma<3,3,3>::CanonicalColor`).
+///   Returns `1 + bucket`.
+///
+/// - `Subpixel`: the same, with the luminance colour at 3/4 instead of 1/2
+///   ("goes from a gamma of 2.0 for black foreground to a gamma of ~1.4?").
+#[cfg(target_os = "macos")]
+pub fn coverage_for_behavior(
+    rgb: [u8; 3],
+    undilated: bool,
+    behavior: rustkit_text::macos::SmoothBehavior,
+) -> u8 {
+    use rustkit_text::macos::SmoothBehavior;
+    if undilated || behavior == SmoothBehavior::None {
+        return 0;
+    }
+    // SkPaintPriv::ComputeLuminanceColor: the luminance of the colour in
+    // the sRGB colour space (SK_GAMMA_SRGB), as an 8-bit gray.
+    let lin = |c: u8| srgb_to_linear(c as f32 / 255.0);
+    let y = 0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2]);
+    let lum = (255.0 * linear_to_srgb(y)).round() as u32;
+    let scaled = if behavior == SmoothBehavior::Subpixel {
+        lum * 3 / 4
+    } else {
+        lum / 2
+    };
+    1 + (scaled >> 5) as u8
+}
+
+/// The luminance colour Skia uses for a paint that is not a plain colour
+/// (a gradient): `SkPaintPriv::ComputeLuminanceColor`'s 0x7F807F.
+pub const GRADIENT_TEXT_LUMINANCE: [u8; 3] = [0x7F, 0x80, 0x7F];
+
+fn srgb_to_linear(x: f32) -> f32 {
+    if x <= 0.04045 {
+        x / 12.92
+    } else {
+        ((x + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(x: f32) -> f32 {
+    if x <= 0.003_130_8 {
+        x * 12.92
+    } else {
+        1.055 * x.max(0.0).powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Skia's mask pre-blend table for coverage law `coverage` (see
+/// [`coverage_for`]), `None` for 0: `SkTMaskGamma_build_correcting_lut`
+/// with contrast 0 (onFilterRec sets it; CoreGraphics dilates for
+/// contrast), sRGB luma (SK_GAMMA_SRGB) and the bucket's canonical colour
+/// `sk_t_scale255<3>(bucket)`.
+pub fn mask_preblend(coverage: u8) -> Option<[u8; 256]> {
+    if coverage == 0 {
+        return None;
+    }
+    let b = (coverage - 1).min(7) as u32;
+    let src_i = (b << 5) | (b << 2) | (b >> 1);
+    let src = src_i as f32 / 255.0;
+    let dst = 1.0 - src;
+    let (lin_src, lin_dst) = (srgb_to_linear(src), srgb_to_linear(dst));
+    let mut table = [0u8; 256];
+    for (i, out) in table.iter_mut().enumerate() {
+        let a = i as f32 / 255.0;
+        *out = if (src - dst).abs() < 1.0 / 256.0 {
+            (255.0 * a).round() as u8
+        } else {
+            let lin_out = lin_src * a + (1.0 - a) * lin_dst;
+            let v = linear_to_srgb(lin_out);
+            (255.0 * ((v - dst) / (src - dst))).round().clamp(0.0, 255.0) as u8
+        };
+    }
+    Some(table)
+}
+
+/// `bitmap` through `coverage`'s pre-blend (unchanged for 0).
+pub fn apply_mask_preblend(bitmap: &mut [u8], coverage: u8) {
+    if let Some(table) = mask_preblend(coverage) {
+        for v in bitmap.iter_mut() {
+            *v = table[*v as usize];
+        }
+    }
 }
 
 impl RunGlyphKey {
@@ -91,10 +328,30 @@ pub fn rasterize_run_glyph(
     #[cfg(target_os = "macos")]
     {
         let font = rustkit_text::macos::face_font(key.face, shaped_size)?;
-        rustkit_text::macos::GlyphRasterizer::for_face(font, key.raster_size())
-            .rasterize_glyph_id(key.glyph_id, 0.0)
+        let mut raster = rustkit_text::macos::GlyphRasterizer::for_face(font, key.raster_size())
+            .with_dilation(key.coverage != 0)
+            .rasterize_glyph_id(
+                key.glyph_id,
+                key.subpixel_phase as f32 / SUBPIXEL_QUANTIZE as f32,
+            )?;
+        apply_mask_preblend(&mut raster.0, key.coverage);
+        Some(raster)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        // DirectWrite faces are size-independent: the face recorded for the
+        // run is drawn at the key's size.
+        let _ = shaped_size;
+        let Some(face) = rustkit_text::face_by_id(key.face) else {
+            // Loud, not silent: layout recorded this id when it shaped the run, so a
+            // miss means the table was bounded out or an id was made up. The caller
+            // still paints the command through the family-list path (no crash).
+            tracing::error!(face = key.face, glyph = key.glyph_id, "shaped run names a face the rasterizer does not hold");
+            return None;
+        };
+        rasterize_face_glyph(face.raw(), key.glyph_id, key.raster_size(), false, true)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (key, shaped_size);
         None
@@ -108,6 +365,26 @@ pub fn rasterize_run_glyph(
 /// cost still grows linearly. 3 is the LCD-subpixel-triad choice and belongs
 /// to a different rendering mode, not to this key.
 pub const SUBPIXEL_QUANTIZE: u8 = 4;
+
+/// Where Chrome draws a glyph whose pen is at device x `x` (TX3): the whole
+/// pixel its bitmap is placed from, and the quarter-pixel phase it is
+/// rasterized at. Skia (Chromium 148) rounds a horizontal run's glyph origin
+/// to the nearest quarter pixel: x + `kSubpixelRound` (1/8) floored to
+/// quarters (`SkGlyphPositionRoundingSpec::HalfAxisSampleFreq`, `kX` axis;
+/// `SkPackedGlyphID::kSubPixelPosLen` = 2, so 4 phases). CfT 148: a line at
+/// x + 0.125 draws as at x + 0.25, at x + 0.875 as at x + 1.
+///
+/// macOS only, where the rasterizer draws at the phase; elsewhere the pen
+/// stays where it was and the phase is 0.
+pub fn skia_glyph_origin(x: f32) -> (f32, u8) {
+    if !cfg!(target_os = "macos") {
+        return (x, 0);
+    }
+    let quarters = ((x + 0.125) * SUBPIXEL_QUANTIZE as f32).floor() as i64;
+    let whole = quarters.div_euclid(SUBPIXEL_QUANTIZE as i64);
+    let phase = quarters.rem_euclid(SUBPIXEL_QUANTIZE as i64) as u8;
+    (whole as f32, phase)
+}
 
 /// Quantize a fractional device X into a phase bucket.
 ///
@@ -150,10 +427,35 @@ pub struct GlyphCache {
     color_atlas: wgpu::Texture,
     _color_atlas_view: wgpu::TextureView,
     color_bind_group: wgpu::BindGroup,
-    color_entries: HashMap<GlyphKey, GlyphEntry>,
+    /// Colour-path entries by key (the key carries the face, see
+    /// `GlyphKey::face`); `None` remembers a character no face draws, so the
+    /// caller owes its advance without re-asking.
+    color_entries: HashMap<GlyphKey, Option<GlyphEntry>>,
+    /// `select_face`'s decision for a key without a record from layout
+    /// (`FaceKey::Auto`), so a legacy command's glyph costs one lookup here
+    /// and one in the atlas maps, not a rasterizer per character. NO ATLAS
+    /// ENTRY IS EVER FILED UNDER AN `Auto` KEY: `resolve_face` turns the
+    /// selector into the face that draws the glyph before any map is read,
+    /// so a plain command and a recorded one of the same face share one
+    /// entry, and nothing keyed by the selector can answer for a face.
+    #[cfg(target_os = "macos")]
+    decisions: HashMap<GlyphKey, rustkit_text::GlyphFace>,
+    /// Coverage masks of COLOUR faces' glyphs (gradient text tints the
+    /// alpha of the emoji's artwork), in the grayscale atlas, keyed by the
+    /// resolved face like the other maps but kept apart from `entries`: a
+    /// mask made for tinting must never answer a plain text command's
+    /// lookup, which wants the face's colour artwork (Prometheus's third
+    /// R1 on #997, a gradient `😀` turning a later plain `😀` into a tinted
+    /// silhouette). `None` remembers a character the face does not draw.
+    #[cfg(target_os = "macos")]
+    tint_entries: HashMap<GlyphKey, Option<GlyphEntry>>,
     color_next_x: u32,
     color_next_y: u32,
     color_row_height: u32,
+    /// Times either atlas has been full and started over at its first row.
+    /// The entries handed out before that point at places the glyphs
+    /// rasterized after it are written over (see [`resets`](Self::resets)).
+    resets: u64,
 }
 
 impl GlyphCache {
@@ -299,15 +601,42 @@ impl GlyphCache {
             _color_atlas_view: color_atlas_view,
             color_bind_group,
             color_entries: HashMap::new(),
+            #[cfg(target_os = "macos")]
+            decisions: HashMap::new(),
+            #[cfg(target_os = "macos")]
+            tint_entries: HashMap::new(),
             color_next_x: 1,
             color_next_y: 1,
             color_row_height: 0,
+            resets: 0,
         })
     }
 
     /// Get the atlas size.
     pub fn atlas_size(&self) -> u32 {
         self.atlas_size
+    }
+
+    /// How often an atlas has started over. A frame during which this
+    /// moves has batched quads whose places in the atlas now hold other
+    /// glyphs: it has to be built again.
+    pub fn resets(&self) -> u64 {
+        self.resets
+    }
+
+    /// Empty both atlases as a reset does, without counting as one: nothing
+    /// handed out before is kept. For a frame drawn again from a known
+    /// state (see `Renderer::execute`).
+    pub fn start_over(&mut self, queue: &wgpu::Queue) {
+        Self::zero_texture(queue, &self.atlas, self.atlas_size, 1);
+        Self::zero_texture(queue, &self.color_atlas, self.atlas_size, 4);
+        self.clear();
+    }
+
+    /// How much of the grayscale atlas is handed out: the rows used so far
+    /// as a fraction of its height (tests size their frames against it).
+    pub fn atlas_fill(&self) -> f32 {
+        (self.next_y + self.row_height) as f32 / self.atlas_size as f32
     }
 
     /// Get the bind group for the atlas texture.
@@ -320,9 +649,161 @@ impl GlyphCache {
         &self.color_bind_group
     }
 
+    /// FACE CONTRACT (macOS): the glyph for `key` from the face its `face`
+    /// names — layout's recorded decision, or for a legacy caller the
+    /// rasterizer's own `select_face` on the same font — on the path that
+    /// face takes. Returns the atlas entry and whether it is in the colour
+    /// atlas (`true`: the blit pipeline; `false`: the coverage mask the
+    /// text pipeline tints). `None` for a character no face draws (an
+    /// `Ignorable` selector, or no face has it); the caller still owes its
+    /// advance. Nothing here decides a face: `rasterize_with_face` resolves
+    /// a `Fallback` through the lookup layout measured with.
+    #[cfg(target_os = "macos")]
+    pub fn get_or_rasterize_faced(
+        &mut self,
+        queue: &wgpu::Queue,
+        key: &GlyphKey,
+    ) -> Option<(GlyphEntry, bool)> {
+        // The face first, then the maps: an entry is filed under the face
+        // that drew it, so a hit here is that face's glyph on its path.
+        let (key, face) = self.resolve_face(key);
+        if let Some(entry) = self.entries.get(&key) {
+            return Some((entry.clone(), false));
+        }
+        if let Some(entry) = self.color_entries.get(&key) {
+            return entry.clone().map(|entry| (entry, true));
+        }
+
+        match Self::raster_for(&key, face) {
+            Some(rustkit_text::macos::GlyphRaster::Mask(raster)) => self
+                .insert_mask(queue, &key, raster)
+                .map(|entry| (entry, false)),
+            Some(rustkit_text::macos::GlyphRaster::Color(raster)) => self
+                .insert_color(queue, &key, raster)
+                .map(|entry| (entry, true)),
+            None => {
+                self.color_entries.insert(key, None);
+                None
+            }
+        }
+    }
+
+    /// The glyph of the face `key` names as a COVERAGE MASK whatever path
+    /// the face takes (GRADIENT TEXT: the text pipeline tints it per
+    /// vertex). A mask face's glyph is the entry plain text shares
+    /// (`entries`); a colour face's artwork is reduced to its alpha and
+    /// filed in `tint_entries`, apart from the colour artwork plain text
+    /// draws, so neither purpose answers the other's lookup. The face is
+    /// resolved first, as in `get_or_rasterize_faced`. `None` for a
+    /// character the face does not draw (an `Ignorable` selector, or no
+    /// face has it); the caller still owes its advance.
+    #[cfg(target_os = "macos")]
+    pub fn get_or_rasterize_faced_mask(
+        &mut self,
+        queue: &wgpu::Queue,
+        key: &GlyphKey,
+    ) -> Option<GlyphEntry> {
+        let (key, face) = self.resolve_face(key);
+        if let Some(entry) = self.entries.get(&key) {
+            return Some(entry.clone());
+        }
+        if let Some(entry) = self.tint_entries.get(&key) {
+            return entry.clone();
+        }
+
+        match Self::raster_for(&key, face) {
+            Some(rustkit_text::macos::GlyphRaster::Mask(raster)) => {
+                self.insert_mask(queue, &key, raster)
+            }
+            Some(rustkit_text::macos::GlyphRaster::Color((
+                rgba,
+                width,
+                height,
+                advance,
+                bearing_x,
+                bearing_y,
+            ))) => {
+                // Premultiplied RGBA: the alpha channel is the coverage.
+                let alpha: Vec<u8> = rgba.chunks_exact(4).map(|px| px[3]).collect();
+                let entry = self.upload_mask(
+                    queue,
+                    &key,
+                    (alpha, width, height, advance, bearing_x, bearing_y),
+                );
+                self.tint_entries.insert(key, entry.clone());
+                entry
+            }
+            None => {
+                self.tint_entries.insert(key, None);
+                None
+            }
+        }
+    }
+
+    /// The key an atlas entry is filed under, and its face: `Recorded` as
+    /// given, or the `Auto` selector replaced by `select_face`'s decision
+    /// on the key's own font (memoised in `decisions`). ONE decision rule
+    /// in the tree: the same function layout records.
+    #[cfg(target_os = "macos")]
+    fn resolve_face(&mut self, key: &GlyphKey) -> (GlyphKey, rustkit_text::GlyphFace) {
+        let variation = match key.face {
+            FaceKey::Recorded(face) => return (key.clone(), face),
+            FaceKey::Auto(variation) => variation,
+        };
+        let face = match self.decisions.get(key) {
+            Some(face) => *face,
+            None => {
+                let face = Self::rasterizer_for(key).select_face(key.codepoint, variation);
+                self.decisions.insert(key.clone(), face);
+                face
+            }
+        };
+        (
+            GlyphKey {
+                face: FaceKey::Recorded(face),
+                ..key.clone()
+            },
+            face,
+        )
+    }
+
+    /// The glyph `key` names from `face`: an emoji sequence's one glyph when
+    /// the key carries a cluster (EM1) and its face forms it, else the
+    /// character's own glyph, as layout measured it.
+    #[cfg(target_os = "macos")]
+    fn raster_for(key: &GlyphKey, face: rustkit_text::GlyphFace) -> Option<rustkit_text::macos::GlyphRaster> {
+        let rasterizer = Self::rasterizer_for(key);
+        if let Some(cluster) = key.cluster.as_deref() {
+            if let Some(raster) = rasterizer.rasterize_emoji_cluster(cluster, face) {
+                return Some(raster);
+            }
+        }
+        rasterizer.rasterize_with_face(key.codepoint, face)
+    }
+
+    /// The rasterizer for the key's own font (the primary face).
+    #[cfg(target_os = "macos")]
+    fn rasterizer_for(key: &GlyphKey) -> rustkit_text::macos::GlyphRasterizer {
+        let family = if key.font_family.is_empty() {
+            "Helvetica"
+        } else {
+            key.font_family.as_str()
+        };
+        rustkit_text::macos::GlyphRasterizer::with_style(
+            family,
+            key.font_size as f32 / 10.0,
+            key.font_weight,
+            key.font_style == 1,
+        )
+        .with_dilation(key.coverage != 0)
+        .with_subpixel(key.subpixel_phase as f32 / SUBPIXEL_QUANTIZE as f32)
+    }
+
     /// Get or rasterize a COLOR glyph (emoji) into the RGBA atlas. Returns the
     /// atlas entry (tex_coords into the color atlas), or None if the platform
-    /// or font can't produce a color glyph for this codepoint.
+    /// or font can't produce a color glyph for this codepoint. (On macOS the
+    /// face decides the path instead: `get_or_rasterize_faced`.)
+    #[cfg(not(target_os = "macos"))]
     #[allow(unused_variables)]
     pub fn get_or_rasterize_color(
         &mut self,
@@ -331,35 +812,34 @@ impl GlyphCache {
         key: &GlyphKey,
     ) -> Option<GlyphEntry> {
         if let Some(entry) = self.color_entries.get(key) {
-            return Some(entry.clone());
+            return entry.clone();
         }
 
-        #[cfg(target_os = "macos")]
-        let raster = {
-            let italic = key.font_style == 1;
-            let family = if key.font_family.is_empty() {
-                "Helvetica"
-            } else {
-                key.font_family.as_str()
-            };
-            let rasterizer = rustkit_text::macos::GlyphRasterizer::with_style(
-                family,
-                key.font_size as f32 / 10.0,
-                key.font_weight,
-                italic,
-            );
-            rasterizer.rasterize_char_color(key.codepoint)
-        };
         #[cfg(windows)]
         let raster = rasterize_glyph_directwrite_color(key, key.font_size as f32 / 10.0);
         #[cfg(not(any(target_os = "macos", windows)))]
         let raster: Option<(Vec<u8>, u32, u32, f32, f32, f32)> = None;
 
-        let (rgba, gw, gh, advance, bearing_x, bearing_y) = raster?;
+        let Some(raster) = raster else {
+            self.color_entries.insert(key.clone(), None);
+            return None;
+        };
+        self.insert_color(queue, key, raster)
+    }
+
+    /// Upload a colour-path raster for `key` into the RGBA atlas and
+    /// remember its entry.
+    fn insert_color(
+        &mut self,
+        queue: &wgpu::Queue,
+        key: &GlyphKey,
+        raster: (Vec<u8>, u32, u32, f32, f32, f32),
+    ) -> Option<GlyphEntry> {
+        let (rgba, gw, gh, advance, bearing_x, bearing_y) = raster;
         let gw = gw.max(1).min(256);
         let gh = gh.max(1).min(256);
 
-        let (ax, ay) = self.allocate_color_space(gw + 2, gh + 2)?;
+        let (ax, ay) = self.allocate_color_space(queue, gw + 2, gh + 2)?;
 
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -395,12 +875,12 @@ impl GlyphCache {
             offset: [bearing_x, -bearing_y],
             advance,
         };
-        self.color_entries.insert(key.clone(), entry.clone());
+        self.color_entries.insert(key.clone(), Some(entry.clone()));
         Some(entry)
     }
 
     /// Allocate space in the COLOR atlas (separate cursor from the grayscale one).
-    fn allocate_color_space(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+    fn allocate_color_space(&mut self, queue: &wgpu::Queue, width: u32, height: u32) -> Option<(u32, u32)> {
         if self.color_next_x + width > self.atlas_size {
             self.color_next_x = 1;
             self.color_next_y += self.color_row_height + 1;
@@ -408,6 +888,8 @@ impl GlyphCache {
         }
         if self.color_next_y + height > self.atlas_size {
             tracing::warn!("Color glyph atlas full, clearing cache");
+            self.resets += 1;
+            Self::zero_texture(queue, &self.color_atlas, self.atlas_size, 4);
             self.color_entries.clear();
             self.color_next_x = 1;
             self.color_next_y = 1;
@@ -420,7 +902,21 @@ impl GlyphCache {
         Some((x, y))
     }
 
+    /// Get or rasterize a glyph as a coverage mask. On macOS this is the
+    /// faced path (`get_or_rasterize_faced_mask`): the key's face is decided
+    /// first and the entry filed under it, never under an `Auto` selector.
+    #[cfg(target_os = "macos")]
+    pub fn get_or_rasterize(
+        &mut self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: &GlyphKey,
+    ) -> Option<GlyphEntry> {
+        self.get_or_rasterize_faced_mask(queue, key)
+    }
+
     /// Get or rasterize a glyph.
+    #[cfg(not(target_os = "macos"))]
     pub fn get_or_rasterize(
         &mut self,
         _device: &wgpu::Device,
@@ -436,36 +932,13 @@ impl GlyphCache {
     }
 
     /// Rasterize a glyph using platform-specific text rendering.
+    #[cfg(not(target_os = "macos"))]
     fn rasterize_glyph_fallback(
         &mut self,
         queue: &wgpu::Queue,
         key: &GlyphKey,
     ) -> Option<GlyphEntry> {
         let font_size = key.font_size as f32 / 10.0;
-
-        // Use platform-specific glyph rasterization
-        #[cfg(target_os = "macos")]
-        let raster_result = {
-            let italic = key.font_style == 1;
-            // Map font families for parity testing
-            let family = if key.font_family.is_empty() {
-                "Helvetica"
-            } else {
-                // Map ParityTest to Noto Sans for consistent cross-platform rendering
-                match key.font_family.as_str() {
-                    "ParityTest" | "'ParityTest'" => "Noto Sans",
-                    "Noto Sans" | "'Noto Sans'" => "Noto Sans",
-                    other => other,
-                }
-            };
-            let rasterizer = rustkit_text::macos::GlyphRasterizer::with_style(
-                family,
-                font_size,
-                key.font_weight,
-                italic,
-            );
-            rasterizer.rasterize_char(key.codepoint, 0.0)
-        };
 
         #[cfg(windows)]
         let raster_result = {
@@ -530,7 +1003,35 @@ impl GlyphCache {
             ))
         };
 
-        let (bitmap, glyph_width, glyph_height, advance, bearing_x, bearing_y) = raster_result?;
+        self.insert_mask(queue, key, raster_result?)
+    }
+
+    /// Upload a coverage-mask raster for `key` into the grayscale atlas and
+    /// remember its entry in `entries` (the face's own mask, shared by
+    /// every command that draws the face).
+    fn insert_mask(
+        &mut self,
+        queue: &wgpu::Queue,
+        key: &GlyphKey,
+        mut raster: (Vec<u8>, u32, u32, f32, f32, f32),
+    ) -> Option<GlyphEntry> {
+        apply_mask_preblend(&mut raster.0, key.coverage);
+        let entry = self.upload_mask(queue, key, raster)?;
+        self.entries.insert(key.clone(), entry.clone());
+        Some(entry)
+    }
+
+    /// Upload a coverage-mask raster into the grayscale atlas and build its
+    /// entry; the caller files it (`entries`, or `tint_entries` for a
+    /// colour face's alpha). `key` is read for the PAINT-0 probe only.
+    #[allow(unused_variables)]
+    fn upload_mask(
+        &mut self,
+        queue: &wgpu::Queue,
+        key: &GlyphKey,
+        raster: (Vec<u8>, u32, u32, f32, f32, f32),
+    ) -> Option<GlyphEntry> {
+        let (bitmap, glyph_width, glyph_height, advance, bearing_x, bearing_y) = raster;
 
         let glyph_width = glyph_width.max(1).min(256);
         let glyph_height = glyph_height.max(1).min(256);
@@ -551,7 +1052,7 @@ impl GlyphCache {
         }
 
         // Allocate space in the atlas
-        let (atlas_x, atlas_y) = self.allocate_space(glyph_width + 2, glyph_height + 2)?;
+        let (atlas_x, atlas_y) = self.allocate_space(queue, glyph_width + 2, glyph_height + 2)?;
 
         // Upload to atlas
         queue.write_texture(
@@ -595,14 +1096,11 @@ impl GlyphCache {
         // x_offset: horizontal bearing adjustment
         let x_offset = bearing_x;
 
-        let entry = GlyphEntry {
+        Some(GlyphEntry {
             tex_coords: [u0, v0, u1, v1],
             offset: [x_offset, y_offset],
             advance,
-        };
-
-        self.entries.insert(key.clone(), entry.clone());
-        Some(entry)
+        })
     }
 
     /// Get or rasterize a glyph of a shaped run (see [`RunGlyphKey`]).
@@ -624,7 +1122,7 @@ impl GlyphCache {
         let glyph_width = glyph_width.max(1).min(256);
         let glyph_height = glyph_height.max(1).min(256);
 
-        let (atlas_x, atlas_y) = self.allocate_space(glyph_width + 2, glyph_height + 2)?;
+        let (atlas_x, atlas_y) = self.allocate_space(queue, glyph_width + 2, glyph_height + 2)?;
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.atlas,
@@ -664,8 +1162,35 @@ impl GlyphCache {
         Some(entry)
     }
 
+    /// Empties an atlas that starts over. Glyphs are sampled with a linear
+    /// filter, one texel past their own edge: with the last round's pixels
+    /// left in the gaps between the new glyphs, every glyph drawn after a
+    /// reset carried specks of whatever lay there before.
+    fn zero_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, size: u32, bytes_per_texel: u32) {
+        let empty = vec![0u8; (size * size * bytes_per_texel) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &empty,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size * bytes_per_texel),
+                rows_per_image: Some(size),
+            },
+            wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
     /// Allocate space in the atlas.
-    fn allocate_space(&mut self, width: u32, height: u32) -> Option<(u32, u32)> {
+    fn allocate_space(&mut self, queue: &wgpu::Queue, width: u32, height: u32) -> Option<(u32, u32)> {
         // Check if we need a new row
         if self.next_x + width > self.atlas_size {
             self.next_x = 1;
@@ -676,8 +1201,13 @@ impl GlyphCache {
         // Check if we've run out of space
         if self.next_y + height > self.atlas_size {
             tracing::warn!("Glyph atlas full, clearing cache");
+            self.resets += 1;
+            Self::zero_texture(queue, &self.atlas, self.atlas_size, 1);
             self.entries.clear();
             self.run_entries.clear();
+            // The tint masks live in this atlas too.
+            #[cfg(target_os = "macos")]
+            self.tint_entries.clear();
             self.next_x = 1;
             self.next_y = 1;
             self.row_height = 0;
@@ -692,10 +1222,25 @@ impl GlyphCache {
         Some((x, y))
     }
 
+    /// Every key an atlas entry is filed under (the FACE CONTRACT pins
+    /// read them: no entry may be keyed by an undecided face).
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &GlyphKey> {
+        self.entries
+            .keys()
+            .chain(self.color_entries.keys())
+            .chain(self.tint_entries.keys())
+    }
+
     /// Clear the cache.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.run_entries.clear();
+        #[cfg(target_os = "macos")]
+        {
+            self.tint_entries.clear();
+            self.decisions.clear();
+        }
         self.next_x = 1;
         self.next_y = 1;
         self.row_height = 0;
@@ -724,6 +1269,88 @@ fn estimate_glyph_size(ch: char, font_size: f32) -> (u32, u32) {
     (width.max(1), height.max(1))
 }
 
+/// The DirectWrite face a per-character glyph draws with: a document web face for its family
+/// list first, then the system collection.
+#[cfg(windows)]
+unsafe fn directwrite_face_for(factory: &IDWriteFactory, key: &GlyphKey) -> Option<IDWriteFontFace> {
+    use windows::core::PCWSTR;
+    unsafe {
+        // The face layout measured this family list with (`resolve_windows_face`: web face,
+        // then the system collection with Windows' substitutes, family by family); the old
+        // ladder below only when no family in the list resolves.
+        let chain = rustkit_layout::FontFamilyChain::from_css_value(&key.font_family);
+        let style = if key.font_style == 1 { rustkit_css::FontStyle::Italic } else { rustkit_css::FontStyle::Normal };
+        // A recorded text fallback is the SYSTEM face layout measured (Segoe UI Symbol from the
+        // system collection): never a document's web face of that name.
+        let resolved = if system_face_only(key) {
+            None
+        } else {
+            rustkit_layout::text::resolve_windows_face(
+                &chain,
+                rustkit_css::FontWeight(key.font_weight),
+                style,
+                rustkit_css::FontStretch::Normal,
+            )
+        };
+        let web_face = resolved.map(|(face, _, _)| face.raw().clone());
+        match web_face {
+            Some(face) => Some(face),
+            None => {
+            let mut collection: Option<IDWriteFontCollection> = None;
+            if factory.GetSystemFontCollection(&mut collection, false).is_err() {
+                return None;
+            }
+            let collection = collection?;
+
+            // Family lookup with the same fallback ladder the Windows tree used.
+            let family_wide: Vec<u16> =
+                key.font_family.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut index: u32 = 0;
+            let mut exists = windows::core::BOOL(0);
+            let direct = !key.font_family.is_empty()
+                && collection
+                    .FindFamilyName(PCWSTR(family_wide.as_ptr()), &mut index, &mut exists)
+                    .is_ok()
+                && exists.as_bool();
+            if !direct {
+                // The family Windows substitutes for the name ("Times" is Times New Roman), as in
+                // shaping, ahead of the fallback ladder.
+                let substitute = rustkit_text::family_substitute(&key.font_family);
+                let mut found = false;
+                for fallback in substitute.iter().map(String::as_str).chain(["Segoe UI", "Arial", "Tahoma"]) {
+                    let fb_wide: Vec<u16> =
+                        fallback.encode_utf16().chain(std::iter::once(0)).collect();
+                    if collection
+                        .FindFamilyName(PCWSTR(fb_wide.as_ptr()), &mut index, &mut exists)
+                        .is_ok()
+                        && exists.as_bool()
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return None;
+                }
+            }
+
+            let family = collection.GetFontFamily(index).ok()?;
+            let dw_weight = DWRITE_FONT_WEIGHT(key.font_weight as i32);
+            let dw_stretch = DWRITE_FONT_STRETCH(5); // Normal
+            let dw_style = if key.font_style == 1 {
+                DWRITE_FONT_STYLE_ITALIC
+            } else {
+                DWRITE_FONT_STYLE_NORMAL
+            };
+            let font = family
+                .GetFirstMatchingFont(dw_weight, dw_stretch, dw_style)
+                .ok()?;
+            font.CreateFontFace().ok()
+            }
+        }
+    }
+}
+
 /// Rasterize one glyph with DirectWrite into an 8-bit coverage bitmap.
 ///
 /// Returns `(bitmap, width, height, advance, bearing_x, bearing_y)` in the
@@ -748,7 +1375,6 @@ fn rasterize_glyph_directwrite(
     key: &GlyphKey,
     font_size: f32,
 ) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
-    use windows::core::PCWSTR;
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
     unsafe {
@@ -764,53 +1390,7 @@ fn rasterize_glyph_directwrite(
                 }
             };
 
-        let mut collection: Option<IDWriteFontCollection> = None;
-        if factory.GetSystemFontCollection(&mut collection, false).is_err() {
-            return None;
-        }
-        let collection = collection?;
-
-        // Family lookup with the same fallback ladder the Windows tree used.
-        let family_wide: Vec<u16> =
-            key.font_family.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut index: u32 = 0;
-        let mut exists = windows::core::BOOL(0);
-        let direct = !key.font_family.is_empty()
-            && collection
-                .FindFamilyName(PCWSTR(family_wide.as_ptr()), &mut index, &mut exists)
-                .is_ok()
-            && exists.as_bool();
-        if !direct {
-            let mut found = false;
-            for fallback in ["Segoe UI", "Arial", "Tahoma"] {
-                let fb_wide: Vec<u16> =
-                    fallback.encode_utf16().chain(std::iter::once(0)).collect();
-                if collection
-                    .FindFamilyName(PCWSTR(fb_wide.as_ptr()), &mut index, &mut exists)
-                    .is_ok()
-                    && exists.as_bool()
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                return None;
-            }
-        }
-
-        let family = collection.GetFontFamily(index).ok()?;
-        let dw_weight = DWRITE_FONT_WEIGHT(key.font_weight as i32);
-        let dw_stretch = DWRITE_FONT_STRETCH(5); // Normal
-        let dw_style = if key.font_style == 1 {
-            DWRITE_FONT_STYLE_ITALIC
-        } else {
-            DWRITE_FONT_STYLE_NORMAL
-        };
-        let font = family
-            .GetFirstMatchingFont(dw_weight, dw_stretch, dw_style)
-            .ok()?;
-        let face = font.CreateFontFace().ok()?;
+        let face = directwrite_face_for(&factory, key)?;
 
         let codepoint = key.codepoint as u32;
         let mut glyph_indices = [0u16; 1];
@@ -824,6 +1404,61 @@ fn rasterize_glyph_directwrite(
         if glyph_index == 0 {
             return None;
         }
+
+        // Whitespace has an advance but no ink.
+        rasterize_face_glyph(&face, glyph_index, font_size, key.codepoint.is_whitespace(), false)
+    }
+}
+
+/// The character path's bitmap for `c`, for tests that compare it with the
+/// run path's.
+#[cfg(all(test, windows))]
+pub(crate) fn rasterize_char_for_test(
+    c: char,
+    family: &str,
+    size: f32,
+    weight: u16,
+) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
+    let key = GlyphKey {
+        cluster: None,
+        codepoint: c,
+        font_family: family.to_string(),
+        font_size: (size * 10.0) as u32,
+        font_weight: weight,
+        font_style: 0,
+        subpixel_phase: 0,
+        web_face: 0,
+        coverage: 0,
+        face: FaceKey::default(),
+    };
+    rasterize_glyph_directwrite(&key, size)
+}
+
+/// Rasterize glyph `glyph_index` of `face` at `font_size`, into the contract
+/// `rasterize_glyph_directwrite` documents.
+///
+/// `blank` says the glyph is known to have no ink (whitespace by character):
+/// it returns a 1x1 empty bitmap with the advance. `blank_if_no_ink` makes a
+/// glyph that turns out to have no ink the same (a shaped run names glyphs,
+/// not characters, so a space reaches here as an id): the character path
+/// leaves that case `None`, so its callers skip the glyph.
+#[cfg(windows)]
+fn rasterize_face_glyph(
+    face: &IDWriteFontFace,
+    glyph_index: u16,
+    font_size: f32,
+    blank: bool,
+    blank_if_no_ink: bool,
+) -> Option<(Vec<u8>, u32, u32, f32, f32, f32)> {
+    unsafe {
+        let factory: IDWriteFactory =
+            match DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!("Failed to create DWrite factory: {:?}", e);
+                    return None;
+                }
+            };
 
         let mut font_metrics = DWRITE_FONT_METRICS::default();
         face.GetMetrics(&mut font_metrics);
@@ -841,9 +1476,9 @@ fn rasterize_glyph_directwrite(
         }
         let advance_width = glyph_metrics[0].advanceWidth as f32 * font_size / design_units_per_em;
 
-        // Whitespace has an advance but no ink: a 1x1 empty bitmap keeps the
-        // shared upload path happy and paints nothing.
-        if key.codepoint.is_whitespace() {
+        // A 1x1 empty bitmap keeps the shared upload path happy and paints
+        // nothing.
+        if blank {
             return Some((vec![0u8; 1], 1, 1, advance_width, 0.0, 0.0));
         }
 
@@ -887,7 +1522,11 @@ fn rasterize_glyph_directwrite(
                     Ok(b) if non_empty(&b) => (b, true),
                     _ => {
                         release(glyph_run);
-                        return None;
+                        return if blank_if_no_ink {
+                            Some((vec![0u8; 1], 1, 1, advance_width, 0.0, 0.0))
+                        } else {
+                            None
+                        };
                     }
                 },
             };
@@ -1084,6 +1723,7 @@ mod tests {
 
     fn key_at(phase: u8) -> GlyphKey {
         GlyphKey {
+            cluster: None,
             codepoint: 'a',
             font_family: "Helvetica".to_string(),
             font_size: 160,
@@ -1091,6 +1731,8 @@ mod tests {
             font_style: 0,
             subpixel_phase: phase,
             web_face: 0,
+            coverage: 0,
+            face: FaceKey::default(),
         }
     }
 
@@ -1106,6 +1748,7 @@ mod tests {
             data: Arc::new(bytes.to_vec()),
         };
         let key = || GlyphKey {
+            cluster: None,
             web_face: GlyphKey::web_face_for("GlyphKeyLateFont, sans-serif", 400, 0),
             font_family: "GlyphKeyLateFont, sans-serif".to_string(),
             ..key_at(0)
@@ -1231,6 +1874,7 @@ mod tests {
     #[test]
     fn test_glyph_key_hash() {
         let key1 = GlyphKey {
+            cluster: None,
             subpixel_phase: 0,
             codepoint: 'A',
             font_family: "Arial".to_string(),
@@ -1238,9 +1882,12 @@ mod tests {
             font_weight: 400,
             font_style: 0,
             web_face: 0,
+            coverage: 0,
+            face: FaceKey::default(),
         };
 
         let key2 = GlyphKey {
+            cluster: None,
             subpixel_phase: 0,
             codepoint: 'A',
             font_family: "Arial".to_string(),
@@ -1248,6 +1895,8 @@ mod tests {
             font_weight: 400,
             font_style: 0,
             web_face: 0,
+            coverage: 0,
+            face: FaceKey::default(),
         };
 
         assert_eq!(key1, key2);
@@ -1256,6 +1905,7 @@ mod tests {
     #[test]
     fn test_glyph_key_different() {
         let key1 = GlyphKey {
+            cluster: None,
             subpixel_phase: 0,
             codepoint: 'A',
             font_family: "Arial".to_string(),
@@ -1263,9 +1913,12 @@ mod tests {
             font_weight: 400,
             font_style: 0,
             web_face: 0,
+            coverage: 0,
+            face: FaceKey::default(),
         };
 
         let key2 = GlyphKey {
+            cluster: None,
             subpixel_phase: 0,
             codepoint: 'B',
             font_family: "Arial".to_string(),
@@ -1273,6 +1926,8 @@ mod tests {
             font_weight: 400,
             font_style: 0,
             web_face: 0,
+            coverage: 0,
+            face: FaceKey::default(),
         };
 
         assert_ne!(key1, key2);
@@ -1287,5 +1942,33 @@ mod tests {
         let (narrow_w, _) = estimate_glyph_size('i', 16.0);
         let (wide_w, _) = estimate_glyph_size('M', 16.0);
         assert!(narrow_w < wide_w);
+    }
+
+    /// One family LIST, one face: what layout measures a run with and what a per-character glyph
+    /// of that run paints with must be the same face, or the painted glyphs do not fill the
+    /// measured width. The glyph key carries the whole CSS list.
+    #[cfg(windows)]
+    #[test]
+    fn layout_and_paint_resolve_a_family_list_to_the_same_face() {
+        use rustkit_css::{FontStretch, FontStyle, FontWeight};
+        let factory: IDWriteFactory =
+            unsafe { DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_SHARED) }.expect("factory");
+        for list in ["Times, serif", "NoSuchFamilyAtAll, Georgia, serif", "Helvetica, sans-serif", "Georgia"] {
+            let shaped = rustkit_layout::TextShaper::new()
+                .shape(
+                    "Abc",
+                    &rustkit_layout::FontFamilyChain::from_css_value(list),
+                    FontWeight(400),
+                    FontStyle::Normal,
+                    FontStretch::Normal,
+                    16.0,
+                )
+                .expect("shaped");
+            let measured = shaped.face.expect("a recorded face").postscript_name;
+            let key = GlyphKey { font_family: list.to_string(), ..key_at(0) };
+            let painted = unsafe { directwrite_face_for(&factory, &key) }
+                .map(|face| rustkit_text::FontFace::from_raw(face).postscript_name());
+            assert_eq!(painted.as_deref(), Some(measured.as_str()), "`{list}`: measured with {measured}, painted with {painted:?}");
+        }
     }
 }

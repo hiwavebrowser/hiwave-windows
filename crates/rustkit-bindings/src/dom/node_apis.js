@@ -1,0 +1,406 @@
+// Node APIs over the wrapper layer (see node_apis.rs): Element.attributes
+// and Attr, document.activeElement with focus()/blur(), createElementNS and
+// the *AttributeNS methods, and document.createEvent.
+(function (g) {
+    var I = g.__rkNodeInternals, NS = __rustkit_dom_ns;
+    delete g.__rkNodeInternals;
+    delete g.__rustkit_dom_ns;
+    var Document = g.Document, Element = g.Element, DOMException = g.DOMException;
+    var HTML_NS = 'http://www.w3.org/1999/xhtml', SVG_NS = 'http://www.w3.org/2000/svg';
+    // The namespaces a stored "prefix:local" attribute name can stand for;
+    // rustkit-dom keeps attributes by qualified name only.
+    var PREFIX_NS = { xml: 'http://www.w3.org/XML/1998/namespace',
+                      xmlns: 'http://www.w3.org/2000/xmlns/', xlink: 'http://www.w3.org/1999/xlink' };
+
+    function illegal() { throw new TypeError('Illegal constructor'); }
+    function iface(name, parent) {
+        var ctor = function () { illegal(); };
+        Object.defineProperty(ctor, 'name', { value: name });
+        if (parent) Object.setPrototypeOf(ctor.prototype, parent.prototype);
+        Object.defineProperty(ctor.prototype, Symbol.toStringTag, { value: name });
+        Object.defineProperty(g, name, { value: ctor, writable: true, configurable: true });
+        return ctor;
+    }
+    function getter(proto, name, fn) {
+        Object.defineProperty(proto, name, { get: fn, configurable: true, enumerable: true });
+    }
+    function fail(method, on, name) {
+        throw new DOMException("Failed to execute '" + method + "' on '" + on + "'.", name);
+    }
+
+    // ---- Namespaces (DOM §4.9): an element's namespaceURI is the one it
+    // was created in; createElement elements are HTML, parsed ones as the
+    // parser placed them.
+    getter(Element.prototype, 'namespaceURI', function () {
+        var s = I.slotOf(this); return NS(s.gen, 'of', s.id);
+    });
+    // The SVG shape and container interfaces (SVG 2 §4.6, §10), by local
+    // name. The geometry methods are web_svg_geometry.js's.
+    var SVG_PROTOS = Object.create(null);
+    (function () {
+        var Graphics = g.SVGGraphicsElement, Geometry = iface('SVGGeometryElement', Graphics);
+        [['path', 'SVGPathElement'], ['rect', 'SVGRectElement'], ['circle', 'SVGCircleElement'],
+         ['ellipse', 'SVGEllipseElement'], ['line', 'SVGLineElement'], ['polyline', 'SVGPolylineElement'],
+         ['polygon', 'SVGPolygonElement']].forEach(function (pair) {
+            SVG_PROTOS[pair[0]] = iface(pair[1], Geometry).prototype;
+        });
+        [['g', 'SVGGElement'], ['defs', 'SVGDefsElement'], ['use', 'SVGUseElement'], ['image', 'SVGImageElement'],
+         ['a', 'SVGAElement'], ['switch', 'SVGSwitchElement'], ['foreignObject', 'SVGForeignObjectElement'],
+         ['text', 'SVGTextElement']].forEach(function (pair) {
+            SVG_PROTOS[pair[0]] = iface(pair[1], Graphics).prototype;
+        });
+        // Paint servers: their `gradientTransform` / `patternTransform` lists are web_svg_geometry.js's.
+        var Gradient = iface('SVGGradientElement', g.SVGElement);
+        SVG_PROTOS.linearGradient = iface('SVGLinearGradientElement', Gradient).prototype;
+        SVG_PROTOS.radialGradient = iface('SVGRadialGradientElement', Gradient).prototype;
+        SVG_PROTOS.pattern = iface('SVGPatternElement', g.SVGElement).prototype;
+    })();
+    // SVG elements get the SVG interfaces (the tag table already maps
+    // `svg`); elements in any other non-HTML namespace are plain Element.
+    I.extendElementProto(function (id, base) {
+        var ns = NS(I.gen(), 'of', id);
+        if (ns === null || ns === HTML_NS) return base(id);
+        if (ns !== SVG_NS) return Element.prototype;
+        var p = base(id);
+        if (p === g.SVGSVGElement.prototype) return p;
+        return SVG_PROTOS[I.local(id)] || g.SVGElement.prototype;
+    });
+    var HOOKS = __rk.domHooks;
+    Document.prototype.createElementNS = function (ns, qualified) {
+        var r = NS(I.gen(), 'create', ns == null ? '' : String(ns), String(qualified));
+        if (typeof r === 'string') fail('createElementNS', 'Document', r);
+        var el = I.wrap(r);
+        // The element is this document's (its scripting state with it).
+        if (typeof __rk.adoptTo === 'function') __rk.adoptTo(el, this);
+        // An HTML `script` made this way is a script like createElement's.
+        if (HOOKS && HOOKS.scripts) HOOKS.scripts.created(el);
+        return el;
+    };
+    function localOf(name) { var i = name.indexOf(':'); return i < 0 ? name : name.slice(i + 1); }
+    function nsOf(name) { var i = name.indexOf(':'); return i < 0 ? null : PREFIX_NS[name.slice(0, i)] || null; }
+    // The stored name for (namespace, localName), or null.
+    function nsName(el, ns, local) {
+        ns = ns == null || ns === '' ? null : String(ns);
+        local = String(local);
+        var names = el.getAttributeNames();
+        for (var i = 0; i < names.length; i++) {
+            var n = names[i];
+            if (ns === null ? n === local : localOf(n) === local && nsOf(n) === ns) return n;
+            if (ns === PREFIX_NS.xmlns && n === 'xmlns' && local === 'xmlns') return n;
+        }
+        return null;
+    }
+    Element.prototype.setAttributeNS = function (ns, qualified, value) {
+        var r = NS(I.gen(), 'check', ns == null ? '' : String(ns), String(qualified));
+        if (typeof r === 'string') fail('setAttributeNS', 'Element', r);
+        this.setAttribute(qualified, value);
+    };
+    Element.prototype.getAttributeNS = function (ns, local) {
+        var n = nsName(this, ns, local); return n === null ? null : this.getAttribute(n);
+    };
+    Element.prototype.hasAttributeNS = function (ns, local) { return nsName(this, ns, local) !== null; };
+    Element.prototype.removeAttributeNS = function (ns, local) {
+        var n = nsName(this, ns, local); if (n !== null) this.removeAttribute(n);
+    };
+
+    // ---- Element.attributes (DOM §4.9.1): a live NamedNodeMap of Attr
+    // nodes. Every read asks the element, so it never goes stale; the Attr
+    // for a name stays the same object. Order is getAttributeNames' order.
+    var NamedNodeMap = iface('NamedNodeMap'), Attr = iface('Attr', g.Node);
+    var OWNER = Symbol('rustkit.owner'), NAME = Symbol('rustkit.name');
+    var maps = new WeakMap(), attrs = new WeakMap();
+    // An Attr taken off its element keeps its value and has no owner.
+    var gone = new WeakMap();
+    function hidden(o, k, v) { Object.defineProperty(o, k, { value: v }); return o; }
+    function attrNode(el, name) {
+        var byName = attrs.get(el);
+        if (!byName) attrs.set(el, byName = Object.create(null));
+        return byName[name] || (byName[name] = newAttr(el, name));
+    }
+    // The owner can change: an Attr taken off one element may be set on
+    // another (`setNamedItem`), and `createAttribute` makes one with none.
+    function newAttr(el, name) {
+        var a = hidden(Object.create(Attr.prototype), NAME, name);
+        Object.defineProperty(a, OWNER, { value: el, writable: true });
+        return a;
+    }
+    // The stored name `name` refers to on `el`, or null (HTML lowercases).
+    function storedName(el, name) {
+        name = String(name);
+        if (el.namespaceURI === HTML_NS) name = name.toLowerCase();
+        return el.getAttributeNames().indexOf(name) >= 0 ? name : null;
+    }
+    getter(Attr.prototype, 'name', function () { return this[NAME]; });
+    getter(Attr.prototype, 'nodeName', function () { return this[NAME]; });
+    getter(Attr.prototype, 'localName', function () { return localOf(this[NAME]); });
+    getter(Attr.prototype, 'prefix', function () {
+        var n = this[NAME], i = n.indexOf(':'); return i < 0 ? null : n.slice(0, i);
+    });
+    getter(Attr.prototype, 'namespaceURI', function () {
+        return this[NAME] === 'xmlns' ? PREFIX_NS.xmlns : nsOf(this[NAME]);
+    });
+    getter(Attr.prototype, 'ownerElement', function () {
+        return !gone.has(this) && this[OWNER] && this[OWNER].hasAttribute(this[NAME]) ? this[OWNER] : null;
+    });
+    getter(Attr.prototype, 'nodeType', function () { return 2; });
+    getter(Attr.prototype, 'specified', function () { return true; });
+    getter(Attr.prototype, 'parentNode', function () { return null; });
+    getter(Attr.prototype, 'ownerDocument', function () { return this[OWNER] ? this[OWNER].ownerDocument : g.document; });
+    ['value', 'nodeValue', 'textContent'].forEach(function (k) {
+        Object.defineProperty(Attr.prototype, k, {
+            get: function () {
+                if (gone.has(this)) return gone.get(this);
+                var v = this[OWNER].getAttribute(this[NAME]); return v === null ? '' : v;
+            },
+            set: function (v) {
+                if (gone.has(this)) gone.set(this, String(v)); else this[OWNER].setAttribute(this[NAME], v);
+            },
+            configurable: true, enumerable: true
+        });
+    });
+
+    getter(NamedNodeMap.prototype, 'length', function () { return this[OWNER].getAttributeNames().length; });
+    NamedNodeMap.prototype.item = function (i) {
+        var n = this[OWNER].getAttributeNames()[i >>> 0];
+        return n === undefined ? null : attrNode(this[OWNER], n);
+    };
+    NamedNodeMap.prototype.getNamedItem = function (name) {
+        var n = storedName(this[OWNER], name); return n === null ? null : attrNode(this[OWNER], n);
+    };
+    NamedNodeMap.prototype.getNamedItemNS = function (ns, local) {
+        var n = nsName(this[OWNER], ns, local); return n === null ? null : attrNode(this[OWNER], n);
+    };
+    // Take `a` off its element: it keeps its value, and the name gets a new
+    // Attr if it is set again (DOM §4.9.2 "remove an attribute").
+    function detach(a) {
+        var el = a[OWNER], v = a.value;
+        el.removeAttribute(a[NAME]);
+        delete attrs.get(el)[a[NAME]];
+        gone.set(a, v);
+        return a;
+    }
+    // DOM §4.9.2 "set an attribute": `a` becomes the element's Attr for its
+    // name (replacing, and returning, the one it had). An Attr another
+    // element still has cannot be taken.
+    function attach(el, a, method) {
+        if (!(a instanceof Attr)) {
+            throw new TypeError("Failed to execute '" + method + "' on 'NamedNodeMap': parameter 1 is not of type 'Attr'.");
+        }
+        var name = a[NAME], owner = gone.has(a) ? null : a[OWNER];
+        if (owner && owner !== el && owner.hasAttribute(name)) fail(method, 'NamedNodeMap', 'InUseAttributeError');
+        if (owner === el && el.hasAttribute(name)) return a;
+        var value = a.value, byName = attrs.get(el), old = null;
+        if (el.hasAttribute(name)) {
+            old = attrNode(el, name);
+            gone.set(old, old.value);
+        }
+        gone.delete(a);
+        a[OWNER] = el;
+        el.setAttribute(name, value);
+        if (!byName) attrs.set(el, byName = Object.create(null));
+        byName[name] = a;
+        return old;
+    }
+    NamedNodeMap.prototype.setNamedItem = function (a) { return attach(this[OWNER], a, 'setNamedItem'); };
+    NamedNodeMap.prototype.setNamedItemNS = function (a) { return attach(this[OWNER], a, 'setNamedItemNS'); };
+    Element.prototype.setAttributeNode = function (a) { return attach(this, a, 'setAttributeNode'); };
+    Element.prototype.setAttributeNodeNS = function (a) { return attach(this, a, 'setAttributeNodeNS'); };
+    // An Attr with no element yet (DOM §4.5 createAttribute): HTML
+    // documents lowercase the name.
+    Document.prototype.createAttribute = function (name) {
+        name = String(name);
+        if (!/^[^\s\/>=\0]+$/.test(name)) {
+            throw new DOMException("Failed to execute 'createAttribute' on 'Document': The localName provided ('" +
+                name + "') contains an invalid character.", 'InvalidCharacterError');
+        }
+        var a = newAttr(null, name.toLowerCase());
+        gone.set(a, '');
+        return a;
+    };
+    NamedNodeMap.prototype.removeNamedItem = function (name) {
+        var a = this.getNamedItem(name);
+        if (!a) fail('removeNamedItem', 'NamedNodeMap', 'NotFoundError');
+        return detach(a);
+    };
+    NamedNodeMap.prototype.removeNamedItemNS = function (ns, local) {
+        var a = this.getNamedItemNS(ns, local);
+        if (!a) fail('removeNamedItemNS', 'NamedNodeMap', 'NotFoundError');
+        return detach(a);
+    };
+    NamedNodeMap.prototype[Symbol.iterator] = function () {
+        var out = [];
+        for (var i = 0; i < this.length; i++) out.push(this.item(i));
+        return out[Symbol.iterator]();
+    };
+    // `attributes[i]` is live too, so the map is a Proxy over its indices.
+    var INDEX = /^(0|[1-9][0-9]*)$/;
+    function isIndex(t, k) { return typeof k === 'string' && INDEX.test(k) && Number(k) < t.length; }
+    var traps = {
+        get: function (t, k, r) { return isIndex(t, k) ? t.item(Number(k)) : Reflect.get(t, k, r); },
+        has: function (t, k) { return isIndex(t, k) || Reflect.has(t, k); },
+        ownKeys: function (t) {
+            var keys = [];
+            for (var i = 0; i < t.length; i++) keys.push(String(i));
+            return keys.concat(Reflect.ownKeys(t));
+        },
+        getOwnPropertyDescriptor: function (t, k) {
+            return isIndex(t, k) ? { value: t.item(Number(k)), enumerable: true, configurable: true }
+                                 : Reflect.getOwnPropertyDescriptor(t, k);
+        }
+    };
+    getter(Element.prototype, 'attributes', function () {
+        var m = maps.get(this);
+        if (!m) maps.set(this, m = new Proxy(hidden(Object.create(NamedNodeMap.prototype), OWNER, this), traps));
+        return m;
+    });
+    Element.prototype.getAttributeNode = function (name) { return this.attributes.getNamedItem(name); };
+    Element.prototype.getAttributeNodeNS = function (ns, local) {
+        return this.attributes.getNamedItemNS(ns, local);
+    };
+    // React 19 strips a host singleton's attributes with this on a client
+    // render after a hydration error (yahoo).
+    Element.prototype.removeAttributeNode = function (attr) {
+        if (!(attr instanceof Attr) || gone.has(attr) || attr[OWNER] !== this || !this.hasAttribute(attr[NAME])) {
+            fail('removeAttributeNode', 'Element', 'NotFoundError');
+        }
+        return detach(attr);
+    };
+
+    // ---- document.activeElement with focus()/blur() (HTML §6.6). One
+    // focus for script and the user: the engine moves it on a click
+    // (`__rk.setFocus`) and follows what script did (`__rk.takeFocus`).
+    // Nothing focused, or the focused element gone from the document,
+    // answers the body.
+    var focused = null, moved = false;
+    function inDocument(el) {
+        var n = el;
+        while (n.parentNode) n = n.parentNode;
+        return n === g.document;
+    }
+    // HTML §6.6.2 "focusable area", for the cases a page reaches by script.
+    function isFocusable(el) {
+        if (!inDocument(el)) return false;
+        var tag = el.localName;
+        if (/^(input|select|textarea|button)$/.test(tag) && el.hasAttribute('disabled')) return false;
+        if (tag === 'input') return (el.getAttribute('type') || '').toLowerCase() !== 'hidden';
+        if (/^(select|textarea|button|iframe|summary)$/.test(tag)) return true;
+        if ((tag === 'a' || tag === 'area') && el.hasAttribute('href')) return true;
+        var editable = el.getAttribute('contenteditable');
+        if (editable !== null && /^(|true|plaintext-only)$/i.test(editable)) return true;
+        return el.hasAttribute('tabindex') && !isNaN(parseInt(el.getAttribute('tabindex'), 10));
+    }
+    function current() { return focused && inDocument(focused) ? focused : null; }
+    var EventCtor = g.Event, dispatchNow = g.EventTarget.prototype.dispatchEvent;
+    // The engine's focus events: built with the constructor of install
+    // time and dispatched as the engine dispatches, whatever a page has put
+    // in place of either since.
+    function fire(el, type, related) {
+        // FocusEvent is made after this script (web_interfaces.js); the
+        // engine's reference is on the host object.
+        var FocusEventCtor = __rk.FocusEvent || EventCtor;
+        __rk.dispatchTo(el, new FocusEventCtor(type, { bubbles: type === 'focusin' || type === 'focusout',
+                                                       composed: true, relatedTarget: related }));
+    }
+    // A field the user edited commits when it loses the focus: `change`
+    // (HTML §4.10.5.5). `__rkFireInput` marks the edit.
+    function commit(el) {
+        if (!__rk.takeEdited(el)) return;
+        // The engine's event: trusted, built with the Event of install
+        // time and dispatched as the engine dispatches.
+        var e = __rk.make('Event', 'change', { bubbles: true });
+        __rk.trust(e);
+        __rk.dispatchTo(el, e);
+    }
+    // A composition in the element losing the focus ends first (CH2.E3).
+    function finishComposing(el) {
+        var f = __rk.finishComposing;
+        if (typeof f === 'function') f(el);
+    }
+    // The focus update steps: change, then blur/focusout on the old
+    // element (with nothing focused), then focus/focusin on the new one.
+    function focus() {
+        var old = current();
+        if (old === this || !isFocusable(this)) return;
+        focused = null;
+        moved = true;
+        if (old) { finishComposing(old); commit(old); fire(old, 'blur', this); fire(old, 'focusout', this); }
+        focused = this;
+        fire(this, 'focus', old);
+        fire(this, 'focusin', old);
+    }
+    function blur() {
+        if (current() !== this) return;
+        focused = null;
+        moved = true;
+        finishComposing(this);
+        commit(this);
+        fire(this, 'blur', null);
+        fire(this, 'focusout', null);
+    }
+    // The user's click focused an element (by node id), or landed on
+    // nothing focusable (null): the same steps script's focus() runs.
+    __rk.setFocus = function (id) {
+        var el = typeof id === 'number' ? I.wrap(id) : null;
+        var old = current();
+        if (el) focus.call(el);
+        if (old && current() === old && old !== el) blur.call(old);
+        // The engine always asks afterwards: the page may have refused.
+        moved = true;
+    };
+    // Where the focus is, when it moved since the engine last asked: the
+    // node id, -1 for nothing; undefined when it has not moved.
+    __rk.takeFocus = function () {
+        if (!moved) return undefined;
+        moved = false;
+        var el = current(), s = el && I.slotOf(el);
+        return s && s.gen === I.gen() ? s.id : -1;
+    };
+    [g.HTMLElement, g.SVGElement].forEach(function (C) {
+        C.prototype.focus = focus;
+        C.prototype.blur = blur;
+    });
+    getter(Document.prototype, 'activeElement', function () {
+        var el = this === g.document ? current() : null;
+        return el || this.body || this.documentElement;
+    });
+
+    // ---- document.createEvent (DOM §4.5): an event of the named interface
+    // with an empty type, which dispatchEvent refuses until initEvent (or
+    // initCustomEvent) has run.
+    var UNINIT = Symbol('rustkit.uninitialised');
+    var EVENT_INTERFACES = {
+        beforeunloadevent: 'BeforeUnloadEvent', compositionevent: 'CompositionEvent',
+        customevent: 'CustomEvent', dragevent: 'DragEvent', event: 'Event', events: 'Event',
+        focusevent: 'FocusEvent', hashchangeevent: 'HashChangeEvent', htmlevents: 'Event',
+        keyboardevent: 'KeyboardEvent', messageevent: 'MessageEvent', mouseevent: 'MouseEvent',
+        mouseevents: 'MouseEvent', storageevent: 'StorageEvent', svgevents: 'Event',
+        textevent: 'TextEvent', touchevent: 'TouchEvent', uievent: 'UIEvent', uievents: 'UIEvent'
+    };
+    Document.prototype.createEvent = function (name) {
+        var C = g[EVENT_INTERFACES[String(name).toLowerCase()]];
+        if (typeof C !== 'function') {
+            throw new DOMException("Failed to execute 'createEvent' on 'Document': The provided event type ('" +
+                name + "') is invalid.", 'NotSupportedError');
+        }
+        // TextEvent has no constructor for script; this is its only maker.
+        var e = C === g.TextEvent ? __rk.newTextEvent('') : new C('');
+        e[UNINIT] = true;
+        return e;
+    };
+    var initEvent = g.Event.prototype.initEvent;
+    g.Event.prototype.initEvent = function () {
+        if (this.eventPhase === 0) delete this[UNINIT];
+        return initEvent.apply(this, arguments);
+    };
+    var dispatch = g.EventTarget.prototype.dispatchEvent;
+    function dispatchEvent(event) {
+        if (event != null && event[UNINIT]) {
+            throw new DOMException("Failed to execute 'dispatchEvent' on 'EventTarget': " +
+                'The event provided is uninitialized.', 'InvalidStateError');
+        }
+        return dispatch.apply(this, arguments);
+    }
+    g.EventTarget.prototype.dispatchEvent = dispatchEvent;
+    // The global took its own copy of the method (dom.rs).
+    if (g.dispatchEvent === dispatch) g.dispatchEvent = dispatchEvent;
+})(globalThis);

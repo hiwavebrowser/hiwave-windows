@@ -434,3 +434,105 @@ fn a_percentage_height_descendant_does_not_raise_the_automatic_minimum() {
         );
     }
 }
+
+/// A `box-sizing: border-box` item with `flex: 1 1 0%` that may go below its
+/// content (`overflow: hidden` or `min-width: 0`), with `edge` px of padding
+/// or border on each side of the main axis, holding a `w` x 10 box.
+fn clipped_border_box_item(edge: f32, border: bool, min_width_zero: bool, w: f32) -> LayoutBox {
+    let mut s = zero_pct();
+    s.box_sizing = rustkit_css::BoxSizing::BorderBox;
+    if min_width_zero {
+        s.min_width = Length::Px(0.0);
+    } else {
+        s.overflow_x = rustkit_css::Overflow::Hidden;
+        s.overflow_y = rustkit_css::Overflow::Hidden;
+    }
+    if border {
+        s.border_left_width = Length::Px(edge);
+        s.border_right_width = Length::Px(edge);
+        s.border_top_width = Length::Px(edge);
+        s.border_bottom_width = Length::Px(edge);
+    } else {
+        s.padding_left = Length::Px(edge);
+        s.padding_right = Length::Px(edge);
+    }
+    let mut b = LayoutBox::new(BoxType::Block, s);
+    b.children.push(sized_block(w, 10.0));
+    b
+}
+
+fn assert_row_143(got: &[(f32, f32)], want: &[(f32, f32)], what: &str) {
+    let close = got.len() == want.len()
+        && got.iter().zip(want).all(|(g, w)| (g.0 - w.0).abs() < 0.5 && (g.1 - w.1).abs() < 0.5);
+    assert!(close, "{what}: the oracle Chromium 143 has content (x, width) {want:?}, got {got:?}");
+}
+
+/// ebay's search field (hand test H15): `flex: 1; overflow: hidden` with a
+/// border, under `* { box-sizing: border-box }`. The basis of 0 is a
+/// border-box size, so the flex base size is the item's own border and
+/// padding; the hypothetical size stayed at 0, which is below that base, and
+/// "a base past the hypothetical size" froze the item before it could grow.
+/// It kept its 4px of border in a 400px row, and what followed it was placed
+/// as if it were 0 wide. Measured in a 400px row (`getBoundingClientRect`).
+#[test]
+fn a_border_box_item_with_a_zero_basis_grows_from_its_padding_and_border() {
+    for collapse in [false, true] {
+        // One item with a 2px border: the whole row.
+        assert_row_143(
+            &row_of(vec![clipped_border_box_item(2.0, true, false, 100.0)], collapse),
+            &[(2.0, 396.0)],
+            "one clipped item, border 2",
+        );
+        // `min-width: 0` and 10px of padding beside a fixed 100px box.
+        assert_row_143(
+            &row_of(vec![clipped_border_box_item(10.0, false, true, 50.0), sized_block(100.0, 10.0)], collapse),
+            &[(10.0, 280.0), (300.0, 100.0)],
+            "min-width 0, padding 10, then a fixed box",
+        );
+        // Two of them share the row.
+        assert_row_143(
+            &row_of(
+                vec![clipped_border_box_item(10.0, false, false, 50.0), clipped_border_box_item(10.0, false, false, 50.0)],
+                collapse,
+            ),
+            &[(10.0, 180.0), (210.0, 180.0)],
+            "two clipped items, padding 10",
+        );
+        // `flex: 1 1 auto; width: 0`: the same base by the other route.
+        let mut by_width = clipped_border_box_item(10.0, false, false, 50.0);
+        by_width.style.flex_basis = FlexBasis::Auto;
+        by_width.style.width = Length::Px(0.0);
+        assert_row_143(
+            &row_of(vec![by_width, sized_block(100.0, 10.0)], collapse),
+            &[(10.0, 280.0), (300.0, 100.0)],
+            "width 0 with an auto basis",
+        );
+        // No grow factor: the item is its padding, and the next box starts
+        // after it (it started at 0, on top of the item).
+        let mut inflexible = clipped_border_box_item(10.0, false, false, 50.0);
+        inflexible.style.flex_grow = 0.0;
+        assert_row_143(
+            &row_of(vec![inflexible, sized_block(100.0, 10.0)], collapse),
+            &[(10.0, 0.0), (20.0, 100.0)],
+            "flex-grow 0",
+        );
+    }
+}
+
+/// The same on the vertical axis: in a 200px column the item takes what the
+/// 20px footer leaves, 180 border-box, so 176 inside its 2px borders.
+#[test]
+fn a_border_box_column_item_with_a_zero_basis_grows_from_its_border() {
+    for collapse in [false, true] {
+        let mut c = LayoutBox::new(BoxType::Block, column(200.0));
+        c.children.push(clipped_border_box_item(2.0, true, false, 50.0));
+        c.children.push(sized_block(100.0, 20.0));
+        let root = laid_out(c, collapse);
+        let item_h = root.children[0].dimensions.content.height;
+        let footer_y = root.children[1].dimensions.content.y - root.dimensions.content.y;
+        assert!(
+            (item_h - 176.0).abs() < 0.5 && (footer_y - 180.0).abs() < 0.5,
+            "the oracle Chromium 143 has the item 176 tall inside its borders and the footer at 180; got {item_h}, footer at {footer_y}"
+        );
+    }
+}

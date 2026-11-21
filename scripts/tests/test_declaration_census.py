@@ -349,6 +349,68 @@ def test_the_two_layout_gaps_stay_named():
         )
 
 
+def test_top_three_buckets_with_owners():
+    """Package Z2-M2: CSS declaration census bounded to top three buckets with owners."""
+    from declaration_census import BUCKETS, bucket_for_property
+
+    # 1. Bucket taxonomy exists with explicit owners
+    check("top three buckets defined", set(BUCKETS.keys()) == {"interactive", "paint", "structure"})
+    for b_id, meta in BUCKETS.items():
+        check(f"bucket {b_id} has title", bool(meta.get("title")))
+        check(f"bucket {b_id} has owner", meta.get("owner") in ("engine", "renderer", "layout"))
+        check(f"bucket {b_id} has properties", len(meta.get("properties", set())) > 0)
+
+    # 2. Every active gap in the gating corpus maps into the top three buckets
+    report = run_census(
+        ENGINE_SOURCE.read_text(encoding="utf-8"),
+        load_registry(include_holdout=False),
+        load_ledger(),
+    )
+    gaps = report["gaps"]
+    # 12 to 7 as the engine began to parse properties the corpus uses:
+    # outline and outline-offset (#867, C5), scrollbar-color and
+    # scrollbar-width (#900, CH2.E7), cursor (#917, CH2.E4). The list, so
+    # a regression that re-opens one names it rather than a count.
+    check(
+        "census measured gaps",
+        sorted(g["property"] for g in gaps)
+        == ["accent-color", "backdrop-filter", "font-variant", "list-style", "resize", "text-shadow", "user-select"],
+        str(sorted(g["property"] for g in gaps)),
+    )
+
+    gap_props = {g["property"] for g in gaps}
+    unmapped = [p for p in gap_props if bucket_for_property(p)[0] not in BUCKETS]
+    check("all gaps belong to top three buckets", len(unmapped) == 0, str(unmapped))
+
+    # 3. Top three buckets account for 100% of unhandled declarations
+    top_buckets = report.get("top_three_buckets", [])
+    check("top three buckets generated in report", len(top_buckets) == 3)
+
+    total_gap_decls = sum(g["declarations"] for g in gaps)
+    top_decls = sum(b["declarations"] for b in top_buckets)
+    check(
+        "top three buckets cover 100% of gap declarations",
+        top_decls == total_gap_decls,
+        f"{top_decls} vs {total_gap_decls}",
+    )
+
+    # 4. Check bucket ranking: paint (4) > interactive (2) = structure (2),
+    # ties by key. Was interactive (26) > paint (12) > structure (4):
+    # outline and outline-offset (8 declarations) left paint with #867,
+    # scrollbar-color and scrollbar-width (2) left structure with #900, and
+    # `cursor` (24, the chrome pages) left interactive with #917, each when
+    # the engine began to parse it. Earlier, `pointer-events` left
+    # interactive (3 declarations) when the engine began to parse it.
+    # `backdrop-filter` stays in paint: its arm only tells a stacking context
+    # (`STACKING_ONLY_ARMS`), and the effect is still not painted.
+    b_order = [b["key"] for b in top_buckets]
+    check("bucket ranking order is paint, interactive, structure", b_order == ["paint", "interactive", "structure"], str(b_order))
+    by_key = {b["key"]: b["declarations"] for b in top_buckets}
+    check("bucket paint has 4 declarations", by_key.get("paint") == 4, str(by_key))
+    check("bucket interactive has 2 declarations", by_key.get("interactive") == 2, str(by_key))
+    check("bucket structure has 2 declarations", by_key.get("structure") == 2, str(by_key))
+
+
 def main():
     print(__doc__.strip().splitlines()[0])
     for fn in (
@@ -362,6 +424,7 @@ def main():
         test_ledger_ratchet,
         test_committed_ledger_holds_on_the_real_trees,
         test_the_two_layout_gaps_stay_named,
+        test_top_three_buckets_with_owners,
     ):
         print(f"\n{fn.__name__}")
         fn()
@@ -375,3 +438,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

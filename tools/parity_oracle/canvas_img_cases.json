@@ -1,0 +1,14 @@
+{
+ "size": [
+  12,
+  8
+ ],
+ "cases": [
+  {
+   "name": "draw-image-img-data-png",
+   "html": "<!doctype html><body><canvas id=c width=12 height=8></canvas><img id=i src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAYAAAC09K7GAAAAHklEQVR4nGP4z8DwHwwZ/gMBQwMDnANm/W9gQFcBAHfyGWkd6ULwAAAAAElFTkSuQmCC\"><script>var i=document.getElementById('i');function go(){var x=document.getElementById('c').getContext('2d');x.fillStyle='#888';x.fillRect(0,0,12,8);x.drawImage(i,1,1);x.drawImage(i,6,0,4,3);x.drawImage(i,1,2,2,1,6,4,6,4);var d=x.getImageData(0,0,12,8).data,h='';for(var k=0;k<d.length;k++)h+=(d[k]<16?'0':'')+d[k].toString(16);window.__r=h;}if(i.complete&&i.naturalWidth)go();else i.onload=go;</script></body>",
+   "chrome_rgba": "888888ff888888ff888888ff888888ff888888ff888888ffff0000ff00ff00ff0000ffffc4c444ff888888ff888888ff888888ffff0000ff00ff00ff0000ffffc4c444ff888888ff00ff00ff0000ffffff0000ff44c4c4ff888888ff888888ff888888ff00ff00ff0000ffffff0000ff44c4c4ff888888ffff0000ff00ff00ff0000ffffc4c444ff888888ff888888ff888888ffff0000ff00ff00ff0000ffffc4c444ff888888ff888888ff888888ff888888ff888888ff888888ff888888ff888888ff888888ff888888ff888888ff888888ff888888ff3b873bff009f5fff1d6d73ff3b3b87ff5f009fff6f3d91ff888888ff888888ff888888ff888888ff888888ff888888ff539713ff00df1fff09995bff135397ff1f00dfff4d3db3ff888888ff888888ff888888ff888888ff888888ff888888ff5f9f00ff00ff00ff00af4fff005f9fff0000ffff3d3dc4ff888888ff888888ff888888ff888888ff888888ff888888ff5f9f00ff00ff00ff00af4fff005f9fff0000ffff3d3dc4ff"
+  }
+ ],
+ "chrome": "148.0.7778.216"
+}

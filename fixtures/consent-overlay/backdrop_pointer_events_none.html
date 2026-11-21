@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html><head><style>
+body { margin: 0; font: 16px sans-serif; }
+.overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2147483647;
+  pointer-events: none; display: flex; align-items: flex-end; justify-content: center; }
+.dialog { pointer-events: auto; background: #fff; width: 500px; padding: 24px; margin-bottom: 40px; }
+.dialog button { width: 120px; height: 40px; }
+</style></head>
+<body>
+<article><h1>Headline</h1><p>Article text the overlay lets clicks through to.</p></article>
+<div class="overlay" id="overlay"><div class="dialog" role="dialog">
+  <p>We use cookies.</p><button id="agree" type="button">Agree</button>
+</div></div>
+<script>
+window.__heard = [];
+window.__agree = document.getElementById('agree');
+__agree.addEventListener('click', function () {
+  __heard.push('click');
+  document.getElementById('overlay').remove();
+});
+</script>
+</body></html>

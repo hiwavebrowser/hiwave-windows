@@ -399,9 +399,8 @@ impl CspSource {
             }
             CspSource::Host(pattern) => {
                 let host = url.host_str().unwrap_or("");
-                if pattern.starts_with("*.") {
+                if let Some(domain) = pattern.strip_prefix("*.") {
                     // Wildcard match
-                    let domain = &pattern[2..];
                     host == domain || host.ends_with(&format!(".{}", domain))
                 } else if pattern.contains('/') {
                     // Path pattern
@@ -652,7 +651,7 @@ impl ReferrerPolicy {
         value
             .split(',')
             .filter_map(|token| token.trim().parse().ok())
-            .last()
+            .next_back()
     }
 }
 

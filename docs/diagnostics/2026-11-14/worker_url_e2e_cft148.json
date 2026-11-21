@@ -1,0 +1,28 @@
+{
+ "url_worker_with_import_scripts": [
+  "msg:ready:lib",
+  "msg:echo:hi"
+ ],
+ "worker_script_served_as_text_plain": [
+  "msg:ran"
+ ],
+ "import_scripts_served_as_text_plain": [
+  "msg:import:NetworkError"
+ ],
+ "import_scripts_through_a_same_origin_redirect": [
+  "msg:ready:lib"
+ ],
+ "import_scripts_of_a_missing_script": [
+  "msg:import:NetworkError"
+ ],
+ "worker_script_through_a_same_origin_redirect": [
+  "msg:ready:lib",
+  "msg:echo:hi"
+ ],
+ "worker_script_served_as_image_png": [
+  "error:Event"
+ ],
+ "import_scripts_with_two_content_types": [
+  "msg:ready:two"
+ ]
+}

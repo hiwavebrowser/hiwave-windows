@@ -1,0 +1,165 @@
+{
+  "chrome": "148.0.7778.216",
+  "cases": [
+    {
+      "label": "video",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 300,
+      "height": 150,
+      "display": "inline",
+      "object_fit": "contain"
+    },
+    {
+      "label": "video with fallback text",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m>fallback text that is never shown</video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 300,
+      "height": 150,
+      "display": "inline",
+      "object_fit": "contain"
+    },
+    {
+      "label": "video width=100 height=50",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m width=100 height=50></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 100,
+      "height": 50,
+      "display": "inline",
+      "object_fit": "contain"
+    },
+    {
+      "label": "video width=100",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m width=100></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 100,
+      "height": 150,
+      "display": "inline",
+      "object_fit": "contain"
+    },
+    {
+      "label": "video height=60",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m height=60></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 300,
+      "height": 60,
+      "display": "inline",
+      "object_fit": "contain"
+    },
+    {
+      "label": "video css width:120px",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m style=\"width:120px\"></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 120,
+      "height": 150,
+      "display": "inline",
+      "object_fit": "contain"
+    },
+    {
+      "label": "video controls",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m controls></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 300,
+      "height": 150,
+      "display": "inline",
+      "object_fit": "contain"
+    },
+    {
+      "label": "video display:block",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m style=\"display:block\"></video></div>",
+      "x": 0,
+      "y": 18,
+      "width": 300,
+      "height": 150,
+      "display": "block",
+      "object_fit": "contain"
+    },
+    {
+      "label": "video border 5px padding 3px",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m style=\"border:5px solid;padding:3px\"></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 316,
+      "height": 166,
+      "display": "inline",
+      "object_fit": "contain"
+    },
+    {
+      "label": "audio",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><audio id=m></audio></div>",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0,
+      "display": "none",
+      "object_fit": "fill"
+    },
+    {
+      "label": "audio controls",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><audio id=m controls></audio></div>",
+      "x": 10,
+      "y": 0,
+      "width": 300,
+      "height": 54,
+      "display": "inline",
+      "object_fit": "fill"
+    },
+    {
+      "label": "audio style display:block",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><audio id=m style=\"display:block\"></audio></div>",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0,
+      "display": "none",
+      "object_fit": "fill"
+    },
+    {
+      "label": "audio sheet display:inline-block",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><style>audio{display:inline-block}</style><audio id=m></audio></div>",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0,
+      "display": "none",
+      "object_fit": "fill"
+    },
+    {
+      "label": "audio style display:block !important",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><audio id=m style=\"display:block !important\"></audio></div>",
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0,
+      "display": "none",
+      "object_fit": "fill"
+    },
+    {
+      "label": "video style object-fit:cover",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><video id=m style=\"object-fit:cover\"></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 300,
+      "height": 150,
+      "display": "inline",
+      "object_fit": "cover"
+    },
+    {
+      "label": "video sheet object-fit:fill",
+      "html": "<!doctype html><style>body{margin:0;font:16px sans-serif}#pre{display:inline-block;width:10px;height:10px}</style><div><span id=pre></span><style>video{object-fit:fill}</style><video id=m></video></div>",
+      "x": 10,
+      "y": 0,
+      "width": 300,
+      "height": 150,
+      "display": "inline",
+      "object_fit": "fill"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- parity-freeze.js fixture (scripts/tests/test_parity_freeze.py): a rAF
+     loop that never stops (a spinner). The freeze's frame budget ends it, so
+     the capture is the same frame every run, whatever the wall clock does:
+     green once the loop has run exactly the budget (300 frames). -->
+<html>
+<head>
+<style>
+  html, body { margin: 0; background: #fff; }
+  canvas { position: absolute; top: 20px; left: 20px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="200" height="100"></canvas>
+<script>
+  const log = { frames: 0 };
+  window.__hiwaveBoard = { calls: () => [log], errors: [] };
+  const ctx = document.getElementById('c').getContext('2d');
+  function spin() {
+    log.frames += 1;
+    ctx.fillStyle = log.frames === 300 ? '#0f0' : '#f00';
+    ctx.fillRect(0, 0, 200, 100);
+    requestAnimationFrame(spin);
+  }
+  requestAnimationFrame(spin);
+</script>
+</body>
+</html>

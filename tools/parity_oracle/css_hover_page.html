@@ -1,0 +1,10 @@
+<html><head><style>
+body { margin: 0 } div { width: 400px; height: 40px } #a { height: auto }
+#b:hover { width: 300px } #b:hover + #c { width: 200px }
+.menu:hover .sub { width: 100px } #c:not(:hover) { margin-left: 5px }
+#b:active { width: 310px } #b:active + #c { width: 210px }
+.menu:active .sub { width: 110px }
+</style></head><body>
+<div id="b">b</div><div id="c">c</div>
+<div id="a" class="menu"><div id="t">t</div><div id="sub" class="sub">sub</div></div>
+</body></html>

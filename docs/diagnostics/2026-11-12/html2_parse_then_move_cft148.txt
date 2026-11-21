@@ -1,0 +1,19 @@
+# HTML2 R1 (second): markup parsed in one document and moved into another. Chrome for Testing 148.0.7778.216,
+# headless: window.report() of html2_parse_then_move.html. A noscript's text is the parsing document's (literal
+# with scripting on, decoded with it off); how it serializes is the document it ends up in.
+insertAdjacentHTML beforebegin: #text("&lt;i&gt;x") | <noscript>&lt;i&gt;x</noscript>
+insertAdjacentHTML afterbegin: #text("&lt;i&gt;x") | <noscript>&lt;i&gt;x</noscript>
+insertAdjacentHTML beforeend: #text("&lt;i&gt;x") | <noscript>&lt;i&gt;x</noscript>
+insertAdjacentHTML afterend: #text("&lt;i&gt;x") | <noscript>&lt;i&gt;x</noscript>
+insertAdjacentHTML in another document: #text("<i>x") | <noscript>&lt;i&gt;x</noscript>
+innerHTML set on a page element: #text("&lt;i&gt;x") | <noscript>&lt;i&gt;x</noscript>
+outerHTML set on a page element: #text("&lt;i&gt;x") | <noscript>&lt;i&gt;x</noscript>
+innerHTML set detached, then inserted: #text("&lt;i&gt;x") | <noscript>&lt;i&gt;x</noscript>
+parsed in another document, imported into the page: #text("<i>x") | <noscript><i>x</noscript>
+parsed in another document, adopted into the page: #text("<i>x") | <noscript><i>x</noscript>
+DOMParser parse, adopted into the page: #text("<i>x") | <noscript><i>x</noscript>
+template innerHTML: #text("<i>x") | <noscript>&lt;i&gt;x</noscript>
+template content imported into the page: #text("<i>x") | <noscript><i>x</noscript>
+template content cloned into the page: #text("<i>x") | <noscript><i>x</noscript>
+shadowRoot innerHTML: #text("&lt;i&gt;x") | <noscript>&lt;i&gt;x</noscript>
+contextual fragment moved into the page: #text("&lt;i&gt;x") | <noscript>&lt;i&gt;x</noscript>

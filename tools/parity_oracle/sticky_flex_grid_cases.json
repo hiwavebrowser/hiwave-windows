@@ -1,0 +1,109 @@
+{
+ "at": "var $ = function (i) { return document.getElementById(i); }; var at = function (i) { var r = $(i).getBoundingClientRect(); return r.x + ',' + r.y; }; var top = function (i) { return at(i) + ' ' + $(i).offsetTop; }; var hit = function (x, y) { var e = document.elementFromPoint(x, y); return e && e.id || '-'; }; var walk = function (s, offs, f) { return offs.map(function (o) { $(s).scrollTop = o; return f(); }).join(' | '); }; var win = function (offs, f) { return offs.map(function (o) { window.scrollTo(0, o); return f(); }).join(' | '); }; var H = function (i) { var e = $(i); return e.offsetHeight + '/' + e.clientHeight + '/' + e.scrollHeight; }; var D = function () { return document.documentElement.scrollHeight; }; var Y = function (i) { return Math.round($(i).getBoundingClientRect().y); }; ",
+ "cases": {
+  "flex_col_scroller": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#s{overflow:auto;width:200px;height:100px}#f{display:flex;flex-direction:column}#gap{height:50px}#h{position:sticky;top:0;height:20px}#t{height:600px}</style><body><div id=s><div id=f><div id=gap></div><div id=h></div><div id=t></div></div></div></body>",
+   "script": "walk('s', [0, 30, 50, 200, 600], function () { return top('h'); })"
+  },
+  "flex_col_window": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#sp{height:100px}#f{display:flex;flex-direction:column;width:300px}#h{position:sticky;top:0;height:40px}#t{height:1000px}#after{height:2000px}</style><body><div id=sp></div><div id=f><div id=h></div><div id=t></div></div><div id=after></div></body>",
+   "script": "win([0, 50, 100, 600, 1200], function () { return top('h'); })"
+  },
+  "grid_sidebar": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#sp{height:100px}#g{display:grid;grid-template-columns:100px 200px}#side{position:sticky;top:10px;height:50px;align-self:start}#main{height:1000px}</style><body><div id=sp></div><div id=g><div id=side></div><div id=main></div></div></body>",
+   "script": "win([0, 50, 100, 500, 1100], function () { return top('side'); })"
+  },
+  "grid_sidebar_stretch": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#sp{height:100px}#g{display:grid;grid-template-columns:100px 200px}#side{position:sticky;top:10px}#main{height:1000px}</style><body><div id=sp></div><div id=g><div id=side></div><div id=main></div></div></body>",
+   "script": "win([0, 50, 100, 500, 1100], function () { return top('side') + ' ' + $('side').offsetHeight; })"
+  },
+  "grid_sidebar_scroller": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#s{overflow:auto;width:300px;height:200px}#g{display:grid;grid-template-columns:100px 200px;margin-top:40px}#side{position:sticky;top:0;height:50px;align-self:start}#main{height:600px}</style><body><div id=s><div id=g><div id=side></div><div id=main></div></div></div></body>",
+   "script": "walk('s', [0, 20, 40, 300, 600], function () { return top('side'); })"
+  },
+  "table_th": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#s{overflow:auto;width:300px;height:100px}table{border-collapse:collapse;border-spacing:0}td,th{padding:0;height:20px;width:100px}th{position:sticky;top:0}</style><body><div id=s><table id=tb><thead><tr><th id=th1>a</th><th id=th2>b</th></tr></thead><tbody><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr></tbody></table></div></body>",
+   "script": "walk('s', [0, 30, 100, 300, 1000], function () { return top('th1') + ' ' + at('th2'); })"
+  },
+  "table_th_window": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#sp{height:100px}table{border-collapse:collapse;border-spacing:0}td,th{padding:0;height:20px;width:100px}th{position:sticky;top:0}</style><body><div id=sp></div><table id=tb><thead><tr><th id=th1>a</th><th id=th2>b</th></tr></thead><tbody><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr></tbody></table></body>",
+   "script": "win([0, 50, 100, 300, 600], function () { return top('th1') + ' ' + at('th2'); })"
+  },
+  "table_thead": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#s{overflow:auto;width:300px;height:100px}table{border-collapse:collapse;border-spacing:0}td,th{padding:0;height:20px;width:100px}thead{position:sticky;top:0}</style><body><div id=s><table id=tb><thead id=hd><tr><th id=th1>a</th><th>b</th></tr></thead><tbody><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr></tbody></table></div></body>",
+   "script": "walk('s', [0, 30, 100, 300, 1000], function () { return top('hd') + ' ' + at('th1'); })"
+  },
+  "flex_item_scroller_row": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#r{display:flex;height:200px;width:400px}#nav{width:100px}#p{flex:1;overflow:auto}#gap{height:50px}#h{position:sticky;top:0;height:20px}#t{height:600px}</style><body><div id=r><div id=nav></div><div id=p><div id=gap></div><div id=h></div><div id=t></div></div></div></body>",
+   "script": "walk('p', [0, 30, 50, 200, 600], function () { return top('h'); })"
+  },
+  "flex_item_scroller_col": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#c{display:flex;flex-direction:column;height:200px;width:300px}#hd{height:40px;flex:none}#p{flex:1;overflow:auto;min-height:0}#gap{height:50px}#h{position:sticky;top:0;height:20px}#t{height:600px}#ft{position:sticky;bottom:0;height:10px}</style><body><div id=c><div id=hd></div><div id=p><div id=gap></div><div id=h></div><div id=t></div><div id=ft></div></div></div></body>",
+   "script": "walk('p', [0, 30, 50, 200, 600], function () { return top('h') + ' ' + at('ft'); })"
+  },
+  "top_and_bottom_flex": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#s{overflow:auto;width:200px;height:100px}#f{display:flex;flex-direction:column}#gap{height:300px}#b{position:sticky;top:10px;bottom:10px;height:20px}#t{height:600px}</style><body><div id=s><div id=f><div id=gap></div><div id=b></div><div id=t></div></div></div></body>",
+   "script": "walk('s', [0, 150, 220, 300, 900], function () { return top('b'); })"
+  },
+  "top_and_bottom_grid": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#sp{height:800px}#g{display:grid;grid-template-columns:100px 100px}#b{position:sticky;top:10px;bottom:10px;height:30px;align-self:center}#t{height:1000px}</style><body><div id=sp></div><div id=g><div id=b></div><div id=t></div></div></body>",
+   "script": "win([0, 300, 700, 1000, 1700], function () { return top('b'); })"
+  },
+  "flex_row_stretch_vs_start": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#sp{height:100px}#r{display:flex}#a{position:sticky;top:0;width:50px}#b{position:sticky;top:0;width:50px;height:30px;align-self:start}#e{position:sticky;top:0;width:50px;height:30px;align-self:end}#c{height:1000px;width:50px}</style><body><div id=sp></div><div id=r><div id=a></div><div id=b></div><div id=e></div><div id=c></div></div></body>",
+   "script": "win([0, 100, 500, 1070, 1300], function () { return [top('a'), top('b'), top('e'), $('a').offsetHeight].join(' '); })"
+  },
+  "flex_row_align_items_start": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#s{overflow:auto;width:300px;height:100px}#r{display:flex;align-items:flex-start;margin-top:20px}#a{position:sticky;top:5px;width:50px;height:30px}#c{height:500px;width:50px}</style><body><div id=s><div id=r><div id=a></div><div id=c></div></div></div></body>",
+   "script": "walk('s', [0, 15, 100, 475, 600], function () { return top('a'); })"
+  },
+  "table_tr": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#s{overflow:auto;width:300px;height:100px}table{border-collapse:collapse;border-spacing:0}td,th{padding:0;height:20px;width:100px}#tr{position:sticky;top:0}</style><body><div id=s><table id=tb><thead><tr id=tr><th id=th1>a</th><th>b</th></tr></thead><tbody><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr></tbody></table></div></body>",
+   "script": "walk('s', [0, 30, 100, 300, 1000], function () { return top('tr') + ' ' + at('th1'); })"
+  },
+  "table_th_caption_spacing": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#sp{height:100px}table{border-spacing:4px;padding:6px;border:2px solid}caption{height:30px}td,th{padding:0;height:20px;width:100px}th{position:sticky;top:0}</style><body><div id=sp></div><table id=tb><caption>c</caption><thead><tr><th id=th1>a</th><th>b</th></tr></thead><tbody><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr></tbody></table></body>",
+   "script": "win([0, 100, 140, 400, 1000], function () { return top('th1'); })"
+  },
+  "table_th_tfoot_bottom": {
+   "page": "<!doctype html><style>body{margin:0;height:3000px}#s{overflow:auto;width:300px;height:100px}table{border-collapse:collapse;border-spacing:0}td,th{padding:0;height:20px;width:100px}#ft{position:sticky;bottom:0}</style><body><div id=s><table id=tb><tbody><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr><tr><td>r</td><td>r</td></tr></tbody><tfoot><tr><td id=ft>f</td><td>g</td></tr></tfoot></table></div></body>",
+   "script": "walk('s', [0, 30, 100, 300, 1000], function () { return top('ft'); })"
+  },
+  "shell_rail_sticky": {
+   "page": "<!doctype html><style>body{margin:0}#app{display:flex;flex-direction:column;height:600px}#hd{height:50px;flex:none}#r{flex:1;display:flex;min-height:0}#side{width:200px}#p{flex:1;overflow:auto}</style><body><div id=app><div id=hd></div><div id=r><div id=side></div><div id=p><div id=gap style='height:50px'></div><div id=h style='position:sticky;top:0;height:20px'></div><div id=t style='height:600px'></div></div></div></div></body>",
+   "script": "walk('p', [0, 30, 50, 300, 1000], function () { return Y('h'); }) + ' # ' + [H('side'), H('p'), H('r'), D(), (function () { window.scrollTo(0, 500); return window.scrollY; })()].join(' ')"
+  },
+  "shell_rail_no_sticky": {
+   "page": "<!doctype html><style>body{margin:0}#app{display:flex;flex-direction:column;height:600px}#hd{height:50px;flex:none}#r{flex:1;display:flex;min-height:0}#side{width:200px}#p{flex:1;overflow:auto}</style><body><div id=app><div id=hd></div><div id=r><div id=side></div><div id=p><div style='height:670px'></div></div></div></div></body>",
+   "script": "[H('side'), H('p'), H('r'), D(), (function () { window.scrollTo(0, 500); return window.scrollY; })()].join(' ')"
+  },
+  "row_stretch_all": {
+   "page": "<!doctype html><style>body{margin:0}#r{display:flex;height:200px}#rail{width:1px}#v{width:50px}#txt{width:50px;font:16px/20px sans-serif}#after{height:10px}</style><body><div id=r><div id=rail></div><div id=v><div style='height:670px'></div></div><div id=txt>a</div></div><div id=after></div></body>",
+   "script": "[H('rail'), H('v'), H('txt'), H('r'), Y('after'), D()].join(' ')"
+  },
+  "flex_row_table": {
+   "page": "<!doctype html><style>body{margin:0}td{height:30px;padding:0;width:20px}#r{display:flex;height:200px}#b{width:20px}#nx{height:5px}</style><body><div id=r><table id=tb cellspacing=0><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr id=last><td></td></tr></table><div id=b></div></div><div id=nx></div></body>",
+   "script": "[H('tb'), Y('last'), H('b'), H('r'), Y('nx'), D()].join(' ')"
+  },
+  "flex_row_table_collapsed_border": {
+   "page": "<!doctype html><style>body{margin:0}td{height:30px;padding:0;width:20px}#r{display:flex;height:200px}#b{width:20px}#nx{height:5px}#tb{border:2px solid;border-collapse:collapse}</style><body><div id=r><table id=tb><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr id=last><td></td></tr></table><div id=b></div></div><div id=nx></div></body>",
+   "script": "[$('tb').offsetHeight, Y('last'), H('b'), H('r'), Y('nx'), D()].join(' ')"
+  },
+  "flex_row_inline_table": {
+   "page": "<!doctype html><style>body{margin:0}td{height:30px;padding:0;width:20px}#r{display:flex;height:200px}#b{width:20px}#nx{height:5px}#tb{display:inline-table}</style><body><div id=r><table id=tb><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr><td></td></tr><tr id=last><td></td></tr></table><div id=b></div></div><div id=nx></div></body>",
+   "script": "[H('tb'), Y('last'), H('b'), H('r'), Y('nx'), D()].join(' ')"
+  },
+  "flex_row_display_table_div": {
+   "page": "<!doctype html><style>body{margin:0}#r{display:flex;height:200px}#tb{display:table}#b{width:20px}#nx{height:5px}</style><body><div id=r><div id=tb><div id=last style='height:670px;width:20px'></div></div><div id=b></div></div><div id=nx></div></body>",
+   "script": "[H('tb'), Y('last'), H('b'), H('r'), Y('nx'), D()].join(' ')"
+  },
+  "flex_row_short_table_stretches": {
+   "page": "<!doctype html><style>body{margin:0}td{height:30px;padding:0;width:20px}#r{display:flex;height:200px}#b{width:20px}#nx{height:5px}</style><body><div id=r><table id=tb cellspacing=0><tr id=last><td></td></tr></table><div id=b></div></div><div id=nx></div></body>",
+   "script": "[H('tb'), Y('last'), H('b'), H('r'), Y('nx'), D()].join(' ')"
+  },
+  "flex_row_tall_content_keeps_its_size": {
+   "page": "<!doctype html><style>body{margin:0}#r{display:flex;height:200px}#a{width:50px}#t{display:table;height:300px}#c{display:flex;flex-direction:column;width:50px}#k{height:400px;flex:none}#nx{height:5px}</style><body><div id=r><div id=a><div id=t style='width:10px'></div></div><div id=c><div id=k></div></div></div><div id=nx></div></body>",
+   "script": "[H('a'), H('t'), H('c'), H('k'), H('r'), Y('nx'), D()].join(' ')"
+  }
+ }
+}

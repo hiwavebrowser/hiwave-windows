@@ -27,6 +27,29 @@ pub struct StylesheetAst {
     /// Layer order is the order names are FIRST declared (CSS Cascade 5
     /// §6.4.3), and a statement can declare a layer before any rule is in it.
     pub layer_statements: Vec<LayerStatementAst>,
+    /// What each `@keyframes` says about `opacity`, in source order.
+    pub keyframes: Vec<KeyframesAst>,
+}
+
+/// An `@keyframes` rule: its keyframe blocks, in source order, for the
+/// engine to run, and the `opacity` it sets at its two ends (`None` where
+/// that keyframe does not set it) for the frame a parity capture, which
+/// runs no animations, settles on (`ComputedStyle::settle_animation_opacity`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyframesAst {
+    pub name: String,
+    pub first: Option<f32>,
+    pub last: Option<f32>,
+    pub frames: Vec<KeyframeAst>,
+}
+
+/// One keyframe block: the offsets its selector names (fractions, `from`
+/// is 0 and `to` is 1) and its declarations (`!important` ones dropped,
+/// as they are invalid in a keyframe).
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyframeAst {
+    pub offsets: Vec<f32>,
+    pub declarations: Vec<DeclarationAst>,
 }
 
 /// A layer name declared at a point in the sheet.
@@ -48,6 +71,11 @@ pub struct RuleAst {
     /// Media query lists of the `@media` blocks enclosing this rule,
     /// outermost first. The rule applies only where every one matches.
     pub media: Vec<String>,
+    /// Preludes of the `@container` blocks enclosing this rule, outermost
+    /// first (`card (width >= 200px)`): an optional container name, then
+    /// the size condition. The rule applies to an element only where each
+    /// one holds for its query container.
+    pub container: Vec<String>,
     /// Full dotted name of the cascade layer the rule is in, or `None` for
     /// an unlayered rule. An anonymous `@layer { }` block gets a name no
     /// author can write (see `anonymous_layer_name`).
@@ -62,11 +90,16 @@ enum AtBlock {
     /// An `@layer` block: its rules are in the named layer (anonymous when
     /// the prelude names none).
     Layer(String),
+    /// An `@container` block: its prelude is recorded on each of its rules.
+    Container(String),
     /// Its body is declarations (`@font-face`, `@page`): kept as one rule
     /// whose selector is the at-rule prelude, as before.
     Declarations,
-    /// Nothing that styles an element in the static frame (`@keyframes`,
-    /// `@container`, `@supports not (...)`, unknown at-rules): skipped whole.
+    /// `@keyframes`, by name: only its `opacity` at each end is kept.
+    Keyframes(String),
+    /// Nothing that styles an element in the static frame (an `@container`
+    /// with no condition, an `@supports` that is false, unknown at-rules):
+    /// skipped whole.
     Skip,
 }
 
@@ -79,18 +112,284 @@ fn at_block_kind(prelude: &str) -> AtBlock {
     let condition = at[name_end..].trim();
     match name.as_str() {
         "media" => AtBlock::Rules(Some(condition.to_string())),
-        // Only a negated condition is decided here: every positive feature
-        // query on the board's sites names something Chrome supports, and a
-        // property RustKit lacks is ignored at apply time anyway.
-        "supports" if condition.to_ascii_lowercase().starts_with("not") => AtBlock::Skip,
-        "supports" => AtBlock::Rules(None),
+        "supports" if supports_condition(condition) == Some(true) => AtBlock::Rules(None),
+        "container" if !condition.is_empty() => AtBlock::Container(condition.to_string()),
         "layer" if condition.is_empty() => AtBlock::Layer(anonymous_layer_name()),
         "layer" => AtBlock::Layer(condition.to_string()),
         "font-face" | "page" | "property" | "counter-style" | "font-palette-values" => {
             AtBlock::Declarations
         }
+        "keyframes" | "-webkit-keyframes" => {
+            AtBlock::Keyframes(condition.trim_matches(|c| c == '"' || c == '\'').to_string())
+        }
         _ => AtBlock::Skip,
     }
+}
+
+/// The `opacity` at each end of an `@keyframes` body. `None` when an end sets
+/// a value this cannot read (`var()`): the rule is then as good as absent, and
+/// the box keeps painting at full opacity rather than be hidden on a guess.
+fn keyframes_opacity(name: String, body: &str) -> Option<KeyframesAst> {
+    let mut frames = KeyframesAst {
+        name,
+        first: None,
+        last: None,
+        frames: Vec::new(),
+    };
+    if frames.name.is_empty() {
+        return None;
+    }
+    for frame in parse_stylesheet(body).ok()?.rules {
+        let offsets: Vec<f32> = frame
+            .selector
+            .split(',')
+            .filter_map(|at| match at.trim().to_ascii_lowercase().as_str() {
+                "from" => Some(0.0),
+                "to" => Some(1.0),
+                other => other
+                    .strip_suffix('%')
+                    .and_then(|p| p.trim().parse::<f32>().ok())
+                    .map(|p| p / 100.0),
+            })
+            .filter(|o| (0.0..=1.0).contains(o))
+            .collect();
+        if !offsets.is_empty() {
+            frames.frames.push(KeyframeAst {
+                offsets,
+                declarations: frame
+                    .declarations
+                    .iter()
+                    .filter(|d| !d.important)
+                    .cloned()
+                    .collect(),
+            });
+        }
+        // Keyframe declarations with `!important` are invalid and ignored.
+        let Some(value) = frame
+            .declarations
+            .iter()
+            .rev()
+            .find(|d| d.property.eq_ignore_ascii_case("opacity") && !d.important)
+        else {
+            continue;
+        };
+        let value = value.value.trim();
+        let opacity = match value.strip_suffix('%') {
+            Some(percent) => percent.parse::<f32>().map(|p| p / 100.0),
+            None => value.parse::<f32>(),
+        };
+        for at in frame.selector.split(',').map(|s| s.trim().to_ascii_lowercase()) {
+            let offset = match at.as_str() {
+                "from" => Some(0.0),
+                "to" => Some(100.0),
+                other => other.strip_suffix('%').and_then(|p| p.parse::<f32>().ok()),
+            };
+            let end = match offset {
+                Some(o) if o == 0.0 => &mut frames.first,
+                Some(o) if o == 100.0 => &mut frames.last,
+                _ => continue,
+            };
+            *end = Some(opacity.as_ref().ok()?.clamp(0.0, 1.0));
+        }
+    }
+    Some(frames)
+}
+
+/// Decide an `@supports` condition (CSS Conditional 3 §6.1, with
+/// `selector()` and `font-tech()`/`font-format()` from level 4) as Chrome
+/// does. `None` means the prelude does not parse, and the rule is dropped.
+///
+/// A declaration counts as supported unless it is plainly not: a property
+/// no Chromium build has, an empty value, or a `display`/`position` value
+/// outside the keywords. RustKit drops a property it lacks at apply time
+/// anyway, so a page's Chrome branch stays the one RustKit gets.
+fn supports_condition(s: &str) -> Option<bool> {
+    let s = s.trim();
+    if let Some(rest) = strip_keyword(s, "not") {
+        let (term, tail) = split_term(rest.trim_start())?;
+        if !tail.trim().is_empty() {
+            return None;
+        }
+        return supports_in_parens(term).map(|v| !v);
+    }
+    let (mut all, mut any, mut op, mut rest) = (true, false, None, s);
+    loop {
+        let (term, tail) = split_term(rest)?;
+        let v = supports_in_parens(term)?;
+        (all, any) = (all && v, any || v);
+        let tail = tail.trim_start();
+        if tail.is_empty() {
+            return Some(if op == Some("or") { any } else { all });
+        }
+        let (kw, after) = match (strip_keyword(tail, "and"), strip_keyword(tail, "or")) {
+            (Some(a), _) => ("and", a),
+            (_, Some(a)) => ("or", a),
+            _ => return None,
+        };
+        // `and` and `or` never mix without parentheses.
+        if op.is_some_and(|o| o != kw) {
+            return None;
+        }
+        (op, rest) = (Some(kw), after.trim_start());
+    }
+}
+
+/// `s` without a leading case-insensitive keyword that whitespace follows.
+fn strip_keyword<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
+    let head = s.get(..kw.len())?;
+    let rest = &s[kw.len()..];
+    (head.eq_ignore_ascii_case(kw) && rest.starts_with(char::is_whitespace)).then_some(rest)
+}
+
+/// Split one `( ... )` or `name( ... )` off the front of `s`.
+fn split_term(s: &str) -> Option<(&str, &str)> {
+    let open = s.find('(')?;
+    if !s[..open].chars().all(|c| c.is_alphanumeric() || c == '-') {
+        return None;
+    }
+    let (mut depth, mut quote, mut escaped) = (0usize, None, false);
+    for (i, c) in s.char_indices().skip_while(|&(i, _)| i < open) {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+        } else {
+            match c {
+                '"' | '\'' => quote = Some(c),
+                '(' => depth += 1,
+                ')' if depth == 1 => return Some((&s[..=i], &s[i + 1..])),
+                ')' => depth -= 1,
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// One `<supports-in-parens>`, or a `selector()`/`font-*()` function.
+fn supports_in_parens(term: &str) -> Option<bool> {
+    let open = term.find('(')?;
+    let name = term[..open].to_ascii_lowercase();
+    let arg = term[open + 1..term.len() - 1].trim();
+    Some(match name.as_str() {
+        "" => {
+            if let Some(v) = supports_condition(arg) {
+                v
+            } else if let Some((prop, value)) = arg.split_once(':') {
+                supports_declaration(prop.trim(), value.trim())
+            } else {
+                false // <general-enclosed>: valid, but false
+            }
+        }
+        // Chrome knows every selector a page tests for except other
+        // engines' prefixed pseudo-classes (`:-moz-focusring`).
+        "selector" => {
+            let a = arg.to_ascii_lowercase();
+            !a.is_empty() && !a.contains(":-moz-") && !a.contains(":-ms-")
+        }
+        "font-format" => matches!(
+            arg.to_ascii_lowercase().as_str(),
+            "collection" | "opentype" | "truetype" | "woff" | "woff2"
+        ),
+        "font-tech" => matches!(
+            arg.to_ascii_lowercase().as_str(),
+            "features-opentype" | "variations" | "palettes" | "color-colrv0" | "color-colrv1"
+        ),
+        _ => false,
+    })
+}
+
+fn supports_declaration(prop: &str, value: &str) -> bool {
+    let value = value
+        .trim_end_matches("!important")
+        .trim()
+        .to_ascii_lowercase();
+    if prop.starts_with("--") {
+        return prop.len() > 2;
+    }
+    let prop = prop.to_ascii_lowercase();
+    let ident = prop
+        .trim_start_matches('-')
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if value.is_empty() || prop.is_empty() || !ident {
+        return false;
+    }
+    // Other engines' prefixes, and properties Chromium never shipped.
+    if ["-moz-", "-ms-", "-o-", "-khtml-"]
+        .iter()
+        .any(|p| prop.starts_with(p))
+        || matches!(
+            prop.as_str(),
+            "margin-trim"
+                | "hanging-punctuation"
+                | "-webkit-touch-callout"
+                | "-webkit-overflow-scrolling"
+        )
+    {
+        return false;
+    }
+    if matches!(
+        value.as_str(),
+        "inherit" | "initial" | "unset" | "revert" | "revert-layer"
+    ) {
+        return true;
+    }
+    match prop.as_str() {
+        "display" => supports_display(&value),
+        "position" => matches!(
+            value.as_str(),
+            "static" | "relative" | "absolute" | "fixed" | "sticky"
+        ),
+        _ => true,
+    }
+}
+
+/// Chrome's `display` grammar: one legacy keyword, or up to one each of an
+/// outer type, an inner type and `list-item` (CSS Display 3 §2).
+fn supports_display(value: &str) -> bool {
+    const ONE: &[&str] = &[
+        "none",
+        "contents",
+        "inline-block",
+        "inline-flex",
+        "inline-grid",
+        "inline-table",
+        "table-row-group",
+        "table-header-group",
+        "table-footer-group",
+        "table-row",
+        "table-cell",
+        "table-column-group",
+        "table-column",
+        "table-caption",
+        "ruby-text",
+        "-webkit-box",
+        "-webkit-inline-box",
+        "-webkit-flex",
+        "-webkit-inline-flex",
+    ];
+    if ONE.contains(&value) {
+        return true;
+    }
+    let (mut outer, mut inner, mut item) = (false, None, false);
+    for t in value.split_whitespace() {
+        match t {
+            "block" | "inline" if !outer => outer = true,
+            "flow" | "flow-root" | "flex" | "grid" | "table" | "ruby" | "math"
+                if inner.is_none() =>
+            {
+                inner = Some(t)
+            }
+            "list-item" if !item => item = true,
+            _ => return false,
+        }
+    }
+    !item || matches!(inner, None | Some("flow" | "flow-root"))
 }
 
 /// A name for an anonymous `@layer { }` block. Each anonymous block is a
@@ -133,7 +432,9 @@ fn take_block(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
             continue;
         }
         if let Some(q) = quote {
-            if c == q {
+            // A newline ends an unclosed string (the tokenizer's bad-string),
+            // as `parse_stylesheet` does.
+            if c == q || c == '\n' {
                 quote = None;
             }
             body.push(c);
@@ -162,7 +463,7 @@ fn take_block(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
 }
 
 /// A parsed declaration AST.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeclarationAst {
     pub property: String,
     pub value: String,
@@ -186,6 +487,19 @@ pub struct DeclarationAst {
 /// - It does not do complex tokenization.
 /// - It attempts to be robust for common author CSS and RustKit test inputs.
 pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
+    // CSS Syntax 3 §3.3 preprocessing: CRLF, CR and FF are each one LF
+    // before anything is scanned. Both scanners here (`take_block` reads
+    // the same iterator) end an unclosed string at LF and take `\` plus
+    // one code point as an escape, so with the raw input `\` CR LF left
+    // the LF to end the string and the real closing quote opened a new
+    // one that swallowed the rest of the sheet (#994 R1 HOLD). Copied
+    // only when there is something to fold.
+    let css: std::borrow::Cow<'_, str> = if css.contains(['\r', '\x0C']) {
+        std::borrow::Cow::Owned(css.replace("\r\n", "\n").replace(['\r', '\x0C'], "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(css)
+    };
+    let css: &str = &css;
     let mut out = StylesheetAst::default();
 
     let mut current_selector = String::new();
@@ -241,6 +555,22 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
         }
 
         if !in_block {
+            // A string in a prelude is text: `a[title="{"]` does not open
+            // the block at its `{`, nor `@import "a;b";` end at its `;`
+            // (CH2.E31). A newline ends an unclosed string, as the
+            // tokenizer's bad-string does.
+            if let Some(q) = quote {
+                if c == q || c == '\n' {
+                    quote = None;
+                }
+                current_selector.push(c);
+                continue;
+            }
+            if c == '"' || c == '\'' {
+                quote = Some(c);
+                current_selector.push(c);
+                continue;
+            }
             let at_rule = current_selector.trim_start().starts_with('@');
             if c == ';' && at_rule {
                 // A statement at-rule (`@charset "UTF-8";`, `@import ...;`)
@@ -272,16 +602,22 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                     AtBlock::Declarations => {}
                     kind => {
                         let body = take_block(&mut chars);
-                        let (media, layer) = match kind {
-                            AtBlock::Rules(media) => (media, None),
-                            AtBlock::Layer(name) => (None, Some(name)),
+                        let (media, container, layer) = match kind {
+                            AtBlock::Rules(media) => (media, None, None),
+                            AtBlock::Container(c) => (None, Some(c), None),
+                            AtBlock::Layer(name) => (None, None, Some(name)),
+                            AtBlock::Keyframes(name) => {
+                                out.keyframes.extend(keyframes_opacity(name, &body));
+                                current_selector.clear();
+                                continue;
+                            }
                             _ => {
                                 current_selector.clear();
                                 continue;
                             }
                         };
                         let inner = parse_stylesheet(&body)?;
-                        merge_block(&mut out, inner, media, layer);
+                        merge_block(&mut out, inner, media, container, layer);
                         current_selector.clear();
                         continue;
                     }
@@ -300,7 +636,21 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
             continue;
         }
 
-        // In block
+        // In block. A string is text up to its closing quote (or a newline,
+        // the tokenizer's bad-string), so a `}` inside it does not end the
+        // rule (`a{content:"}"}`, `url("x}.png")`; CH2.E31). Escapes were
+        // taken above.
+        if let Some(q) = quote {
+            if c == q || c == '\n' {
+                quote = None;
+            }
+            if in_value {
+                current_value.push(c);
+            } else {
+                current_property.push(c);
+            }
+            continue;
+        }
         if c == '}' {
             flush_decl(
                 &mut current_property,
@@ -308,12 +658,12 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                 &mut current_decls,
                 in_value,
             );
-            let selector = current_selector.trim().to_string();
-            if !selector.is_empty() && !current_decls.is_empty() {
+            if !current_selector.is_empty() && !current_decls.is_empty() {
                 out.rules.push(RuleAst {
-                    selector,
-                    declarations: current_decls.clone(),
+                    selector: std::mem::take(&mut current_selector),
+                    declarations: std::mem::take(&mut current_decls),
                     media: Vec::new(),
+                    container: Vec::new(),
                     layer: None,
                 });
             }
@@ -335,10 +685,9 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
         // once a value begins would miss `url(` opened on the property side by
         // malformed input and leave depth wrong for the rest of the block.
         match c {
-            '"' | '\'' if quote == Some(c) => quote = None,
-            '"' | '\'' if quote.is_none() => quote = Some(c),
-            '(' if quote.is_none() => depth += 1,
-            ')' if quote.is_none() => depth = depth.saturating_sub(1),
+            '"' | '\'' => quote = Some(c),
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
             _ => {}
         }
 
@@ -373,6 +722,7 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
                     selector: parent.clone(),
                     declarations: std::mem::take(&mut current_decls),
                     media: Vec::new(),
+                    container: Vec::new(),
                     layer: None,
                 });
             }
@@ -381,20 +731,21 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
             if parent.is_empty() || prelude.is_empty() {
                 continue;
             }
-            let (css, media, layer) = if prelude.starts_with('@') {
+            let (css, media, container, layer) = if prelude.starts_with('@') {
                 // A conditional group rule inside a style rule: its bare
                 // declarations apply to the parent selector.
                 match at_block_kind(prelude) {
-                    AtBlock::Rules(media) => (format!("{parent}{{{body}}}"), media, None),
-                    AtBlock::Layer(name) => (format!("{parent}{{{body}}}"), None, Some(name)),
+                    AtBlock::Rules(media) => (format!("{parent}{{{body}}}"), media, None, None),
+                    AtBlock::Container(c) => (format!("{parent}{{{body}}}"), None, Some(c), None),
+                    AtBlock::Layer(name) => (format!("{parent}{{{body}}}"), None, None, Some(name)),
                     _ => continue,
                 }
             } else {
                 let selector = nest_selector(&parent, prelude);
-                (format!("{selector}{{{body}}}"), None, None)
+                (format!("{selector}{{{body}}}"), None, None, None)
             };
             let inner = parse_stylesheet(&css)?;
-            merge_block(&mut out, inner, media, layer);
+            merge_block(&mut out, inner, media, container, layer);
             continue;
         }
 
@@ -407,6 +758,13 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
             // is decoration, and decoration in a parser reads as intent.
             if c == ':' {
                 in_value = true;
+            } else if c == ';' && structural {
+                // A `;` before any `:` ends an empty declaration (`;;`) or
+                // one with no colon (`foo;`): both are skipped and the next
+                // declaration starts clean (CSS Syntax 3 §5.4.5). Kept as
+                // text, the `;` became part of the next property name, so
+                // `color:red;;background:blue` lost the background (CH2.E28).
+                current_property.clear();
             } else {
                 current_property.push(c);
             }
@@ -437,12 +795,12 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
             &mut current_decls,
             in_value,
         );
-        let selector = current_selector.trim().to_string();
-        if !selector.is_empty() && !current_decls.is_empty() {
+        if !current_selector.is_empty() && !current_decls.is_empty() {
             out.rules.push(RuleAst {
-                selector,
+                selector: current_selector,
                 declarations: current_decls,
                 media: Vec::new(),
+                container: Vec::new(),
                 layer: None,
             });
         }
@@ -452,14 +810,19 @@ pub fn parse_stylesheet(css: &str) -> Result<StylesheetAst, ParseError> {
 }
 
 /// Append the rules and layer statements of a block's body to `out`, each
-/// inside the block's `@media` query list and cascade layer.
+/// inside the block's `@media` query list, `@container` condition and
+/// cascade layer.
 fn merge_block(
     out: &mut StylesheetAst,
     inner: StylesheetAst,
     media: Option<String>,
+    container: Option<String>,
     layer: Option<String>,
 ) {
     let base = out.rules.len();
+    // An `@keyframes` is carried whatever `@media` it sits in: only a box that
+    // names it reads it, and a wrong width costs less than a lost rule.
+    out.keyframes.extend(inner.keyframes);
     if let Some(name) = &layer {
         // The block declares its layer where it opens, even when it is empty.
         out.layer_statements.push(LayerStatementAst {
@@ -481,6 +844,9 @@ fn merge_block(
     for mut rule in inner.rules {
         if let Some(m) = &media {
             rule.media.insert(0, m.clone());
+        }
+        if let Some(c) = &container {
+            rule.container.insert(0, c.clone());
         }
         if let Some(outer) = &layer {
             rule.layer = Some(sublayer(outer, rule.layer.as_deref()));
@@ -628,6 +994,150 @@ fn flush_decl(
     current_value.clear();
 }
 
+/// Split a declaration list -- the text of a `style` attribute -- into its
+/// declarations, the way CSS Syntax 3 §5.4.5 ("consume a list of
+/// declarations") does: only a `;` at the top level ends one. A `;` inside a
+/// quoted string, inside `()`/`[]`/`{}` (`calc()`, `var()` fallbacks,
+/// custom-property blocks), inside an unquoted `url(...)` or inside a
+/// comment does not, and an escaped `\;` is text. Comments are dropped (a
+/// tokenizer never yields them); one becomes a space so `1px/**/2px` stays
+/// two tokens. A closer ends only the block it matches (`(]` leaves the `(`
+/// open). Each declaration comes back trimmed; empty ones (`;;`, a trailing
+/// `;`) are skipped, as Chromium skips them.
+///
+/// An unquoted `url(` is ONE url token (§4.3.6): it runs to the first
+/// unescaped `)` with no string, comment or block inside it, so
+/// `url(a/*b)`, `url(it's)` and `url(a(b.png)` end at their `)` (the last
+/// two are bad urls, which the value parser rejects) and the next
+/// declaration survives.
+///
+/// End of input: a custom property keeps its text as written (Chromium reads
+/// `--s:'abc` back as `'abc`). Any other declaration gets its open url,
+/// string and blocks closed, which is what its value parser needs and what
+/// Chromium's tokenizer does: `url(data:...` at the end of the attribute
+/// still loads.
+///
+/// `rustkit-bindings`' `splitDecls` (dom.rs) is the JS copy of this rule;
+/// both run `declaration_list_cases.json`.
+///
+/// Splitting at every `;` cut `url(data:image/svg+xml;base64,...)` at its
+/// `;base64,`, so no inline data-URL background or mask ever applied (Z plan
+/// CH2.E27).
+pub fn split_declaration_list(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut closers: Vec<char> = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut open_url = false;
+    let mut chars = text.chars().peekable();
+    let finish = |current: &mut String, out: &mut Vec<String>| {
+        let declaration = current.trim();
+        if !declaration.is_empty() {
+            out.push(declaration.to_string());
+        }
+        current.clear();
+    };
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            current.push(c);
+            if let Some(n) = chars.next() {
+                current.push(n);
+            }
+            continue;
+        }
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            current.push(c);
+            continue;
+        }
+        match c {
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                while let Some(cc) = chars.next() {
+                    if cc == '*' && chars.peek() == Some(&'/') {
+                        chars.next();
+                        break;
+                    }
+                }
+                current.push(' ');
+                continue;
+            }
+            '(' if ends_with_url_ident(&current) => {
+                current.push(c);
+                let quoted = {
+                    let mut ahead = chars.clone();
+                    loop {
+                        match ahead.next() {
+                            Some(w) if w.is_whitespace() => continue,
+                            Some('"' | '\'') => break true,
+                            _ => break false,
+                        }
+                    }
+                };
+                if quoted {
+                    // `url("...")` is an ordinary function holding a string.
+                    closers.push(')');
+                    continue;
+                }
+                open_url = true;
+                while let Some(u) = chars.next() {
+                    current.push(u);
+                    if u == '\\' {
+                        if let Some(n) = chars.next() {
+                            current.push(n);
+                        }
+                    } else if u == ')' {
+                        open_url = false;
+                        break;
+                    }
+                }
+                continue;
+            }
+            '"' | '\'' => quote = Some(c),
+            '(' => closers.push(')'),
+            '[' => closers.push(']'),
+            '{' => closers.push('}'),
+            ')' | ']' | '}' if closers.last() == Some(&c) => {
+                closers.pop();
+            }
+            ';' if closers.is_empty() => {
+                finish(&mut current, &mut out);
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    if !current.trim_start().starts_with("--") {
+        if open_url {
+            current.push(')');
+        }
+        current.extend(quote);
+        current.extend(closers.iter().rev());
+    }
+    finish(&mut current, &mut out);
+    out
+}
+
+/// Whether `text` ends with the identifier `url` (ASCII case-insensitive), so
+/// a `(` after it opens a url token. `myurl(` and `my-url(` are other
+/// functions: the character before `url` must not continue an identifier.
+fn ends_with_url_ident(text: &str) -> bool {
+    let Some(head) = text.len().checked_sub(3).and_then(|i| text.get(i..).map(|t| (i, t))) else {
+        return false;
+    };
+    let (at, tail) = head;
+    if !tail.eq_ignore_ascii_case("url") {
+        return false;
+    }
+    !text[..at]
+        .chars()
+        .next_back()
+        .is_some_and(|p| p.is_alphanumeric() || p == '-' || p == '_' || p == '\\' || !p.is_ascii())
+}
+
 fn strip_important(value: &str) -> (&str, bool) {
     let lower = value.to_ascii_lowercase();
     if let Some(idx) = lower.rfind("!important") {
@@ -658,6 +1168,22 @@ mod tests {
     }
 
     #[test]
+    fn a_prefixed_mask_with_a_quoted_svg_data_uri_parses_whole() {
+        // The icon idiom on the board sites: a `-webkit-` mask whose quoted
+        // SVG has `;`, `:`, `{`-free markup and quotes of the other kind.
+        let svg = "data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M0 0h16v16z'/></svg>";
+        let css = format!(
+            ".icon {{ -webkit-mask-image: url(\"{svg}\"); mask: url(\"{svg}\") no-repeat 50% / contain; background-color: currentColor; }}"
+        );
+        let ast = parse_stylesheet(&css).expect("parse");
+        let decls = &ast.rules[0].declarations;
+        let names: Vec<&str> = decls.iter().map(|d| d.property.as_str()).collect();
+        assert_eq!(names, ["-webkit-mask-image", "mask", "background-color"]);
+        assert_eq!(decls[0].value, format!("url(\"{svg}\")"));
+        assert_eq!(decls[1].value, format!("url(\"{svg}\") no-repeat 50% / contain"));
+    }
+
+    #[test]
     fn a_url_containing_colons_parses_whole() {
         // Documents behaviour; NOT a guard. The obvious `structural` check on
         // the property/value colon was removed after falsification showed this
@@ -680,6 +1206,81 @@ mod tests {
     }
 
     use super::*;
+
+    /// CH2.E28: an empty declaration, or one with no colon, is skipped and
+    /// the next one is kept (Chromium 148.0.7778.216 on the same rules:
+    /// tools/parity_oracle/empty_declaration_cases.json).
+    #[test]
+    fn an_empty_or_colonless_declaration_does_not_eat_the_next_one() {
+        let decls = |css: &str| -> Vec<(String, String, bool)> {
+            parse_stylesheet(css).unwrap().rules[0]
+                .declarations
+                .iter()
+                .map(|d| (d.property.clone(), d.value.clone(), d.important))
+                .collect()
+        };
+        let d = |p: &str, v: &str, i: bool| (p.to_string(), v.to_string(), i);
+        assert_eq!(decls("a{color:red;;background:blue}"), [d("color", "red", false), d("background", "blue", false)]);
+        assert_eq!(decls("a{;;color:red}"), [d("color", "red", false)]);
+        assert_eq!(decls("a{color:red;;background:blue !important}"), [d("color", "red", false), d("background", "blue", true)]);
+        assert_eq!(decls("a{foo;color:red}"), [d("color", "red", false)]);
+        assert_eq!(decls("a{width:1px;}"), [d("width", "1px", false)]);
+        assert_eq!(decls("a{b:url(x;y);;w:1}"), [d("b", "url(x;y)", false), d("w", "1", false)]);
+        assert_eq!(decls("a{--t: ;;w:1}"), [d("--t", "", false), d("w", "1", false)]);
+        assert_eq!(decls("a{f(;);color:red}"), [d("color", "red", false)]);
+    }
+
+    /// The case list both copies of the rule run (this one and the bindings'
+    /// JS `splitDecls`), so they cannot drift apart (#972 R1 nit 3).
+    #[test]
+    fn the_shared_declaration_list_cases_split_as_listed() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("declaration_list_cases.json")).expect("cases");
+        let mut wrong = Vec::new();
+        for case in doc["cases"].as_array().expect("cases") {
+            let input = case["input"].as_str().unwrap();
+            let want: Vec<(String, String)> = case["decls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| (d[0].as_str().unwrap().to_string(), d[1].as_str().unwrap().to_string()))
+                .collect();
+            let got: Vec<(String, String)> = split_declaration_list(input)
+                .iter()
+                .filter_map(|d| d.split_once(':'))
+                .map(|(n, v)| (n.trim().to_string(), v.trim().to_string()))
+                .collect();
+            if got != want {
+                wrong.push(format!("{input:?}: got {got:?}, want {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{} wrong\n{}", wrong.len(), wrong.join("\n"));
+    }
+
+    #[test]
+    fn a_declaration_list_splits_only_at_top_level_semicolons() {
+        let split = |s: &str| split_declaration_list(s);
+        assert_eq!(
+            split("background-image:url(data:image/svg+xml;base64,AA==);width:10px"),
+            ["background-image:url(data:image/svg+xml;base64,AA==)", "width:10px"]
+        );
+        assert_eq!(split("font-family:'a;b', serif;width:1px"), ["font-family:'a;b', serif", "width:1px"]);
+        assert_eq!(split("a:url(\"x;y\");b:1"), ["a:url(\"x;y\")", "b:1"]);
+        assert_eq!(split("--k:f(;);w:1"), ["--k:f(;)", "w:1"]);
+        assert_eq!(split("--k:[;];w:1"), ["--k:[;]", "w:1"]);
+        assert_eq!(split("--k:{;};w:1"), ["--k:{;}", "w:1"]);
+        assert_eq!(split("a:'it\\'s;x';b:1"), ["a:'it\\'s;x'", "b:1"]);
+        assert_eq!(split("a:x\\;y;b:1"), ["a:x\\;y", "b:1"]);
+        assert_eq!(split("width:20px /* ; */;height:2px"), ["width:20px", "height:2px"]);
+        assert_eq!(split("margin:1px/**/2px"), ["margin:1px 2px"]);
+        assert_eq!(split(" ;; color:red !important ;; ;"), ["color:red !important"]);
+        assert_eq!(split("w:1;b:url(data:x;y"), ["w:1", "b:url(data:x;y)"]);
+        assert_eq!(split("a:'open;b:1"), ["a:'open;b:1'"]);
+        assert_eq!(split("--a:'open;b:1"), ["--a:'open;b:1"]);
+        assert_eq!(split("a:f(];b:1"), ["a:f(];b:1)"]);
+        assert_eq!(split("a:1);b:2"), ["a:1)", "b:2"]);
+        assert!(split("").is_empty());
+    }
 
     #[test]
     fn parse_simple_stylesheet() {
@@ -808,12 +1409,53 @@ mod tests {
                 rule(".wide", &["screen", "(min-width: 800px)"]),
                 rule(".grid", &[]),
                 rule(".layered", &[]),
+                rule(".in-card", &[]),
                 rule("@font-face", &[]),
                 rule(".after", &[]),
             ]
         );
     }
 
+    #[test]
+    fn supports_blocks_apply_only_when_their_condition_holds() {
+        // #747's css_supports.html (#a-#e), then and/or/not, Tailwind v4's
+        // property-defaults query, and a group rule nested in a style rule.
+        // Before, every positive query applied and every `not` was skipped.
+        let css = r#"
+            @supports (display: grid) { .a { color: green } }
+            @supports not (display: frobnicate) { .b { color: green } }
+            @supports (display: frobnicate) { .c { color: red } }
+            @supports not (display: block) { .d { color: red } }
+            @supports not selector(:popover-open) { .e { color: red } }
+            @supports (display: grid) and (not (margin-trim: inline)) { .f { color: green } }
+            @supports (-moz-appearance: none) or (color: oklch(0 0 0)) { .g { color: green } }
+            @supports (display: grid) and (gap: 1px) or (color: red) { .h { color: red } }
+            @supports ((-webkit-hyphens: none) and (not (margin-trim: inline))) or ((-moz-orient: inline) and (not (color:rgb(from red r g b)))) { .tw { color: green } }
+            .n { color: green; @supports (display: frobnicate) { color: red } }
+            .after { color: green }
+        "#;
+        let selectors: Vec<String> = parse_stylesheet(css)
+            .expect("parse")
+            .rules
+            .into_iter()
+            .map(|r| r.selector)
+            .collect();
+        assert_eq!(selectors, [".a", ".b", ".f", ".g", ".tw", ".n", ".after"]);
+    }
+
+    #[test]
+    fn supports_conditions_follow_the_grammar() {
+        assert_eq!(supports_condition("(display: block flow-root)"), Some(true));
+        assert_eq!(
+            supports_condition("(display: inline list-item flex)"),
+            Some(false)
+        );
+        assert_eq!(
+            supports_condition("(--x: {a}) and font-format(woff2)"),
+            Some(true)
+        );
+        assert_eq!(supports_condition("display: grid"), None);
+    }
     #[test]
     fn layer_blocks_name_their_rules_and_statements_declare_the_order() {
         let css = r#"
@@ -968,10 +1610,40 @@ mod tests {
                 (".a", s(&["blue"]), s(&["(min-width: 800px)"]), None),
                 (".a .b", s(&["green"]), s(&["(min-width: 800px)"]), None),
                 (".a", s(&["1px"]), vec![], Some("top")),
+                (".a", s(&["2px"]), vec![], None),
                 (".c", s(&["black"]), vec![], None),
             ]
         );
         assert_eq!(ast.layer_statements[0].name, "top");
+    }
+
+    #[test]
+    fn container_blocks_record_their_condition_on_each_rule() {
+        let css = "@container card (width >= 200px) { .a { color: red } \
+                   @container (min-width: 1px) { .b { color: blue } } } \
+                   @media print { @container x (width > 0px) { .p { color: red } } } \
+                   @container { .bare { color: red } } .c { color: black }";
+        let ast = parse_stylesheet(css).expect("parse");
+        let got: Vec<(&str, Vec<&str>, Vec<&str>)> = ast
+            .rules
+            .iter()
+            .map(|r| {
+                (
+                    r.selector.as_str(),
+                    r.container.iter().map(String::as_str).collect(),
+                    r.media.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (".a", vec!["card (width >= 200px)"], vec![]),
+                (".b", vec!["card (width >= 200px)", "(min-width: 1px)"], vec![]),
+                (".p", vec!["x (width > 0px)"], vec!["print"]),
+                (".c", vec![], vec![]),
+            ]
+        );
     }
 
     #[test]
@@ -994,13 +1666,104 @@ mod tests {
 
     #[test]
     fn braces_in_strings_and_comments_do_not_end_a_media_block() {
-        // (A `}` inside a declaration's string is a separate, older limit of
-        // the rule parser; `{` exercises the block scanner's string state.)
+        // (`{` exercises the block scanner's string state; a `}` in a
+        // declaration's string is pinned by the CH2.E31 test below.)
         let css = "@media print { .a::after { content: \"{\" } /* } */ .b { color: red } } .c { color: blue }";
         assert_eq!(
             summary(css),
             vec![rule(".a::after", &["print"]), rule(".b", &["print"]), rule(".c", &[])]
         );
+    }
+
+    /// Z CH2.E31: a `{`, `}` or `;` inside a string (a declaration value,
+    /// a quoted `url()`, an attribute selector's value) is text. Chrome for
+    /// Testing 148 on each sheet below keeps the rule whole (the `a`
+    /// element gets the colour and the string) and styles the following
+    /// `b`; `document.styleSheets[0].cssRules.length` is 2 for each.
+    #[test]
+    fn braces_and_semicolons_in_strings_do_not_end_the_rule() {
+        let b = sd("b", &["color:blue"]);
+        for (css, a) in [
+            (r#"a{content:"}";color:red} b{color:blue}"#, sd("a", &[r#"content:"}""#, "color:red"])),
+            (r#"a{content:"{;";color:red} b{color:blue}"#, sd("a", &[r#"content:"{;""#, "color:red"])),
+            ("a{content:'}';color:red} b{color:blue}", sd("a", &["content:'}'", "color:red"])),
+            (
+                r#"a{background-image:url("x}.png");color:red} b{color:blue}"#,
+                sd("a", &[r#"background-image:url("x}.png")"#, "color:red"]),
+            ),
+            (r#"a[title="}"]{color:red} b{color:blue}"#, sd(r#"a[title="}"]"#, &["color:red"])),
+            (r#"a[title="{"]{color:red} b{color:blue}"#, sd(r#"a[title="{"]"#, &["color:red"])),
+            (r#"a[title=";"]{color:red} b{color:blue}"#, sd(r#"a[title=";"]"#, &["color:red"])),
+            (r#"i{& a{content:"}";color:red}} b{color:blue}"#, sd("i a", &[r#"content:"}""#, "color:red"])),
+        ] {
+            assert_eq!(selectors_and_decls(css), vec![a, b.clone()], "{css}");
+        }
+        // The same inside a group rule (CfT 148: one @media rule, both apply).
+        assert_eq!(
+            summary(r#"@media all{a{content:"}";color:red} b{color:blue}}"#),
+            vec![rule("a", &["all"]), rule("b", &["all"])]
+        );
+        assert_eq!(
+            selectors_and_decls(r#"@media all{a{content:"}";color:red} b{color:blue}}"#),
+            vec![sd("a", &[r#"content:"}""#, "color:red"]), sd("b", &["color:blue"])]
+        );
+        // A newline ends an unclosed string (bad-string), so it cannot
+        // swallow the sheet: CfT 148 keeps `a`'s colour and styles `b`.
+        let parsed = selectors_and_decls("a{color:red;content:\"oops\n} b{color:blue}");
+        assert_eq!(parsed.first().map(|r| r.0.as_str()), Some("a"));
+        assert!(parsed[0].1.contains(&"color:red".to_string()), "{parsed:?}");
+        assert_eq!(parsed.last(), Some(&sd("b", &["color:blue"])), "{parsed:?}");
+    }
+
+    /// #994 R1 HOLD: a backslash before a newline continues a string (CSS
+    /// Syntax 3 §4.3.5 consumes the escaped newline), and the input's
+    /// CRLF, CR and FF are each one newline (§3.3 preprocessing). The escape
+    /// branches took `\` plus one code point, so `\` CR LF left the LF to end
+    /// the string as a bad-string and the real closing quote opened a new
+    /// one that swallowed the rest of the sheet. CfT 148 on each sheet: two
+    /// rules, `a` red with `content: "xy"`, `b` blue (`e31_crlf_probe`).
+    #[test]
+    fn an_escaped_newline_of_any_kind_continues_a_string() {
+        let b = sd("b", &["color:blue"]);
+        let bs = char::from(92);
+        let lf_decl = format!("a{{content:\"x{bs}\ny\";color:red}} b{{color:blue}}");
+        for nl in [
+            String::from_iter([char::from(13), char::from(10)]),
+            String::from(char::from(13)),
+            String::from(char::from(10)),
+            String::from(char::from(12)),
+        ] {
+            let esc = format!("{bs}{nl}");
+            let decl = format!("a{{content:\"x{esc}y\";color:red}} b{{color:blue}}");
+            let got = selectors_and_decls(&decl);
+            assert_eq!(got.len(), 2, "{decl:?}: {got:?}");
+            assert_eq!(got[0].0, "a", "{decl:?}");
+            assert!(got[0].1.contains(&"color:red".to_string()), "{decl:?}: {got:?}");
+            assert_eq!(got[1], b, "{decl:?}: {got:?}");
+            assert_eq!(got, selectors_and_decls(&lf_decl), "{decl:?}: the same AST as backslash LF");
+
+            let sel = format!("a[title=\"x{esc}y\"]{{color:red}} b{{color:blue}}");
+            let got = selectors_and_decls(&sel);
+            assert_eq!(got.len(), 2, "{sel:?}: {got:?}");
+            assert_eq!(got[0].1, vec!["color:red".to_string()], "{sel:?}: {got:?}");
+            assert_eq!(got[1], b, "{sel:?}: {got:?}");
+
+            let media = format!("@media all{{a{{content:\"x{esc}y\";color:red}} b{{color:blue}}}} i{{color:green}}");
+            assert_eq!(
+                summary(&media),
+                vec![rule("a", &["all"]), rule("b", &["all"]), rule("i", &[])],
+                "{media:?}"
+            );
+        }
+        // An unescaped CR, FF or CRLF ends an unclosed string as LF does
+        // (bad-string): CfT 148 keeps `a`'s colour and styles `b`.
+        for nl in ["\r", "\x0C", "\r\n"] {
+            let css = format!("a{{color:red;content:\"oops{nl}}} b{{color:blue}}");
+            let parsed = selectors_and_decls(&css);
+            assert_eq!(parsed.first().map(|r| r.0.as_str()), Some("a"), "{css:?}: {parsed:?}");
+            assert!(parsed[0].1.contains(&"color:red".to_string()), "{css:?}: {parsed:?}");
+            assert_eq!(parsed.last(), Some(&b), "{css:?}: {parsed:?}");
+        }
     }
 
     #[test]
@@ -1021,5 +1784,84 @@ mod tests {
         assert_eq!(ast.rules.len(), 2);
         assert_eq!(ast.rules[0].declarations[0].value, "hsl(0, 100%, 50%)");
         assert_eq!(ast.rules[1].declarations[0].value, "hsl(120, 100%, 50%)");
+    }
+
+    /// #833 RD3: `@keyframes` opacity ends are what settle paints from. The
+    /// engine companion is headless-gated, so default Linux CI never sees it;
+    /// pin the parser contract here.
+    #[test]
+    fn keyframes_keep_opacity_at_each_end() {
+        let frames = |css: &str| -> Vec<(String, Option<f32>, Option<f32>)> {
+            parse_stylesheet(css)
+                .expect("parse")
+                .keyframes
+                .into_iter()
+                .map(|k| (k.name, k.first, k.last))
+                .collect()
+        };
+        assert_eq!(
+            frames("@keyframes fade { from { opacity: 0 } to { opacity: 1 } }"),
+            vec![("fade".to_string(), Some(0.0), Some(1.0))]
+        );
+        assert_eq!(
+            frames("@keyframes p { 0% { opacity: 20% } 100% { opacity: .5 } }"),
+            vec![("p".to_string(), Some(0.2), Some(0.5))]
+        );
+        // `!important` in a keyframe is invalid and ignored; an end that
+        // only had that declaration stays unset.
+        assert_eq!(
+            frames("@keyframes i { from { opacity: 0 !important } to { opacity: 1 } }"),
+            vec![("i".to_string(), None, Some(1.0))]
+        );
+        // `var()` cannot be read: the `?` on the parse drops the whole
+        // `@keyframes` (as good as absent), so settle leaves the box at
+        // full opacity rather than guess.
+        assert!(
+            frames("@keyframes v { from { opacity: var(--o) } to { opacity: var(--o) } }").is_empty(),
+            "unreadable opacity must drop the rule"
+        );
+        assert_eq!(
+            frames("@-webkit-keyframes w { to { opacity: .25 } }"),
+            vec![("w".to_string(), None, Some(0.25))]
+        );
+    }
+
+    /// S13b: the engine runs `@keyframes`, so every block is kept with its
+    /// offsets and declarations (`!important` ones dropped).
+    #[test]
+    fn keyframes_keep_every_block() {
+        let sheet = parse_stylesheet(
+            "@keyframes k { from { opacity: 0; transform: none } 25%, 75% { opacity: .5 !important; \
+             animation-timing-function: linear } to { opacity: 1 } }",
+        )
+        .expect("parse");
+        let k = &sheet.keyframes[0];
+        let blocks: Vec<(Vec<f32>, Vec<(String, String)>)> = k
+            .frames
+            .iter()
+            .map(|f| {
+                (
+                    f.offsets.clone(),
+                    f.declarations
+                        .iter()
+                        .map(|d| (d.property.clone(), d.value.clone()))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            blocks,
+            vec![
+                (
+                    vec![0.0],
+                    vec![("opacity".to_string(), "0".to_string()), ("transform".to_string(), "none".to_string())]
+                ),
+                (
+                    vec![0.25, 0.75],
+                    vec![("animation-timing-function".to_string(), "linear".to_string())]
+                ),
+                (vec![1.0], vec![("opacity".to_string(), "1".to_string())]),
+            ]
+        );
     }
 }

@@ -1,0 +1,50 @@
+{
+  "chrome": "148.0.7778.216",
+  "cases": [
+    {
+      "label": "img block between margined divs",
+      "body": "<div id=a style=\"height:20px;margin-bottom:30px\"></div><img id=e style=\"display:block;margin:12px 0\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px\"></div>",
+      "want": "a=0/20 e=50/10 n=72/10"
+    },
+    {
+      "label": "img block h0 between margined divs",
+      "body": "<div id=a style=\"height:20px;margin-bottom:30px\"></div><img id=e style=\"display:block;margin:12px 0;height:0\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px\"></div>",
+      "want": "a=0/20 e=50/0 n=62/10"
+    },
+    {
+      "label": "img block larger top margin",
+      "body": "<div id=a style=\"height:20px;margin-bottom:30px\"></div><img id=e style=\"display:block;margin:40px 0 5px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px;margin-top:20px\"></div>",
+      "want": "a=0/20 e=60/10 n=90/10"
+    },
+    {
+      "label": "img block negative top margin",
+      "body": "<div id=a style=\"height:20px;margin-bottom:30px\"></div><img id=e style=\"display:block;margin-top:-10px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><div id=n style=\"height:10px\"></div>",
+      "want": "a=0/20 e=40/10 n=50/10"
+    },
+    {
+      "label": "img block first child of a margined parent",
+      "body": "<div id=p style=\"margin-top:7px\"><img id=e style=\"display:block;margin-top:12px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"></div><div id=n style=\"height:10px\"></div>",
+      "want": "p=12/10 e=12/10 n=22/10"
+    },
+    {
+      "label": "img block last child, parent bottom margin",
+      "body": "<div id=p style=\"margin-bottom:7px\"><img id=e style=\"display:block;margin-bottom:12px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"></div><div id=n style=\"height:10px\"></div>",
+      "want": "p=0/10 e=0/10 n=22/10"
+    },
+    {
+      "label": "two block imgs",
+      "body": "<img id=e style=\"display:block;margin-bottom:15px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"><img id=f style=\"display:block;margin-top:25px\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\">",
+      "want": "e=0/10 f=35/10"
+    },
+    {
+      "label": "svg block between margined divs",
+      "body": "<div id=a style=\"height:20px;margin-bottom:30px\"></div><svg id=e style=\"display:block;margin:12px 0\" width=10 height=10></svg><div id=n style=\"height:10px\"></div>",
+      "want": "a=0/20 e=50/10 n=72/10"
+    },
+    {
+      "label": "inline img (unchanged)",
+      "body": "<div id=a style=\"height:20px;margin-bottom:30px\"></div><div id=w><img id=e style=\"margin:12px 0\" src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC\"></div><div id=n style=\"height:10px\"></div>",
+      "want": "a=0/20 w=50/38 e=62/10 n=88/10"
+    }
+  ]
+}

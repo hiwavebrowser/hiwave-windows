@@ -1,0 +1,100 @@
+{
+ "viewport": [
+  1280,
+  800
+ ],
+ "boxes": "xywh",
+ "chrome": "143.0.7499.4 (grid_flexible_row_log.mjs); Chrome for Testing 148.0.7778.216 gives the same boxes",
+ "cases": [
+  {
+   "name": "an-empty-minmax-0-300-track-beside-an-fr-track-takes-300",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:minmax(0,1fr) minmax(0,300px)\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:700:10 i1:700:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-minmax-0-300-track-with-100px-content-takes-300",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:minmax(0,1fr) minmax(0,300px)\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"><div style=\"width:100px;height:10px\"></div></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:700:10 i1:700:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-minmax-0-300-track-with-500px-content-stays-300",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:minmax(0,1fr) minmax(0,300px)\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"><div style=\"width:500px;height:10px\"></div></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:700:10 i1:700:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "two-minmax-0-n-tracks-beside-an-fr-track-with-a-gap",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:1000px;column-gap:24px;grid-template-columns:minmax(0,1fr) minmax(0,300px) minmax(0,200px)\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"></div><div id=i2 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:452:10 i1:476:0:300:10 i2:800:0:200:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-2fr-track-gets-what-the-minmax-track-leaves",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:500px;grid-template-columns:2fr minmax(0,300px)\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:500:10 i0:0:0:200:10 i1:200:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "two-minmax-0-300-tracks-share-the-space-before-the-fr-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:400px;grid-template-columns:minmax(0,300px) minmax(0,300px) 1fr\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"></div><div id=i2 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:400:10 i0:0:0:200:10 i1:200:0:200:10 i2:400:0:0:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-float-grid-sizes-the-minmax-track-to-its-max",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;float:left;grid-template-columns:minmax(0,1fr) minmax(0,300px)\"><div id=i0 style=\"min-height:10px\"><div style=\"width:100px;height:10px\"></div></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:400:10 i0:0:0:100:10 i1:100:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "an-inline-grid-sizes-the-minmax-track-to-its-max",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:inline-grid;grid-template-columns:minmax(0,1fr) minmax(0,300px)\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:4:300:10 i0:0:4:0:10 i1:0:4:300:10 after:0:18:1280:18"
+  },
+  {
+   "name": "auto-fill-minmax-0-300-repeats-at-300",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:repeat(auto-fill, minmax(0,300px))\"><div id=i0 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "auto-fit-minmax-0-300-keeps-the-filled-track-at-300",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:repeat(auto-fit, minmax(0,300px))\"><div id=i0 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "an-fr-track-with-wider-content-does-not-squeeze-the-minmax-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:minmax(0,1fr) minmax(0,300px)\"><div id=i0 style=\"min-height:10px\"><div style=\"width:900px;height:10px\"></div></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:700:10 i1:700:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-minmax-0-auto-track-shares-what-the-minmax-track-leaves",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:minmax(0,auto) minmax(0,300px)\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:10 i0:0:0:700:10 i1:700:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-minmax-100-50pct-track-grows-to-its-max-before-the-fr-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:400px;grid-template-columns:minmax(100px,50%) 1fr\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:400:10 i0:0:0:200:10 i1:200:0:200:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-fit-content-track-stays-at-its-content-beside-an-fr-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;width:500px;grid-template-columns:fit-content(300px) 1fr\"><div id=i0 style=\"min-height:10px\"><div style=\"width:100px;height:10px\"></div></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after>x</div></body></html>",
+   "chrome_boxes": "g:0:0:500:10 i0:0:0:100:10 i1:100:0:400:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-float-grid-with-fixed-tracks-is-laid-out-as-a-grid",
+   "html": "<!doctype html><html><head><style>body{margin:0}</style></head><body><div id=g style=\"display:grid;float:left;grid-template-columns:100px 300px\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:400:10 i0:0:0:100:10 i1:100:0:300:10 after:0:10:1280:18"
+  },
+  {
+   "name": "a-fit-content-track-wider-than-its-argument-beside-an-fr-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:fit-content(300px) 1fr\"><div id=i0 class=w><span></span> <span></span> <span></span> <span></span> <span></span> <span></span> <span></span> <span></span> <span></span></div><div id=i1 style=\"min-height:10px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:20 i0:0:0:300:20 i1:300:0:700:20 after:0:20:1280:18"
+  },
+  {
+   "name": "a-two-row-float-grid-with-unequal-rows",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;float:left;grid-template-columns:minmax(0,1fr) minmax(0,300px)\"><div id=i0 style=\"width:100px;height:10px\"></div><div id=i1 style=\"height:30px\"></div><div id=i2 style=\"height:20px\"></div><div id=i3 style=\"height:5px\"></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:400:50 i0:0:0:100:10 i1:100:0:300:30 i2:0:30:100:20 i3:100:30:300:5 after:0:50:1280:18"
+  },
+  {
+   "name": "a-minmax-0-auto-track-with-an-item-spanning-the-minmax-track",
+   "html": "<!doctype html><html><head><style>body{margin:0}.w{font-size:0}.w span{display:inline-block;width:60px;height:10px}</style></head><body><div id=g style=\"display:grid;width:1000px;grid-template-columns:minmax(0,auto) minmax(0,300px)\"><div id=i0 style=\"min-height:10px\"></div><div id=i1 style=\"min-height:10px\"></div><div id=i2 style=\"grid-column:1 / 3;min-height:10px\"><div style=\"width:800px;height:10px\"></div></div></div><div id=after style=\"clear:both\">x</div></body></html>",
+   "chrome_boxes": "g:0:0:1000:20 i0:0:0:700:10 i1:700:0:300:10 i2:0:10:1000:10 after:0:20:1280:18"
+  }
+ ]
+}

@@ -192,6 +192,7 @@
     var P = ReadableStream.prototype;
     Object.defineProperty(P, 'locked', { get: function () { return this[RS].reader !== null; }, enumerable: true, configurable: true });
     P.getReader = function (options) {
+        if (options && options.mode === 'byob') __rk.unsupported('ReadableStream', 'getReader(byob)');
         if (options && options.mode === 'byob') throw domError("Failed to execute 'getReader' on 'ReadableStream': BYOB readers are not supported.", 'NotSupportedError');
         return new ReadableStreamDefaultReader(this);
     };

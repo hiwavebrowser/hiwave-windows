@@ -3,12 +3,18 @@
 //! The setter is exact: it replaces the element's children with the
 //! "rendered text fragment", Text nodes split by `<br>` elements.
 //!
-//! The getter runs the "rendered text collection steps", but it reads
-//! each element's display from the UA stylesheet defaults for its tag (and
-//! the `hidden` attribute), not from computed style: the bindings have no
-//! style access. Author CSS that hides an element or changes its display
-//! is not seen. That is the read the pin's §3.4 defers to the rung that
-//! adds a forced style/layout flush.
+//! The getter runs the "rendered text collection steps" on the computed
+//! `display` and `visibility` of the last layout (the caller forces one
+//! after a script write, as for geometry reads). An element the layout has
+//! no style for (no layout yet, or a node outside it) falls back to the UA
+//! stylesheet defaults for its tag and the `hidden` attribute. CH2.E13: the
+//! getter used only those defaults, so author CSS that hid an element or
+//! changed its display was not seen. CH2.E13b: `white-space`, the table
+//! cell tab and row line feed, and a `<p>`'s two breaks come from computed
+//! style too (`white-space` and display of the layout), so a `white-space:
+//! pre` div keeps its spaces, a `display: table-cell` span gets its tab, a
+//! `<td>` set to `display: block` gets none, and a `display: contents` `<p>`
+//! (no box) adds no breaks, as in Chromium 143.
 
 use rustkit_dom::{Document, Node, NodeType};
 use std::rc::Rc;
@@ -75,18 +81,68 @@ const BLOCK: &[&str] = &[
 /// `pre-wrap` in the UA stylesheet).
 const PRESERVE: &[&str] = &["listing", "plaintext", "pre", "textarea", "xmp"];
 
-fn is_hidden(node: &Node) -> bool {
+/// What the last layout's computed style says about one element.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Computed {
+    /// The `display` keyword (`none`, `block`, `inline`, `flex`, ...).
+    pub display: String,
+    /// `visibility` is `visible`.
+    pub visible: bool,
+    /// The `white-space` keyword, if the lines carry one.
+    pub white_space: Option<String>,
+}
+
+impl Computed {
+    /// From the `name\tvalue` lines `DomBindings::set_computed_styles`
+    /// publishes. `None` when the lines carry no `display`.
+    pub(crate) fn from_lines(lines: &str) -> Option<Computed> {
+        let mut display = None;
+        let mut visible = true;
+        let mut white_space = None;
+        for line in lines.lines() {
+            match line.split_once('\t') {
+                Some(("display", v)) => display = Some(v.trim().to_string()),
+                Some(("visibility", v)) => visible = v.trim() == "visible",
+                Some(("white-space", v)) => white_space = Some(v.trim().to_string()),
+                _ => {}
+            }
+        }
+        Some(Computed { display: display?, visible, white_space })
+    }
+
+    /// Block-level, or `table-caption`: one required line break each side.
+    fn block_level(&self) -> bool {
+        matches!(
+            self.display.as_str(),
+            "block" | "list-item" | "flex" | "grid" | "table" | "flow-root" | "table-caption"
+        )
+    }
+}
+
+/// The computed style of an element, if the layout has one for it.
+pub(crate) type StyleOf<'a> = &'a dyn Fn(&Node) -> Option<Computed>;
+
+fn is_hidden(node: &Node, style: StyleOf) -> bool {
+    if let Some(c) = style(node) {
+        return c.display == "none";
+    }
     node.tag_name().is_some_and(|t| HIDDEN.contains(&t)) || node.get_attribute("hidden").is_some()
+}
+
+/// `visibility` of an element is `visible` (an element with no computed
+/// style is taken as visible).
+fn is_visible(node: &Node, style: StyleOf) -> bool {
+    style(node).is_none_or(|c| c.visible)
 }
 
 /// Is `node` in a document and outside every UA-hidden subtree? Anything
 /// else is "not being rendered", and its innerText is its textContent.
-fn is_rendered(node: &Rc<Node>) -> bool {
+fn is_rendered(node: &Rc<Node>, style: StyleOf) -> bool {
     let mut current = Some(node.clone());
     while let Some(n) = current {
         match n.node_type {
             NodeType::Document => return true,
-            NodeType::Element { .. } if is_hidden(&n) => return false,
+            NodeType::Element { .. } if is_hidden(&n, style) => return false,
             _ => {}
         }
         current = n.parent();
@@ -94,22 +150,70 @@ fn is_rendered(node: &Rc<Node>) -> bool {
     false
 }
 
-fn preserves_space(node: &Rc<Node>) -> bool {
+/// How a text node's white space is processed (CSS Text 3 §4.1).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Space {
+    /// `normal`, `nowrap`: every run of white space is one space.
+    Collapse,
+    /// `pre-line`: spaces and tabs collapse, line feeds are kept.
+    PreLine,
+    /// `pre`, `pre-wrap`, `break-spaces`: everything is kept.
+    Preserve,
+}
+
+/// A text node's white-space processing: its parent's computed
+/// `white-space` (the property inherits, and a text node has no style of
+/// its own); with no style for the parent, the UA rule of the nearest
+/// ancestor tag (`PRESERVE`).
+fn space_of(node: &Rc<Node>, style: StyleOf) -> Space {
+    if let Some(ws) = node.parent().and_then(|p| style(&p)).and_then(|c| c.white_space) {
+        return match ws.as_str() {
+            "pre" | "pre-wrap" | "break-spaces" => Space::Preserve,
+            "pre-line" => Space::PreLine,
+            _ => Space::Collapse,
+        };
+    }
     let mut current = node.parent();
     while let Some(n) = current {
         if n.tag_name().is_some_and(|t| PRESERVE.contains(&t)) {
-            return true;
+            return Space::Preserve;
         }
         current = n.parent();
     }
-    false
+    Space::Collapse
+}
+
+/// The element's computed display is one of `displays`; with no computed
+/// style, its tag is one of `tags` (the UA stylesheet's table parts).
+fn display_is(node: &Node, style: StyleOf, displays: &[&str], tags: &[&str]) -> bool {
+    match style(node) {
+        Some(c) => displays.contains(&c.display.as_str()),
+        None => node.tag_name().is_some_and(|t| tags.contains(&t)),
+    }
+}
+
+fn is_cell(node: &Node, style: StyleOf) -> bool {
+    display_is(node, style, &["table-cell"], &["td", "th"])
+}
+
+fn is_row(node: &Node, style: StyleOf) -> bool {
+    display_is(node, style, &["table-row"], &["tr"])
+}
+
+fn is_row_group(node: &Node, style: StyleOf) -> bool {
+    display_is(
+        node,
+        style,
+        &["table-row-group", "table-header-group", "table-footer-group"],
+        &["thead", "tbody", "tfoot"],
+    )
 }
 
 /// The rendered text, built as the collection steps walk the tree. White
 /// space collapses as it arrives: a run of collapsible spaces is held as
 /// one pending space, written only if more text follows on the same line.
-#[derive(Default)]
-struct Collector {
+struct Collector<'a> {
+    style: StyleOf<'a>,
     out: String,
     /// The required line break count waiting to be written (the largest of
     /// a run; dropped if no text follows).
@@ -117,7 +221,7 @@ struct Collector {
     space: bool,
 }
 
-impl Collector {
+impl Collector<'_> {
     fn flush_breaks(&mut self) {
         if self.breaks > 0 && !self.out.is_empty() {
             self.out.push_str(&"\n".repeat(self.breaks));
@@ -125,9 +229,14 @@ impl Collector {
         self.breaks = 0;
     }
 
-    fn text(&mut self, data: &str, preserve: bool) {
+    fn text(&mut self, data: &str, space: Space) {
         for c in data.chars() {
-            if !preserve && matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}') {
+            if space == Space::PreLine && c == '\n' {
+                // A kept line feed; the spaces either side of it go.
+                self.line_feed();
+                continue;
+            }
+            if space != Space::Preserve && matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}') {
                 // A space at the start of a line is removed.
                 self.space = self.breaks == 0 && !self.out.is_empty() && !self.out.ends_with('\n');
                 continue;
@@ -159,16 +268,34 @@ impl Collector {
 
     fn walk(&mut self, node: &Rc<Node>) {
         match &node.node_type {
-            NodeType::Text(data) => self.text(data, preserves_space(node)),
+            NodeType::Text(data) => {
+                // A text node's `visibility` is its parent's.
+                if node.parent().is_some_and(|p| !is_visible(&p, self.style)) {
+                    return;
+                }
+                self.text(data, space_of(node, self.style))
+            }
             NodeType::Element { tag_name, .. } => {
-                if is_hidden(node) {
+                if is_hidden(node, self.style) {
+                    return;
+                }
+                // Not `visible`: its children still count (one of them can
+                // be visible again), but nothing of its own does, not its
+                // line breaks, a `<br>` or a cell's tab.
+                if !is_visible(node, self.style) {
+                    for child in node.children() {
+                        self.walk(&child);
+                    }
                     return;
                 }
                 let tag = tag_name.as_str();
-                let before = match tag {
-                    "p" => 2,
-                    "tr" => 0,
-                    t if BLOCK.contains(&t) => 1,
+                let before = match (tag, (self.style)(node)) {
+                    // `display: contents` makes no box, and Chromium gives a
+                    // boxless `<p>` no breaks.
+                    (_, Some(c)) if c.display == "contents" => 0,
+                    ("p", _) => 2,
+                    (_, Some(c)) => usize::from(c.block_level()),
+                    (t, None) if BLOCK.contains(&t) => 1,
                     _ => 0,
                 };
                 if tag == "br" {
@@ -179,15 +306,19 @@ impl Collector {
                 for child in node.children() {
                     self.walk(&child);
                 }
-                match tag {
+                if is_cell(node, self.style) {
                     // A cell that is not its row's last is followed by a tab.
-                    "td" | "th" if next_cell(node) => {
+                    if next_cell(node, self.style) {
                         self.flush_breaks();
                         self.space = false;
                         self.out.push('\t');
                     }
-                    "tr" if next_row(node) => self.line_feed(),
-                    _ => self.required_breaks(before),
+                } else if is_row(node, self.style) {
+                    if next_row(node, self.style) {
+                        self.line_feed();
+                    }
+                } else {
+                    self.required_breaks(before);
                 }
             }
             _ => {}
@@ -195,10 +326,15 @@ impl Collector {
     }
 }
 
-fn next_cell(node: &Rc<Node>) -> bool {
+fn is_element(node: &Node) -> bool {
+    matches!(node.node_type, NodeType::Element { .. })
+}
+
+/// Is `node` followed by another cell of its row?
+fn next_cell(node: &Rc<Node>, style: StyleOf) -> bool {
     let mut next = node.next_sibling();
     while let Some(n) = next {
-        if matches!(n.tag_name(), Some("td" | "th")) {
+        if is_element(&n) && is_cell(&n, style) {
             return true;
         }
         next = n.next_sibling();
@@ -208,35 +344,36 @@ fn next_cell(node: &Rc<Node>) -> bool {
 
 /// Is `row` followed by another row of its table (in this or a later row
 /// group)?
-fn next_row(row: &Rc<Node>) -> bool {
+fn next_row(row: &Rc<Node>, style: StyleOf) -> bool {
     let mut scope = row.clone();
     loop {
         let mut next = scope.next_sibling();
         while let Some(n) = next {
-            match n.tag_name() {
-                Some("tr") => return true,
-                Some("thead" | "tbody" | "tfoot")
-                    if n.children().iter().any(|c| c.tag_name() == Some("tr")) =>
-                {
-                    return true
+            if is_element(&n) {
+                if is_row(&n, style) {
+                    return true;
                 }
-                _ => {}
+                if is_row_group(&n, style)
+                    && n.children().iter().any(|c| is_element(c) && is_row(c, style))
+                {
+                    return true;
+                }
             }
             next = n.next_sibling();
         }
         match scope.parent() {
-            Some(p) if matches!(p.tag_name(), Some("thead" | "tbody" | "tfoot")) => scope = p,
+            Some(p) if is_row_group(&p, style) => scope = p,
             _ => return false,
         }
     }
 }
 
-/// The innerText getter.
-pub(crate) fn inner_text(element: &Rc<Node>) -> String {
-    if !is_rendered(element) {
+/// The innerText getter, on the computed style `style` gives.
+pub(crate) fn inner_text(element: &Rc<Node>, style: StyleOf) -> String {
+    if !is_rendered(element, style) {
         return element.text_content();
     }
-    let mut collector = Collector::default();
+    let mut collector = Collector { style, out: String::new(), breaks: 0, space: false };
     for child in element.children() {
         collector.walk(&child);
     }
@@ -324,6 +461,177 @@ mod tests {
                 "var d = document.createElement('div'); d.textContent = ' a  b '; d.innerText"
             ),
             " a  b "
+        );
+    }
+
+    /// CH2.E13: when the last layout published computed styles, `display:none`
+    /// and `visibility` drive the walk (the engine oracle is macOS+headless).
+    #[test]
+    fn inner_text_honours_published_display_none_and_visibility() {
+        use super::{inner_text, Computed};
+        use rustkit_dom::Node;
+        use std::collections::HashMap;
+
+        assert_eq!(
+            Computed::from_lines("color\tred\ndisplay\tnone\nvisibility\thidden")
+                .map(|c| (c.display, c.visible)),
+            Some(("none".into(), false))
+        );
+        assert!(Computed::from_lines("color\tred").is_none());
+
+        let document = Document::parse_html(
+            "<div id=t><span id=h>hid</span><span id=v>vis</span>\
+             <span id=i>invis<span id=r>ok</span></span></div>",
+        )
+        .unwrap();
+        let t = document.get_element_by_id("t").unwrap();
+        let ids: HashMap<&str, usize> = ["h", "v", "i", "r", "t"]
+            .into_iter()
+            .map(|id| (id, document.get_element_by_id(id).unwrap().id.raw()))
+            .collect();
+        let style = |n: &Node| -> Option<Computed> {
+            let id = n.id.raw();
+            if id == ids["h"] {
+                Some(Computed {
+                    display: "none".into(),
+                    visible: true,
+                    white_space: None,
+                })
+            } else if id == ids["i"] {
+                Some(Computed {
+                    display: "inline".into(),
+                    visible: false,
+                    white_space: None,
+                })
+            } else if id == ids["r"] || id == ids["v"] {
+                Some(Computed {
+                    display: "inline".into(),
+                    visible: true,
+                    white_space: None,
+                })
+            } else if id == ids["t"] {
+                Some(Computed {
+                    display: "block".into(),
+                    visible: true,
+                    white_space: None,
+                })
+            } else {
+                None
+            }
+        };
+        assert_eq!(inner_text(&t, &style), "visok");
+
+        // Through DomBindings: published rows are what the getter reads.
+        let doc = Rc::new(
+            Document::parse_html("<div id=t><span id=h>hid</span>keep</div>").unwrap(),
+        );
+        let hid_id = doc.get_element_by_id("h").unwrap().id.raw();
+        let t_id = doc.get_element_by_id("t").unwrap().id.raw();
+        let b = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        b.set_document(doc).unwrap();
+        let mut styles = HashMap::new();
+        styles.insert(t_id, "display\tblock\nvisibility\tvisible".into());
+        styles.insert(hid_id, "display\tnone\nvisibility\tvisible".into());
+        b.set_computed_styles(styles);
+        assert_eq!(
+            eval_string(&b, "document.getElementById('t').innerText"),
+            "keep"
+        );
+    }
+
+    /// CH2.E13b / #951: published `white-space` and table display drive the
+    /// walk (UA tag defaults alone miss author CSS). Portable beside the
+    /// macos+headless `inner_text_style_tests` oracle.
+    #[test]
+    fn inner_text_honours_published_white_space_and_table_display() {
+        use super::{inner_text, Computed};
+        use rustkit_dom::Node;
+        use std::collections::HashMap;
+
+        assert_eq!(
+            Computed::from_lines("display\tblock\nwhite-space\tpre-wrap")
+                .and_then(|c| c.white_space),
+            Some("pre-wrap".into())
+        );
+
+        // `white-space: pre` on the parent keeps spaces and line feeds.
+        let document = Document::parse_html("<div id=t>  a  b\n c </div>").unwrap();
+        let t = document.get_element_by_id("t").unwrap();
+        let style = |n: &Node| -> Option<Computed> {
+            if n.id == t.id {
+                Some(Computed {
+                    display: "block".into(),
+                    visible: true,
+                    white_space: Some("pre".into()),
+                })
+            } else {
+                None
+            }
+        };
+        assert_eq!(inner_text(&t, &style), "  a  b\n c ");
+
+        // `pre-line` collapses spaces/tabs but keeps line feeds.
+        let style = |n: &Node| -> Option<Computed> {
+            if n.id == t.id {
+                Some(Computed {
+                    display: "block".into(),
+                    visible: true,
+                    white_space: Some("pre-line".into()),
+                })
+            } else {
+                None
+            }
+        };
+        assert_eq!(inner_text(&t, &style), "a b\nc");
+
+        // Author `display: table-cell` / `table-row` on non-td/tr still tabs
+        // and breaks; a `<td>` forced to `display: block` does not.
+        let document = Document::parse_html(
+            "<div id=t><span id=a>x</span><span id=b>y</span></div>\
+             <table id=u><tr id=r><td id=c>p</td><td id=d>q</td></tr></table>",
+        )
+        .unwrap();
+        let ids: HashMap<&str, usize> = ["t", "a", "b", "u", "r", "c", "d"]
+            .into_iter()
+            .map(|id| (id, document.get_element_by_id(id).unwrap().id.raw()))
+            .collect();
+        let style = |n: &Node| -> Option<Computed> {
+            let id = n.id.raw();
+            let (display, white_space) = if id == ids["t"] {
+                ("block", None)
+            } else if id == ids["a"] || id == ids["b"] {
+                ("table-cell", None)
+            } else if id == ids["u"] {
+                ("table", None)
+            } else if id == ids["r"] {
+                ("table-row", None)
+            } else if id == ids["c"] || id == ids["d"] {
+                ("block", None)
+            } else {
+                return None;
+            };
+            Some(Computed {
+                display: display.into(),
+                visible: true,
+                white_space: white_space.map(str::to_string),
+            })
+        };
+        let t = document.get_element_by_id("t").unwrap();
+        assert_eq!(inner_text(&t, &style), "x\ty");
+        let u = document.get_element_by_id("u").unwrap();
+        assert_eq!(inner_text(&u, &style), "p\nq");
+
+        // Through DomBindings: `white-space:normal` on a `<pre>` collapses.
+        let doc = Rc::new(Document::parse_html("<pre id=t>  a  b</pre>").unwrap());
+        let t_id = doc.get_element_by_id("t").unwrap().id.raw();
+        let b = DomBindings::new(JsRuntime::new().unwrap()).unwrap();
+        b.set_document(doc).unwrap();
+        let mut styles = HashMap::new();
+        styles.insert(t_id, "display\tblock\nvisibility\tvisible\nwhite-space\tnormal".into());
+        b.set_computed_styles(styles);
+        assert_eq!(
+            eval_string(&b, "document.getElementById('t').innerText"),
+            "a b"
         );
     }
 

@@ -1,0 +1,50 @@
+<!doctype html><title>long turn, then resume</title><div id=first></div><div id=frames></div><script>
+// PACE1. A requestAnimationFrame loop and a 10 ms timer chain run throughout. From 300 ms to 1300 ms
+// (performance.now) the page is quiet; the first frame after 1300 ms runs for 2000 ms; then the page is
+// quiet for 1000 ms more and records what happened.
+//   quietFrames, quietTimers   frames and timer firings in the quiet second before the long frame
+//   longMs                     how long the long frame ran
+//   firstFrameAfterMs          from the end of the long frame to the next frame callback
+//   firstTimerAfterMs          from the end of the long frame to the next timer callback
+//   tsJumpMs                   that next frame's timestamp minus the long frame's
+//   afterFrames, afterTimers   frames and timer firings in the second after the long frame
+// When done it sets rec.done, logs REC <json>, and gives #first a height of 10000 + firstFrameAfterMs and
+// #frames a height of 20000 + afterFrames (px), for tools that read only the layout.
+window.rec = { quietFrames: 0, quietTimers: 0, longMs: 0, firstFrameAfterMs: -1, firstTimerAfterMs: -1,
+  tsJumpMs: 0, afterFrames: 0, afterTimers: 0, done: false };
+var start = performance.now(), phase = 0, longEnd = 0, longTs = 0;
+function spin(ms) {
+  var t0 = performance.now();
+  while (performance.now() - t0 < ms) JSON.stringify({ a: [1, 2, 3], b: 'x' });
+  return performance.now() - t0;
+}
+function finish() {
+  rec.done = true;
+  document.getElementById('first').style.height = (10000 + rec.firstFrameAfterMs) + 'px';
+  document.getElementById('frames').style.height = (20000 + rec.afterFrames) + 'px';
+  console.log('REC ' + JSON.stringify(rec));
+}
+function frame(ts) {
+  var now = performance.now() - start;
+  if (phase === 0) {
+    if (now >= 300) rec.quietFrames++;
+    if (now >= 1300) { phase = 1; rec.longMs = Math.round(spin(2000)); longEnd = performance.now(); longTs = ts; phase = 2; }
+  } else if (phase === 2) {
+    var after = performance.now() - longEnd;
+    if (rec.firstFrameAfterMs < 0) { rec.firstFrameAfterMs = Math.round(after); rec.tsJumpMs = Math.round(ts - longTs); }
+    if (after < 1000) rec.afterFrames++; else { phase = 3; finish(); }
+  }
+  if (phase !== 3) requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+(function tick() {
+  var now = performance.now() - start;
+  if (phase === 0 && now >= 300) rec.quietTimers++;
+  else if (phase === 2) {
+    var after = performance.now() - longEnd;
+    if (rec.firstTimerAfterMs < 0) rec.firstTimerAfterMs = Math.round(after);
+    if (after < 1000) rec.afterTimers++;
+  }
+  if (phase !== 3) setTimeout(tick, 10);
+})();
+</script>

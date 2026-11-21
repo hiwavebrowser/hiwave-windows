@@ -26,6 +26,7 @@ use rustkit_css::Color;
 use rustkit_layout::{DisplayCommand, Rect};
 use std::collections::HashMap;
 use std::f32::consts::PI;
+use std::sync::Arc;
 use thiserror::Error;
 
 // ==================== Errors ====================
@@ -61,6 +62,19 @@ pub struct SvgDocument {
     pub height: Option<SvgLength>,
     /// Defined elements (for use references).
     pub defs: HashMap<String, SvgElement>,
+    /// Scale the viewBox to the render rect on each axis independently
+    /// (`preserveAspectRatio="none"`) instead of uniformly. Set by the
+    /// engine for an SVG image whose viewBox it synthesized, as Blink does.
+    pub stretch: bool,
+    /// The markup and the viewport it was read for, kept when the paint
+    /// depends on that viewport: a root with no viewBox that holds a
+    /// `<use>`. See `for_viewport`.
+    viewport_source: Option<(std::sync::Arc<str>, (f32, f32))>,
+    /// The last document `for_viewport` read, with its size. One element
+    /// draws its document at one size, relayout after relayout, and a
+    /// tiled background draws every tile at one size, so the last answer
+    /// is nearly always the next one.
+    sized: std::sync::Arc<std::sync::Mutex<Option<(f32, f32, std::sync::Arc<SvgDocument>)>>>,
 }
 
 impl SvgDocument {
@@ -72,11 +86,21 @@ impl SvgDocument {
             width: None,
             height: None,
             defs: HashMap::new(),
+            stretch: false,
+            viewport_source: None,
+            sized: Default::default(),
         }
     }
 
     /// Parse SVG from XML string.
     pub fn parse(xml: &str) -> Result<Self, SvgError> {
+        Self::parse_in(xml, None)
+    }
+
+    /// `parse`, with the root's viewport given by the caller where the root
+    /// has no viewBox (`used_viewport`), in place of its size attributes
+    /// and the 300x150 default.
+    fn parse_in(xml: &str, used_viewport: Option<(f32, f32)>) -> Result<Self, SvgError> {
         let mut doc = Self::new();
         // Simple XML-like parser
         let xml = xml.trim();
@@ -123,7 +147,61 @@ impl SvgDocument {
         }
 
         // Parse elements (simplified)
-        doc.root = parse_svg_content(xml, &root_style)?;
+        let mut servers = HashMap::new();
+        // The root's user units: what the percentages of a nested viewport
+        // and of a `<use>` resolve against.
+        let viewport = doc.view_box.map(|vb| (vb.width, vb.height)).or(used_viewport).unwrap_or_else(|| {
+            (
+                doc.width.map(|w| w.to_px(300.0)).unwrap_or(300.0),
+                doc.height.map(|h| h.to_px(150.0)).unwrap_or(150.0),
+            )
+        });
+        if doc.view_box.is_none() && xml.contains("<use") {
+            doc.viewport_source = Some((xml.into(), viewport));
+        }
+        // The root's own tag is read above: what is parsed here is its
+        // content, so an `<svg>` met there is a nested one. Markup after its
+        // close tag (the sprite sheet the engine appends) never paints; it
+        // is read for the paint servers it defines.
+        let (body, appended) = xml
+            .find("<svg")
+            .and_then(|start| {
+                let after_tag = start + xml[start..].find('>')? + 1;
+                if xml[..after_tag].ends_with("/>") {
+                    return Some(("", &xml[after_tag..]));
+                }
+                let lower = xml.to_ascii_lowercase();
+                Some(match element_extent(&lower, after_tag, "svg") {
+                    Some((body_end, after_close)) => (&xml[after_tag..body_end], &xml[after_close..]),
+                    None => (&xml[after_tag..], ""),
+                })
+            })
+            .unwrap_or((xml, ""));
+        doc.root = parse_svg_content(body, &root_style, &mut servers, viewport)?;
+        parse_svg_content(appended, &root_style, &mut servers, viewport)?;
+
+        // `<use>` names its target by id, anywhere in the markup and possibly
+        // after itself, so every reference is resolved once the whole
+        // document has been read. The instances are built before paint
+        // servers resolve so a gradient they name is swapped in too.
+        let ids = collect_ids(xml);
+        if !ids.is_empty() {
+            let mut ctx = UseContext {
+                ids,
+                stack: Vec::new(),
+                budget: MAX_USE_INSTANCES,
+                servers: &mut servers,
+            };
+            resolve_uses(&mut doc.root, &mut ctx, viewport);
+        }
+
+        // A paint server may be defined after the shape that names it, and
+        // may take its stops from another one, so `url(#id)` paints are
+        // resolved once the whole document has been read.
+        if !servers.is_empty() {
+            let servers = resolve_gradients(&servers);
+            doc.root.resolve_paint(&servers);
+        }
 
         Ok(doc)
     }
@@ -143,6 +221,40 @@ impl SvgDocument {
             .unwrap_or(150.0);
 
         (width, height)
+    }
+
+    /// This document read again for a `width` x `height` viewport, when that
+    /// changes what it paints.
+    ///
+    /// A root with no viewBox has no user units of its own: its viewport is
+    /// the box it is drawn in (the CSS size of an inline `<svg>`), and a
+    /// `<use>` of a `<symbol>` fills that. The size is not known when the
+    /// markup is parsed, and the instances are built then, so a document
+    /// drawn at another size than it was read for is read again. `None`
+    /// when the size is the one it was read for or nothing depends on it.
+    ///
+    /// The markup of an SVG image is the whole file and a background draws
+    /// it once per tile, so the answer for the last size is kept.
+    fn for_viewport(&self, width: f32, height: f32) -> Option<std::sync::Arc<SvgDocument>> {
+        // The engine gives an SVG image a viewBox after parsing; with one,
+        // the render rect only scales.
+        if self.view_box.is_some() {
+            return None;
+        }
+        let (xml, read_for) = self.viewport_source.as_ref()?;
+        let same = (read_for.0 - width).abs() < 0.01 && (read_for.1 - height).abs() < 0.01;
+        if same || !(width > 0.0 && height > 0.0) {
+            return None;
+        }
+        let mut last = self.sized.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((w, h, doc)) = last.as_ref() {
+            if (w - width).abs() < 0.01 && (h - height).abs() < 0.01 {
+                return Some(doc.clone());
+            }
+        }
+        let doc = std::sync::Arc::new(Self::parse_in(xml, Some((width, height))).ok()?);
+        *last = Some((width, height, doc.clone()));
+        Some(doc)
     }
 
     /// Render to display commands with `currentColor` resolving to black —
@@ -166,16 +278,24 @@ impl SvgDocument {
         height: f32,
         current_color: Color,
     ) -> Vec<DisplayCommand> {
+        if let Some(sized) = self.for_viewport(width, height) {
+            return sized.render_with_color(x, y, width, height, current_color);
+        }
         let mut commands = Vec::new();
         // Apply viewBox transform if present
         let transform = if let Some(vb) = &self.view_box {
             let scale_x = width / vb.width;
             let scale_y = height / vb.height;
-            let scale = scale_x.min(scale_y);
+            let (scale_x, scale_y) = if self.stretch {
+                (scale_x, scale_y)
+            } else {
+                let scale = scale_x.min(scale_y);
+                (scale, scale)
+            };
 
             Transform2D::identity()
-                .translate(x - vb.min_x * scale, y - vb.min_y * scale)
-                .scale(scale, scale)
+                .translate(x - vb.min_x * scale_x, y - vb.min_y * scale_y)
+                .scale(scale_x, scale_y)
         } else {
             Transform2D::identity().translate(x, y)
         };
@@ -357,6 +477,14 @@ impl Transform2D {
         }
     }
 
+    /// The most this transform stretches any direction: its largest
+    /// singular value.
+    pub fn max_scale(&self) -> f32 {
+        let sum = self.a * self.a + self.b * self.b + self.c * self.c + self.d * self.d;
+        let det = self.a * self.d - self.b * self.c;
+        ((sum + (sum * sum - 4.0 * det * det).max(0.0).sqrt()) * 0.5).sqrt()
+    }
+
     /// Transform a point.
     pub fn apply(&self, x: f32, y: f32) -> (f32, f32) {
         (
@@ -456,8 +584,12 @@ pub enum Paint {
     None,
     /// Solid color.
     Color(Color),
-    /// URL reference (gradients, patterns).
-    Url(String),
+    /// URL reference (gradients, patterns) the document has not resolved:
+    /// it names nothing this crate paints, so it paints its fallback (the
+    /// color, `currentColor` or `none` after the `url()`), or nothing.
+    Url(String, Option<Box<Paint>>),
+    /// A gradient paint server, resolved from its `url(#id)` reference.
+    Gradient(Arc<Gradient>),
     /// Current color.
     CurrentColor,
 }
@@ -471,17 +603,30 @@ impl Default for Paint {
 impl Paint {
     /// Parse paint attribute.
     pub fn parse(s: &str) -> Self {
-        let s = s.trim().to_lowercase();
+        let raw = s.trim();
+        let s = raw.to_lowercase();
         
         match s.as_str() {
             "none" => Paint::None,
             "currentcolor" => Paint::CurrentColor,
             _ if s.starts_with("url(") => {
-                let url = s.trim_start_matches("url(")
-                    .trim_end_matches(')')
-                    .trim_matches(|c| c == '"' || c == '\'' || c == '#')
+                // The id is case-sensitive, so it is read from the authored
+                // text; a fallback color may follow the closing paren.
+                let (inner, after) = raw[4..].split_once(')').unwrap_or((&raw[4..], ""));
+                let url = inner
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .trim_start_matches('#')
                     .to_string();
-                Paint::Url(url)
+                let after = after.trim().to_lowercase();
+                let fallback = match after.as_str() {
+                    "" => None,
+                    "none" => Some(Paint::None),
+                    "currentcolor" => Some(Paint::CurrentColor),
+                    other => parse_svg_color(other).map(Paint::Color),
+                }
+                .map(Box::new);
+                Paint::Url(url, fallback)
             }
             _ => {
                 if let Some(color) = parse_svg_color(&s) {
@@ -501,13 +646,82 @@ impl Paint {
     }
 
     /// Get the solid color this paint draws with, resolving `currentColor`
-    /// to `current_color`. `None` for `none` and unresolved `url()` paints.
+    /// to `current_color`. `None` for `none` and for an unresolved `url()`
+    /// paint without a fallback.
     pub fn resolve(&self, current_color: Color) -> Option<Color> {
         match self {
             Paint::Color(c) => Some(*c),
             Paint::CurrentColor => Some(current_color),
+            Paint::Url(_, Some(fallback)) => fallback.resolve(current_color),
             _ => None,
         }
+    }
+}
+
+/// How a gradient paints past the ends of its vector (`spreadMethod`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpreadMethod {
+    #[default]
+    Pad,
+    Reflect,
+    Repeat,
+}
+
+/// The vector or circle a gradient's stops are laid along, in gradient
+/// units (before `gradientTransform`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GradientGeometry {
+    Linear { x1: f32, y1: f32, x2: f32, y2: f32 },
+    /// The focal point is taken to be the centre (`fx`/`fy` are not read).
+    Radial { cx: f32, cy: f32, r: f32 },
+}
+
+/// A gradient paint server (`<linearGradient>` / `<radialGradient>`).
+#[derive(Debug, Clone)]
+pub struct Gradient {
+    pub geometry: GradientGeometry,
+    /// `(offset, color)`, offsets in 0..=1 and never decreasing; the
+    /// color's alpha carries `stop-opacity`.
+    pub stops: Vec<(f32, Color)>,
+    /// `gradientTransform`.
+    pub transform: Transform2D,
+    /// `gradientUnits="userSpaceOnUse"`; otherwise the geometry is in
+    /// fractions of the filled shape's bounding box.
+    pub user_space: bool,
+    pub spread: SpreadMethod,
+}
+
+impl Gradient {
+    /// The color at position `t` along the gradient (0 = the start of the
+    /// vector, 1 = its far end). Stops blend in non-premultiplied sRGB, as
+    /// SVG gradients do.
+    pub fn color_at(&self, t: f32) -> Color {
+        let Some(&(_, last)) = self.stops.last() else {
+            return Color::TRANSPARENT;
+        };
+        let t = match self.spread {
+            SpreadMethod::Pad => t.clamp(0.0, 1.0),
+            SpreadMethod::Repeat => t - t.floor(),
+            SpreadMethod::Reflect => {
+                let u = t.rem_euclid(2.0);
+                if u > 1.0 { 2.0 - u } else { u }
+            }
+        };
+        if t <= self.stops[0].0 {
+            return self.stops[0].1;
+        }
+        for pair in self.stops.windows(2) {
+            let ((o0, c0), (o1, c1)) = (pair[0], pair[1]);
+            if t <= o1 {
+                if o1 <= o0 {
+                    return c1;
+                }
+                let k = (t - o0) / (o1 - o0);
+                let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
+                return Color::new(mix(c0.r, c1.r), mix(c0.g, c1.g), mix(c0.b, c1.b), c0.a + (c1.a - c0.a) * k);
+            }
+        }
+        last
     }
 }
 
@@ -694,6 +908,11 @@ const MAX_CROSSING_CHECKS: usize = 2_000_000;
 /// most triangles) goes through as-is, and anything else (concave outlines,
 /// holes, self-crossings, several subpaths) is swept into horizontal
 /// trapezoids, each inside under `rule`.
+///
+/// A contour winds zero outside its own x-range, so contours are first
+/// split into clusters whose x-ranges don't overlap and each cluster is
+/// filled on its own: a line of glyphs isn't cut into bands at every
+/// vertex of every other glyph. The fill is the same under either rule.
 fn fill_contours(
     contours: &[Vec<(f32, f32)>],
     rule: FillRule,
@@ -720,10 +939,78 @@ fn fill_contours(
         .filter(|c| c.len() >= 3)
         .collect();
 
-    match contours.as_slice() {
+    // Clusters of contours whose x-ranges overlap, left to right.
+    let mut spans: Vec<(f32, f32, usize)> = contours
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let (x, _, w, _) = bounds_of(c.iter());
+            (x, x + w, i)
+        })
+        .collect();
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut checks = 0usize;
+    let mut cluster: Vec<&[(f32, f32)]> = Vec::new();
+    let mut right = f32::NEG_INFINITY;
+    for &(lo, hi, i) in &spans {
+        if lo >= right && !cluster.is_empty() {
+            fill_cluster(&cluster, rule, color, &mut checks, commands);
+            cluster.clear();
+        }
+        cluster.push(&contours[i]);
+        right = right.max(hi);
+    }
+    fill_cluster(&cluster, rule, color, &mut checks, commands);
+}
+
+/// Fill device-space contours with one colour, as convex polygons the
+/// renderer fills exactly (see [`fill_contours`]). For painters other than
+/// SVG that draw paths: a canvas's `fill()`.
+pub fn fill_device_contours(contours: &[Vec<(f32, f32)>], even_odd: bool, color: Color) -> Vec<DisplayCommand> {
+    let mut commands = Vec::new();
+    let rule = if even_odd { FillRule::EvenOdd } else { FillRule::NonZero };
+    fill_contours(contours, rule, color, &mut commands);
+    commands
+}
+
+/// Fill device-space contours with a linear gradient from `(x1, y1)` to
+/// `(x2, y2)` (device space, padded past the ends), `stops` as
+/// `(offset, colour)` in increasing offset (see [`fill_gradient`]).
+pub fn fill_device_contours_linear(
+    contours: &[Vec<(f32, f32)>],
+    even_odd: bool,
+    from: (f32, f32),
+    to: (f32, f32),
+    stops: Vec<(f32, Color)>,
+) -> Vec<DisplayCommand> {
+    let gradient = Gradient {
+        geometry: GradientGeometry::Linear { x1: from.0, y1: from.1, x2: to.0, y2: to.1 },
+        stops,
+        transform: Transform2D::identity(),
+        user_space: true,
+        spread: SpreadMethod::Pad,
+    };
+    let rule = if even_odd { FillRule::EvenOdd } else { FillRule::NonZero };
+    let mut commands = Vec::new();
+    fill_gradient(contours, rule, &gradient, (0.0, 0.0, 0.0, 0.0), &Transform2D::identity(), 1.0, &mut commands);
+    commands
+}
+
+/// Fill contours that may overlap, sharing `checks` with the rest of the fill.
+fn fill_cluster(
+    contours: &[&[(f32, f32)]],
+    rule: FillRule,
+    color: Color,
+    checks: &mut usize,
+    commands: &mut Vec<DisplayCommand>,
+) {
+    match contours {
         [] => return,
         [only] if is_convex(only) => {
-            commands.push(DisplayCommand::FillPolygon { points: only.clone(), color });
+            commands.push(DisplayCommand::FillPolygon {
+                points: only.to_vec(),
+                color,
+            });
             return;
         }
         _ => {}
@@ -743,7 +1030,7 @@ fn fill_contours(
         }
     }
     let mut edges: Vec<Edge> = Vec::new();
-    for c in &contours {
+    for c in contours {
         for i in 0..c.len() {
             let (a, b) = (c[i], c[(i + 1) % c.len()]);
             if a.1 == b.1 {
@@ -764,15 +1051,14 @@ fn fill_contours(
     // Band boundaries: every vertex y, plus every y where two edges cross,
     // so inside one band the edges keep their left-to-right order.
     let mut ys: Vec<f32> = edges.iter().flat_map(|e| [e.y0, e.y1]).collect();
-    let mut checks = 0usize;
     'crossings: for i in 0..edges.len() {
         let a = &edges[i];
         for b in &edges[i + 1..] {
             if b.y0 >= a.y1 {
                 break;
             }
-            checks += 1;
-            if checks > MAX_CROSSING_CHECKS {
+            *checks += 1;
+            if *checks > MAX_CROSSING_CHECKS {
                 break 'crossings;
             }
             let (lo, hi) = (a.y0.max(b.y0), a.y1.min(b.y1));
@@ -830,6 +1116,193 @@ fn fill_contours(
             }
         }
     }
+}
+
+/// The most cells a gradient fill is cut into along one axis.
+const GRADIENT_CELLS: f32 = 64.0;
+
+/// Fill closed device-space contours with a gradient.
+///
+/// The renderer's polygons are one flat color each, so the fill's convex
+/// pieces are cut on a grid and every cell takes the gradient's color at
+/// its centre. Cells are one device pixel where the shape is small (an
+/// icon gets the gradient per pixel) and never more than `GRADIENT_CELLS`
+/// to an axis. The pieces have hard edges, so neighbouring cells meet
+/// without a seam even where the stops are translucent.
+///
+/// `bbox` is the shape's user-space bounding box `(x, y, width, height)`
+/// and `transform` maps user space to device space; `opacity` is the
+/// shape's fill opacity times its opacity.
+fn fill_gradient(
+    contours: &[Vec<(f32, f32)>],
+    rule: FillRule,
+    gradient: &Gradient,
+    bbox: (f32, f32, f32, f32),
+    transform: &Transform2D,
+    opacity: f32,
+    commands: &mut Vec<DisplayCommand>,
+) {
+    if gradient.stops.is_empty() {
+        return;
+    }
+    let mut pieces = Vec::new();
+    fill_contours(contours, rule, Color::BLACK, &mut pieces);
+    let pieces: Vec<Vec<(f32, f32)>> = pieces
+        .into_iter()
+        .filter_map(|c| match c {
+            DisplayCommand::FillPolygon { points, .. } => Some(points),
+            _ => None,
+        })
+        .collect();
+    if pieces.is_empty() {
+        return;
+    }
+
+    // Gradient space -> device space, then its inverse. The bounding-box
+    // units of a shape with no width or no height paint nothing (SVG 2
+    // §14.2.2), as does a transform that cannot be inverted.
+    let mut to_device = *transform;
+    if !gradient.user_space {
+        if !(bbox.2 > 0.0 && bbox.3 > 0.0) {
+            return;
+        }
+        to_device = to_device.translate(bbox.0, bbox.1).scale(bbox.2, bbox.3);
+    }
+    let m = to_device.multiply(&gradient.transform);
+    // f64: real gradientTransforms carry translations in the hundreds of
+    // thousands against a radius under one (bing's logo).
+    let (a, b, c, d, e, f) = (m.a as f64, m.b as f64, m.c as f64, m.d as f64, m.e as f64, m.f as f64);
+    let det = a * d - b * c;
+    if det == 0.0 || !det.is_finite() {
+        return;
+    }
+    let position = |x: f32, y: f32| -> f32 {
+        let (dx, dy) = (x as f64 - e, y as f64 - f);
+        let (gx, gy) = ((d * dx - c * dy) / det, (a * dy - b * dx) / det);
+        match gradient.geometry {
+            GradientGeometry::Linear { x1, y1, x2, y2 } => {
+                let (vx, vy) = ((x2 - x1) as f64, (y2 - y1) as f64);
+                let len = vx * vx + vy * vy;
+                if len == 0.0 {
+                    1.0
+                } else {
+                    (((gx - x1 as f64) * vx + (gy - y1 as f64) * vy) / len) as f32
+                }
+            }
+            GradientGeometry::Radial { cx, cy, r } => {
+                if r <= 0.0 {
+                    1.0
+                } else {
+                    ((gx - cx as f64).hypot(gy - cy as f64) / r as f64) as f32
+                }
+            }
+        }
+    };
+
+    let (min_x, min_y, width, height) = bounds_of(pieces.iter().flatten());
+    let cell = (width.max(height) / GRADIENT_CELLS).max(1.0);
+    let (origin_x, origin_y) = (min_x.floor(), min_y.floor());
+    for piece in &pieces {
+        let (x, y, w, h) = bounds_of(piece.iter());
+        let cols = ((x - origin_x) / cell).floor() as i32..=((x + w - origin_x) / cell).floor() as i32;
+        for col in cols {
+            let left = origin_x + col as f32 * cell;
+            let strip = clip_to_slab(piece, false, left, left + cell);
+            if strip.len() < 3 {
+                continue;
+            }
+            let rows = ((y - origin_y) / cell).floor() as i32..=((y + h - origin_y) / cell).floor() as i32;
+            for row in rows {
+                let top = origin_y + row as f32 * cell;
+                let points = clip_to_slab(&strip, true, top, top + cell);
+                if points.len() < 3 || polygon_area(&points) < 1e-6 {
+                    continue;
+                }
+                let color = gradient.color_at(position(left + cell * 0.5, top + cell * 0.5));
+                let alpha = (color.a * opacity).clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    commands.push(DisplayCommand::FillPolygon { points, color: Color { a: alpha, ..color } });
+                }
+            }
+        }
+    }
+}
+
+/// Fill one user-space outline with the style's fill, if that is a gradient.
+fn fill_outline_with_gradient(
+    outline: &[(f32, f32)],
+    style: &SvgStyle,
+    transform: &Transform2D,
+    commands: &mut Vec<DisplayCommand>,
+) {
+    if let Paint::Gradient(gradient) = &style.fill {
+        let device: Vec<(f32, f32)> = outline.iter().map(|&(x, y)| transform.apply(x, y)).collect();
+        fill_gradient(
+            &[device],
+            style.fill_rule,
+            gradient,
+            bounds_of(outline.iter()),
+            transform,
+            style.fill_opacity * style.opacity,
+            commands,
+        );
+    }
+}
+
+/// A circle or ellipse as a closed outline.
+fn ellipse_outline(cx: f32, cy: f32, rx: f32, ry: f32) -> Vec<(f32, f32)> {
+    const SEGMENTS: usize = 64;
+    (0..SEGMENTS)
+        .map(|i| {
+            let angle = i as f32 / SEGMENTS as f32 * 2.0 * PI;
+            (cx + rx * angle.cos(), cy + ry * angle.sin())
+        })
+        .collect()
+}
+
+/// Bounding box `(x, y, width, height)` of a set of points.
+fn bounds_of<'a>(points: impl Iterator<Item = &'a (f32, f32)>) -> (f32, f32, f32, f32) {
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for &(x, y) in points {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    }
+    (x0, y0, x1 - x0, y1 - y0)
+}
+
+/// The part of a convex polygon between `lo` and `hi` on one axis.
+fn clip_to_slab(polygon: &[(f32, f32)], vertical: bool, lo: f32, hi: f32) -> Vec<(f32, f32)> {
+    let along = |p: (f32, f32)| if vertical { p.1 } else { p.0 };
+    let mut out = polygon.to_vec();
+    for (bound, keep_above) in [(lo, true), (hi, false)] {
+        let input = std::mem::take(&mut out);
+        let inside = |p: (f32, f32)| if keep_above { along(p) >= bound } else { along(p) <= bound };
+        for i in 0..input.len() {
+            let (p, q) = (input[i], input[(i + 1) % input.len()]);
+            if inside(p) {
+                out.push(p);
+            }
+            if inside(p) != inside(q) {
+                let k = (bound - along(p)) / (along(q) - along(p));
+                let (x, y) = (p.0 + (q.0 - p.0) * k, p.1 + (q.1 - p.1) * k);
+                out.push(if vertical { (x, bound) } else { (bound, y) });
+            }
+        }
+    }
+    out
+}
+
+fn polygon_area(points: &[(f32, f32)]) -> f32 {
+    let n = points.len();
+    let twice: f32 = (0..n)
+        .map(|i| {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum();
+    twice.abs() * 0.5
 }
 
 /// A simple convex polygon: every turn the same way, and one full turn in
@@ -893,7 +1366,44 @@ impl SvgElement {
             SvgElement::Polygon(p) => p.render(transform, parent_style, commands),
             SvgElement::Path(p) => p.render(transform, parent_style, commands),
             SvgElement::Text(t) => t.render(transform, parent_style, commands),
-            SvgElement::Use(_) => {} // TODO: resolve references
+            SvgElement::Use(u) => {
+                // An unresolved reference (missing target, cycle, external
+                // file) paints nothing.
+                if let Some(instance) = &u.instance {
+                    instance.render(transform, parent_style, commands);
+                }
+            }
+        }
+    }
+
+    /// Swap every fill that names one of `servers` for that gradient.
+    fn resolve_paint(&mut self, servers: &HashMap<String, Arc<Gradient>>) {
+        let style = match self {
+            SvgElement::Group(g) => {
+                for child in &mut g.children {
+                    child.resolve_paint(servers);
+                }
+                &mut g.style
+            }
+            SvgElement::Rect(r) => &mut r.style,
+            SvgElement::Circle(c) => &mut c.style,
+            SvgElement::Ellipse(e) => &mut e.style,
+            SvgElement::Line(l) => &mut l.style,
+            SvgElement::Polyline(p) => &mut p.style,
+            SvgElement::Polygon(p) => &mut p.style,
+            SvgElement::Path(p) => &mut p.style,
+            SvgElement::Text(t) => &mut t.style,
+            SvgElement::Use(u) => {
+                if let Some(instance) = &mut u.instance {
+                    instance.resolve_paint(servers);
+                }
+                return;
+            }
+        };
+        if let Paint::Url(id, _) = &style.fill {
+            if let Some(gradient) = servers.get(id) {
+                style.fill = Paint::Gradient(gradient.clone());
+            }
         }
     }
 }
@@ -909,6 +1419,10 @@ pub struct SvgGroup {
     pub style: SvgStyle,
     /// ID.
     pub id: Option<String>,
+    /// A nested `<svg>`'s viewport `(x, y, width, height)` in its parent's
+    /// user units, when its content is clipped to it (`overflow` other
+    /// than `visible`).
+    pub viewport: Option<(f32, f32, f32, f32)>,
 }
 
 impl SvgGroup {
@@ -923,8 +1437,27 @@ impl SvgGroup {
         let mut style = self.style.clone();
         style.inherit_from(parent_style);
 
+        // An upright viewport clips what it holds; under a rotation or a
+        // skew it is no rectangle here, and its content is left whole.
+        let clip = self.viewport.filter(|_| parent_transform.b == 0.0 && parent_transform.c == 0.0).map(
+            |(x, y, width, height)| {
+                let (x0, y0) = parent_transform.apply(x, y);
+                let (x1, y1) = parent_transform.apply(x + width, y + height);
+                Rect::new(x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs())
+            },
+        );
+        let Some(clip) = clip else {
+            for child in &self.children {
+                child.render(&transform, &style, commands);
+            }
+            return;
+        };
+        let mut content = Vec::new();
         for child in &self.children {
-            child.render(&transform, &style, commands);
+            child.render(&transform, &style, &mut content);
+        }
+        for command in content {
+            rustkit_layout::clip_vector_command(command, clip, commands);
         }
     }
 }
@@ -983,15 +1516,22 @@ impl SvgRect {
         if let Some(color) = style.fill_color() {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
-            commands.push(DisplayCommand::FillRect { rect: rect.clone(), color: fill_color });
+            commands.push(DisplayCommand::FillRect { rect, color: fill_color });
         }
+        let (right, bottom) = (self.x + self.width, self.y + self.height);
+        fill_outline_with_gradient(
+            &[(self.x, self.y), (right, self.y), (right, bottom), (self.x, bottom)],
+            &style,
+            &transform,
+            commands,
+        );
 
         // Stroke
         if let Some(color) = style.stroke_color() {
             let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
             let stroke_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::StrokeRect {
-                rect: rect.clone(),
+                rect,
                 color: stroke_color,
                 width: style.stroke_width,
             });
@@ -1049,6 +1589,7 @@ impl SvgCircle {
                 color: fill_color,
             });
         }
+        fill_outline_with_gradient(&ellipse_outline(self.cx, self.cy, self.r, self.r), &style, &transform, commands);
 
         // Stroke
         if let Some(color) = style.stroke_color() {
@@ -1114,10 +1655,11 @@ impl SvgEllipse {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
             commands.push(DisplayCommand::FillEllipse {
-                rect: rect.clone(),
+                rect,
                 color: fill_color,
             });
         }
+        fill_outline_with_gradient(&ellipse_outline(self.cx, self.cy, self.rx, self.ry), &style, &transform, commands);
     }
 }
 
@@ -1239,6 +1781,7 @@ impl SvgPolygon {
             let fill_color = Color { a: alpha, ..color };
             fill_contours(std::slice::from_ref(&points), style.fill_rule, fill_color, commands);
         }
+        fill_outline_with_gradient(&self.points, &style, &transform, commands);
 
         if let Some(color) = style.stroke_color() {
             let alpha = (color.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0);
@@ -1254,48 +1797,7 @@ impl SvgPolygon {
 
 // ==================== SVG Path ====================
 
-/// Path command.
-#[derive(Debug, Clone, Copy)]
-pub enum PathCommand {
-    /// Move to (absolute).
-    MoveTo(f32, f32),
-    /// Move to (relative).
-    MoveToRel(f32, f32),
-    /// Line to (absolute).
-    LineTo(f32, f32),
-    /// Line to (relative).
-    LineToRel(f32, f32),
-    /// Horizontal line (absolute).
-    HorizontalTo(f32),
-    /// Horizontal line (relative).
-    HorizontalToRel(f32),
-    /// Vertical line (absolute).
-    VerticalTo(f32),
-    /// Vertical line (relative).
-    VerticalToRel(f32),
-    /// Cubic bezier (absolute).
-    CubicTo(f32, f32, f32, f32, f32, f32),
-    /// Cubic bezier (relative).
-    CubicToRel(f32, f32, f32, f32, f32, f32),
-    /// Smooth cubic bezier (absolute).
-    SmoothCubicTo(f32, f32, f32, f32),
-    /// Smooth cubic bezier (relative).
-    SmoothCubicToRel(f32, f32, f32, f32),
-    /// Quadratic bezier (absolute).
-    QuadTo(f32, f32, f32, f32),
-    /// Quadratic bezier (relative).
-    QuadToRel(f32, f32, f32, f32),
-    /// Smooth quadratic bezier (absolute).
-    SmoothQuadTo(f32, f32),
-    /// Smooth quadratic bezier (relative).
-    SmoothQuadToRel(f32, f32),
-    /// Arc (absolute).
-    ArcTo(f32, f32, f32, bool, bool, f32, f32),
-    /// Arc (relative).
-    ArcToRel(f32, f32, f32, bool, bool, f32, f32),
-    /// Close path.
-    Close,
-}
+pub use rustkit_layout::path_data::PathCommand;
 
 /// Path element (<path>).
 #[derive(Debug, Clone, Default)]
@@ -1308,349 +1810,22 @@ pub struct SvgPath {
 impl SvgPath {
     /// Parse path data string.
     pub fn parse(d: &str) -> Vec<PathCommand> {
-        let mut commands = Vec::new();
-        let mut chars = d.chars().peekable();
-        let mut current_cmd = ' ';
-
-        while let Some(&c) = chars.peek() {
-            if c.is_whitespace() || c == ',' {
-                chars.next();
-                continue;
-            }
-
-            if c.is_alphabetic() {
-                current_cmd = c;
-                chars.next();
-                
-                // Handle commands that don't take arguments immediately
-                if current_cmd == 'Z' || current_cmd == 'z' {
-                    commands.push(PathCommand::Close);
-                }
-                continue;
-            }
-
-            match current_cmd {
-                'M' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::MoveTo(x, y));
-                        current_cmd = 'L'; // Subsequent coordinates are lines
-                    }
-                }
-                'm' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::MoveToRel(x, y));
-                        current_cmd = 'l';
-                    }
-                }
-                'L' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::LineTo(x, y));
-                    }
-                }
-                'l' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::LineToRel(x, y));
-                    }
-                }
-                'H' => {
-                    if let Some(x) = parse_number(&mut chars) {
-                        commands.push(PathCommand::HorizontalTo(x));
-                    }
-                }
-                'h' => {
-                    if let Some(x) = parse_number(&mut chars) {
-                        commands.push(PathCommand::HorizontalToRel(x));
-                    }
-                }
-                'V' => {
-                    if let Some(y) = parse_number(&mut chars) {
-                        commands.push(PathCommand::VerticalTo(y));
-                    }
-                }
-                'v' => {
-                    if let Some(y) = parse_number(&mut chars) {
-                        commands.push(PathCommand::VerticalToRel(y));
-                    }
-                }
-                'C' => {
-                    if let (Some(x1), Some(y1), Some(x2), Some(y2), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::CubicTo(x1, y1, x2, y2, x, y));
-                    }
-                }
-                'c' => {
-                    if let (Some(x1), Some(y1), Some(x2), Some(y2), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::CubicToRel(x1, y1, x2, y2, x, y));
-                    }
-                }
-                'S' => {
-                    if let (Some(x2), Some(y2), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::SmoothCubicTo(x2, y2, x, y));
-                    }
-                }
-                's' => {
-                    if let (Some(x2), Some(y2), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::SmoothCubicToRel(x2, y2, x, y));
-                    }
-                }
-                'Q' => {
-                    if let (Some(x1), Some(y1), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::QuadTo(x1, y1, x, y));
-                    }
-                }
-                'q' => {
-                    if let (Some(x1), Some(y1), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::QuadToRel(x1, y1, x, y));
-                    }
-                }
-                'T' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::SmoothQuadTo(x, y));
-                    }
-                }
-                't' => {
-                    if let (Some(x), Some(y)) = (parse_number(&mut chars), parse_number(&mut chars)) {
-                        commands.push(PathCommand::SmoothQuadToRel(x, y));
-                    }
-                }
-                'A' => {
-                    if let (Some(rx), Some(ry), Some(angle), Some(large_arc), Some(sweep), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_flag(&mut chars),
-                        parse_flag(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::ArcTo(rx, ry, angle, large_arc, sweep, x, y));
-                    }
-                }
-                'a' => {
-                    if let (Some(rx), Some(ry), Some(angle), Some(large_arc), Some(sweep), Some(x), Some(y)) = (
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                        parse_flag(&mut chars),
-                        parse_flag(&mut chars),
-                        parse_number(&mut chars),
-                        parse_number(&mut chars),
-                    ) {
-                        commands.push(PathCommand::ArcToRel(rx, ry, angle, large_arc, sweep, x, y));
-                    }
-                }
-                'Z' | 'z' => {
-                    commands.push(PathCommand::Close);
-                    chars.next();
-                }
-                _ => {
-                    chars.next();
-                }
-            }
-        }
-
-        commands
+        rustkit_layout::path_data::parse(d)
     }
 
-    /// Convert path to line segments.
+    /// Convert path to line segments, flattening curves to
+    /// `FLATTEN_TOLERANCE_PX` in the path's own units. That is only right for
+    /// a path drawn at 1:1; one in a small viewBox drawn large comes out
+    /// coarse, so a caller that knows its scale uses `to_line_segments_within`.
     pub fn to_line_segments(&self) -> Vec<Vec<(f32, f32)>> {
-        let mut segments = Vec::new();
-        let mut current_segment = Vec::new();
-        let mut current_pos = (0.0_f32, 0.0_f32);
-        let mut start_pos = (0.0_f32, 0.0_f32);
-        // The previous segment's second control point, for S/s (after C/S)
-        // and T/t (after Q/T) to reflect. Any other command clears both.
-        let mut last_cubic = None::<(f32, f32)>;
-        let mut last_quad = None::<(f32, f32)>;
+        self.to_line_segments_within(FLATTEN_TOLERANCE_PX)
+    }
 
-        for cmd in &self.commands {
-            match cmd {
-                PathCommand::MoveTo(x, y) => {
-                    if !current_segment.is_empty() {
-                        segments.push(std::mem::take(&mut current_segment));
-                    }
-                    current_pos = (*x, *y);
-                    start_pos = current_pos;
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::MoveToRel(dx, dy) => {
-                    if !current_segment.is_empty() {
-                        segments.push(std::mem::take(&mut current_segment));
-                    }
-                    current_pos = (current_pos.0 + dx, current_pos.1 + dy);
-                    start_pos = current_pos;
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::LineTo(x, y) => {
-                    current_pos = (*x, *y);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::LineToRel(dx, dy) => {
-                    current_pos = (current_pos.0 + dx, current_pos.1 + dy);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::HorizontalTo(x) => {
-                    current_pos = (*x, current_pos.1);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::HorizontalToRel(dx) => {
-                    current_pos = (current_pos.0 + dx, current_pos.1);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::VerticalTo(y) => {
-                    current_pos = (current_pos.0, *y);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::VerticalToRel(dy) => {
-                    current_pos = (current_pos.0, current_pos.1 + dy);
-                    current_segment.push(current_pos);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                PathCommand::CubicTo(x1, y1, x2, y2, x, y) => {
-                    let points = cubic_bezier_points(current_pos, (*x1, *y1), (*x2, *y2), (*x, *y), 20);
-                    current_segment.extend(points);
-                    current_pos = (*x, *y);
-                    last_cubic = Some((*x2, *y2));
-                    last_quad = None;
-                }
-                PathCommand::CubicToRel(dx1, dy1, dx2, dy2, dx, dy) => {
-                    let (x1, y1) = (current_pos.0 + dx1, current_pos.1 + dy1);
-                    let (x2, y2) = (current_pos.0 + dx2, current_pos.1 + dy2);
-                    let (x, y) = (current_pos.0 + dx, current_pos.1 + dy);
-                    let points = cubic_bezier_points(current_pos, (x1, y1), (x2, y2), (x, y), 20);
-                    current_segment.extend(points);
-                    current_pos = (x, y);
-                    last_cubic = Some((x2, y2));
-                    last_quad = None;
-                }
-                PathCommand::QuadTo(x1, y1, x, y) => {
-                    let points = quad_bezier_points(current_pos, (*x1, *y1), (*x, *y), 20);
-                    current_segment.extend(points);
-                    current_pos = (*x, *y);
-                    last_quad = Some((*x1, *y1));
-                    last_cubic = None;
-                }
-                PathCommand::QuadToRel(dx1, dy1, dx, dy) => {
-                    let (x1, y1) = (current_pos.0 + dx1, current_pos.1 + dy1);
-                    let (x, y) = (current_pos.0 + dx, current_pos.1 + dy);
-                    let points = quad_bezier_points(current_pos, (x1, y1), (x, y), 20);
-                    current_segment.extend(points);
-                    current_pos = (x, y);
-                    last_quad = Some((x1, y1));
-                    last_cubic = None;
-                }
-                PathCommand::Close => {
-                    if current_pos != start_pos {
-                        current_segment.push(start_pos);
-                    }
-                    current_pos = start_pos;
-                    if !current_segment.is_empty() {
-                        segments.push(std::mem::take(&mut current_segment));
-                    }
-                    last_cubic = None;
-                    last_quad = None;
-                }
-                // S/s and T/t: the first control point is the reflection of
-                // the previous segment's (SVG 1.1 §8.3.6, §8.3.7), or the
-                // current point when the previous command wasn't the same kind.
-                PathCommand::SmoothCubicTo(..) | PathCommand::SmoothCubicToRel(..) => {
-                    let (x2, y2, x, y) = match cmd {
-                        PathCommand::SmoothCubicTo(x2, y2, x, y) => (*x2, *y2, *x, *y),
-                        PathCommand::SmoothCubicToRel(dx2, dy2, dx, dy) => (
-                            current_pos.0 + dx2,
-                            current_pos.1 + dy2,
-                            current_pos.0 + dx,
-                            current_pos.1 + dy,
-                        ),
-                        _ => unreachable!(),
-                    };
-                    let c1 = reflect(last_cubic, current_pos);
-                    current_segment.extend(cubic_bezier_points(current_pos, c1, (x2, y2), (x, y), 20));
-                    current_pos = (x, y);
-                    last_cubic = Some((x2, y2));
-                    last_quad = None;
-                }
-                PathCommand::SmoothQuadTo(..) | PathCommand::SmoothQuadToRel(..) => {
-                    let (x, y) = match cmd {
-                        PathCommand::SmoothQuadTo(x, y) => (*x, *y),
-                        PathCommand::SmoothQuadToRel(dx, dy) => (current_pos.0 + dx, current_pos.1 + dy),
-                        _ => unreachable!(),
-                    };
-                    let c1 = reflect(last_quad, current_pos);
-                    current_segment.extend(quad_bezier_points(current_pos, c1, (x, y), 20));
-                    current_pos = (x, y);
-                    last_quad = Some(c1);
-                    last_cubic = None;
-                }
-                PathCommand::ArcTo(..) | PathCommand::ArcToRel(..) => {
-                    let (rx, ry, angle, large_arc, sweep, x, y) = match cmd {
-                        PathCommand::ArcTo(rx, ry, a, l, s, x, y) => (*rx, *ry, *a, *l, *s, *x, *y),
-                        PathCommand::ArcToRel(rx, ry, a, l, s, dx, dy) => {
-                            (*rx, *ry, *a, *l, *s, current_pos.0 + dx, current_pos.1 + dy)
-                        }
-                        _ => unreachable!(),
-                    };
-                    current_segment.extend(arc_points(current_pos, rx, ry, angle, large_arc, sweep, (x, y)));
-                    current_pos = (x, y);
-                    last_cubic = None;
-                    last_quad = None;
-                }
-            }
-        }
-
-        if !current_segment.is_empty() {
-            segments.push(current_segment);
-        }
-
-        segments
+    /// Convert path to line segments, flattening every curve and arc so no
+    /// point of it strays more than `tolerance` (in the path's own units)
+    /// from the flattened outline.
+    pub fn to_line_segments_within(&self, tolerance: f32) -> Vec<Vec<(f32, f32)>> {
+        rustkit_layout::path_data::flatten(&self.commands, tolerance)
     }
 
     /// Render the path.
@@ -1663,9 +1838,11 @@ impl SvgPath {
             return;
         }
 
-        let subpaths: Vec<Vec<(f32, f32)>> = self
-            .to_line_segments()
-            .into_iter()
+        // Flatten to a device-pixel tolerance: a path authored in a big
+        // viewBox and drawn small needs few steps per curve.
+        let outlines = self.to_line_segments_within(FLATTEN_TOLERANCE_PX / transform.max_scale());
+        let subpaths: Vec<Vec<(f32, f32)>> = outlines
+            .iter()
             .map(|segment| segment.iter().map(|(x, y)| transform.apply(*x, *y)).collect())
             .collect();
 
@@ -1676,6 +1853,16 @@ impl SvgPath {
             let alpha = (color.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0);
             let fill_color = Color { a: alpha, ..color };
             fill_contours(&subpaths, style.fill_rule, fill_color, commands);
+        } else if let Paint::Gradient(gradient) = &style.fill {
+            fill_gradient(
+                &subpaths,
+                style.fill_rule,
+                gradient,
+                bounds_of(outlines.iter().flatten()),
+                &transform,
+                style.fill_opacity * style.opacity,
+                commands,
+            );
         }
 
         for points in subpaths {
@@ -1785,209 +1972,262 @@ impl SvgText {
                 // baseline directly instead of a run-top.
                 ascent: Some(0.0),
                 run: None,
+                faces: None,
+                undilated: false,
             });
         }
     }
 }
 
-/// Use element (<use>).
+/// Use element (<use>, SVG 2 §5.6).
 #[derive(Debug, Clone, Default)]
 pub struct SvgUse {
+    /// The reference as authored (`href`, else `xlink:href`).
     pub href: String,
     pub x: f32,
     pub y: f32,
-    pub width: Option<f32>,
-    pub height: Option<f32>,
+    /// Size of the viewport a `<symbol>` / `<svg>` target is drawn into.
+    pub width: Option<SvgLength>,
+    pub height: Option<SvgLength>,
     pub transform: Transform2D,
+    /// The use's own style: what its instance inherits from.
+    pub style: SvgStyle,
+    /// The referenced subtree instantiated under the use, as a group
+    /// carrying `transform`, the x/y translation and any viewBox mapping.
+    /// `None` when the reference does not resolve.
+    pub instance: Option<Box<SvgElement>>,
+}
+
+/// Instances one document may build; past it further `<use>`s paint
+/// nothing. Bounds the exponential case (each level using the one below
+/// several times), which a cycle check alone does not.
+const MAX_USE_INSTANCES: usize = 4096;
+/// Deepest chain of `<use>` → target → `<use>` followed.
+const MAX_USE_DEPTH: usize = 32;
+
+/// An element that carries an `id`, as markup, so a `<use>` can instantiate
+/// it with its own style as the inherited one.
+#[derive(Clone)]
+struct IdDef {
+    name: String,
+    open_tag: String,
+    body: String,
+}
+
+struct UseContext<'a> {
+    ids: HashMap<String, IdDef>,
+    /// Ids being instantiated, outermost first: naming one again is a cycle.
+    stack: Vec<String>,
+    budget: usize,
+    servers: &'a mut HashMap<String, GradientDef>,
+}
+
+/// The extent of the element whose open tag ends at `after_tag`: where its
+/// content ends and where its close tag ends. Same-name elements nested in
+/// it are counted, so `<g><g></g></g>` closes at the outer `</g>`. `lower`
+/// is the markup ASCII-lowercased (same byte offsets).
+fn element_extent(lower: &str, after_tag: usize, name: &str) -> Option<(usize, usize)> {
+    let is_name_end = |rest: &str| {
+        rest.chars()
+            .next()
+            .is_none_or(|c| c.is_whitespace() || c == '>' || c == '/')
+    };
+    let mut depth = 1;
+    let mut pos = after_tag;
+    while let Some(i) = lower[pos..].find('<').map(|i| pos + i) {
+        let rest = &lower[i + 1..];
+        let tag_end = lower[i..].find('>').map(|e| i + e + 1)?;
+        if let Some(after) = rest.strip_prefix('/').and_then(|r| r.strip_prefix(name)) {
+            if is_name_end(after) {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((i, tag_end));
+                }
+            }
+        } else if let Some(after) = rest.strip_prefix(name) {
+            if is_name_end(after) && !lower[i..tag_end].ends_with("/>") {
+                depth += 1;
+            }
+        }
+        pos = tag_end;
+    }
+    None
+}
+
+/// Every element a `<use>` can name, by id; the first in document order
+/// wins, as `getElementById` does.
+fn collect_ids(xml: &str) -> HashMap<String, IdDef> {
+    const REFERABLE: &[&str] = &[
+        "symbol", "g", "svg", "use", "rect", "circle", "ellipse", "line", "path", "polyline", "polygon", "text",
+    ];
+    let lower = xml.to_ascii_lowercase();
+    let mut ids = HashMap::new();
+    let mut pos = 0;
+    while let Some(start) = xml[pos..].find('<').map(|i| pos + i) {
+        let Some(end) = xml[start..].find('>').map(|e| start + e + 1) else {
+            break;
+        };
+        pos = end;
+        let tag = &xml[start..end];
+        let name = lower[start + 1..end]
+            .split(|c: char| c.is_whitespace() || c == '>' || c == '/')
+            .next()
+            .unwrap_or("");
+        if !REFERABLE.contains(&name) {
+            continue;
+        }
+        let Some(id) = tag_attributes(tag).remove("id") else {
+            continue;
+        };
+        if ids.contains_key(&id) {
+            continue;
+        }
+        let body = if tag.ends_with("/>") {
+            ""
+        } else {
+            element_extent(&lower, end, name).map_or("", |(body_end, _)| &xml[end..body_end])
+        };
+        ids.insert(
+            id,
+            IdDef {
+                name: name.to_string(),
+                open_tag: tag.to_string(),
+                body: body.to_string(),
+            },
+        );
+    }
+    ids
+}
+
+/// The transform mapping `vb` into a `width` × `height` viewport under
+/// `preserveAspectRatio` (SVG 2 §8.2, default `xMidYMid meet`). `None` for
+/// an empty viewBox, which disables rendering.
+fn viewbox_transform(vb: &ViewBox, width: f32, height: f32, par: Option<&str>) -> Option<Transform2D> {
+    if vb.width <= 0.0 || vb.height <= 0.0 {
+        return None;
+    }
+    let par = par.unwrap_or("").to_ascii_lowercase();
+    let mut tokens = par.split_whitespace().filter(|t| *t != "defer");
+    let align = tokens.next().unwrap_or("xmidymid");
+    let (sx, sy) = (width / vb.width, height / vb.height);
+    if align == "none" {
+        return Some(Transform2D::identity().translate(-vb.min_x * sx, -vb.min_y * sy).scale(sx, sy));
+    }
+    let scale = if tokens.next() == Some("slice") { sx.max(sy) } else { sx.min(sy) };
+    let place = |min: &str, max: &str, extra: f32| {
+        if align.contains(min) {
+            0.0
+        } else if align.contains(max) {
+            extra
+        } else {
+            extra / 2.0
+        }
+    };
+    let tx = place("xmin", "xmax", width - vb.width * scale);
+    let ty = place("ymin", "ymax", height - vb.height * scale);
+    Some(
+        Transform2D::identity()
+            .translate(tx - vb.min_x * scale, ty - vb.min_y * scale)
+            .scale(scale, scale),
+    )
+}
+
+/// Instantiate every `<use>` under `element`. `viewport` is the size, in
+/// the current user units, that percentages and a symbol's auto size
+/// resolve against.
+fn resolve_uses(element: &mut SvgElement, ctx: &mut UseContext, viewport: (f32, f32)) {
+    match element {
+        SvgElement::Group(g) => {
+            for child in &mut g.children {
+                resolve_uses(child, ctx, viewport);
+            }
+        }
+        SvgElement::Use(u) => {
+            let instance = instantiate_use(u, ctx, viewport);
+            u.instance = instance.map(Box::new);
+        }
+        _ => {}
+    }
+}
+
+/// Build the instance of one `<use>` (SVG 2 §5.6): its target re-read with
+/// the use's style as the inherited one, under `transform` then
+/// `translate(x, y)`; a `<symbol>` (or `<svg>`) target becomes a viewport
+/// of the use's width/height (else its own, else 100%) with its viewBox
+/// mapped in. Only same-document `#id` references resolve.
+fn instantiate_use(u: &SvgUse, ctx: &mut UseContext, viewport: (f32, f32)) -> Option<SvgElement> {
+    let id = u.href.trim().strip_prefix('#')?;
+    if ctx.budget == 0 || ctx.stack.len() >= MAX_USE_DEPTH || ctx.stack.iter().any(|s| s == id) {
+        return None;
+    }
+    let def = ctx.ids.get(id)?.clone();
+    ctx.budget -= 1;
+
+    let mut transform = u.transform.translate(u.x, u.y);
+    let mut inner_viewport = viewport;
+    let mut group = match def.name.as_str() {
+        "symbol" | "svg" | "g" => {
+            let attrs = tag_attributes(&def.open_tag);
+            let mut style = u.style.clone();
+            style.parse_attributes(&attrs);
+            if def.name == "g" {
+                if let Some(t) = attrs.get("transform") {
+                    transform = transform.multiply(&Transform2D::parse(t));
+                }
+            } else {
+                let size = |used: Option<SvgLength>, own: &str, full: f32| {
+                    used.or_else(|| attrs.get(own).and_then(|v| SvgLength::parse(v)))
+                        .map_or(full, |l| l.to_px(full))
+                };
+                let width = size(u.width, "width", viewport.0);
+                let height = size(u.height, "height", viewport.1);
+                inner_viewport = (width, height);
+                if let Some(vb) = attrs.get("viewbox").and_then(|v| ViewBox::parse(v)) {
+                    let fit = viewbox_transform(&vb, width, height, attrs.get("preserveaspectratio").map(String::as_str))?;
+                    transform = transform.multiply(&fit);
+                    inner_viewport = (vb.width, vb.height);
+                }
+            }
+            let SvgElement::Group(mut g) = parse_svg_content(&def.body, &style, ctx.servers, inner_viewport).ok()? else {
+                return None;
+            };
+            g.style = style;
+            g
+        }
+        "text" => {
+            let mut g = SvgGroup::new();
+            g.children.push(parse_text_element(&def.open_tag, &def.body, &u.style)?);
+            g.style = u.style.clone();
+            g
+        }
+        _ => {
+            let mut g = SvgGroup::new();
+            g.children.push(parse_element(&def.open_tag, &u.style)?);
+            g.style = u.style.clone();
+            g
+        }
+    };
+    group.transform = transform;
+
+    ctx.stack.push(id.to_string());
+    let mut instance = SvgElement::Group(group);
+    resolve_uses(&mut instance, ctx, inner_viewport);
+    ctx.stack.pop();
+    Some(instance)
 }
 
 // ==================== Helper Functions ====================
 
-/// Parse a number from character iterator.
-fn parse_number<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) -> Option<f32> {
-    // Skip whitespace and commas
-    while chars.peek().is_some_and(|c| c.is_whitespace() || *c == ',') {
-        chars.next();
-    }
-
-    let mut s = String::new();
-    let mut has_dot = false;
-    let mut has_exp = false;
-
-    // Handle sign
-    if chars.peek().is_some_and(|c| *c == '-' || *c == '+') {
-        s.push(chars.next().unwrap());
-    }
-
-    while let Some(&c) = chars.peek() {
-        if c.is_ascii_digit() {
-            s.push(chars.next().unwrap());
-        } else if c == '.' && !has_dot {
-            has_dot = true;
-            s.push(chars.next().unwrap());
-        } else if (c == 'e' || c == 'E') && !has_exp {
-            has_exp = true;
-            s.push(chars.next().unwrap());
-            if chars.peek().is_some_and(|c| *c == '-' || *c == '+') {
-                s.push(chars.next().unwrap());
-            }
-        } else {
-            break;
-        }
-    }
-
-    if s.is_empty() || s == "-" || s == "+" {
-        None
-    } else {
-        s.parse().ok()
-    }
-}
-
-/// Parse a flag (0 or 1).
-fn parse_flag<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) -> Option<bool> {
-    while chars.peek().is_some_and(|c| c.is_whitespace() || *c == ',') {
-        chars.next();
-    }
-
-    match chars.next() {
-        Some('0') => Some(false),
-        Some('1') => Some(true),
-        _ => None,
-    }
-}
-
-/// Generate points along a cubic bezier curve.
-fn cubic_bezier_points(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), p3: (f32, f32), segments: usize) -> Vec<(f32, f32)> {
-    let mut points = Vec::with_capacity(segments);
-    
-    for i in 1..=segments {
-        let t = i as f32 / segments as f32;
-        let t2 = t * t;
-        let t3 = t2 * t;
-        let mt = 1.0 - t;
-        let mt2 = mt * mt;
-        let mt3 = mt2 * mt;
-
-        let x = mt3 * p0.0 + 3.0 * mt2 * t * p1.0 + 3.0 * mt * t2 * p2.0 + t3 * p3.0;
-        let y = mt3 * p0.1 + 3.0 * mt2 * t * p1.1 + 3.0 * mt * t2 * p2.1 + t3 * p3.1;
-
-        points.push((x, y));
-    }
-
-    points
-}
-
-/// The reflection of `control` about `about`; `about` itself when there is no
-/// control to reflect (S/T after a command of another kind).
-fn reflect(control: Option<(f32, f32)>, about: (f32, f32)) -> (f32, f32) {
-    match control {
-        Some((cx, cy)) => (2.0 * about.0 - cx, 2.0 * about.1 - cy),
-        None => about,
-    }
-}
-
-/// Points along an SVG elliptical arc from `p0` to `p1`, excluding `p0` and
-/// ending exactly on `p1` (SVG 1.1 appendix F.6: endpoint to center
-/// parameterization, with out-of-range radii scaled up and a zero radius
-/// meaning a straight line).
-fn arc_points(
-    p0: (f32, f32),
-    rx: f32,
-    ry: f32,
-    x_axis_rotation_deg: f32,
-    large_arc: bool,
-    sweep: bool,
-    p1: (f32, f32),
-) -> Vec<(f32, f32)> {
-    if p0 == p1 {
-        return Vec::new();
-    }
-    let (mut rx, mut ry) = (f64::from(rx.abs()), f64::from(ry.abs()));
-    if rx == 0.0 || ry == 0.0 {
-        return vec![p1];
-    }
-    let (x0, y0) = (f64::from(p0.0), f64::from(p0.1));
-    let (x1, y1) = (f64::from(p1.0), f64::from(p1.1));
-    let phi = f64::from(x_axis_rotation_deg).to_radians();
-    let (sin_phi, cos_phi) = phi.sin_cos();
-
-    // F.6.5.1: the midpoint in the ellipse's rotated frame.
-    let (hx, hy) = ((x0 - x1) / 2.0, (y0 - y1) / 2.0);
-    let xp = cos_phi * hx + sin_phi * hy;
-    let yp = -sin_phi * hx + cos_phi * hy;
-
-    // F.6.6.2: radii too small to span the endpoints are scaled up.
-    let lambda = (xp * xp) / (rx * rx) + (yp * yp) / (ry * ry);
-    if lambda > 1.0 {
-        let k = lambda.sqrt();
-        rx *= k;
-        ry *= k;
-    }
-
-    // F.6.5.2: the center in the rotated frame.
-    let num = rx * rx * ry * ry - rx * rx * yp * yp - ry * ry * xp * xp;
-    let den = rx * rx * yp * yp + ry * ry * xp * xp;
-    let mut coef = if den == 0.0 { 0.0 } else { (num / den).max(0.0).sqrt() };
-    if large_arc == sweep {
-        coef = -coef;
-    }
-    let cxp = coef * rx * yp / ry;
-    let cyp = -coef * ry * xp / rx;
-
-    // F.6.5.3: back to user space.
-    let cx = cos_phi * cxp - sin_phi * cyp + (x0 + x1) / 2.0;
-    let cy = sin_phi * cxp + cos_phi * cyp + (y0 + y1) / 2.0;
-
-    // F.6.5.5-6: start angle and sweep.
-    let angle = |ux: f64, uy: f64, vx: f64, vy: f64| (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
-    let (ux, uy) = ((xp - cxp) / rx, (yp - cyp) / ry);
-    let (vx, vy) = ((-xp - cxp) / rx, (-yp - cyp) / ry);
-    let theta1 = angle(1.0, 0.0, ux, uy);
-    let mut delta = angle(ux, uy, vx, vy);
-    if !sweep && delta > 0.0 {
-        delta -= std::f64::consts::TAU;
-    } else if sweep && delta < 0.0 {
-        delta += std::f64::consts::TAU;
-    }
-
-    // About one point per 11.25 degrees, as fine as the 20-step beziers.
-    let steps = ((delta.abs() / (std::f64::consts::PI / 16.0)).ceil() as usize).max(2);
-    let mut points = Vec::with_capacity(steps);
-    for i in 1..steps {
-        let (sin_t, cos_t) = (theta1 + delta * i as f64 / steps as f64).sin_cos();
-        points.push((
-            (cx + rx * cos_phi * cos_t - ry * sin_phi * sin_t) as f32,
-            (cy + rx * sin_phi * cos_t + ry * cos_phi * sin_t) as f32,
-        ));
-    }
-    points.push(p1);
-    points
-}
-
-/// Generate points along a quadratic bezier curve.
-fn quad_bezier_points(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), segments: usize) -> Vec<(f32, f32)> {
-    let mut points = Vec::with_capacity(segments);
-    
-    for i in 1..=segments {
-        let t = i as f32 / segments as f32;
-        let mt = 1.0 - t;
-
-        let x = mt * mt * p0.0 + 2.0 * mt * t * p1.0 + t * t * p2.0;
-        let y = mt * mt * p0.1 + 2.0 * mt * t * p1.1 + t * t * p2.1;
-
-        points.push((x, y));
-    }
-
-    points
-}
+/// How far, in CSS pixels, a flattened curve may stray from the true one.
+/// The polygon sits inside its curve, so this is ink lost on every convex
+/// edge: 0.1 keeps a 16 px icon dot within 3% of its area, and is 0.2
+/// physical px on a 2x display (this crate doesn't see the scale factor).
+const FLATTEN_TOLERANCE_PX: f32 = 0.1;
 
 /// Extract attribute value from XML tag.
 fn extract_attr(tag: &str, name: &str) -> Option<String> {
-    // Both spellings: HTML's tree builder lowercases attribute names, so an
-    // inline <svg viewBox=...> serialized back out of the DOM carries
-    // `viewbox=` — the camelCase spelling only survives in external .svg
-    // files. (The spec-correct place to re-case it is the HTML parser's
-    // "adjust SVG attributes" step, which rustkit-html does not have.)
+    // Both spellings: the parser adjusts `viewBox` on a parsed <svg>, but a
+    // script can still set the lowercase one on an element it made.
     let lower = name.to_lowercase();
     for candidate in [name, lower.as_str()] {
         let pattern = format!("{}=", candidate);
@@ -2008,8 +2248,7 @@ fn parse_svg_color(s: &str) -> Option<Color> {
     let s = s.trim().to_lowercase();
 
     // Hex colors
-    if s.starts_with('#') {
-        let hex = &s[1..];
+    if let Some(hex) = s.strip_prefix('#') {
         return match hex.len() {
             3 => {
                 let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
@@ -2032,7 +2271,7 @@ fn parse_svg_color(s: &str) -> Option<Color> {
         let inner = s.trim_start_matches("rgba(")
             .trim_start_matches("rgb(")
             .trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(|c| c == ',' || c == '/').collect();
+        let parts: Vec<&str> = inner.split([',', '/']).collect();
         
         if parts.len() >= 3 {
             let r: u8 = parts[0].trim().parse().ok()?;
@@ -2064,9 +2303,15 @@ fn parse_svg_color(s: &str) -> Option<Color> {
 }
 
 /// Parse SVG content into elements.
-fn parse_svg_content(xml: &str, base_style: &SvgStyle) -> Result<SvgElement, SvgError> {
+fn parse_svg_content(
+    xml: &str,
+    base_style: &SvgStyle,
+    servers: &mut HashMap<String, GradientDef>,
+    viewport: (f32, f32),
+) -> Result<SvgElement, SvgError> {
     let mut group = SvgGroup::new();
-    
+    let lower = xml.to_ascii_lowercase();
+
     // Simple element parsing
     let mut pos = 0;
     while pos < xml.len() {
@@ -2118,6 +2363,97 @@ fn parse_svg_content(xml: &str, base_style: &SvgStyle) -> Result<SvgElement, Svg
                     }
                 }
 
+                // Nothing inside <defs> or a <symbol> renders where it is
+                // written: it is drawn only through a <use> (SVG 2 §5.3,
+                // §5.5). Its content is still read for the paint servers it
+                // defines, then the whole element is consumed.
+                if (tag_name == "defs" || tag_name == "symbol") && !tag.ends_with("/>") {
+                    let (body_end, after_close) =
+                        element_extent(&lower, after_tag, &tag_name).unwrap_or((xml.len(), xml.len()));
+                    parse_svg_content(&xml[after_tag..body_end], base_style, servers, viewport)?;
+                    pos = after_close;
+                    continue;
+                }
+
+                // A `<g>` and a nested `<svg>` are containers (SVG 2 §5.2,
+                // §8.2): their children are read with the container's style
+                // as the inherited one and drawn under its transform. A
+                // nested `<svg>` is a viewport at (x, y) with its viewBox
+                // mapped in, and clips to it. Until 2026-10-08
+                // both tags were dropped and their children read as the
+                // root's: no group transform, no inherited fill, and every
+                // icon of a sprite sheet at its viewBox's own units.
+                if matches!(tag_name.as_str(), "g" | "a" | "svg") && !tag.ends_with("/>") {
+                    let (body_end, after_close) =
+                        element_extent(&lower, after_tag, &tag_name).unwrap_or((xml.len(), xml.len()));
+                    let attrs = tag_attributes(tag);
+                    let mut style = base_style.clone();
+                    style.parse_attributes(&attrs);
+                    let mut transform = attrs
+                        .get("transform")
+                        .map_or_else(Transform2D::identity, |t| Transform2D::parse(t));
+                    let mut inner_viewport = viewport;
+                    let mut renders = true;
+                    let mut clip = None;
+                    if tag_name == "svg" {
+                        let length = |name: &str, full: f32, default: f32| {
+                            attrs
+                                .get(name)
+                                .and_then(|v| SvgLength::parse(v))
+                                .map_or(default, |l| l.to_px(full))
+                        };
+                        let width = length("width", viewport.0, viewport.0);
+                        let height = length("height", viewport.1, viewport.1);
+                        let (x, y) = (length("x", viewport.0, 0.0), length("y", viewport.1, 0.0));
+                        // `overflow: hidden` by the UA sheet; a viewport
+                        // under its own `transform` is left unclipped.
+                        let visible = attrs.get("overflow").is_some_and(|v| v.trim().eq_ignore_ascii_case("visible"));
+                        if !visible && !attrs.contains_key("transform") {
+                            clip = Some((x, y, width, height));
+                        }
+                        transform = transform.translate(x, y);
+                        inner_viewport = (width, height);
+                        if let Some(vb) = attrs.get("viewbox").and_then(|v| ViewBox::parse(v)) {
+                            let par = attrs.get("preserveaspectratio").map(String::as_str);
+                            match viewbox_transform(&vb, width, height, par) {
+                                Some(fit) => {
+                                    transform = transform.multiply(&fit);
+                                    inner_viewport = (vb.width, vb.height);
+                                }
+                                // An empty viewBox disables rendering.
+                                None => renders = false,
+                            }
+                        }
+                    }
+                    let content = parse_svg_content(&xml[after_tag..body_end], &style, servers, inner_viewport)?;
+                    if let (true, SvgElement::Group(mut container)) = (renders, content) {
+                        container.transform = transform;
+                        container.style = style;
+                        container.id = attrs.get("id").cloned();
+                        container.viewport = clip;
+                        group.children.push(SvgElement::Group(container));
+                    }
+                    pos = after_close;
+                    continue;
+                }
+
+                // A gradient's stops are its children: read them up to its
+                // closing tag and consume the element.
+                if tag_name == "lineargradient" || tag_name == "radialgradient" {
+                    let mut body = "";
+                    if !tag.ends_with("/>") {
+                        let rest = xml[after_tag..].to_ascii_lowercase();
+                        if let Some(close) = rest.find(&format!("</{tag_name}")) {
+                            body = &xml[after_tag..after_tag + close];
+                        }
+                    }
+                    if let Some((id, def)) = parse_gradient(tag, &tag_name, body) {
+                        servers.insert(id, def);
+                    }
+                    pos = after_tag + body.len();
+                    continue;
+                }
+
                 // Parse element
                 if let Some(element) = parse_element(tag, base_style) {
                     group.children.push(element);
@@ -2133,6 +2469,110 @@ fn parse_svg_content(xml: &str, base_style: &SvgStyle) -> Result<SvgElement, Svg
     }
 
     Ok(SvgElement::Group(group))
+}
+
+/// A gradient as authored: its own attributes, plus the gradient it names
+/// as a template (`href`), which supplies the stops when it has none.
+struct GradientDef {
+    gradient: Gradient,
+    href: Option<String>,
+}
+
+/// The attributes of an open tag, names lowercased, with the declarations
+/// of an inline `style` laid over them.
+fn tag_attributes(tag: &str) -> HashMap<String, String> {
+    let tag = tag.trim_start_matches('<').trim_end_matches('>').trim_end_matches('/');
+    let mut attr_str = tag.split_once(char::is_whitespace).map(|x| x.1).unwrap_or("");
+    let mut attrs = HashMap::new();
+    while let Some((key, value, rest)) = parse_attr(attr_str) {
+        attrs.insert(key.to_lowercase(), value);
+        attr_str = rest;
+    }
+    if let Some(style) = attrs.remove("style") {
+        for decl in style.split(';') {
+            if let Some((name, value)) = decl.split_once(':') {
+                attrs.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+            }
+        }
+    }
+    attrs
+}
+
+/// A number or a percentage, as a fraction.
+fn parse_fraction(s: &str) -> Option<f32> {
+    let s = s.trim();
+    match s.strip_suffix('%') {
+        Some(percent) => percent.trim().parse::<f32>().ok().map(|p| p / 100.0),
+        None => s.parse().ok(),
+    }
+}
+
+/// Parse a `<linearGradient>` / `<radialGradient>` from its open tag and
+/// the markup between its tags. `None` without an id: nothing can name it.
+fn parse_gradient(tag: &str, name: &str, body: &str) -> Option<(String, GradientDef)> {
+    let attrs = tag_attributes(tag);
+    let id = attrs.get("id")?.clone();
+    let coord = |key: &str, default: f32| attrs.get(key).and_then(|v| parse_fraction(v)).unwrap_or(default);
+    let geometry = if name == "lineargradient" {
+        GradientGeometry::Linear { x1: coord("x1", 0.0), y1: coord("y1", 0.0), x2: coord("x2", 1.0), y2: coord("y2", 0.0) }
+    } else {
+        GradientGeometry::Radial { cx: coord("cx", 0.5), cy: coord("cy", 0.5), r: coord("r", 0.5) }
+    };
+
+    let mut stops: Vec<(f32, Color)> = Vec::new();
+    let lower = body.to_ascii_lowercase();
+    let mut pos = 0;
+    while let Some(start) = lower[pos..].find("<stop").map(|i| pos + i) {
+        let end = body[start..].find('>').map(|i| start + i + 1).unwrap_or(body.len());
+        let stop = tag_attributes(&body[start..end]);
+        let offset = stop.get("offset").and_then(|v| parse_fraction(v)).unwrap_or(0.0).clamp(0.0, 1.0);
+        // Each offset is at least the one before it (SVG 2 §14.2.4).
+        let offset = stops.last().map_or(offset, |&(previous, _)| offset.max(previous));
+        let color = stop.get("stop-color").and_then(|v| parse_svg_color(v)).unwrap_or(Color::BLACK);
+        let opacity = stop.get("stop-opacity").and_then(|v| parse_fraction(v)).unwrap_or(1.0).clamp(0.0, 1.0);
+        stops.push((offset, Color { a: color.a * opacity, ..color }));
+        pos = end;
+    }
+
+    let href = attrs
+        .get("href")
+        .or_else(|| attrs.get("xlink:href"))
+        .map(|h| h.trim().trim_start_matches('#').to_string());
+    let gradient = Gradient {
+        geometry,
+        stops,
+        transform: attrs.get("gradienttransform").map(|t| Transform2D::parse(t)).unwrap_or_default(),
+        user_space: attrs.get("gradientunits").is_some_and(|u| u.trim().eq_ignore_ascii_case("userSpaceOnUse")),
+        spread: match attrs.get("spreadmethod").map(|m| m.trim().to_ascii_lowercase()).as_deref() {
+            Some("reflect") => SpreadMethod::Reflect,
+            Some("repeat") => SpreadMethod::Repeat,
+            _ => SpreadMethod::Pad,
+        },
+    };
+    Some((id, GradientDef { gradient, href }))
+}
+
+/// The paintable gradients of a document: each one with the stops it
+/// inherits through its `href` chain when it has none of its own.
+fn resolve_gradients(defs: &HashMap<String, GradientDef>) -> HashMap<String, Arc<Gradient>> {
+    defs.iter()
+        .map(|(id, def)| {
+            let mut gradient = def.gradient.clone();
+            let mut href = def.href.as_deref();
+            // Bounded, so a reference cycle ends.
+            for _ in 0..8 {
+                if !gradient.stops.is_empty() {
+                    break;
+                }
+                let Some(template) = href.and_then(|h| defs.get(h)) else {
+                    break;
+                };
+                gradient.stops = template.gradient.stops.clone();
+                href = template.href.as_deref();
+            }
+            (id.clone(), Arc::new(gradient))
+        })
+        .collect()
 }
 
 /// Parse a single SVG element.
@@ -2239,6 +2679,21 @@ fn parse_element(tag: &str, base_style: &SvgStyle) -> Option<SvgElement> {
             polygon.style.parse_attributes(&attrs);
             Some(SvgElement::Polygon(polygon))
         }
+        "use" => {
+            let coord = |key: &str| attrs.get(key).and_then(|s| SvgLength::parse(s)).map(|l| l.to_px(0.0)).unwrap_or(0.0);
+            let mut style = base_style.clone();
+            style.parse_attributes(&attrs);
+            Some(SvgElement::Use(SvgUse {
+                href: attrs.get("href").or_else(|| attrs.get("xlink:href")).cloned().unwrap_or_default(),
+                x: coord("x"),
+                y: coord("y"),
+                width: attrs.get("width").and_then(|s| SvgLength::parse(s)),
+                height: attrs.get("height").and_then(|s| SvgLength::parse(s)),
+                transform: attrs.get("transform").map(|t| Transform2D::parse(t)).unwrap_or_default(),
+                style,
+                instance: None,
+            }))
+        }
         _ => None,
     }
 }
@@ -2250,8 +2705,8 @@ fn parse_text_element(tag: &str, content: &str, base_style: &SvgStyle) -> Option
     let attrs_str = tag
         .trim_start_matches('<')
         .trim_end_matches('>')
-        .splitn(2, char::is_whitespace)
-        .nth(1)
+        .split_once(char::is_whitespace)
+        .map(|x| x.1)
         .unwrap_or("");
 
     let mut attrs = HashMap::new();
@@ -2649,6 +3104,416 @@ mod tests {
         assert_eq!(black, 1, "render() must still resolve currentColor to black: {plain:?}");
     }
 
+    /// The colors the renderer's triangle fans paint at `p`, in paint order.
+    fn fan_colors(commands: &[DisplayCommand], p: (f32, f32)) -> Vec<Color> {
+        commands
+            .iter()
+            .filter(|c| fan_coverage(std::slice::from_ref(*c), p) == 1)
+            .filter_map(|c| match c {
+                DisplayCommand::FillPolygon { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_linear_gradient_fill_runs_across_the_bounding_box() {
+        // The default gradient: objectBoundingBox units, left to right. The
+        // id keeps its case — `url(#Grad)` names `id="Grad"`.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="10"><defs><linearGradient id="Grad">
+                <stop offset="0" stop-color="#ff0000"/><stop offset="100%" stop-color="#0000ff"/>
+            </linearGradient></defs><rect width="100" height="10" fill="url(#Grad)"/></svg>"##,
+        )
+        .expect("parse");
+        let commands = doc.render(0.0, 0.0, 100.0, 10.0);
+        let at = |x: f32| {
+            let colors = fan_colors(&commands, (x, 5.3));
+            assert_eq!(colors.len(), 1, "x={x} must be painted exactly once: {colors:?}");
+            colors[0]
+        };
+        let (left, mid, right) = (at(5.3), at(50.3), at(94.7));
+        assert!(left.r > 220 && left.b < 35, "left end is the first stop: {left:?}");
+        assert!(right.b > 220 && right.r < 35, "right end is the last stop: {right:?}");
+        assert!((mid.r as i32 - 127).abs() < 12 && (mid.b as i32 - 127).abs() < 12, "midpoint blends: {mid:?}");
+        assert_eq!(left.a, 1.0);
+    }
+
+    #[test]
+    fn test_user_space_gradient_follows_its_transform_and_stop_opacity() {
+        // bing's logo overlay, reduced: a userSpaceOnUse vector flipped by
+        // gradientTransform, fading to a transparent stop, on a concave path.
+        let doc = SvgDocument::parse(
+            r##"<svg width="10" height="10"><defs>
+            <linearGradient id="b" x1="0" y1="0" x2="0" y2="-10" gradientTransform="scale(1 -1)" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#3dcbff"/><stop offset=".5" stop-color="#0588f7" stop-opacity="0"/>
+            </linearGradient></defs><path fill="url(#b)" d="M0 0H10V10H0V6H4V4H0Z"/></svg>"##,
+        )
+        .expect("parse");
+        let commands = doc.render(0.0, 0.0, 10.0, 10.0);
+        let top = fan_colors(&commands, (7.3, 0.4));
+        assert_eq!(top.len(), 1, "the top row is painted once: {top:?}");
+        assert!(top[0].a > 0.8 && top[0].r < 80 && top[0].b > 240, "near the first stop: {:?}", top[0]);
+        let quarter = fan_colors(&commands, (7.3, 2.4));
+        assert!(quarter.len() == 1 && (quarter[0].a - 0.5).abs() < 0.12, "half faded a quarter down: {quarter:?}");
+        // Past the last stop the gradient pads with it: fully transparent.
+        assert!(fan_colors(&commands, (7.3, 8.3)).iter().all(|c| c.a == 0.0));
+        // The notch stays outside the fill.
+        assert!(fan_colors(&commands, (2.3, 5.1)).is_empty(), "the notch is not filled");
+    }
+
+    #[test]
+    fn test_radial_gradient_takes_stops_from_its_href_and_may_follow_its_use() {
+        let doc = SvgDocument::parse(
+            r##"<svg width="20" height="20" xmlns:xlink="http://www.w3.org/1999/xlink">
+            <circle cx="10" cy="10" r="10" fill="url(#r)"/>
+            <radialGradient id="r" xlink:href="#s"/>
+            <linearGradient id="s"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#000000"/></linearGradient>
+            </svg>"##,
+        )
+        .expect("parse");
+        let commands = doc.render(0.0, 0.0, 20.0, 20.0);
+        let centre = fan_colors(&commands, (10.3, 10.3));
+        assert!(centre.len() == 1 && centre[0].r > 225, "the centre is the first stop: {centre:?}");
+        // 80% of the way out, in two directions: the same ring.
+        for p in [(18.3, 10.3), (10.3, 2.3)] {
+            let ring = fan_colors(&commands, p);
+            assert!(ring.len() == 1 && (ring[0].r as i32 - 51).abs() < 20, "{p:?} is 80% out: {ring:?}");
+        }
+        // Outside the circle nothing paints.
+        assert!(fan_colors(&commands, (0.7, 0.7)).is_empty());
+    }
+
+    #[test]
+    fn test_paint_naming_a_missing_server_paints_nothing() {
+        let doc = SvgDocument::parse(
+            r##"<svg width="10" height="10"><rect width="10" height="10" fill="url(#nope)"/></svg>"##,
+        )
+        .expect("parse");
+        assert!(doc.render(0.0, 0.0, 10.0, 10.0).is_empty());
+    }
+
+    /// SVG 2 §13.2: a `url()` paint that names nothing paints its fallback
+    /// (reddit's interstitial logo is `fill: url(#missing) #ff4500`).
+    #[test]
+    fn test_paint_naming_a_missing_server_paints_its_fallback() {
+        let render = |fill: &str| {
+            let doc = SvgDocument::parse(&format!(
+                r##"<svg width="10" height="10"><rect width="10" height="10" fill="{fill}"/></svg>"##
+            ))
+            .expect("parse");
+            fill_rects(&doc.render_with_color(0.0, 0.0, 10.0, 10.0, Color::from_rgb(0, 0, 255)))
+        };
+        assert_eq!(render("url(#nope) #ff4500"), vec![(0.0, 0.0, 10.0, 10.0, (255, 69, 0))]);
+        assert_eq!(render("url('#nope') currentColor"), vec![(0.0, 0.0, 10.0, 10.0, (0, 0, 255))]);
+        assert!(render("url(#nope) none").is_empty());
+        // With a gradient elsewhere in the document the resolve pass runs;
+        // a reference it cannot find still falls back.
+        let doc = SvgDocument::parse(
+            r##"<svg width="10" height="10"><defs><linearGradient id="g"><stop offset="0" stop-color="red"/></linearGradient></defs>
+            <rect width="10" height="10" fill="url(#nope) #00ff00"/></svg>"##,
+        )
+        .expect("parse");
+        assert_eq!(fill_rects(&doc.render(0.0, 0.0, 10.0, 10.0)), vec![(0.0, 0.0, 10.0, 10.0, (0, 255, 0))]);
+    }
+
+    /// #832 RD4 companion for stroke: `resolve_paint` only upgrades fill
+    /// gradients, so stroke `url()` fallbacks are the only path that keeps
+    /// stroke-only icons visible when the paint server is missing.
+    #[test]
+    fn a_stroke_naming_a_missing_server_paints_its_fallback() {
+        let stroke_rects = |commands: &[DisplayCommand]| -> Vec<(f32, f32, f32, f32, (u8, u8, u8))> {
+            commands
+                .iter()
+                .filter_map(|c| match c {
+                    DisplayCommand::StrokeRect { rect, color, .. } => {
+                        Some((rect.x, rect.y, rect.width, rect.height, (color.r, color.g, color.b)))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let render = |stroke: &str| {
+            let doc = SvgDocument::parse(&format!(
+                r##"<svg width="10" height="10"><rect width="10" height="10" fill="none" stroke="{stroke}"/></svg>"##
+            ))
+            .expect("parse");
+            stroke_rects(&doc.render_with_color(0.0, 0.0, 10.0, 10.0, Color::from_rgb(0, 0, 255)))
+        };
+        assert_eq!(render("url(#nope) #ff4500"), vec![(0.0, 0.0, 10.0, 10.0, (255, 69, 0))]);
+        assert_eq!(render("url('#nope') currentColor"), vec![(0.0, 0.0, 10.0, 10.0, (0, 0, 255))]);
+        assert!(render("url(#nope) none").is_empty());
+        // Garbage after the url() is not a colour: no fallback, paints nothing.
+        assert!(render("url(#nope) notacolor").is_empty());
+        assert_eq!(
+            Paint::parse("url(#x) notacolor").resolve(Color::BLACK),
+            None,
+            "unparseable fallback must not invent a colour"
+        );
+    }
+
+    /// Every `FillRect` the commands paint, as `(x, y, w, h, (r, g, b))`.
+    fn fill_rects(commands: &[DisplayCommand]) -> Vec<(f32, f32, f32, f32, (u8, u8, u8))> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                DisplayCommand::FillRect { rect, color } => {
+                    Some((rect.x, rect.y, rect.width, rect.height, (color.r, color.g, color.b)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_group_transform_and_fill_reach_its_children() {
+        // A <g> is a container: its transform and its presentation
+        // attributes are its children's, at any depth, and end with it.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <g transform="translate(50,10)" fill="#ff0000">
+                    <g transform="scale(2)"><rect x="1" y="1" width="3" height="3"/></g>
+                </g>
+                <rect width="2" height="2" fill="#0000ff"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(
+            rects,
+            vec![(52.0, 12.0, 6.0, 6.0, (255, 0, 0)), (0.0, 0.0, 2.0, 2.0, (0, 0, 255))]
+        );
+    }
+
+    #[test]
+    fn test_nested_svg_is_a_viewport() {
+        // A sprite sheet as wikipedia.org's portal ships it: one <svg> per
+        // icon inside the root, each with its own size and viewBox. SVG 2
+        // §8.2: a nested <svg> is a viewport at (x, y) with its viewBox
+        // mapped in. Drawn flat, a 47px icon in a 612-unit viewBox was 612px.
+        let doc = SvgDocument::parse(
+            r##"<svg width="176" height="811" viewBox="0 0 176 811">
+                <svg width="40" height="40" viewBox="-100 -100 200 200"><rect x="-100" y="-100" width="200" height="200" fill="#990000"/></svg>
+                <svg x="10" y="50" width="20" height="10" viewBox="0 0 10 10"><rect width="10" height="10" fill="#006699"/></svg>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 176.0, 811.0));
+        assert_eq!(
+            rects,
+            vec![(0.0, 0.0, 40.0, 40.0, (153, 0, 0)), (15.0, 50.0, 10.0, 10.0, (0, 102, 153))]
+        );
+    }
+
+    #[test]
+    fn test_nested_svg_clips_to_its_viewport() {
+        // `overflow` is `hidden` on a nested <svg> by the UA sheet (SVG 2
+        // §8.2): in a sprite sheet an icon drawn past its own viewport must
+        // not show in its neighbour's. `overflow="visible"` lifts it.
+        let sheet = |overflow: &str| {
+            let doc = SvgDocument::parse(&format!(
+                r##"<svg width="100" height="100">
+                    <svg x="10" y="10" width="20" height="20" viewBox="0 0 20 20"{overflow}>
+                        <rect x="-10" y="5" width="100" height="5" fill="#ff0000"/>
+                        <rect x="0" y="50" width="5" height="5" fill="#00ff00"/>
+                    </svg>
+                </svg>"##
+            ))
+            .expect("parse");
+            fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0))
+        };
+        assert_eq!(sheet(""), vec![(10.0, 15.0, 20.0, 5.0, (255, 0, 0))]);
+        assert_eq!(
+            sheet(r#" overflow="visible""#),
+            vec![(0.0, 15.0, 100.0, 5.0, (255, 0, 0)), (10.0, 60.0, 5.0, 5.0, (0, 255, 0))]
+        );
+    }
+
+    #[test]
+    fn test_use_instantiates_a_symbol_into_the_use_viewport() {
+        // The sprite-sheet idiom (cnn, reddit, shopify, youtube): a <symbol>
+        // with its own viewBox, drawn by a <use> that sets x/y/width/height.
+        // SVG 2 §5.6: the symbol becomes a viewport at (x, y) sized by the
+        // use, its viewBox mapped into it; the symbol itself never renders
+        // where it is defined.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs><symbol id="s" viewBox="0 0 10 10"><rect x="1" y="2" width="4" height="4" fill="#00ff00"/></symbol></defs>
+                <use href="#s" x="20" y="30" width="20" height="20"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(rects, vec![(22.0, 34.0, 8.0, 8.0, (0, 255, 0))], "one green rect, translated and scaled x2");
+    }
+
+    #[test]
+    fn test_use_of_a_group_by_xlink_href_inherits_the_use_presentation_attributes() {
+        // `xlink:href` and a <g> target; the rect names no fill, so it takes
+        // the <use>'s (SVG 2 §5.6.1: the instance inherits from the use).
+        // A rect that sets its own fill keeps it.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs><g id="g" transform="translate(1 1)"><rect width="5" height="5"/><rect x="10" width="5" height="5" fill="#0000ff"/></g></defs>
+                <use xlink:href="#g" x="10" y="20" fill="#ff0000"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(
+            rects,
+            vec![(11.0, 21.0, 5.0, 5.0, (255, 0, 0)), (21.0, 21.0, 5.0, 5.0, (0, 0, 255))],
+        );
+    }
+
+    #[test]
+    fn test_use_of_a_shape_and_currentcolor_through_the_use() {
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs><rect id="r" width="3" height="3"/></defs>
+                <use href="#r" x="5" y="6" fill="currentColor"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let css = Color::new(10, 20, 30, 1.0);
+        let rects = fill_rects(&doc.render_with_color(0.0, 0.0, 100.0, 100.0, css));
+        assert_eq!(rects, vec![(5.0, 6.0, 3.0, 3.0, (10, 20, 30))]);
+    }
+
+    #[test]
+    fn test_nested_use_composes_the_translations() {
+        // use(#outer) -> symbol containing use(#inner) -> g with a rect.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs>
+                    <g id="inner"><rect width="2" height="2" fill="#00ff00"/></g>
+                    <symbol id="outer"><use href="#inner" x="3" y="4"/></symbol>
+                </defs>
+                <use href="#outer" x="10" y="20"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        assert_eq!(rects, vec![(13.0, 24.0, 2.0, 2.0, (0, 255, 0))]);
+    }
+
+    #[test]
+    fn test_use_reference_cycles_and_missing_targets_paint_nothing_and_end() {
+        // a -> b -> a, a use naming itself, and a use naming no element:
+        // parse and render must return (no hang, no panic) with only the
+        // shapes outside the cycle painted.
+        let doc = SvgDocument::parse(
+            r##"<svg width="100" height="100">
+                <defs>
+                    <g id="a"><rect width="1" height="1" fill="#ff0000"/><use href="#b"/></g>
+                    <g id="b"><use href="#a"/></g>
+                </defs>
+                <use id="self" href="#self"/>
+                <use href="#nowhere"/>
+                <use href="#a" x="50"/>
+            </svg>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 100.0, 100.0));
+        // #a's rect once, at the use's x; a -> b -> a is refused there.
+        assert_eq!(rects.len(), 1, "{rects:?}");
+        assert_eq!(rects[0].0, 50.0);
+    }
+
+    #[test]
+    fn test_use_resolves_against_markup_appended_after_the_root() {
+        // The engine appends a sprite sheet that lives in ANOTHER <svg> of
+        // the page (the diagnostics repro) after the root's close tag. It
+        // must resolve but never paint on its own.
+        let doc = SvgDocument::parse(
+            r##"<svg height="50" width="50"><use href="#icon" x="1"></use></svg><defs><g id="icon"><rect x="5" y="5" width="40" height="40" fill="green"></rect></g></defs>"##,
+        )
+        .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 50.0, 50.0));
+        assert_eq!(rects, vec![(6.0, 5.0, 40.0, 40.0, (0, 128, 0))]);
+    }
+
+    /// ebay's icon (H24): `<svg class="icon"><use href="#icon-..."></svg>`,
+    /// no width, height or viewBox, sized 24px by CSS. The viewport of such
+    /// a root is the box it is drawn in, so the symbol fills 24x24 (Chrome
+    /// 148 on docs/diagnostics/2026-10-09/ebay_icon_bg_h24.html). It was
+    /// read for the 300x150 default and painted 150x150 at x=75.
+    const CSS_SIZED_ICON: &str = r##"<svg class="icon"><use href="#sq"></use></svg><defs><symbol viewBox="0 0 16 16" id="sq"><rect x="0" y="0" width="16" height="16" fill="#000000"></rect></symbol></defs>"##;
+
+    #[test]
+    fn test_use_in_a_root_without_a_viewbox_fills_the_box_it_is_drawn_in() {
+        let doc = SvgDocument::parse(CSS_SIZED_ICON).expect("parse");
+        let rects = fill_rects(&doc.render(100.0, 50.0, 24.0, 24.0));
+        assert_eq!(rects, vec![(100.0, 50.0, 24.0, 24.0, (0, 0, 0))]);
+    }
+
+    #[test]
+    fn test_use_in_a_root_without_a_viewbox_keeps_the_symbols_ratio() {
+        // `xMidYMid meet` in a 48x24 box: 24x24, centred.
+        let doc = SvgDocument::parse(CSS_SIZED_ICON).expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 48.0, 24.0));
+        assert_eq!(rects, vec![(12.0, 0.0, 24.0, 24.0, (0, 0, 0))]);
+    }
+
+    #[test]
+    fn test_use_in_a_root_with_size_attributes_follows_the_css_size() {
+        // The attributes are the size only until CSS says otherwise: the
+        // viewport is the used box (Chrome 148: a width="24" height="24"
+        // icon under `width: 48px; height: 48px` paints 48x48).
+        let doc = SvgDocument::parse(&CSS_SIZED_ICON.replace(r#"class="icon""#, r#"width="24" height="24""#))
+            .expect("parse");
+        assert_eq!(
+            fill_rects(&doc.render(0.0, 0.0, 24.0, 24.0)),
+            vec![(0.0, 0.0, 24.0, 24.0, (0, 0, 0))],
+            "at its attribute size"
+        );
+        assert_eq!(
+            fill_rects(&doc.render(0.0, 0.0, 48.0, 48.0)),
+            vec![(0.0, 0.0, 48.0, 48.0, (0, 0, 0))],
+            "at a CSS size"
+        );
+    }
+
+    #[test]
+    fn test_a_root_without_a_viewbox_is_read_again_once_per_size() {
+        // A background draws its document once per tile, up to 2500 of
+        // them, all one size: the second render at a size reuses the
+        // document the first one read.
+        let doc = SvgDocument::parse(CSS_SIZED_ICON).expect("parse");
+        let first = doc.for_viewport(24.0, 24.0).expect("24x24 is not the size it was read for");
+        let again = doc.for_viewport(24.0, 24.0).expect("still not");
+        assert!(std::sync::Arc::ptr_eq(&first, &again), "the same size is not read twice");
+        let other = doc.for_viewport(16.0, 16.0).expect("another size");
+        assert!(!std::sync::Arc::ptr_eq(&first, &other));
+        assert_eq!(fill_rects(&doc.render(0.0, 0.0, 16.0, 16.0)), vec![(0.0, 0.0, 16.0, 16.0, (0, 0, 0))]);
+        assert_eq!(fill_rects(&doc.render(0.0, 0.0, 24.0, 24.0)), vec![(0.0, 0.0, 24.0, 24.0, (0, 0, 0))]);
+        // The size it was read for needs no second document.
+        assert!(doc.for_viewport(300.0, 150.0).is_none());
+    }
+
+    #[test]
+    fn test_a_viewbox_given_after_parsing_is_kept() {
+        // What the engine does for an SVG image with absolute sizes and no
+        // viewBox: the 24x24 drawing is scaled into the 48px box, not read
+        // again for a 48px viewport without it.
+        let mut doc = SvgDocument::parse(&CSS_SIZED_ICON.replace(r#"class="icon""#, r#"width="24" height="24""#))
+            .expect("parse");
+        doc.view_box = Some(ViewBox { min_x: 0.0, min_y: 0.0, width: 24.0, height: 24.0 });
+        doc.stretch = true;
+        let rects = fill_rects(&doc.render(0.0, 0.0, 48.0, 12.0));
+        assert_eq!(rects, vec![(0.0, 0.0, 48.0, 12.0, (0, 0, 0))]);
+    }
+
+    #[test]
+    fn test_a_root_viewbox_still_decides_the_scale_of_a_use() {
+        // Pin: with a viewBox the user units are fixed and the render rect
+        // only scales them, as before.
+        let doc = SvgDocument::parse(&CSS_SIZED_ICON.replace(r#"class="icon""#, r#"viewBox="0 0 16 16""#))
+            .expect("parse");
+        let rects = fill_rects(&doc.render(0.0, 0.0, 24.0, 24.0));
+        assert_eq!(rects, vec![(0.0, 0.0, 24.0, 24.0, (0, 0, 0))]);
+    }
+
     #[test]
     fn test_transform_identity() {
         let t = Transform2D::identity();
@@ -2710,7 +3575,7 @@ mod tests {
     fn test_paint_parse() {
         assert!(matches!(Paint::parse("none"), Paint::None));
         assert!(matches!(Paint::parse("#ff0000"), Paint::Color(_)));
-        assert!(matches!(Paint::parse("url(#gradient)"), Paint::Url(_)));
+        assert!(matches!(Paint::parse("url(#gradient)"), Paint::Url(_, None)));
     }
 
     #[test]
@@ -2756,6 +3621,243 @@ mod tests {
         assert_eq!(points[2], (50.0, 60.0));
     }
 
+    /// A line of glyph-like outlines in a large viewBox, the shape of a
+    /// text-converted-to-paths tagline: 28 "o"-like glyphs, each an outer cubic loop
+    /// and a reversed inner one (its counter), drawn under nonzero.
+    fn glyph_line_svg() -> String {
+        let d: String = glyph_line()
+            .iter()
+            .map(|&(cx, cy, rx, ry)| {
+                glyph_ellipse(cx, cy, rx, ry, true)
+                    + &glyph_ellipse(cx, cy, rx - 35.0, ry - 50.0, false)
+            })
+            .collect();
+        format!(r##"<svg viewBox="0 0 5000 400"><path d="{d}" fill="#000"/></svg>"##)
+    }
+
+    /// Each glyph's outer ellipse `(cx, cy, rx, ry)`; its counter is 35 x 50
+    /// smaller in radius. Glyphs differ a little, as real letters do, so
+    /// their vertices don't land on the same rows.
+    fn glyph_line() -> Vec<(f32, f32, f32, f32)> {
+        (0..28)
+            .map(|i| {
+                let (cx, cy) = (90.0 + 175.0 * i as f32, 200.0 + (i % 7) as f32 * 3.0);
+                (
+                    cx,
+                    cy,
+                    80.0 - (i % 3) as f32 * 4.0,
+                    180.0 - (i % 5) as f32 * 7.0,
+                )
+            })
+            .collect()
+    }
+
+    /// A 4-cubic ellipse about (cx, cy); `cw` picks the direction.
+    fn glyph_ellipse(cx: f32, cy: f32, rx: f32, ry: f32, cw: bool) -> String {
+        let k = 0.5523;
+        let (kx, ky) = (rx * k, ry * k);
+        let s = if cw { 1.0 } else { -1.0 };
+        format!(
+            "M{x0} {cy} C{x0} {a} {b} {top} {cx} {top} C{c} {top} {x1} {a} {x1} {cy} \
+             C{x1} {d} {c} {bot} {cx} {bot} C{b} {bot} {x0} {d} {x0} {cy} Z ",
+            x0 = cx - s * rx,
+            x1 = cx + s * rx,
+            a = cy - ky,
+            b = cx - s * kx,
+            c = cx + s * kx,
+            d = cy + ky,
+            top = cy - ry,
+            bot = cy + ry,
+        )
+    }
+
+    fn fill_polygons(commands: &[DisplayCommand]) -> Vec<&Vec<(f32, f32)>> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                DisplayCommand::FillPolygon { points, .. } => Some(points),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_large_viewbox_path_drawn_small_stays_cheap() {
+        // Wikipedia's tagline: text converted to paths in a big viewBox,
+        // drawn about 139 x 9 CSS px. Curves must be flattened to a device
+        // tolerance, not 20 steps each in user units, and glyphs that don't
+        // share any x must not cut each other's fill into bands.
+        //
+        // The bound: 139 x 9 is 1,251 device pixels. A fill needs at most a
+        // handful of pieces per pixel row per glyph; 2,000 primitives (about
+        // 1.6 per device pixel, ~70 per 9 px glyph) is generous for that
+        // and still two orders of magnitude under the old output.
+        let doc = SvgDocument::parse(&glyph_line_svg()).expect("parse");
+        let commands = doc.render(0.0, 0.0, 139.0, 9.0);
+        let polys = fill_polygons(&commands);
+        assert!(!polys.is_empty(), "the glyphs must still paint");
+        assert!(
+            polys.len() <= 2_000,
+            "{} fill polygons for a 139 x 9 px shape",
+            polys.len()
+        );
+    }
+
+    /// The most any point of `points`' chords (closing one included) sits
+    /// off the ellipse `(cx, cy, rx, ry)`, all in device pixels: the chord
+    /// midpoints are where a flattened curve sags furthest.
+    fn worst_sag(points: &[(f32, f32)], (cx, cy, rx, ry): (f32, f32, f32, f32)) -> f32 {
+        (0..points.len())
+            .map(|i| {
+                let (a, b) = (points[i], points[(i + 1) % points.len()]);
+                let (x, y) = ((a.0 + b.0) * 0.5 - cx, (a.1 + b.1) * 0.5 - cy);
+                let rho = ((x / rx).powi(2) + (y / ry).powi(2)).sqrt();
+                (1.0 - rho).abs() * rx.max(ry)
+            })
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn test_path_drawn_large_keeps_its_curves_smooth() {
+        // The tagline's glyphs at 1000 px wide (a 0.2 scale) and at the
+        // viewBox's own 5000 px: each flattened outline stays within the
+        // device tolerance of its ellipse (plus the 4-cubic approximation's
+        // own ~0.03%), and keeps at least as many points as a circle of the
+        // glyph's smaller radius needs to stay within it.
+        for scale in [0.2_f32, 1.0] {
+            for (cx, cy, rx, ry) in glyph_line() {
+                let path = SvgPath {
+                    commands: SvgPath::parse(&glyph_ellipse(cx, cy, rx, ry, true)),
+                    ..Default::default()
+                };
+                let outline: Vec<(f32, f32)> = path
+                    .to_line_segments_within(FLATTEN_TOLERANCE_PX / scale)
+                    .concat()
+                    .into_iter()
+                    .map(|(x, y)| (x * scale, y * scale))
+                    .collect();
+                let device = (cx * scale, cy * scale, rx * scale, ry * scale);
+                let sag = worst_sag(&outline, device);
+                assert!(sag <= 0.15, "scale {scale}: sags {sag} px off the curve");
+                let r = rx.min(ry) * scale;
+                let floor = (std::f32::consts::PI / (1.0 - FLATTEN_TOLERANCE_PX / r).acos()).floor()
+                    as usize;
+                assert!(
+                    outline.len() >= floor,
+                    "scale {scale}: {} points, a radius-{r} circle needs {floor}",
+                    outline.len()
+                );
+            }
+        }
+        // And the 1000 px drawing has more points than the 139 px one.
+        let path = SvgPath {
+            commands: SvgPath::parse(&glyph_ellipse(90.0, 200.0, 80.0, 180.0, true)),
+            ..Default::default()
+        };
+        let points = |scale: f32| {
+            path.to_line_segments_within(FLATTEN_TOLERANCE_PX / scale)
+                .concat()
+                .len()
+        };
+        assert!(
+            points(0.2) >= 2 * points(9.0 / 400.0),
+            "{} vs {}",
+            points(0.2),
+            points(9.0 / 400.0)
+        );
+    }
+
+    #[test]
+    fn test_small_glyph_line_fill_covers_the_glyphs_once() {
+        // The 139 x 9 px drawing (scale 9 / 400) still fills each ring once,
+        // leaves the counters and the gaps empty, and covers the rings' area.
+        let scale = 9.0 / 400.0;
+        let doc = SvgDocument::parse(&glyph_line_svg()).expect("parse");
+        let commands = doc.render(0.0, 0.0, 139.0, 9.0);
+        let polys = fill_polygons(&commands);
+
+        // Area: every piece is convex and they don't overlap, so their sum
+        // is the coverage. The true rings are pi * (rx * ry - counter). Both
+        // outlines are inscribed, so the ring loses ink outside and gains it
+        // in the counter; at a 0.1 px tolerance the net is about -2% here
+        // (develop covered 351.0 px^2, this 344.9, exact 351.5).
+        let area: f32 = polys.iter().map(|p| polygon_area(p)).sum();
+        let exact: f32 = glyph_line()
+            .iter()
+            .map(|&(_, _, rx, ry)| {
+                std::f32::consts::PI * (rx * ry - (rx - 35.0) * (ry - 50.0)) * scale * scale
+            })
+            .sum();
+        assert!(
+            (area - exact).abs() <= exact * 0.03,
+            "covers {area} px^2, the rings are {exact}"
+        );
+
+        // Points: on a 0.2 px grid, a point clearly inside a ring is painted
+        // exactly once and every other clear point not at all. A point within
+        // 0.3 px of an edge may go either way.
+        let (mut inside, mut outside) = (0, 0);
+        for gy in 0..45 {
+            for gx in 0..600 {
+                // Off the vertex rows, where two pieces share an edge.
+                let p = (gx as f32 * 0.2 + 0.1037, gy as f32 * 0.2 + 0.0913);
+                let mut clear = true;
+                let mut in_ring = false;
+                for &(cx, cy, rx, ry) in &glyph_line() {
+                    let (dx, dy) = (p.0 - cx * scale, p.1 - cy * scale);
+                    let rho = |rx: f32, ry: f32| {
+                        ((dx / (rx * scale)).powi(2) + (dy / (ry * scale)).powi(2)).sqrt()
+                    };
+                    let (outer, inner) = (rho(rx, ry), rho(rx - 35.0, ry - 50.0));
+                    if (outer - 1.0).abs() * rx.min(ry) * scale < 0.3
+                        || (inner - 1.0).abs() * (rx - 35.0).min(ry - 50.0) * scale < 0.3
+                    {
+                        clear = false;
+                    }
+                    in_ring |= outer < 1.0 && inner > 1.0;
+                }
+                if !clear {
+                    continue;
+                }
+                let hits = fan_coverage(&commands, p);
+                if in_ring {
+                    inside += 1;
+                    assert_eq!(hits, 1, "{p:?} is in a ring");
+                } else {
+                    outside += 1;
+                    assert_eq!(hits, 0, "{p:?} is outside every ring");
+                }
+            }
+        }
+        assert!(
+            inside > 100 && outside > 1000,
+            "{inside} inside, {outside} outside"
+        );
+    }
+
+    #[test]
+    fn test_icon_dot_keeps_its_ink() {
+        // A filled r=4 dot in a 24-unit icon, drawn 16 px (r = 2.67 px): the
+        // commonest small curve on a page. Flattened polygons sit inside
+        // their curves, so a coarse tolerance shrinks the dot (0.25 px cost
+        // it 10%, 0.1 px costs 2.6%); keep it within 4% of the true area.
+        let doc = SvgDocument::parse(
+            r##"<svg viewBox="0 0 24 24"><path d="M8 12 C8 9.8 9.8 8 12 8 C14.2 8 16 9.8 16 12 C16 14.2 14.2 16 12 16 C9.8 16 8 14.2 8 12 Z" fill="#000"/></svg>"##,
+        )
+        .expect("parse");
+        let commands = doc.render(0.0, 0.0, 16.0, 16.0);
+        let area: f32 = fill_polygons(&commands)
+            .iter()
+            .map(|p| polygon_area(p))
+            .sum();
+        let r = 4.0 * 16.0 / 24.0;
+        let exact = std::f32::consts::PI * r * r;
+        assert!(
+            (area - exact).abs() <= exact * 0.04,
+            "the dot covers {area} px^2, a circle of radius {r} is {exact}"
+        );
+    }
+
     #[test]
     fn test_svg_document_parse() {
         let svg = r#"<svg viewBox="0 0 100 100"><rect x="10" y="10" width="80" height="80" fill="red"/></svg>"#;
@@ -2764,3 +3866,195 @@ mod tests {
     }
 }
 
+// ==================== Path list (canvas drawImage) ====================
+
+/// One painted shape of an SVG document as a path list: its outline in
+/// device pixels (flattened finely enough that a rasterizer cannot tell it
+/// from the curves) and how it is filled and stroked. For painters that
+/// rasterize the document themselves, such as a canvas's `drawImage` of an
+/// SVG image (STR-7 slice 3), which Chrome rasterizes at the drawn size.
+#[derive(Debug, Clone)]
+pub struct SvgPaintPath {
+    /// Each subpath's points and whether it is closed.
+    pub contours: Vec<(Vec<(f32, f32)>, bool)>,
+    pub even_odd: bool,
+    /// The solid fill, its opacities applied.
+    pub fill: Option<Color>,
+    pub stroke: Option<SvgPaintStroke>,
+}
+
+/// A path list entry's stroke, in device pixels.
+#[derive(Debug, Clone, Copy)]
+pub struct SvgPaintStroke {
+    pub color: Color,
+    pub width: f32,
+    pub cap: LineCap,
+    pub join: LineJoin,
+    pub miter_limit: f32,
+}
+
+/// The flattening tolerance of a path list, in device pixels.
+const PATH_LIST_TOLERANCE_PX: f32 = 0.05;
+
+impl SvgDocument {
+    /// The document as a path list for the rect `(x, y, width, height)`,
+    /// placed as `render` places it. Painted in document order. Not
+    /// included: gradient paint, text, dashes, `<use>`, clipping by a
+    /// nested viewport.
+    pub fn path_list(&self, x: f32, y: f32, width: f32, height: f32, current_color: Color) -> Vec<SvgPaintPath> {
+        if let Some(sized) = self.for_viewport(width, height) {
+            return sized.path_list(x, y, width, height, current_color);
+        }
+        let transform = if let Some(vb) = &self.view_box {
+            let (sx, sy) = (width / vb.width, height / vb.height);
+            let (sx, sy) = if self.stretch { (sx, sy) } else { (sx.min(sy), sx.min(sy)) };
+            Transform2D::identity().translate(x - vb.min_x * sx, y - vb.min_y * sy).scale(sx, sy)
+        } else {
+            Transform2D::identity().translate(x, y)
+        };
+        let base = SvgStyle { current_color, ..SvgStyle::default() };
+        let mut out = Vec::new();
+        self.root.path_list(&transform, &base, &mut out);
+        out
+    }
+}
+
+/// `n` points around an ellipse, closed.
+fn ellipse_points(cx: f32, cy: f32, rx: f32, ry: f32, scale: f32) -> Vec<(f32, f32)> {
+    let r = rx.max(ry) * scale;
+    // Chord error r(1 - cos(pi/n)) under the tolerance.
+    let n = ((PI / (1.0 - PATH_LIST_TOLERANCE_PX / r.max(PATH_LIST_TOLERANCE_PX * 2.0)).acos()).ceil() as usize).clamp(8, 1024);
+    (0..n)
+        .map(|i| {
+            let a = i as f32 / n as f32 * 2.0 * PI;
+            (cx + rx * a.cos(), cy + ry * a.sin())
+        })
+        .collect()
+}
+
+/// A rounded rect's outline (radii already clamped), closed.
+fn round_rect_points(x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32, scale: f32) -> Vec<(f32, f32)> {
+    if rx <= 0.0 || ry <= 0.0 {
+        return vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+    }
+    let quarter = ellipse_points(0.0, 0.0, rx, ry, scale);
+    let q = quarter.len() / 4;
+    let mut pts = Vec::new();
+    // Corners clockwise from the top right; each a quarter of the ellipse.
+    for (corner, (cx, cy)) in [(3, (x + w - rx, y + ry)), (0, (x + w - rx, y + h - ry)), (1, (x + rx, y + h - ry)), (2, (x + rx, y + ry))] {
+        for i in 0..=q {
+            let (px, py) = quarter[(corner * q + i) % quarter.len()];
+            pts.push((cx + px, cy + py));
+        }
+    }
+    pts
+}
+
+impl SvgElement {
+    fn path_list(&self, parent: &Transform2D, parent_style: &SvgStyle, out: &mut Vec<SvgPaintPath>) {
+        let (own, style) = match self {
+            SvgElement::Group(g) => (&g.transform, &g.style),
+            SvgElement::Rect(e) => (&e.transform, &e.style),
+            SvgElement::Circle(e) => (&e.transform, &e.style),
+            SvgElement::Ellipse(e) => (&e.transform, &e.style),
+            SvgElement::Line(e) => (&e.transform, &e.style),
+            SvgElement::Polyline(e) => (&e.transform, &e.style),
+            SvgElement::Polygon(e) => (&e.transform, &e.style),
+            SvgElement::Path(e) => (&e.transform, &e.style),
+            SvgElement::Text(_) | SvgElement::Use(_) => return,
+        };
+        let t = parent.multiply(own);
+        let mut style = style.clone();
+        style.inherit_from(parent_style);
+        if !style.visibility {
+            return;
+        }
+        let scale = t.max_scale().max(1e-6);
+        let contours: Vec<(Vec<(f32, f32)>, bool)> = match self {
+            SvgElement::Group(g) => {
+                for child in &g.children {
+                    child.path_list(&t, &style, out);
+                }
+                return;
+            }
+            SvgElement::Rect(r) => {
+                if r.width <= 0.0 || r.height <= 0.0 {
+                    return;
+                }
+                let (rx, ry) = match (r.rx > 0.0, r.ry > 0.0) {
+                    (true, true) => (r.rx, r.ry),
+                    (true, false) => (r.rx, r.rx),
+                    (false, true) => (r.ry, r.ry),
+                    _ => (0.0, 0.0),
+                };
+                let (rx, ry) = (rx.min(r.width / 2.0), ry.min(r.height / 2.0));
+                vec![(round_rect_points(r.x, r.y, r.width, r.height, rx, ry, scale), true)]
+            }
+            SvgElement::Circle(c) if c.r > 0.0 => vec![(ellipse_points(c.cx, c.cy, c.r, c.r, scale), true)],
+            SvgElement::Ellipse(e) if e.rx > 0.0 && e.ry > 0.0 => vec![(ellipse_points(e.cx, e.cy, e.rx, e.ry, scale), true)],
+            SvgElement::Line(l) => vec![(vec![(l.x1, l.y1), (l.x2, l.y2)], false)],
+            SvgElement::Polyline(p) => vec![(p.points.clone(), false)],
+            SvgElement::Polygon(p) => vec![(p.points.clone(), true)],
+            SvgElement::Path(p) => {
+                // A subpath is closed when it ends with a closepath (the
+                // flattener returns to its start point).
+                let closes: Vec<bool> = {
+                    let mut v = Vec::new();
+                    let mut open = false;
+                    for c in &p.commands {
+                        match c {
+                            PathCommand::MoveTo(..) | PathCommand::MoveToRel(..) => {
+                                if open {
+                                    v.push(false);
+                                }
+                                open = true;
+                            }
+                            PathCommand::Close => {
+                                if open {
+                                    v.push(true);
+                                    open = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if open {
+                        v.push(false);
+                    }
+                    v
+                };
+                p.to_line_segments_within(PATH_LIST_TOLERANCE_PX / scale)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, pts)| (pts, closes.get(i).copied().unwrap_or(false)))
+                    .collect()
+            }
+            _ => return,
+        };
+        let contours: Vec<(Vec<(f32, f32)>, bool)> = contours
+            .into_iter()
+            .filter(|(pts, _)| pts.len() >= 2)
+            .map(|(pts, closed)| (pts.iter().map(|&(x, y)| t.apply(x, y)).collect(), closed))
+            .collect();
+        if contours.is_empty() {
+            return;
+        }
+        let open_shape = matches!(self, SvgElement::Line(_) | SvgElement::Polyline(_));
+        let fill = if open_shape && matches!(self, SvgElement::Line(_)) {
+            None
+        } else {
+            style.fill_color().map(|c| Color { a: (c.a * style.fill_opacity * style.opacity).clamp(0.0, 1.0), ..c })
+        };
+        let stroke = style.stroke_color().filter(|_| style.stroke_width > 0.0).map(|c| SvgPaintStroke {
+            color: Color { a: (c.a * style.stroke_opacity * style.opacity).clamp(0.0, 1.0), ..c },
+            width: style.stroke_width * scale,
+            cap: style.stroke_linecap,
+            join: style.stroke_linejoin,
+            miter_limit: style.stroke_miterlimit,
+        });
+        if fill.is_none() && stroke.is_none() {
+            return;
+        }
+        out.push(SvgPaintPath { contours, even_odd: style.fill_rule == FillRule::EvenOdd, fill, stroke });
+    }
+}

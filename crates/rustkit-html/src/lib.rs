@@ -134,6 +134,47 @@ pub trait TreeSink {
         }
     }
 
+    /// Insert a text node at the foster parent location: immediately before
+    /// `table` in the table's parent (HTML §13.2.6.1, "appropriate place for
+    /// inserting a node" with foster parenting). Used for non-whitespace
+    /// text that appears directly inside a table, tbody, tfoot, thead or tr.
+    ///
+    /// The default is built only from the primitives above, so existing
+    /// sinks get it without changes: the text is created inside a scratch
+    /// element, the scratch element is detached, and then the table is
+    /// moved after the text. That relies on the table being its parent's
+    /// last child, which holds while the table is open (everything else
+    /// goes inside the table or, fostered, before it). Sinks that can create
+    /// a detached text node should override this with a direct insert.
+    fn foster_parent_text(&mut self, table: Self::NodeId, data: String) {
+        let Some(parent) = self.get_parent(table.clone()) else {
+            self.text(data);
+            return;
+        };
+        let scratch = self.start_element("span".to_string(), Vec::new(), false);
+        self.text(data);
+        self.end_element("span".to_string());
+        self.remove_from_parent(scratch.clone());
+        self.remove_from_parent(table.clone());
+        self.reparent_children(scratch, parent.clone());
+        self.append_child(parent, table);
+    }
+
+    /// Make `node`, already in the tree, the insertion point again (pushed
+    /// on the sink's stack of open elements): HTML §13.2.6.4.6, a head
+    /// element after `</head>` goes back into the head. The default does
+    /// nothing.
+    fn reopen(&mut self, _node: Self::NodeId) {}
+
+    /// Take `node` off the sink's stack of open elements, wherever it is on
+    /// it (the head, once such an element is in). The default does nothing.
+    fn remove_open(&mut self, _node: Self::NodeId) {}
+
+    /// Add each of `attrs` that `target` does not already have (HTML
+    /// §13.2.6.4.7, a second `<html>` or `<body>` start tag). The existing
+    /// value wins. The default ignores them.
+    fn add_attrs_if_missing(&mut self, _target: Self::NodeId, _attrs: Vec<(String, String)>) {}
+
     /// Called when a parse error is encountered.
     /// The default implementation ignores errors.
     fn parse_error(&mut self, _error: &str) {
@@ -155,7 +196,7 @@ pub trait TreeSink {
 
     /// Check if an element is a template element.
     fn is_template_element(&self, node: Self::NodeId) -> bool {
-        self.get_tag_name(node).map_or(false, |n| n == "template")
+        self.get_tag_name(node).is_some_and(|n| n == "template")
     }
 
     /// Mark a script element as "already started" per HTML5 spec.
@@ -172,10 +213,27 @@ pub trait TreeSink {
 }
 
 /// Parse HTML from a string using the provided sink.
-pub fn parse<S: TreeSink>(html: &str, mut sink: S) -> ParseResult<S> {
-    let tokens = tokenizer::tokenize(html)?;
-    sink = tree_builder::build_tree(tokens, sink)?;
-    Ok(sink)
+pub fn parse<S: TreeSink>(html: &str, sink: S) -> ParseResult<S> {
+    parse_scripted(html, sink, false)
+}
+
+/// `parse` with the scripting flag (HTML §13.2.3.5): on for a document
+/// whose scripts run, where `<noscript>` holds raw text and nothing in it
+/// becomes an element.
+pub fn parse_scripted<S: TreeSink>(html: &str, sink: S, scripting: bool) -> ParseResult<S> {
+    tree_builder::TreeBuilder::new(sink).parse(html, scripting)
+}
+
+/// `parse_fragment` with the scripting flag of the context element's
+/// document.
+pub fn parse_fragment_scripted<S: TreeSink>(
+    html: &str,
+    sink: S,
+    context_element: &str,
+    scripting: bool,
+) -> ParseResult<S> {
+    let context = FragmentContext::new(context_element);
+    tree_builder::TreeBuilder::new_fragment(sink, context).parse(html, scripting)
 }
 
 /// Parse HTML from bytes using the provided sink.
@@ -208,9 +266,7 @@ pub fn parse_fragment<S: TreeSink>(
     sink: S,
     context_element: &str,
 ) -> ParseResult<S> {
-    let tokens = tokenizer::tokenize(html)?;
-    let context = FragmentContext::new(context_element);
-    tree_builder::build_tree_fragment(tokens, sink, context)
+    parse_fragment_scripted(html, sink, context_element, false)
 }
 
 #[cfg(test)]

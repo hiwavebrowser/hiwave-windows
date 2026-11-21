@@ -1,0 +1,28 @@
+{
+ "cases": {
+  "scanThenOnloadThenSrc": [
+   "frame_load_child.html"
+  ],
+  "scanThenListenerOnly": [],
+  "attrNoSrc": [
+   "blank"
+  ],
+  "attrSrc": [
+   "frame_load_child.html"
+  ],
+  "attrSrcdoc": [
+   "srcdoc"
+  ],
+  "replacedBefore": [
+   "blank"
+  ],
+  "replacedAfter": [],
+  "attrThenReplaced": [
+   "blank"
+  ],
+  "removedAfterInsertion": [
+   "blank"
+  ]
+ },
+ "browser": "148.0.7778.216"
+}

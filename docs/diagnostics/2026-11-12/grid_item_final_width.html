@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>GR3 grid items lay out at their final width</title>
+<style>
+body { margin: 0; font: 16px/20px Times; }
+.g { display: grid; width: 400px; margin-bottom: 4px; }
+.f { float: left; width: 100px; height: 10px; }
+.r { float: right; width: 60px; height: 10px; }
+.ib { display: inline-block; width: 50px; height: 10px; }
+</style></head><body>
+<!-- shrink-to-fit items (justify-items:start) with floats -->
+<div class="g" style="justify-items:start"><div id="s_two"><div id="s_two_b" class="f"></div><div id="s_two_c" class="f"></div></div></div>
+<div class="g" style="justify-items:start"><div id="s_lr"><div class="f"></div><div id="s_lr_r" class="r"></div></div></div>
+<div class="g" style="justify-items:center"><div id="c_two"><div class="f"></div><div id="c_two_c" class="f"></div></div></div>
+<!-- stretched items (default justify-items) -->
+<div class="g"><div id="t_three"><div class="f"></div><div class="f"></div><div id="t_three_c" class="f"></div></div></div>
+<div class="g" style="grid-template-columns:auto auto"><div id="t_auto_a"><div class="f"></div><div id="t_auto_a_c" class="f"></div></div><div id="t_auto_b">x</div></div>
+<div class="g" style="grid-template-columns:1fr 1fr"><div id="t_fr"><div class="f"></div><div id="t_fr_c" class="r"></div></div><div>x</div></div>
+<!-- non-float content -->
+<div class="g" style="justify-items:start"><div id="n_ib"><span class="ib"></span><span class="ib"></span><span class="ib"></span><span class="ib"></span><span id="n_ib_e" class="ib"></span></div></div>
+<div class="g"><div id="n_txt">one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen</div></div>
+<div class="g" style="grid-template-columns:auto auto"><div id="n_txt_auto">alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu</div><div id="n_txt_auto2">nu xi omicron pi rho sigma tau upsilon phi chi psi omega</div></div>
+<div class="g" style="justify-items:start"><div id="n_pct"><div style="width:120px;height:4px"></div><div id="n_pct_c" style="width:100%;height:6px"></div></div></div>
+<div class="g"><div id="n_pct_s"><div id="n_pct_s_c" style="width:50%;height:6px"></div></div></div>
+<div class="g" style="justify-items:start"><div id="n_flex"><div style="display:flex"><div style="width:80px;height:10px"></div><div id="n_flex_c" style="flex:1;height:10px"></div></div><div style="width:150px;height:2px"></div></div></div>
+<div class="g" style="justify-items:start"><div id="n_txt_fl"><div class="f"></div>abc def ghi<div id="n_txt_fl_r" class="r"></div></div></div>
+</body></html>
