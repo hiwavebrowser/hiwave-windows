@@ -311,6 +311,22 @@ impl ContentThread {
     }
 
     pub fn load_html(&self, html: &str) -> oneshot::Receiver<Result<(), String>> {
+        self.load_html_doc(html, false)
+    }
+
+    /// [`Self::load_html`] for one of the app's own pages shown in this web
+    /// view: see [`crate::Engine::load_internal_page_as`].
+    pub fn load_internal_page(&self, html: &str) -> oneshot::Receiver<Result<(), String>> {
+        self.load_html_doc(html, true)
+    }
+
+    /// Answer the internal page's read of navigation `nav_id`
+    /// ([`PageEvent::InternalRead`]).
+    pub fn answer_internal_read(&self, nav_id: u64, response_json: String) {
+        let _ = self.cmd.send(PageCmd::AnswerInternalRead { nav_id, response_json });
+    }
+
+    fn load_html_doc(&self, html: &str, internal_page: bool) -> oneshot::Receiver<Result<(), String>> {
         let (reply, rx) = oneshot::channel();
         // Allocated here, not when the page later runs the command. A
         // navigation queued behind this one then has the newer id, and a
@@ -327,6 +343,7 @@ impl ContentThread {
         let _ = self.cmd.send(PageCmd::LoadHtml {
             html: html.to_string(),
             nav_id,
+            internal_page,
             reply,
         });
         rx
@@ -1583,6 +1600,7 @@ mod tests {
         assert!(!runs_mid_load(&PageCmd::LoadHtml {
             html: "<p>x</p>".into(),
             nav_id: 1,
+            internal_page: false,
             reply: html_reply,
         }));
         let (live_reply, _) = oneshot::channel();
@@ -1710,7 +1728,7 @@ mod tests {
             PageCmd::Input(PageInput::MouseDown { x: 2.0, y: 0.0, clicks: 1, shift: false }),
             mv(2.0),
             PageCmd::Input(PageInput::Click { x: 2.0, y: 0.0, reply: click_reply }),
-            PageCmd::LoadHtml { html: "<p>next</p>".into(), nav_id: 9, reply: html_reply },
+            PageCmd::LoadHtml { html: "<p>next</p>".into(), nav_id: 9, internal_page: false, reply: html_reply },
             mv(3.0),
         ];
         let out = coalesce(batch);

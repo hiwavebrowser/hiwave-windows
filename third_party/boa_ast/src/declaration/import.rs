@@ -36,6 +36,12 @@ pub enum ImportKind {
         /// List of the required exports of the imported module.
         names: Box<[ImportSpecifier]>,
     },
+    /// HIWAVE PATCH (source-phase-import): source phase import
+    /// (`import source name from "module-name"`, the source-phase-imports proposal).
+    Source {
+        /// Binding for the source phase representation of the imported module.
+        binding: Identifier,
+    },
 }
 
 impl VisitWith for ImportKind {
@@ -45,7 +51,9 @@ impl VisitWith for ImportKind {
     {
         match self {
             Self::DefaultOrUnnamed => ControlFlow::Continue(()),
-            Self::Namespaced { binding } => visitor.visit_identifier(binding),
+            Self::Namespaced { binding } | Self::Source { binding } => {
+                visitor.visit_identifier(binding)
+            }
             Self::Named { names } => {
                 for name in &**names {
                     visitor.visit_import_specifier(name)?;
@@ -61,7 +69,9 @@ impl VisitWith for ImportKind {
     {
         match self {
             Self::DefaultOrUnnamed => ControlFlow::Continue(()),
-            Self::Namespaced { binding } => visitor.visit_identifier_mut(binding),
+            Self::Namespaced { binding } | Self::Source { binding } => {
+                visitor.visit_identifier_mut(binding)
+            }
             Self::Named { names } => {
                 for name in &mut **names {
                     visitor.visit_import_specifier_mut(name)?;
@@ -235,6 +245,9 @@ pub enum ImportName {
     Namespace,
     /// A binding of the imported module.
     Name(Sym),
+    /// HIWAVE PATCH (source-phase-import): the source phase representation of the imported
+    /// module (`import source name from "module-name"`).
+    Source,
 }
 
 /// [`ImportEntry`][spec] record.

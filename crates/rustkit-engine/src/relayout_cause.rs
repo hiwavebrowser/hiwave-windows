@@ -243,6 +243,9 @@ pub struct RelayoutStats {
     /// Time spent in them: the restyle, the patch and the display list
     /// (the commit to the presenter is not counted).
     pub animation_paint_ms: f64,
+    /// MEDIA-AVF §3.3: frames presented for a new video frame alone, with no build and
+    /// no layout.
+    pub video_frames_presented: u32,
     /// Forced layouts: script read geometry after a DOM write in the same
     /// task, so the page was laid out (not painted) for the read.
     pub forced_layouts: u64,

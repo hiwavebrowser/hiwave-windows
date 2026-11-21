@@ -77,6 +77,91 @@ pub enum FaceKey {
     Recorded(rustkit_text::GlyphFace),
 }
 
+/// How a character is painted on Windows, from the face layout recorded.
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WindowsPaint {
+    /// Colour artwork from Segoe UI Emoji (`rasterize_glyph_directwrite_color`).
+    Colour,
+    /// A coverage mask from the run's own face.
+    Mask,
+    /// A coverage mask from the text fallback face layout measured the
+    /// character in (Segoe UI Symbol): a symbol without Emoji_Presentation,
+    /// which Chrome draws as text, not colour.
+    TextFallback,
+}
+
+/// The text face layout measures a text-presentation symbol in on Windows
+/// (`TextShaper::shape_uncached`), and paint draws it from.
+#[cfg(windows)]
+pub(crate) const WINDOWS_TEXT_SYMBOL_FAMILY: &str = "Segoe UI Symbol";
+
+/// Windows' paint path for `ch`. A recorded fallback face decides (layout's
+/// one decision); without one, an `is_emoji` character keeps the colour path,
+/// as before.
+#[cfg(windows)]
+pub(crate) fn windows_paint(ch: char, face: FaceKey) -> WindowsPaint {
+    match face {
+        FaceKey::Recorded(rustkit_text::GlyphFace::Fallback { emoji: false }) => WindowsPaint::TextFallback,
+        FaceKey::Recorded(rustkit_text::GlyphFace::Fallback { emoji: true }) => WindowsPaint::Colour,
+        _ if rustkit_text::is_emoji(ch) => WindowsPaint::Colour,
+        _ => WindowsPaint::Mask,
+    }
+}
+
+/// Whether `key` must be drawn from the system collection alone: a text fallback layout
+/// measured in the system's Segoe UI Symbol, which a document's `@font-face` of the same name
+/// must not replace (layout measured the system face, and the glyph cache keys it as one).
+#[cfg(windows)]
+pub(crate) fn system_face_only(key: &GlyphKey) -> bool {
+    matches!(key.face, FaceKey::Recorded(rustkit_text::GlyphFace::Fallback { emoji: false }))
+}
+
+#[cfg(all(test, windows))]
+mod windows_paint_tests {
+    use super::*;
+    use rustkit_text::{GlyphFace, Variation};
+
+    /// A symbol layout measured in the text fallback face is a mask from that
+    /// face, never Segoe UI Emoji's colour artwork (U+2699 GEAR: Chrome for
+    /// Testing 148 win64 draws it from Segoe UI Symbol).
+    #[test]
+    fn a_recorded_text_fallback_is_a_mask_from_the_symbol_face() {
+        let gear = '\u{2699}';
+        assert_eq!(windows_paint(gear, FaceKey::Recorded(GlyphFace::Fallback { emoji: false })), WindowsPaint::TextFallback);
+        assert_eq!(windows_paint(gear, FaceKey::Recorded(GlyphFace::Fallback { emoji: true })), WindowsPaint::Colour);
+        // No record (a legacy command): the old rule.
+        assert_eq!(windows_paint(gear, FaceKey::Auto(Variation::None)), WindowsPaint::Colour);
+        assert_eq!(windows_paint('a', FaceKey::Recorded(GlyphFace::Primary)), WindowsPaint::Mask);
+        // The face exists and has ink for the symbol at 14px.
+        let drawn = rasterize_char_for_test(gear, WINDOWS_TEXT_SYMBOL_FAMILY, 14.0, 400).expect("Segoe UI Symbol has U+2699");
+        assert!(drawn.0.iter().any(|&a| a > 0), "no ink");
+        assert!((drawn.3 - 11.8125).abs() < 0.02, "advance {}", drawn.3);
+    }
+
+    /// The text fallback's glyph comes from the system face only; any other key may take a
+    /// document's web face first, as before.
+    #[test]
+    fn a_text_fallback_glyph_is_the_system_face_only() {
+        let key = |face| GlyphKey {
+            cluster: None,
+            codepoint: '\u{2699}',
+            font_family: WINDOWS_TEXT_SYMBOL_FAMILY.to_string(),
+            font_size: 140,
+            font_weight: 400,
+            font_style: 0,
+            subpixel_phase: 0,
+            web_face: 0,
+            coverage: 0,
+            face,
+        };
+        assert!(system_face_only(&key(FaceKey::Recorded(GlyphFace::Fallback { emoji: false }))));
+        assert!(!system_face_only(&key(FaceKey::Recorded(GlyphFace::Fallback { emoji: true }))));
+        assert!(!system_face_only(&key(FaceKey::Recorded(GlyphFace::Primary))));
+        assert!(!system_face_only(&key(FaceKey::Auto(Variation::None))));
+    }
+}
+
 impl Default for FaceKey {
     fn default() -> Self {
         FaceKey::Auto(rustkit_text::Variation::None)
@@ -1195,12 +1280,18 @@ unsafe fn directwrite_face_for(factory: &IDWriteFactory, key: &GlyphKey) -> Opti
         // ladder below only when no family in the list resolves.
         let chain = rustkit_layout::FontFamilyChain::from_css_value(&key.font_family);
         let style = if key.font_style == 1 { rustkit_css::FontStyle::Italic } else { rustkit_css::FontStyle::Normal };
-        let resolved = rustkit_layout::text::resolve_windows_face(
-            &chain,
-            rustkit_css::FontWeight(key.font_weight),
-            style,
-            rustkit_css::FontStretch::Normal,
-        );
+        // A recorded text fallback is the SYSTEM face layout measured (Segoe UI Symbol from the
+        // system collection): never a document's web face of that name.
+        let resolved = if system_face_only(key) {
+            None
+        } else {
+            rustkit_layout::text::resolve_windows_face(
+                &chain,
+                rustkit_css::FontWeight(key.font_weight),
+                style,
+                rustkit_css::FontStretch::Normal,
+            )
+        };
         let web_face = resolved.map(|(face, _, _)| face.raw().clone());
         match web_face {
             Some(face) => Some(face),

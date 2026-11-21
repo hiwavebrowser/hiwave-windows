@@ -1,0 +1,16 @@
+{
+  "01_source_binding": "import source x from 'dep'; export const r = 1;",
+  "02_binding_named_source": "import source source from 'dep'; export const r = 1;",
+  "03_binding_named_from": "import source from from 'dep'; export const r = 1;",
+  "04_line_terminators": "import\n\nsource\n\ny from 'dep'; export const r = 1;",
+  "05_unloadable_module": "import source x from 'missing'; export const r = 1;",
+  "06_default_named_source": "import source from 'dep'; export const r = source;",
+  "07_default_source_and_named": "import source, { a } from 'dep'; export const r = source + a;",
+  "08_default_source_and_namespace": "import source, * as ns from 'dep'; export const r = ns.a;",
+  "09_source_with_named": "import source x, { a } from 'dep'; export const r = 1;",
+  "10_source_namespace": "import source * as ns from 'dep'; export const r = 1;",
+  "11_source_named_list": "import source { a } from 'dep'; export const r = 1;",
+  "12_source_bare_specifier": "import source 'dep'; export const r = 1;",
+  "13_source_binding_redeclared": "import source x from 'dep'; let x; export const r = 1;",
+  "14_escaped_source_keyword": "import sour\\u0063e x from 'dep'; export const r = 1;"
+}

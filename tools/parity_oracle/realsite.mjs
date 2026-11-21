@@ -1,10 +1,11 @@
 /**
  * realsite.mjs - Chrome side of the real-site board (scripts/realsite_board.py)
  *
- *   node realsite.mjs chrome <url> <out.png> <out-text.json> [width height settleMs]
+ *   node realsite.mjs chrome <url> <out.png> <out-text.json> [width height settleMs [out.har]]
  *     Load a live URL in pinned Chrome (PARITY_CHROME_PATH) with the oracle's
  *     deterministic launch options, let it settle, screenshot the first
- *     viewport and record the text Chrome shows in that viewport.
+ *     viewport and record the text Chrome shows in that viewport. With
+ *     out.har, also record the load as a HAR with embedded bodies.
  *
  *   node realsite.mjs diff <chrome.png> <other.png|.ppm> [diff.png]
  *     Pixel diff with the campaign's pixelmatch settings (compare_pixels.mjs).
@@ -53,12 +54,13 @@ function collectViewportText() {
   return out.join(' ');
 }
 
-async function captureChrome(url, pngPath, textPath, width, height, settleMs) {
+async function captureChrome(url, pngPath, textPath, width, height, settleMs, harPath = null) {
   const started = Date.now();
   // Headless unless the board opted in to headed under the real-window lock (A1); see realsite_launch.mjs.
   const launch = oracleLaunchOptions(width, height);
   const browser = await chromium.launch(launch);
   const result = { url, status: 'ok', error: null, nav_error: null, oracle_headless: launch.headless };
+  let harContext = null;
   try {
     // colorScheme is pinned: left unset, headless Chrome followed the seat's
     // OS appearance and served Google's dark theme, which RustKit never gets.
@@ -71,7 +73,13 @@ async function captureChrome(url, pngPath, textPath, width, height, settleMs) {
       // the client hint header, which still followed the OS (one of two
       // launches in a run came back dark).
       extraHTTPHeaders: { 'Sec-CH-Prefers-Color-Scheme': 'light' },
+      // QB-ARCHIVE-INPUT: the load's requests and bodies, for an offline replay of the site
+      // (written when the context closes; realsite_har.py strips secrets, slims and compresses
+      // it). Minimal mode keeps only what routing from a HAR uses: no cookie arrays, sizes,
+      // timings or page records.
+      ...(harPath ? { recordHar: { path: harPath, mode: 'minimal', content: 'embed' } } : {}),
     });
+    harContext = context;
     const page = await context.newPage();
     // Top-level document status, recorded even when goto throws: an error
     // status is Chrome showing its own error page, not the site (x's 403).
@@ -100,6 +108,14 @@ async function captureChrome(url, pngPath, textPath, width, height, settleMs) {
     result.status = 'error';
     result.error = String(e.message || e).split('\n')[0];
   } finally {
+    if (harPath && harContext) {
+      try {
+        await harContext.close();
+        result.har_path = harPath;
+      } catch (e) {
+        result.har_error = String(e.message || e).split('\n')[0];
+      }
+    }
     await browser.close();
   }
   result.elapsed_ms = Date.now() - started;
@@ -313,8 +329,8 @@ async function main() {
   const [mode, ...rest] = process.argv.slice(2);
   let result;
   if (mode === 'chrome') {
-    const [url, png, textJson, w = '1280', h = '800', settle = '5000'] = rest;
-    result = await captureChrome(url, png, textJson, Number(w), Number(h), Number(settle));
+    const [url, png, textJson, w = '1280', h = '800', settle = '5000', har = ''] = rest;
+    result = await captureChrome(url, png, textJson, Number(w), Number(h), Number(settle), har || null);
   } else if (mode === 'actions') {
     const [url, actionsArg, outDir = '.', w = '1280', h = '800', settle = '5000'] = rest;
     result = await runActionsChrome(url, actionsArg, outDir, Number(w), Number(h), Number(settle));

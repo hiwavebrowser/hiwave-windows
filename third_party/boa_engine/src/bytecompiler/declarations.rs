@@ -100,6 +100,8 @@ pub(crate) fn global_declaration_instantiation_context(
 
     // // 9. Let declaredVarNames be a new empty List.
     let mut declared_var_names = Vec::new();
+    // HIWAVE PATCH (scope-name-index): a set beside the list, so the membership test is not a scan.
+    let mut declared_var_seen = rustc_hash::FxHashSet::default();
 
     // 10. For each element d of varDeclarations, do
     //     a. If d is either a VariableDeclaration, a ForBinding, or a BindingIdentifier, then
@@ -115,7 +117,7 @@ pub(crate) fn global_declaration_instantiation_context(
                 // SKIP: a. Let vnDefinable be ? env.CanDeclareGlobalVar(vn).
                 // SKIP: b. If vnDefinable is false, throw a TypeError exception.
                 // c. If declaredVarNames does not contain vn, then
-                if !declared_var_names.contains(&name) {
+                if declared_var_seen.insert(name) {
                     // i. Append vn to declaredVarNames.
                     declared_var_names.push(name);
                 }
@@ -442,6 +444,8 @@ impl ByteCompiler<'_> {
 
         // 9. Let declaredVarNames be a new empty List.
         let mut declared_var_names = Vec::new();
+    // HIWAVE PATCH (scope-name-index): a set beside the list, so the membership test is not a scan.
+    let mut declared_var_seen = rustc_hash::FxHashSet::default();
 
         // 10. For each element d of varDeclarations, do
         //     a. If d is either a VariableDeclaration, a ForBinding, or a BindingIdentifier, then
@@ -462,7 +466,7 @@ impl ByteCompiler<'_> {
                     // for this check.
 
                     // c. If declaredVarNames does not contain vn, then
-                    if !declared_var_names.contains(&name) {
+                    if declared_var_seen.insert(name) {
                         // i. Append vn to declaredVarNames.
                         declared_var_names.push(name);
                     }
@@ -718,6 +722,8 @@ impl ByteCompiler<'_> {
 
         // 12. Let declaredVarNames be a new empty List.
         let mut declared_var_names = Vec::new();
+    // HIWAVE PATCH (scope-name-index): a set beside the list, so the membership test is not a scan.
+    let mut declared_var_seen = rustc_hash::FxHashSet::default();
 
         // 13. For each element d of varDeclarations, do
         for declaration in var_declarations {
@@ -739,7 +745,7 @@ impl ByteCompiler<'_> {
                     //    for this check.
 
                     // b. If declaredVarNames does not contain vn, then
-                    if !declared_var_names.contains(&name) {
+                    if declared_var_seen.insert(name) {
                         // i. Append vn to declaredVarNames.
                         declared_var_names.push(name);
                     }
@@ -1098,11 +1104,13 @@ impl ByteCompiler<'_> {
 
                 // d. Let instantiatedVarNames be a new empty List.
                 let mut instantiated_var_names = Vec::new();
+                // HIWAVE PATCH (scope-name-index): a set beside the list, so the membership test is not a scan.
+                let mut instantiated_var_seen = rustc_hash::FxHashSet::default();
 
                 // e. For each element n of varNames, do
                 for n in var_names {
                     // i. If instantiatedVarNames does not contain n, then
-                    if !instantiated_var_names.contains(&n) {
+                    if instantiated_var_seen.insert(n) {
                         // 1. Append n to instantiatedVarNames.
                         instantiated_var_names.push(n);
 
@@ -1147,11 +1155,14 @@ impl ByteCompiler<'_> {
                 // a. NOTE: Only a single Environment Record is needed for the parameters and top-level vars.
                 // b. Let instantiatedVarNames be a copy of the List parameterBindings.
                 let mut instantiated_var_names = parameter_bindings;
+                // HIWAVE PATCH (scope-name-index): a set beside the list, so the membership test is not a scan.
+                let mut instantiated_var_seen: rustc_hash::FxHashSet<_> =
+                    instantiated_var_names.iter().copied().collect();
 
                 // c. For each element n of varNames, do
                 for n in var_names {
                     // i. If instantiatedVarNames does not contain n, then
-                    if !instantiated_var_names.contains(&n) {
+                    if instantiated_var_seen.insert(n) {
                         // 1. Append n to instantiatedVarNames.
                         instantiated_var_names.push(n);
 

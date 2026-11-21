@@ -85,6 +85,8 @@ mod glyph_grid;
 #[cfg(test)]
 mod scroll_cost_tests;
 #[cfg(test)]
+mod image_update_tests;
+#[cfg(test)]
 mod layer_cost_tests;
 #[cfg(test)]
 mod clip_mask_cache_tests;
@@ -427,6 +429,51 @@ impl TextureCache {
         }
 
         self.textures.get(key).unwrap()
+    }
+
+    /// Replace the pixels under `key`: written into its texture when the size is the
+    /// same (no new texture, no new bind group), else a new texture (MEDIA-AVF §3.3: a
+    /// video's frames, one key for the video's life).
+    pub fn update(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: &str,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) {
+        let same = self.textures.get(key).is_some_and(|t| {
+            t.width == width && t.height == height && {
+                let size = t.texture.size();
+                size.width == width && size.height == height
+            }
+        });
+        if !same {
+            self.textures.remove(key);
+            self.get_or_create(device, queue, key, width, height, data);
+            return;
+        }
+        let texture = &self.textures[key].texture;
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     /// Check if a texture exists.
@@ -6865,20 +6912,36 @@ impl Renderer {
             #[cfg(target_os = "macos")]
             let drawn = self.glyph_cache.get_or_rasterize_faced(&self.queue, &key);
             #[cfg(windows)]
-            let drawn = {
-                let _ = &face;
-                let colour = if rustkit_text::is_emoji(ch) {
+            let drawn = match crate::glyph::windows_paint(ch, face) {
+                // A text-presentation symbol: the coverage mask from the text
+                // face layout measured it in (Segoe UI Symbol), as Chrome
+                // draws it, not Segoe UI Emoji's colour artwork.
+                crate::glyph::WindowsPaint::TextFallback => {
+                    let symbol = GlyphKey {
+                        font_family: crate::glyph::WINDOWS_TEXT_SYMBOL_FAMILY.to_string(),
+                        font_weight: 400,
+                        font_style: 0,
+                        web_face: 0,
+                        ..key.clone()
+                    };
                     self.glyph_cache
-                        .get_or_rasterize_color(&self.device, &self.queue, &key)
-                        .map(|entry| (entry, true))
-                } else {
-                    None
-                };
-                colour.or_else(|| {
-                    self.glyph_cache
-                        .get_or_rasterize(&self.device, &self.queue, &key)
+                        .get_or_rasterize(&self.device, &self.queue, &symbol)
                         .map(|entry| (entry, false))
-                })
+                }
+                paint => {
+                    let colour = if paint == crate::glyph::WindowsPaint::Colour {
+                        self.glyph_cache
+                            .get_or_rasterize_color(&self.device, &self.queue, &key)
+                            .map(|entry| (entry, true))
+                    } else {
+                        None
+                    };
+                    colour.or_else(|| {
+                        self.glyph_cache
+                            .get_or_rasterize(&self.device, &self.queue, &key)
+                            .map(|entry| (entry, false))
+                    })
+                }
             };
             #[cfg(not(any(target_os = "macos", windows)))]
             let drawn = {
@@ -7224,6 +7287,28 @@ impl Renderer {
         Ok(())
     }
     
+    /// Upload RGBA that changes under one key (a video's frames, MEDIA-AVF §3.3): the
+    /// texture already under `url` is written in place when the size matches, and is
+    /// only made anew when the size differs.
+    pub fn update_image(
+        &mut self,
+        url: &str,
+        width: u32,
+        height: u32,
+        rgba_data: &[u8],
+    ) -> Result<(), RendererError> {
+        if rgba_data.len() != (width as usize) * (height as usize) * 4 {
+            return Err(RendererError::TextureUpload(format!(
+                "Invalid image data size: expected {} bytes, got {}",
+                (width as usize) * (height as usize) * 4,
+                rgba_data.len()
+            )));
+        }
+        self.texture_cache
+            .update(&self.device, &self.queue, url, width, height, rgba_data);
+        Ok(())
+    }
+
     /// Upload premultiplied RGBA (a canvas bitmap, STR-7b). Its quads
     /// filter the premultiplied texels, as Chrome composites a canvas, so a
     /// scaled bitmap blends an opaque texel with a transparent neighbour

@@ -44,7 +44,7 @@ class TestReceiptNoHostPaths(unittest.TestCase):
         self.campaign = self.outside / "parity_test_results.json"
         self.campaign.write_text(json.dumps({"results": [{"pixel": {"diffPercent": 1.5}}], "passed": 1, "failed": 0}), encoding="utf-8")
         self.run_file = self.outside / "ab_table.txt"
-        self.run_file.write_text("row\n", encoding="utf-8")
+        self.run_file.write_bytes(b"row\n")  # 4 bytes on every OS (text mode writes \r\n on Windows)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -125,6 +125,34 @@ class TestReceiptNoHostPaths(unittest.TestCase):
                         ("pushed to https://user:token@example.com/org/repo.git", "pushed to https://example.com/org/repo.git"),
                         ("--remap-path-prefix=/Users/example/hiwave=. -C link-arg=/opt/x/y.o", "--remap-path-prefix=hiwave=. -C link-arg=y.o")]:
             self.assertEqual(receipt.public_text(t, REPO), want)
+
+    def test_a_windows_path_glued_to_an_option_is_stripped(self):
+        # #1362: a drive path right after a short option ("-LC:\...", RUSTFLAGS on Windows) was
+        # not matched (the drive letter followed a letter), so the whole host path stayed in the
+        # receipt. The option stays, the path goes, as for "-L/abs".
+        sys.path.insert(0, str(SCRIPTS))
+        import receipt
+        for t, want in [
+            (r"-LC:\Users\example\AppData\Local\Temp\x\lib", "-Llib"),
+            (r"-L C:\Users\example\x\lib", "-L lib"),
+            (r"--remap-path-prefix=C:\Users\example\hiwave=. -LC:\Users\example\x\lib", "--remap-path-prefix=hiwave=. -Llib"),
+            (r"-isystemC:\Users\example\include", "-isysteminclude"),
+            (r"-LD:/build/target/lib", "-Llib"),
+        ]:
+            out = receipt.public_text(t, REPO)
+            self.assertEqual(out, want)
+            self.assertNotIn("example", out)
+
+    @unittest.skipUnless(os.name == "nt", "a drive path is this checkout's only on Windows")
+    def test_a_windows_path_inside_the_repo_prints_repo_relative(self):
+        # The Windows-only branch (Prometheus R1 nit 1 on #1384): a drive path under the
+        # repository prints repo-relative with "/", as a POSIX one does, option kept.
+        sys.path.insert(0, str(SCRIPTS))
+        import receipt
+        lib = str(REPO / "target" / "lib")
+        self.assertEqual(receipt.public_text("-L" + lib, REPO), "-Ltarget/lib")
+        self.assertEqual(receipt.public_text("see " + str(REPO / "scripts" / "receipt.py"), REPO),
+                         "see scripts/receipt.py")
 
     def test_a_shell_variable_path_in_the_note_is_not_mangled(self):
         sys.path.insert(0, str(SCRIPTS))
@@ -275,9 +303,10 @@ class TestReceiptNoHostPaths(unittest.TestCase):
             self.assertEqual(receipt.public_text(t, REPO), want)
         out = run_receipt("--note", f"bins at {self.outside / 'My Documents' / 'parity-capture'}")
         self.assert_clean(out)
+        # The part after the space is not a path on its own, so it keeps this OS's separator.
         self.assertEqual(
             json.loads(out)["note"],
-            "bins at My Documents/parity-capture",
+            "bins at My Documents" + os.sep + "parity-capture",
         )
 
     def test_a_schemeless_wiki_path_in_the_note_is_shortened_to_its_basename(self):

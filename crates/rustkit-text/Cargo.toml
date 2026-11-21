@@ -18,6 +18,8 @@ windows = { version = "0.61", features = [
     "Win32_System_Com",
     "Win32_Graphics_DirectWrite",
     "Win32_System_Registry",
+    # icu.dll's u_hasBinaryProperty, loaded at run time (Emoji_Presentation).
+    "Win32_System_LibraryLoader",
 ] }
 # The `#[implement]` macro (the web-font registry's own font file loader) names this crate.
 windows-core = "0.61"

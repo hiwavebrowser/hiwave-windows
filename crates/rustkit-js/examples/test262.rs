@@ -195,13 +195,10 @@ fn install_host(realm: &Realm, context: &mut Context) -> JsResult<JsValue> {
 }
 
 /// The name of the error a script threw: its constructor's `name`, as test262's `negative.type`.
+/// Read from the error object, never from a native error's text: that text is `Kind: message`
+/// with the stack position after it, so an error with no message (`throw new TypeError()`) read
+/// as `TypeError (native)`.
 fn error_name(err: &JsError, context: &mut Context) -> String {
-    if let Ok(native) = err.try_native(context) {
-        let text = native.to_string();
-        if let Some(name) = text.split(':').next() {
-            return name.trim().to_string();
-        }
-    }
     let Ok(value) = err.clone().into_opaque(context) else {
         return "(error could not be made a value)".to_string();
     };
@@ -440,6 +437,10 @@ fn main() {
             other => panic!("unknown argument {other}"),
         }
     }
+    // The real path: the module loader canonicalizes its root but keeps a referrer's path as given, so
+    // a symlinked or relative root made every relative fixture import fail ("outside the module root",
+    // a TypeError), which some negative tests then counted as a pass.
+    let root = root.canonicalize().unwrap_or_else(|e| panic!("--root {}: {e}", root.display()));
     let list = std::fs::read_to_string(list.expect("--list FILE")).expect("the list file");
     let files: Vec<String> = list.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
 
@@ -468,7 +469,9 @@ fn main() {
                 writeln!(out, "START\t{file}").ok();
                 out.flush().ok();
             }
+            // A test file reached through a symlink inside the suite resolves likewise.
             let path = runner.root.join(&file);
+            let path = path.canonicalize().unwrap_or(path);
             let source = match std::fs::read_to_string(&path) {
                 Ok(source) => source,
                 Err(e) => {

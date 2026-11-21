@@ -11,6 +11,9 @@ default = []
 # Headless mode: Enables offscreen rendering without window surfaces
 # Useful for testing, CI/CD, and server-side rendering
 headless = []
+# MEDIA-AVF step 3: `EngineBuilder::avfoundation_media`, media elements' players on the
+# main-thread MediaHost (docs/design/MEDIA_AVF.md §3.2). Off until Milestone 1 step 6.
+media-avf = ["rustkit-media/media-avf"]
 
 [dependencies]
 # RustKit crates

@@ -116,6 +116,8 @@ def modes_of(path, suite=None):
 
 def resident_mb(pid):
     """The process's resident size in MiB, or None when it cannot be read."""
+    if os.name == "nt":
+        return _resident_mb_windows(pid)
     try:
         with open(f"/proc/{pid}/status", encoding="utf-8") as status:
             for line in status:
@@ -128,6 +130,40 @@ def resident_mb(pid):
         return int(out.stdout.strip()) / 1024.0 if out.stdout.strip() else None
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
+
+
+def _resident_mb_windows(pid):
+    """The private bytes (commit charge) of `pid` in MiB (Windows has neither /proc nor ps), or
+    None. Not the working set: Windows trims that under memory pressure, so a runaway runner can
+    read below its real footprint; commit charge tracks a growing heap and is what RLIMIT_AS caps
+    on Linux."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (name, ctypes.c_size_t) for name in (
+                "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+                "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.K32GetProcessMemoryInfo.argtypes = (wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD)
+    kernel32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        counters = Counters()
+        counters.cb = ctypes.sizeof(Counters)
+        if not kernel32.K32GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+            return None
+        return counters.PagefileUsage / (1024.0 * 1024.0)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def address_space_cap(mem_mb):
@@ -145,9 +181,10 @@ def run_capped(argv, mem_mb, deadline_s):
     """Runs `argv` with its output in a file, stopping it when its resident size passes `mem_mb` or
     when `deadline_s` passes. Returns (stdout text, exit code, why it was stopped or None)."""
     with tempfile.TemporaryFile() as out:
-        proc = subprocess.Popen(
-            argv, stdout=out, stderr=subprocess.DEVNULL, preexec_fn=address_space_cap(mem_mb)
-        )
+        # preexec_fn exists on POSIX only (Windows refuses it); the watchdog below holds the cap
+        # everywhere, and RLIMIT_AS is applied only where the kernel enforces it (Linux) anyway.
+        preexec = address_space_cap(mem_mb) if os.name == "posix" else None
+        proc = subprocess.Popen(argv, stdout=out, stderr=subprocess.DEVNULL, preexec_fn=preexec)
         stopped = None
         began = time.monotonic()
         while True:
@@ -169,6 +206,12 @@ def run_capped(argv, mem_mb, deadline_s):
         return out.read().decode("utf-8", "replace"), proc.returncode, stopped
 
 
+def runner_argv(binary):
+    """The runner's command: a path, or an argv prefix ([interpreter, script]) for a runner that
+    is not an executable on this OS."""
+    return [str(part) for part in binary] if isinstance(binary, (list, tuple)) else [str(binary)]
+
+
 def run_chunk(binary, files, timeout_ms, mem_mb, suite=None):
     """Runs `files`, restarting after any test that takes the process down.
     Returns {(path, mode): (status, why)}."""
@@ -183,7 +226,7 @@ def run_chunk(binary, files, timeout_ms, mem_mb, suite=None):
             # A chunk's whole budget: every run timing out, twice over.
             deadline = len(todo) * 2 * (timeout_ms / 1000.0) * 2 + 60
             output, code, stopped = run_capped(
-                [str(binary), "--root", str(suite), "--list", list_path, "--timeout-ms", str(timeout_ms)],
+                runner_argv(binary) + ["--root", str(suite), "--list", list_path, "--timeout-ms", str(timeout_ms)],
                 mem_mb,
                 deadline,
             )

@@ -17,6 +17,9 @@ import tempfile
 import unittest
 from unittest import mock
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from posix_bash import posix_bash  # noqa: E402
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
 import wpt_coverage  # noqa: E402
@@ -868,6 +871,11 @@ class Runnability(unittest.TestCase):
             self.assertNotIn("--run-inline-scripts", wpt_tier1.capture_args(page, page, {"width": 1, "height": 1}))
 
 
+# A target directory outside the repository, absolute on every OS ("/elsewhere/t" has no drive
+# on Windows, so it is not absolute there): the root of the current drive, then elsewhere/t.
+OUTSIDE_TARGET = pathlib.Path(pathlib.Path.cwd().anchor) / "elsewhere" / "t"
+
+
 class Provenance(unittest.TestCase):
     def test_capture_binary_is_the_parity_profile(self):
         self.assertEqual(wpt_tier1.capture_bin({}), REPO / "target/parity/parity-capture")
@@ -881,8 +889,8 @@ class Provenance(unittest.TestCase):
 
     def test_capture_binary_honours_cargo_target_dir(self):
         self.assertEqual(
-            wpt_tier1.capture_bin({"CARGO_TARGET_DIR": "/elsewhere/t"}),
-            pathlib.Path("/elsewhere/t/parity/parity-capture"),
+            wpt_tier1.capture_bin({"CARGO_TARGET_DIR": str(OUTSIDE_TARGET)}),
+            OUTSIDE_TARGET / "parity" / "parity-capture",
         )
 
     def test_a_relative_cargo_target_dir_is_from_the_repo(self):
@@ -897,8 +905,9 @@ class Provenance(unittest.TestCase):
 
     def test_capture_binary_label_survives_a_target_outside_the_repo(self):
         self.assertEqual(
-            wpt_tier1.capture_label(pathlib.Path("/elsewhere/t/parity/parity-capture")),
-            "/elsewhere/t/parity/parity-capture",
+            wpt_tier1.capture_label(OUTSIDE_TARGET / "parity" / "parity-capture"),
+            # Forward slashes on every OS, as a repo-relative label (#1362).
+            (OUTSIDE_TARGET / "parity" / "parity-capture").as_posix(),
         )
         self.assertEqual(
             wpt_tier1.capture_label(REPO / "target/parity/parity-capture"),
@@ -946,8 +955,12 @@ class Manifest(unittest.TestCase):
         self.assertNotIn("NOT YET RUN", text)
 
     def test_sync_check_passes_or_names_what_is_missing(self):
+        bash = posix_bash()
+        if bash is None:
+            self.skipTest("no POSIX bash on this host (set HIWAVE_BASH; see posix_bash.py)")
         proc = subprocess.run(
-            ["bash", str(REPO / "scripts/wpt_sync.sh"), "--dry-run"], capture_output=True, text=True, encoding="utf-8"
+            [bash, str(REPO / "scripts/wpt_sync.sh"), "--dry-run"],
+            capture_output=True, text=True, encoding="utf-8"
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("css/css-flexbox/support/flexbox.css", proc.stdout)

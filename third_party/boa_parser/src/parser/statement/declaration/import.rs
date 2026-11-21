@@ -10,7 +10,7 @@
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import
 
 use crate::{
-    lexer::TokenKind,
+    lexer::{TokenKind, token::ContainsEscapeSequence},
     parser::{
         Error, OrAbrupt, ParseResult, TokenParser,
         cursor::Cursor,
@@ -71,6 +71,38 @@ impl ImportDeclaration {
     }
 }
 
+impl ImportDeclaration {
+    /// HIWAVE PATCH (source-phase-import): whether the tokens after `import` are
+    /// `source ImportedBinding`, not a default import named `source`: an unescaped `source`
+    /// followed by a binding identifier, unless that identifier is `from` followed by a string
+    /// literal (`import source from "m"`).
+    fn is_source_phase<R: ReadChar>(
+        cursor: &mut Cursor<R>,
+        interner: &mut Interner,
+    ) -> ParseResult<bool> {
+        let Some(tok) = cursor.peek(0, interner)? else {
+            return Ok(false);
+        };
+        if !matches!(
+            tok.kind(),
+            TokenKind::IdentifierName((Sym::SOURCE, ContainsEscapeSequence(false)))
+        ) {
+            return Ok(false);
+        }
+        let Some(next) = cursor.peek(1, interner)? else {
+            return Ok(false);
+        };
+        match next.kind() {
+            TokenKind::IdentifierName((Sym::FROM, _)) => Ok(cursor
+                .peek(2, interner)?
+                .is_some_and(|t| !matches!(t.kind(), TokenKind::StringLiteral(_)))),
+            TokenKind::IdentifierName(_)
+            | TokenKind::Keyword((Keyword::Await | Keyword::Yield, _)) => Ok(true),
+            _ => Ok(false),
+        }
+    }
+}
+
 impl<R> TokenParser<R> for ImportDeclaration
 where
     R: ReadChar,
@@ -79,6 +111,24 @@ where
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
         cursor.expect((Keyword::Import, false), "import declaration", interner)?;
+
+        // HIWAVE PATCH (source-phase-import): `import source ImportedBinding FromClause ;`
+        // (source-phase-imports proposal). `import source from "m"` and `import source, ...`
+        // stay default imports of a binding named `source`.
+        if Self::is_source_phase(cursor, interner)? {
+            cursor.advance(interner);
+            let binding = ImportedBinding.parse(cursor, interner)?;
+            let module_identifier =
+                FromClause::new("import declaration").parse(cursor, interner)?;
+            let attributes = WithClause::new("import declaration").parse(cursor, interner)?;
+            cursor.expect_semicolon("import declaration", interner)?;
+            return Ok(AstImportDeclaration::new(
+                None,
+                ImportKind::Source { binding },
+                module_identifier,
+                attributes,
+            ));
+        }
 
         let tok = cursor.peek(0, interner).or_abrupt()?;
 

@@ -74,13 +74,14 @@ def public_path(path, root):
 # or "~user/" path, a Windows drive path or a UNC path. The "/" may follow an
 # option word ("-L/abs", "-isystem/abs"), a ":" ("path:/abs", the entries of a
 # PATH= list) or an "=", but not any other word, which is a relative path
-# ("a/b/c", "rustkit-layout/src") or "${HOME}/x". A path with a space in it is
-# cut at the space.
+# ("a/b/c", "rustkit-layout/src") or "${HOME}/x". A drive path may follow an
+# option word too ("-LC:\\abs", RUSTFLAGS on Windows; the option is matched lazily,
+# so "-LC:" is "-L" + "C:"). A path with a space in it is cut at the space.
 SEG = r"[\w.@+~$-]"
 ABS_PATH = re.compile(
     r"(?:(?P<flag>(?<![\w-])--?[A-Za-z][\w-]*)|(?<![\w./\\~}]))(?P<posix>~?/(?:SEG+/)+SEG*)"
     r"|(?P<tilde>(?<![\w./\\~}])~[A-Za-z_][\w.-]*/(?:SEG+/?)*)"
-    r"|(?<![A-Za-z])[A-Za-z]:[\\/](?:SEG+[\\/])*SEG*"
+    r"|(?:(?P<wflag>(?<![\w-])--?[A-Za-z][\w-]*?)|(?<![A-Za-z]))(?P<drive>[A-Za-z]:[\\/](?:SEG+[\\/])*SEG*)"
     r"|(?<![\w\\/:])\\\\SEG+(?:\\SEG+)+".replace("SEG", SEG))
 # A credential carried as a URL query value.
 SECRET_QUERY = re.compile(r"([?&](?:[\w-]*[_-])?(?:token|key|secret|password|passwd|pwd|auth|signature|sig)=)[^&\s#]+", re.I)
@@ -88,15 +89,21 @@ SECRET_QUERY = re.compile(r"([?&](?:[\w-]*[_-])?(?:token|key|secret|password|pas
 
 def public_text(text, root):
     def one(m):
-        tok = m.group("posix") or m.group(0)
+        tok = m.group("posix") or m.group("drive") or m.group(0)
         body = tok.rstrip(".")
         rest = tok[len(body):]
         if m.group("posix"):
             return (m.group("flag") or "") + public_path(os.path.expanduser(body), root) + rest
+        flag = m.group("wflag") or ""
+        if m.group("drive") and os.name == "nt":
+            # A drive path on this host: the same rule as a POSIX one (repo-relative inside
+            # the repository, "~" for a home directory, the basename otherwise). On a POSIX host
+            # a drive path is never this checkout's, so it keeps the basename, on purpose.
+            return flag + public_path(body, root) + rest
         parts = re.split(r"[\\/]", body.rstrip("\\/"))
         if (m.group("tilde") and len(parts) == 1) or is_home(body):
-            return "~" + rest
-        return parts[-1] + rest
+            return flag + "~" + rest
+        return flag + parts[-1] + rest
     if not text:
         return text
     text = re.sub(r"(\b[A-Za-z][\w+.-]*://)[^/\s@]*@", r"\1", text.replace("file://", ""))

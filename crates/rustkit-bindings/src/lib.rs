@@ -506,6 +506,27 @@ pub const UNSUPPORTED_MEMBERS: [(&str, &str); 11] = [
     ("URL", "createObjectURL (blob store full)"),
 ];
 
+/// The longest message an internal page's `window.ipc.postMessage` queues.
+const INTERNAL_READ_MAX_BYTES: usize = 4096;
+/// How many of them wait at most between two drains.
+const INTERNAL_READ_MAX_QUEUED: usize = 64;
+
+/// An internal page's `window.ipc` ([`DomBindings::new_internal_page`]):
+/// a frozen object whose `postMessage` queues the message (a non-string as
+/// its JSON) on the Rust side.
+const INTERNAL_READS_JS: &str = r#"
+__rk.appRead = globalThis.__rustkit_app_read;
+delete globalThis.__rustkit_app_read;
+(function (read) {
+    var ipc = Object.freeze({
+        postMessage: function (message) {
+            read(typeof message === 'string' ? message : JSON.stringify(message));
+        }
+    });
+    Object.defineProperty(window, 'ipc', { value: ipc, writable: false, configurable: false, enumerable: false });
+})(__rk.appRead);
+"#;
+
 /// Every name the embedder's scripts keep on the host object (`__rk`).
 /// Each is an own property of it before the first script runs
 /// ([`JsRuntime::reserve_host_slots`]), `undefined` until its script fills
@@ -517,14 +538,16 @@ pub(crate) const HOST_SLOTS: &[&str] = &[
     "canvasCall", "canvasSlot", "compose",
     "decodeWait", "dispatchTo", "domDirty", "domHooks", "domReset", "dragStore", "dropTimers", "editKey",
     "finishComposing", "fire", "fireAnimation", "fireDrag", "fireError", "fireInput", "fireKey", "fireMouse", "fireOn",
-    "fireRejection", "fireTextInput", "fireTransition", "fireWheel", "followLink", "fragmentNavigation", "hasCtor", "historyReset",
+    "fireRejection", "fireTextInput", "fireTransition", "fireWheel", "followLink", "fragmentNavigation", "framePending", "frameRounds", "hasCtor", "historyReset",
     "imageFailed", "imageFailedFor", "imageGaveUp", "imageLoaded", "imageLoadedFor", "imageWritten",
     "implicitSubmit", "inlineStyleParses", "isDispatching", "keepCtor", "keepFinish", "likelySubtags", "locationHashSync",
     "locationSync", "make", "markEdited", "matchMediaTagged", "mediaCall", "mediaChanges", "mediaEvent", "net", "newTextEvent", "nextTimer",
-    "now", "observersTick", "perfNow", "pickOption", "realTop", "runTimers", "runTimersFramed", "scrollToFragment",
+    "now", "observersTick", "pendingFrameRound", "perfNow", "pickOption", "realTop", "registerProperty", "resizeHeld", "runTimers", "runTimersFramed", "scrollToFragment",
     "scrollToLocationFragment", "setAdoptedStyles", "setCurrentScript", "setDetClock", "setFocus", "setGridStamps", "setOneRound", "setSelection",
     "setSheetDisabled", "sheetGeneration", "styleNative", "takeEdited", "takeFocus", "takeSelection", "testRealMs", "timeOrigin", "timelineNow", "treeTurn", "trust", "turnFrameAt", "userEdit",
     "userScrolled", "userScrolledElement", "viewFocused", "wakeSoon", "wheelBlocks",
+    // Installed only in an app page loaded for its reads (`new_internal_page`).
+    "appRead",
     // Installed only with nested browsing contexts on (web_frames.js).
     "frames",
     // The frame tree's shared state, which the runtime puts there itself.
@@ -629,6 +652,10 @@ const PAGE_LIFECYCLE_JS: &str = r#"
         // The last animation frame run, as its number on the tree's frame grid (below), and
         // whether a frame's callbacks are running now.
         Q.frameK = 0; Q.inFrame = false;
+        // How many animation frames have run callbacks (`__rk.frameRounds`, counted in `ranFrame`):
+        // a resize observation made while a frame is asked for waits for the next one
+        // (REPORT-CHART-0x0).
+        Q.rounds = 0;
         // The grid time of the frame whose callbacks run (its timestamp's time, below).
         Q.frameDue = 0;
         // A frame tree's turn (`__rk.treeTurn`): while one is open, the grid time of the frame
@@ -836,7 +863,12 @@ const PAGE_LIFECYCLE_JS: &str = r#"
         var k = Q.frameK + 1, c = gridAtOrBefore(Q.now);
         return c > k ? c : k;
     }
-    function ranFrame(timer) { if (timer.k > Q.frameK) Q.frameK = timer.k; }
+    // A callback of a frame after the last one run starts that frame's round (`Q.rounds`), from a
+    // turn's round or from the load's timers alike (#1361 R1: the load's frames counted none, and
+    // a resize observation held for a frame under an endless loop was never delivered).
+    function ranFrame(timer) {
+        if (timer.k > Q.frameK) { Q.frameK = timer.k; Q.rounds = (Q.rounds | 0) + 1; }
+    }
     function runFrame(timer) {
         ranFrame(timer);
         Q.inFrame = true;
@@ -900,7 +932,19 @@ const PAGE_LIFECYCLE_JS: &str = r#"
                 // times every run. And a frame a task already read the timeline of (its grid
                 // point, `__rk.timelineNow`) is stamped with that reading, as Chrome's timeline in
                 // the task equals the frame's `t`.
-                var grid = !Q.det && Q.gridStamps;
+                // ANIM-READ-JUMP: a turn that is not a real one moves the timers' clock, not
+                // real time: a test's or a capture's `pump_live`, and in the app too a load's
+                // timers and a network delivery (`__rk.runTimers`). The engine's CSS animations
+                // run on that clock (`__rk.animationNow`), so the frames' timeline is its grid
+                // time too: stamped from the real clock, a frame (or a timeline read,
+                // `getAnimations()`) put the timeline the load's real time ahead of the CSS
+                // clock, and the CSS clock, which never runs behind the timeline, jumped there
+                // (a 100 ms transition ended at its first frame). The callback's stamp stays on
+                // `performance.now()`'s clock (the clock-parity pins), so in such a turn a
+                // frame's `t` and its timeline time differ by what the real clock is ahead
+                // (`anim_read_jump_tests`), as with grid frame stamps (TIMELINE1). The app's
+                // real-time loop is unchanged; its hand-off from the load is a follow-up row.
+                var grid = !Q.det && (Q.gridStamps || !Q.realTurn);
                 if (!Q.det && Q.aheadAt === Q.now) ts = at;
                 if (!grid && Q.tlAt === at) ts = Q.tlTs;
                 // At least the grid distance from the last frame, but at most one grid step from it
@@ -1073,6 +1117,42 @@ const PAGE_LIFECYCLE_JS: &str = r#"
         }
         return ran;
     }
+    // REPORT-CHART-0x0: HTML's update the rendering runs a frame's animation frame callbacks
+    // before it gathers and broadcasts resize observations, so an observation made while a frame
+    // callback is asked for is delivered after that frame's callbacks (web_observers_live.js).
+    // How many frames have run callbacks, and whether a frame callback is asked for now. The
+    // queue is the frame tree's, so a frame's loop holds the top document's observations too:
+    // Chrome's rendering update runs every document's frame callbacks before any document's
+    // resize observations (`report_chart_resize_cft148.json` `iframe`: "F1 ro=800x300 F2 F3").
+    __rk.frameRounds = function () { return Q.rounds | 0; };
+    // The frame a held resize observation waits for, run now as one round: the callbacks asked
+    // for so far (not those they ask for), in order, at the frame time of the latest of them.
+    // The clock does not move. For a host that takes the page with no turn to come (the end of
+    // a load, a capture after its actions: `Engine::run_held_observation_frame`), so the
+    // observation still comes after the frame's callbacks, as in Chrome (#1361 R1).
+    __rk.pendingFrameRound = function (max) {
+        var round = objCreate(null), due = 0, latest = -1, ran = 0;
+        for (var i = 0; i < Q.count; i++) {
+            if (timers[i].frame) {
+                round[due++] = timers[i];
+                if (timers[i].due > latest) latest = timers[i].due;
+            }
+        }
+        if (latest >= 0) Q.frameDue = latest;
+        Q.inFrame = false;
+        for (var j = 0; j < due && ran < max; j++) {
+            var at = slotOf(round[j]);
+            if (at < 0) continue;
+            removeAt(at);
+            ran++;
+            runFrame(round[j]);
+        }
+        return ran;
+    };
+    __rk.framePending = function () {
+        for (var i = 0; i < Q.count; i++) if (timers[i].frame) return true;
+        return false;
+    };
     __rk.runTimers = function (horizon, max) {
         Q.realTurn = false;
         return runTimers(horizon, max, false);
@@ -1208,7 +1288,7 @@ const PAGE_LIFECYCLE_JS: &str = r#"
                     // timers' clock catching up would count it again (CLOCK-INFLATE). Read once
                     // per grid point, so a task reads one value.
                     Q.tlAt = g;
-                    var v = !Q.det && Q.gridStamps ? g : treeNow() - (turnNow() - g);
+                    var v = !Q.det && (Q.gridStamps || !Q.realTurn) ? g : treeNow() - (turnNow() - g);
                     Q.tlTs = Q.prevFrameTs >= 0 && v < Q.frameTl ? Q.frameTl : v;
                 }
                 ts = Q.tlTs;
@@ -1853,6 +1933,11 @@ pub struct DomBindings {
     /// What the page posted with `window.ipc.postMessage`, held on the
     /// Rust side (`__rk_ipc_post`), so a drain runs no script.
     ipc_queue: Rc<RefCell<Vec<IpcMessage>>>,
+    /// What an internal page ([`Self::new_internal_page`]) posted, for
+    /// [`Self::drain_internal_reads`]. Always empty in any other document.
+    read_queue: Rc<RefCell<Vec<String>>>,
+    /// Built by [`Self::new_internal_page`].
+    internal_reads: bool,
     /// Pending invalidation from script DOM writes (see `DomDirty`).
     /// Shared with the tree-write host functions, which mark it.
     dirty: Rc<DirtyMark>,
@@ -1882,7 +1967,7 @@ impl DomBindings {
     /// sees no `window.ipc`, `window.hiwaveChrome` or `__rk_ipc_post`, as
     /// in Chromium (CH3.A7).
     pub fn new(runtime: JsRuntime) -> Result<Self, BindingError> {
-        Self::build(runtime, false)
+        Self::build(runtime, false, false)
     }
 
     /// Create DOM bindings for one of the app's own documents (the chrome,
@@ -1890,11 +1975,20 @@ impl DomBindings {
     /// `window.hiwaveChrome.postMessage`, whose messages
     /// [`Self::drain_ipc_queue`] hands to the app (CH2.E9, CH3.A7).
     pub fn new_app_owned(runtime: JsRuntime) -> Result<Self, BindingError> {
-        Self::build(runtime, true)
+        Self::build(runtime, true, false)
     }
 
-    fn build(runtime: JsRuntime, app_bridge: bool) -> Result<Self, BindingError> {
-        Self::build_in(PageRuntime::main(runtime), app_bridge, false, None)
+    /// Create DOM bindings for one of the app's own pages shown in a
+    /// content view (the report page): `window.ipc.postMessage` only
+    /// queues the message for [`Self::drain_internal_reads`]; the embedder
+    /// decides which of them it answers. No `window.hiwaveChrome`, no
+    /// `__rk_ipc_post`, and nothing reaches [`Self::drain_ipc_queue`].
+    pub fn new_internal_page(runtime: JsRuntime) -> Result<Self, BindingError> {
+        Self::build(runtime, false, true)
+    }
+
+    fn build(runtime: JsRuntime, app_bridge: bool, internal_reads: bool) -> Result<Self, BindingError> {
+        Self::build_in(PageRuntime::main(runtime), app_bridge, internal_reads, false, None)
     }
 
     /// Bindings for a document nested in this one's frame tree and of its
@@ -1905,7 +1999,7 @@ impl DomBindings {
     /// [`Self::drop_child`].
     pub fn new_child(&self) -> Result<Self, BindingError> {
         let realm = self.runtime.shared.borrow_mut().create_realm()?;
-        Self::build_in(PageRuntime { shared: Rc::clone(&self.runtime.shared), realm }, false, true, Some(self.clock_origin))
+        Self::build_in(PageRuntime { shared: Rc::clone(&self.runtime.shared), realm }, false, false, true, Some(self.clock_origin))
     }
 
     /// Give this page's global a property `name` that is `other`'s global
@@ -2081,6 +2175,7 @@ impl DomBindings {
     fn build_in(
         page: PageRuntime,
         app_bridge: bool,
+        internal_reads: bool,
         lazy: bool,
         tree_clock: Option<std::time::Instant>,
     ) -> Result<Self, BindingError> {
@@ -2119,6 +2214,24 @@ impl DomBindings {
         runtime.evaluate_script(include_str!("web_legacy.js"))?;
         // Inject global objects
         let clock_origin = Self::inject_globals(&mut *runtime, app_bridge, lazy, tree_clock)?;
+        let read_queue = Rc::new(RefCell::new(Vec::new()));
+        if internal_reads {
+            let queue = Rc::clone(&read_queue);
+            runtime.register_host_function(
+                "__rustkit_app_read",
+                1,
+                Box::new(move |args| {
+                    if let Some(JsValue::String(payload)) = args.first() {
+                        let mut queue = queue.borrow_mut();
+                        if payload.len() <= INTERNAL_READ_MAX_BYTES && queue.len() < INTERNAL_READ_MAX_QUEUED {
+                            queue.push(payload.clone());
+                        }
+                    }
+                    JsValue::Undefined
+                }),
+            )?;
+            runtime.evaluate_with_host(INTERNAL_READS_JS)?;
+        }
         let dom_host = dom::SharedDomHost::default();
         let dirty = Rc::new(DirtyMark::default());
         let mutations = Rc::new(RefCell::new(ScriptMutations::default()));
@@ -2233,6 +2346,8 @@ impl DomBindings {
             window: RefCell::new(WindowState::default()),
             dom_host,
             ipc_queue,
+            read_queue,
+            internal_reads,
             dirty,
             mutations,
             mutation_log,
@@ -3166,6 +3281,15 @@ impl DomBindings {
             Ok(JsValue::Number(n)) if n >= 0.0 => n as usize,
             _ => 0,
         }
+    }
+
+    /// Whether a resize observation is held for an animation frame (REPORT-CHART-0x0): it is
+    /// delivered after that frame's callbacks.
+    pub fn resize_held(&self) -> bool {
+        matches!(
+            self.host_turn("return typeof __rk.resizeHeld === 'function' && __rk.resizeHeld();", &[]),
+            Ok(JsValue::Boolean(true))
+        )
     }
 
     /// Tell the page its window was scrolled by the user: fires `scroll`.
@@ -4240,6 +4364,18 @@ impl DomBindings {
     /// Returns a Vec of IpcMessage structs.
     pub fn drain_ipc_queue(&self) -> Vec<IpcMessage> {
         std::mem::take(&mut *self.ipc_queue.borrow_mut())
+    }
+
+    /// What an internal page ([`Self::new_internal_page`]) posted with
+    /// `window.ipc.postMessage` since the last call. Empty for any other
+    /// document.
+    pub fn drain_internal_reads(&self) -> Vec<String> {
+        std::mem::take(&mut *self.read_queue.borrow_mut())
+    }
+
+    /// Whether these bindings were built by [`Self::new_internal_page`].
+    pub fn is_internal_page(&self) -> bool {
+        self.internal_reads
     }
 
     /// Check if there are pending IPC messages.

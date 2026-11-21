@@ -13,7 +13,8 @@
 //! ## AVFoundation
 //!
 //! [`avf`] (macOS) is the glue to AVFoundation that MEDIA-AVF builds on
-//! (`docs/design/MEDIA_AVF.md`).
+//! (`docs/design/MEDIA_AVF.md`). [`host`] is the contract with the main-thread
+//! `MediaHost` that owns the players, and `avf_host` (feature `media-avf`) is that host.
 //!
 //! ## Architecture
 //!
@@ -27,6 +28,11 @@
 
 #[cfg(target_os = "macos")]
 pub mod avf;
+/// The main-thread `MediaHost` on AVFoundation (MEDIA-AVF step 3), behind `media-avf`.
+#[cfg(all(target_os = "macos", feature = "media-avf"))]
+pub mod avf_host;
+/// The contract between the engine and the main-thread `MediaHost` (MEDIA-AVF §3.2).
+pub mod host;
 /// Off macOS there is no AVFoundation: nothing plays, every probe fails.
 #[cfg(not(target_os = "macos"))]
 pub mod avf {
@@ -70,6 +76,15 @@ pub mod avf {
         Pending,
         Ready { duration: f64, video: Option<(f64, f64)>, audio: bool },
         Failed,
+    }
+
+    pub struct Feed;
+
+    impl Feed {
+        pub fn new(_source: Arc<MediaSource>) -> Arc<Feed> {
+            Arc::new(Feed)
+        }
+        pub fn bytes_changed(&self) {}
     }
 
     pub struct Probe;

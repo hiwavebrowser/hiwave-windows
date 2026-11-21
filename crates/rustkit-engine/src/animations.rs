@@ -42,9 +42,11 @@ use rustkit_css::{
     AnimationDirection, AnimationFillMode, AnimationItem, AnimationIterationCount,
     AnimationPlayState, BackgroundSize, BoxShadow, Color, ComputedStyle, CornerRadius, Display,
     GridTemplate, Length, LineHeight, TimingFunction, TrackDefinition, TrackRepeat, TrackSize,
-    TransformList, TransformOp, TransitionItem, Visibility,
+    TransformList, TransformOp, TransitionItem, TypedValue, Visibility,
 };
+use rustkit_css::registered_property::{LengthPercentage, Typed};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A value one of the transitionable properties takes.
 #[derive(Clone, Debug)]
@@ -85,6 +87,8 @@ pub(crate) enum AnimValue {
     /// `grid-template-columns` / `grid-template-rows`: the track list as
     /// declared (`repeat()` kept, which is what decides the shape).
     Grid(GridTemplate),
+    /// TRANS-F: a registered custom property's typed computed value.
+    Custom(TypedValue),
 }
 
 /// One `filter` function as a transition reads it (filter-effects-1 §8):
@@ -121,12 +125,13 @@ impl PartialEq for AnimValue {
             (Shadows(a), Shadows(b)) => a == b,
             (Filter(a, _), Filter(b, _)) => a == b,
             (Grid(a), Grid(b)) => a == b,
+            (Custom(a), Custom(b)) => a == b,
             // Every variant by name: a new one is a compile error here
             // until its equality is decided.
             (
                 Number(_) | Length(_) | Color(_) | CurrentColor(_) | Transform(_) | Individual(_)
                 | LineHeight(_) | Radius(_) | BackgroundSizes(_) | Visibility(_) | Shadows(_)
-                | Filter(..) | Grid(_),
+                | Filter(..) | Grid(_) | Custom(_),
                 _,
             ) => false,
         }
@@ -1008,6 +1013,62 @@ fn interpolate_grid_template(a: &GridTemplate, b: &GridTemplate, t: f32) -> Opti
     })
 }
 
+/// TRANS-F: two computed values of one registered property, item by item
+/// (css-properties-values-api-1 §6: a list interpolates when the lengths
+/// match; colours premultiplied, as `color`; a length with a percentage as
+/// a `calc()` mix; an `<integer>` rounds). `None` (discrete, no
+/// transition) where the shapes differ or an item is a keyword.
+fn interpolate_typed(a: &TypedValue, b: &TypedValue, t: f32) -> Option<TypedValue> {
+    if a.multiplier != b.multiplier || a.items.len() != b.items.len() {
+        return None;
+    }
+    // The end is the end value itself (`50%`, where the way there was a
+    // `calc()` mix).
+    if t >= 1.0 {
+        return Some(b.clone());
+    }
+    let items = a
+        .items
+        .iter()
+        .zip(&b.items)
+        .map(|(x, y)| {
+            Some(match (x, y) {
+                (Typed::Color(x), Typed::Color(y)) => Typed::Color(interpolate_color(x, y, t)),
+                (Typed::Length(x), Typed::Length(y)) => Typed::Length(lerp(*x, *y, t)),
+                (Typed::Number(x), Typed::Number(y)) => Typed::Number(lerp(*x, *y, t)),
+                (Typed::Integer(x), Typed::Integer(y)) => Typed::Integer(lerp(*x, *y, t).round()),
+                (Typed::Percentage(x), Typed::Percentage(y)) => Typed::Percentage(lerp(*x, *y, t)),
+                (Typed::Angle(x), Typed::Angle(y)) => Typed::Angle(lerp(*x, *y, t)),
+                (Typed::Time(x), Typed::Time(y)) => Typed::Time(lerp(*x, *y, t)),
+                (Typed::LengthPercentage(x), Typed::LengthPercentage(y)) => {
+                    use LengthPercentage::*;
+                    Typed::LengthPercentage(match (x, y) {
+                        (Px(x), Px(y)) => Px(lerp(*x, *y, t)),
+                        (Percent(x), Percent(y)) => Percent(lerp(*x, *y, t)),
+                        _ => {
+                            let parts = |v: &LengthPercentage| match *v {
+                                Px(px) => (0.0, px),
+                                Percent(p) => (p, 0.0),
+                                Calc { percent, px } => (percent, px),
+                            };
+                            let ((pa, xa), (pb, xb)) = (parts(x), parts(y));
+                            Calc {
+                                percent: lerp(pa, pb, t),
+                                px: lerp(xa, xb, t),
+                            }
+                        }
+                    })
+                }
+                _ => return None,
+            })
+        })
+        .collect::<Option<Vec<Typed>>>()?;
+    Some(TypedValue {
+        items,
+        multiplier: a.multiplier,
+    })
+}
+
 fn interpolate(a: &AnimValue, b: &AnimValue, t: f32) -> Option<AnimValue> {
     Some(match (a, b) {
         (AnimValue::Number(x), AnimValue::Number(y)) => AnimValue::Number(lerp(*x, *y, t)),
@@ -1054,6 +1115,7 @@ fn interpolate(a: &AnimValue, b: &AnimValue, t: f32) -> Option<AnimValue> {
         (AnimValue::Grid(x), AnimValue::Grid(y)) => {
             AnimValue::Grid(interpolate_grid_template(x, y, t)?)
         }
+        (AnimValue::Custom(x), AnimValue::Custom(y)) => AnimValue::Custom(interpolate_typed(x, y, t)?),
         _ => return None,
     })
 }
@@ -1193,7 +1255,20 @@ pub(crate) struct Animations {
     /// generation. While neither changed and nothing moves, a pass would
     /// find what the last one found (`LayoutCtx::svg_paint_transitions`).
     pub(crate) svg_last: Option<(std::rc::Weak<HashMap<usize, crate::SvgPaintStyle>>, u64)>,
+    /// TRANS-F: the document's registered custom properties, as the last
+    /// build installed them.
+    pub(crate) registry: Option<Arc<rustkit_css::PropertyRegistry>>,
+    /// The registered custom properties a transition ran on: a transition's
+    /// `prop` of `CUSTOM_BASE + k` is `custom_names[k]`.
+    custom_names: Vec<String>,
+    /// The registered values the last overlay set, by element: the build
+    /// cascades the element again with them (`take_custom_overlay`).
+    custom_overlay: HashMap<usize, HashMap<String, String>>,
 }
+
+/// TRANS-F: a transition's `prop` at or past this is a registered custom
+/// property (`Animations::custom_names`), not a `PROPS` row.
+const CUSTOM_BASE: usize = 1 << 20;
 
 /// A2.2: a `fill` or `stroke` transition of an element of an inline svg.
 /// Its timing is a `Transition`'s (its `prop` unused: svg paint is no
@@ -1237,6 +1312,69 @@ impl Animations {
         self.last_id
     }
 
+    /// The CSS name of transition property `prop`: a `PROPS` row or a
+    /// registered custom property.
+    fn prop_label(&self, prop: usize) -> &str {
+        match prop.checked_sub(CUSTOM_BASE) {
+            Some(k) => self.custom_names.get(k).map_or("", String::as_str),
+            None => PROPS[prop].name,
+        }
+    }
+
+    /// The `prop` index of registered custom property `name`.
+    fn custom_index(&mut self, name: &str) -> usize {
+        let k = match self.custom_names.iter().position(|n| n == name) {
+            Some(k) => k,
+            None => {
+                self.custom_names.push(name.to_string());
+                self.custom_names.len() - 1
+            }
+        };
+        CUSTOM_BASE + k
+    }
+
+    /// Whether a registered custom property's transition runs: what reads it
+    /// (`var()`) is known only to a cascade, so a frame takes a build.
+    pub(crate) fn custom_running(&self) -> bool {
+        self.transitions.iter().any(|t| t.prop >= CUSTOM_BASE)
+    }
+
+    /// The registered values `node`'s overlay set in this build, if any.
+    pub(crate) fn take_custom_overlay(&mut self, node: usize) -> Option<HashMap<String, String>> {
+        self.custom_overlay.remove(&node)
+    }
+
+    /// The registered custom properties `specs` names (by name: `all`
+    /// does not cover them, as in Chrome 148) with a typed syntax, and
+    /// their values in `style`.
+    fn custom_values(&mut self, specs: &[TransitionItem], style: &ComputedStyle) -> Vec<(usize, AnimValue)> {
+        let Some(registry) = self.registry.clone() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for item in specs {
+            let name = item.property.trim();
+            if !name.starts_with("--") {
+                continue;
+            }
+            let Some(reg) = registry.get(name) else {
+                continue;
+            };
+            let value = style
+                .custom_properties
+                .get(name)
+                .and_then(|v| reg.syntax.compute(v, &Default::default()));
+            let Some(value) = value else {
+                continue;
+            };
+            let i = self.custom_index(name);
+            if !out.iter().any(|(j, _)| *j == i) {
+                out.push((i, AnimValue::Custom(value)));
+            }
+        }
+        out
+    }
+
     /// The transition property names reported since the last call
     /// (`CSSTransition.<name>` in the Inspector's unsupported APIs).
     pub(crate) fn take_unsupported(&mut self) -> Vec<String> {
@@ -1246,8 +1384,11 @@ impl Animations {
     fn note_unsupported(&mut self, specs: &[TransitionItem]) {
         for item in specs {
             let name = item.property.trim().to_ascii_lowercase();
+            // A custom property is no gap: an unregistered one is discrete
+            // in Chrome too, and a registered one runs (TRANS-F).
             if name == "all"
                 || name == "none"
+                || name.starts_with("--")
                 || PROPS.iter().any(|p| p.name == name)
                 || SVG_PAINT_PROPS.contains(&name.as_str())
                 || !expands_to(&name).is_empty()
@@ -1277,7 +1418,7 @@ impl Animations {
         self.events.push(AnimationEvent {
             node: t.node,
             kind,
-            property: PROPS[t.prop].name.to_string(),
+            property: self.prop_label(t.prop).to_string(),
             name: String::new(),
             elapsed_s,
         });
@@ -1512,13 +1653,17 @@ impl Animations {
         }
         let specs = style.transitions.clone();
         self.note_unsupported(&specs);
-        let covered: Vec<usize> = (0..PROPS.len())
+        let mut covered: Vec<usize> = (0..PROPS.len())
             .filter(|&i| spec_for(&specs, PROPS[i].name).is_some())
             .collect();
-        let new_vals: Vec<(usize, AnimValue)> = covered
+        let mut new_vals: Vec<(usize, AnimValue)> = covered
             .iter()
             .map(|&i| (i, (PROPS[i].get)(style)))
             .collect();
+        for (i, v) in self.custom_values(&specs, style) {
+            covered.push(i);
+            new_vals.push((i, v));
+        }
         let prev = self.base.insert(node, new_vals.clone());
 
         // The transition's spec went away (`transition: none`, or the
@@ -1541,7 +1686,14 @@ impl Animations {
                 let Some(old) = prev.iter().find(|(j, _)| j == i).map(|(_, v)| v) else {
                     continue;
                 };
-                let Some(spec) = spec_for(&specs, PROPS[*i].name) else {
+                let spec = match i.checked_sub(CUSTOM_BASE) {
+                    Some(_) => {
+                        let name = self.prop_label(*i);
+                        specs.iter().rev().find(|item| item.property.trim() == name)
+                    }
+                    None => spec_for(&specs, PROPS[*i].name),
+                };
+                let Some(spec) = spec else {
                     continue;
                 };
                 let running = self
@@ -1636,6 +1788,7 @@ impl Animations {
     /// Overlay the running transitions of this element.
     fn transitions_overlay(&mut self, node: usize, style: &mut ComputedStyle) {
         let now = self.clock_ms;
+        let mut custom: HashMap<String, String> = HashMap::new();
         let mut i = 0;
         while i < self.transitions.len() {
             if self.transitions[i].node != node {
@@ -1650,7 +1803,15 @@ impl Animations {
             }
             let t = &mut self.transitions[i];
             let value = t.value_at(now);
-            (PROPS[t.prop].set)(style, &value);
+            match t.prop.checked_sub(CUSTOM_BASE) {
+                Some(k) => {
+                    if let (Some(name), AnimValue::Custom(v)) = (self.custom_names.get(k), &value) {
+                        custom.insert(name.clone(), v.to_css());
+                    }
+                }
+                None => (PROPS[t.prop].set)(style, &value),
+            }
+            let t = &mut self.transitions[i];
             if now >= t.end_ms() {
                 t.done = true;
                 let (t, elapsed) = (t.clone(), (t.duration_ms / 1000.0) as f32);
@@ -1659,6 +1820,14 @@ impl Animations {
             } else {
                 i += 1;
             }
+        }
+        if !custom.is_empty() {
+            let layer = custom.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
+            style.custom_properties =
+                Arc::new(rustkit_css::CustomProperties::over(&style.custom_properties, layer));
+            self.custom_overlay.insert(node, custom);
+        } else {
+            self.custom_overlay.remove(&node);
         }
     }
 }
@@ -1694,6 +1863,9 @@ pub(crate) fn parse_transition_shorthand(
                     times += 1;
                 } else if is_timing_keyword(&lower) {
                     out.timing = parse_timing(&lower);
+                } else if token.starts_with("--") {
+                    // A custom property's name is case-sensitive.
+                    out.property = token.to_string();
                 } else if !lower.is_empty() {
                     out.property = lower;
                 }
@@ -1730,7 +1902,8 @@ pub(crate) fn set_transition_properties(style: &mut ComputedStyle, value: &str) 
             } else {
                 old[i % old.len()].clone()
             };
-            item.property = name.to_ascii_lowercase();
+            // A custom property's name is case-sensitive.
+            item.property = if name.starts_with("--") { name.to_string() } else { name.to_ascii_lowercase() };
             item
         })
         .collect();
@@ -1816,6 +1989,19 @@ pub(crate) fn prop_indices(name: &str) -> Vec<usize> {
 /// The value of animatable property `index` in `style`.
 pub(crate) fn prop_value(style: &ComputedStyle, index: usize) -> AnimValue {
     (PROPS[index].get)(style)
+}
+
+/// TRANS-F: onto `fresh` (the element cascaded again with its moving
+/// registered values), the values its animations set over `cascaded` (its
+/// first cascade) as `animated` shows them.
+pub(crate) fn carry_animated(cascaded: &ComputedStyle, animated: &ComputedStyle, fresh: &mut ComputedStyle) {
+    for p in PROPS {
+        let now = (p.get)(animated);
+        if now != (p.get)(cascaded) {
+            (p.set)(fresh, &now);
+        }
+    }
+    fresh.animation_settled_opacity = animated.animation_settled_opacity;
 }
 
 /// The name of animatable property `index`.
@@ -2373,7 +2559,7 @@ impl Animations {
                 pseudo: split_key(t.node).1,
                 kind: "transition",
                 index: t.prop,
-                name: PROPS[t.prop].name.to_string(),
+                name: self.prop_label(t.prop).to_string(),
                 start_ms: t.created_ms,
                 paused_ms: None,
                 delay_ms: t.delay_ms,
@@ -2447,7 +2633,7 @@ impl Animations {
         for t in self.transitions.iter().filter(|t| split_key(t.node).1.is_none()) {
             out.entry(t.node)
                 .or_default()
-                .push(PROPS[t.prop].name.to_string());
+                .push(self.prop_label(t.prop).to_string());
         }
         for a in self.css.iter().filter(|a| !a.cancelled && split_key(a.node).1.is_none()) {
             let props = out.entry(a.node).or_default();
@@ -3042,6 +3228,23 @@ mod tests {
                 "transitionend"
             ]
         );
+    }
+
+    /// TRANS-F: a transition naming a custom property is no engine gap
+    /// (Chrome runs none for an unregistered one, and a registered one
+    /// runs here), so it is not reported as an unsupported API. Tailwind
+    /// v4's `--tw-gradient-from` reported one entry per name on x.com.
+    #[test]
+    fn a_custom_property_in_a_transition_is_not_reported_unsupported() {
+        let mut anims = Animations::default();
+        let no_frames = |_: &str, _: &ComputedStyle| None::<Vec<Frame>>;
+        let mut style = ComputedStyle::new();
+        style.transitions = ["--tw-gradient-from", "--u", "zoom"]
+            .iter()
+            .map(|p| linear_100ms(p).unwrap())
+            .collect();
+        anims.on_style(7, &mut style, &no_frames);
+        assert_eq!(anims.take_unsupported(), ["zoom"]);
     }
 }
 

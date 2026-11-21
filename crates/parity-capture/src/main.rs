@@ -54,6 +54,14 @@ struct Args {
     #[arg(long)]
     dump_scripts: Option<String>,
 
+    /// Output path for a HAR 1.2 recording of every response the loader answered (decoded bodies;
+    /// image, video and audio bodies left out, SVG kept, images kept with
+    /// REALSITE_HAR_KEEP_IMAGES=1; no cookie or authorization values), written also when the
+    /// capture times out
+    /// (QB-ARCHIVE-INPUT: the real-site board archives it to replay a site offline).
+    #[arg(long)]
+    dump_har: Option<String>,
+
     /// Viewport width
     #[arg(long, default_value = "1280")]
     width: u32,
@@ -125,6 +133,15 @@ struct Args {
     /// is not comparable with the board.
     #[arg(long)]
     live_ms: Option<u64>,
+
+    /// After `--actions`, turn the live loop for this many milliseconds of
+    /// real time, as the chrome board's Chromium arm waits after its
+    /// actions (`chrome_board.mjs` SETTLE_MS): what an action started (a
+    /// click's request answered in a microtask, a chart resized from a
+    /// ResizeObserver through an animation frame) gets its frames. Off by
+    /// default: the actions' state is taken as they leave it.
+    #[arg(long)]
+    actions_live_ms: Option<u64>,
 
     /// Pace `--live-ms` as the app's window thread does with the content thread off
     /// (`HIWAVE_CONTENT_THREAD=0`, `hiwave-app` `process_events`): every wait for a timer or a request
@@ -885,6 +902,12 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
 
+    if args.dump_har.is_some() {
+        // Image bodies only on request (the board's opt-in); video and audio never.
+        let keep_images = std::env::var("REALSITE_HAR_KEEP_IMAGES").is_ok_and(|v| v == "1");
+        rustkit_net::har::start_recording(keep_images);
+    }
+
     // Hard wall-clock limit. A live page can stall the engine anywhere
     // (network, layout, paint) and nothing inside the engine can be trusted
     // to give up, so the limit is enforced from outside the capture thread.
@@ -894,8 +917,11 @@ fn main() {
             "timeout",
             format!("capture exceeded {} ms", args.timeout_ms),
         );
+        let har_path = args.dump_har.clone();
         std::thread::spawn(move || {
             std::thread::sleep(limit);
+            // What was fetched before the stall is the input a replay of the timeout needs.
+            write_har(har_path.as_deref());
             println!("{}", serde_json::to_string(&timeout_result).unwrap());
             std::process::exit(3);
         });
@@ -931,6 +957,7 @@ fn main() {
         Err(_) => CaptureResult::new(&args).failed("error", "worker thread panicked".to_string()),
     };
     result.elapsed_ms = Some(started.elapsed().as_millis() as u64);
+    write_har(args.dump_har.as_deref());
 
     // Output JSON result
     println!("{}", serde_json::to_string(&result).unwrap());
@@ -940,6 +967,14 @@ fn main() {
         std::process::exit(0);
     } else {
         std::process::exit(1);
+    }
+}
+
+/// `--dump-har`: the loader's recording so far, written to `path` (QB-ARCHIVE-INPUT).
+fn write_har(path: Option<&str>) {
+    let Some(path) = path else { return };
+    if let Err(e) = rustkit_net::har::write(std::path::Path::new(path)) {
+        error!("Failed to write HAR: {:?}", e);
     }
 }
 
@@ -1281,6 +1316,25 @@ fn capture(args: &Args, sink: Option<&CollectingSink>, inspector: &mut Option<Ar
             args.actions_out_dir.as_deref(),
             &mut result,
         );
+        // What the actions left held for a frame, before the settle or the frame (#1361 R1).
+        if let Err(e) = engine.run_held_observation_frame(view_id) {
+            error!("Failed to run the held resize observation's frame: {:?}", e);
+        }
+        if let Some(live_ms) = args.actions_live_ms {
+            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => return result.failed("error", format!("Failed to create runtime: {}", e)),
+            };
+            run_live(&rt, &mut engine, view_id, live_ms, LivePacing::of(args));
+        }
+    }
+
+    // The page as it stands, with no turn to come: a resize observation held for a frame (an
+    // action showed a box while a frame was asked for) gets that frame, then is delivered, as
+    // the next rendering update would (#1361 R1). The engine already did it at the end of the
+    // load; with nothing held this runs nothing.
+    if let Err(e) = engine.run_held_observation_frame(view_id) {
+        error!("Failed to run the held resize observation's frame: {:?}", e);
     }
 
     // Render final view
@@ -2452,6 +2506,12 @@ mod tests {
         let too_large = log_of(&big);
         let failed = inline_script_failure(&too_large).expect("a too-large inline script fails the capture");
         assert!(matches!(failed.outcome, ScriptOutcome::Skipped(why) if why.starts_with("too large")), "{too_large:?}");
+    }
+
+    #[test]
+    fn actions_live_ms_is_off_unless_given() {
+        assert_eq!(parsed(&[]).actions_live_ms, None);
+        assert_eq!(parsed(&["--actions-live-ms", "100"]).actions_live_ms, Some(100));
     }
 
     #[test]

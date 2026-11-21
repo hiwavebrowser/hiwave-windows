@@ -26,6 +26,7 @@ use url::Url;
 
 pub mod cache;
 pub mod download;
+pub mod har;
 pub mod intercept;
 pub mod policy;
 pub mod security;
@@ -488,6 +489,38 @@ enum ResponseBody {
 }
 
 impl Response {
+    /// The body when it is already loaded (QB-ARCHIVE-INPUT: the HAR recording reads it without
+    /// taking it).
+    pub(crate) fn full_body(&self) -> Option<&Bytes> {
+        match &self.body {
+            ResponseBody::Full(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        url: Url,
+        status: StatusCode,
+        headers: HeaderMap,
+        content_type: Option<Mime>,
+        body: Bytes,
+        redirect_chain: Vec<(Url, StatusCode)>,
+    ) -> Self {
+        Response {
+            request_id: RequestId::new(),
+            url,
+            status,
+            headers,
+            content_type,
+            content_length: Some(body.len() as u64),
+            from_cache: false,
+            encoded_body_size: None,
+            redirect_chain,
+            body: ResponseBody::Full(body),
+        }
+    }
+
     /// Check if request was successful (2xx).
     pub fn ok(&self) -> bool {
         self.status.is_success()
@@ -745,8 +778,13 @@ impl ResourceLoader {
         use_cache: bool,
     ) -> Result<Response, NetError> {
         let mut trace = FetchTrace::begin(&request);
+        let began = std::time::Instant::now();
+        let recorded = har::recording().then(|| request.clone());
         let result = self.fetch_with_inner(request, client, use_cache).await;
         trace.finish(&result);
+        if let Some(request) = recorded {
+            har::record(&request, &result, began);
+        }
         result
     }
 

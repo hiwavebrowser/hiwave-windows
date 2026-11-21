@@ -3059,6 +3059,43 @@ pub(crate) fn install(
         }),
     )?;
 
+    // `register_property(name, syntax, inherits, initialValue)`:
+    // `CSS.registerProperty()` (css-properties-values-api-1 §3.1). The
+    // descriptor is validated here and kept on the document as `@property`
+    // text, which the next layout reads after the document's sheets.
+    // Answers `''`, or the DOMException name to throw.
+    let h = host.clone();
+    let d = dirty.clone();
+    runtime.register_host_function(
+        "__rustkit_dom_register_property",
+        4,
+        Box::new(move |args| {
+            let host = h.borrow();
+            let Some(document) = host.document.clone() else {
+                return JsValue::String(String::new());
+            };
+            let name = string_arg(args, 0).unwrap_or("");
+            let syntax = string_arg(args, 1).unwrap_or("*");
+            let inherits = matches!(args.get(2), Some(JsValue::Boolean(true)));
+            let initial = string_arg(args, 3);
+            let registration = match rustkit_css::Registration::new(name, syntax, Some(inherits), initial) {
+                Ok(r) => r,
+                Err(e) => return JsValue::String(e.to_string()),
+            };
+            let rule = rustkit_css::registered_property::registration_rule(
+                &registration.name,
+                syntax,
+                inherits,
+                initial,
+            );
+            if !document.register_property(name, rule) {
+                return JsValue::String("InvalidModificationError".into());
+            }
+            d.mark(DomDirty::Style, "sheet", crate::Logged::No);
+            JsValue::String(String::new())
+        }),
+    )?;
+
     // `set_sheet_disabled(gen, id, on)`: `<style>.sheet.disabled`. The
     // engine leaves the element's sheet out of the cascade while its text
     // is the text it had now (web_cssom.js calls again after a CSSOM edit).
@@ -3107,6 +3144,7 @@ const WRAPPERS_JS: &str = r#"
         wheelAttribute: __rustkit_dom_wheel_attribute,
         rangeTextRects: __rustkit_dom_range_text_rects, setAdopted: __rustkit_dom_set_adopted,
         setSheetDisabled: __rustkit_dom_set_sheet_disabled,
+        registerProperty: __rustkit_dom_register_property,
         scrollElement: __rustkit_dom_scroll_element,
         animate: __rustkit_dom_animate, cssAnimations: __rustkit_dom_css_animations,
         cssControl: __rustkit_dom_css_control, animated: __rustkit_dom_animated,
@@ -3115,7 +3153,7 @@ const WRAPPERS_JS: &str = r#"
     delete g.__rustkit_style_read;
     delete g.__rustkit_style_write;
     ['root', 'by_id', 'collect', 'info', 'attr', 'mutate', 'write', 'matches', 'value', 'resolve', 'checked', 'submit', 'navigate',
-        'inserted_script', 'hit', 'svg_hit', 'note_wheel', 'wheel_attribute', 'range_text_rects', 'set_adopted', 'set_sheet_disabled', 'scroll_element', 'animate', 'css_animations', 'css_control', 'animated'].forEach(function (n) {
+        'inserted_script', 'hit', 'svg_hit', 'note_wheel', 'wheel_attribute', 'range_text_rects', 'set_adopted', 'set_sheet_disabled', 'register_property', 'scroll_element', 'animate', 'css_animations', 'css_control', 'animated'].forEach(function (n) {
         delete g['__rustkit_dom_' + n];
     });
     // The DOM's dirty flag (a native registered as a global), for
@@ -7749,6 +7787,10 @@ const WRAPPERS_JS: &str = r#"
         var s = node != null ? node[SLOT] : undefined;
         if (!s || s.gen !== gen) return;
         N.setAdopted(s.gen, s.id, String(json));
+    };
+    // web_cssom.js: CSS.registerProperty(); '' or the DOMException name.
+    __rk.registerProperty = function (name, syntax, inherits, initial) {
+        return N.registerProperty(name, syntax, inherits, initial);
     };
     // web_cssom.js: a <style>'s sheet.disabled, for the sheet it owns now.
     __rk.setSheetDisabled = function (node, on) {

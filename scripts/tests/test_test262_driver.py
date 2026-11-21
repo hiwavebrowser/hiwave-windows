@@ -59,9 +59,15 @@ class DriverTests(unittest.TestCase):
         for name in ("a_grow.js", "b_ok.js"):
             (self.suite / "test" / name).write_text("/*---\ndescription: x\n---*/\n", encoding="utf-8")
         (self.suite / "test" / "c_strict.js").write_text("/*---\nflags: [onlyStrict]\n---*/\n", encoding="utf-8")
-        self.runner = root / "runner"
-        self.runner.write_text(FAKE_RUNNER, encoding="utf-8")
-        self.runner.chmod(self.runner.stat().st_mode | stat.S_IEXEC)
+        script = root / "runner"
+        script.write_text(FAKE_RUNNER, encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        # The runner as an argv prefix, so the fake starts on any OS (Windows does not run a
+        # script by its shebang) and the watchdog measures and stops the python process itself.
+        # The base interpreter, not a venv's: on Windows a venv's python.exe is a launcher that
+        # runs the real interpreter as a child, so the watchdog would measure and stop the launcher.
+        # The fake runner uses only the standard library, so it needs nothing from the venv.
+        self.runner = [getattr(sys, "_base_executable", sys.executable), str(script)]
 
     def tearDown(self):
         self.dir.cleanup()
@@ -88,6 +94,13 @@ class DriverTests(unittest.TestCase):
             results = self.run_files()
         self.check_stopped(results)
         self.assertIn("memory", results[("test/a_grow.js", "sloppy")][1])
+
+    def test_the_resident_size_of_a_running_process_is_read(self):
+        # #1362: the watchdog holds the cap by the runner's resident size. Windows has neither
+        # /proc nor ps, so it read nothing and could never stop a runaway runner.
+        rss = test262.resident_mb(os.getpid())
+        self.assertIsNotNone(rss)
+        self.assertGreater(rss, 1.0)
 
     def test_modes_follow_the_flags(self):
         self.assertEqual(test262.modes_of("test/c_strict.js", self.suite), ["strict"])

@@ -38,7 +38,7 @@ def write_ppm(path, striped):
 
 
 def fake_chrome(result):
-    def capture(url, png, text_json, width, height, env):
+    def capture(url, png, text_json, width, height, env, har_path=None):
         Path(png).write_bytes(b"png")
         Path(text_json).write_text(json.dumps({"url": url, "text": "access denied"}), encoding="utf-8")
         return dict(result)
@@ -113,7 +113,7 @@ class OracleBlocked(unittest.TestCase):
         caps = iter([dict(OK, http_status=403), OK])
         out = Path(tempfile.mkdtemp(prefix="t19_"))
         try:
-            def capture(url, png, text_json, width, height, env):
+            def capture(url, png, text_json, width, height, env, har_path=None):
                 Path(png).write_bytes(b"png")
                 Path(text_json).write_text(json.dumps({"url": url, "text": "access denied"}), encoding="utf-8")
                 return dict(next(caps))
@@ -295,6 +295,23 @@ class RealWindowGate(unittest.TestCase):
         dead.wait()
         return dead.pid
 
+    def test_pid_alive_tells_a_dead_pid_from_a_live_one(self):
+        """#1357: os.kill(pid, 0) is a POSIX liveness probe. On Windows signal 0 is
+        CTRL_C_EVENT, not a probe: a dead holder read as alive, so no stale lock
+        was ever recovered there."""
+        self.assertTrue(realsite_board._pid_alive(os.getpid()))
+        live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            self.assertTrue(realsite_board._pid_alive(live.pid))
+        finally:
+            live.kill()
+            live.wait()
+        self.assertFalse(realsite_board._pid_alive(self._dead_pid()))
+        # R1 nit: an exit code equal to STILL_ACTIVE (259) is still a dead process.
+        dead259 = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(259)"])
+        dead259.wait()
+        self.assertFalse(realsite_board._pid_alive(dead259.pid))
+
     def test_dead_lock_recovery_loses_to_a_runner_that_recovered_first(self):
         """R1 (#960): two runners both read the same dead pid; exactly one may hold.
 
@@ -370,6 +387,9 @@ class RealWindowGate(unittest.TestCase):
         lock.release()
         self.assertFalse(self.lock_path.exists())
 
+    @unittest.skipIf(os.name == "nt", "#1357: the real-window lock is never taken on Windows (no HID idle "
+                     "probe, so the oracle is always headless); this stress race only measures Windows "
+                     "filesystem timing (a just-written stale dir held open, delete-pending names)")
     def test_two_concurrent_recoverers_one_holder(self):
         """Two processes race to recover the same dead lock, ten rounds: one holder each time."""
         script = (

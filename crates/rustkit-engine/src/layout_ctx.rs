@@ -284,7 +284,20 @@ impl LayoutCtx {
             lay.animations.borrow().has_records(node)
         };
         let cascaded = may_animate.then(|| style.clone());
-        lay.animations.borrow_mut().on_style(node, style, &resolve);
+        {
+            let mut anims = lay.animations.borrow_mut();
+            // TRANS-F: the registered custom properties of this build.
+            let registry = crate::registered_props::current();
+            let same = match (&anims.registry, &registry) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            };
+            if !same {
+                anims.registry = registry;
+            }
+            anims.on_style(node, style, &resolve);
+        }
         // Script's animated values, above the CSS ones: each entry parsed
         // against the style as it stands and composed on it.
         self.apply_script_layer(style, entries.as_deref());
@@ -306,6 +319,22 @@ impl LayoutCtx {
             }
         }
         may_animate
+    }
+
+    /// TRANS-F: the registered custom property values `node`'s running
+    /// transitions set in this build, for the element's second cascade.
+    pub(crate) fn take_custom_overlay(&self, node: usize) -> Option<std::collections::HashMap<String, String>> {
+        let lay = self.building.borrow().as_ref().and_then(|view| view.lay.clone())?;
+        let mut anims = lay.animations.borrow_mut();
+        anims.take_custom_overlay(node)
+    }
+
+    /// The style `node` cascaded to before its animations, as
+    /// `animate_style` kept it.
+    pub(crate) fn cascaded_style(&self, node: usize) -> Option<crate::ComputedStyle> {
+        let lay = self.building.borrow().as_ref().and_then(|view| view.lay.clone())?;
+        let anims = lay.animations.borrow();
+        anims.captured.get(&node).map(|c| c.cascaded.clone())
     }
 
     /// Script's animated-style entries for one element (Web Animations),
@@ -366,6 +395,27 @@ impl LayoutCtx {
             // (detached, or under `display: none`) paints nothing, and
             // the frame has nothing of it to place (LAT14: until
             // 2026-11-08 such an entry laid out every frame of the page).
+            // TRANS-F: what reads a registered custom property (`var()`)
+            // is known only to a cascade.
+            if anims.custom_running() {
+                // REG-TRANS-FASTPATH: every element that animates (a frame's values move on all
+                // of them), for the relayout's short path to restyle alone: what reads a moving
+                // registered value through `var()` is its own declarations or, for an
+                // `inherits: true` property, its subtree's.
+                let mut roots: Vec<usize> = anims
+                    .record_nodes()
+                    .into_iter()
+                    // Script-layer entries unfiltered: one on an element no build reaches
+                    // (detached, `display: none`) is a root the short path cannot find, a miss
+                    // and the full build, as now.
+                    .chain(script.keys().copied())
+                    .map(|key| crate::animations::split_key(key).0)
+                    .collect();
+                roots.sort_unstable();
+                roots.dedup();
+                *lay.animation_roots.borrow_mut() = Some(roots);
+                return Err("a registered custom property animates".into());
+            }
             if let Some(node) = anims
                 .record_nodes()
                 .into_iter()
@@ -616,9 +666,9 @@ pub(crate) struct ViewLayout {
     /// is shared, and another view's pass must not evict what this one
     /// paints.
     pub(crate) svg_transient_keys: RefCell<Vec<String>>,
-    /// MEDIA-AVF: each video's display size once its metadata is in, by raw NodeId:
-    /// what its replaced box is built at (`media.rs`).
-    pub(crate) media_sizes: RefCell<HashMap<usize, (u32, u32)>>,
+    /// MEDIA-AVF: each video's display size once its metadata is in, with the key its
+    /// frames paint under, by raw NodeId: what its replaced box is built at (`media.rs`).
+    pub(crate) media_sizes: RefCell<HashMap<usize, (u32, u32, String)>>,
     /// This view's running CSS transitions and the values they compare
     /// against, read and advanced by every build (`animations.rs`).
     pub(crate) animations: RefCell<crate::animations::Animations>,
@@ -738,6 +788,14 @@ pub(crate) struct ViewLayout {
     /// such restyle's build went into.
     pub(crate) script_roots: RefCell<Option<Vec<usize>>>,
     pub(crate) script_walked: Cell<Option<usize>>,
+    /// REG-TRANS-FASTPATH: a registered custom property's transition runs, so the animation frame
+    /// took no paint-only path (`animation_frame`); the elements that animate (raw NodeIds), for
+    /// the coming relayout to restyle alone on the LPF1 short path (`Engine::relayout`). Under
+    /// each the build restyles its subtree, which is where an `inherits: true` value reaches (a
+    /// host's shadow tree included). Set by a refused frame and taken by the next relayout, which
+    /// keeps it only when every cause is `animation` with nothing else dirty: a list left from an
+    /// earlier frame is at worst a superset of what animates, and only costs a wider restyle.
+    pub(crate) animation_roots: RefCell<Option<Vec<usize>>>,
     /// LAT9: the URL each `<img>` (raw NodeId) last painted with a loaded
     /// image. When script swaps its `src`, the box keeps painting this one
     /// while the new image is in flight, so a card does not go blank
