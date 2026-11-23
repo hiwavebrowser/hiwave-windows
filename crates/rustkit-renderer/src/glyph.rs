@@ -96,6 +96,17 @@ pub(crate) enum WindowsPaint {
 #[cfg(windows)]
 pub(crate) const WINDOWS_TEXT_SYMBOL_FAMILY: &str = "Segoe UI Symbol";
 
+/// The family a `TextFallback` glyph is drawn from: the face layout measured it in
+/// (`rustkit_text::text_fallback_face`, Blink's per-block table and then DirectWrite's
+/// fallback), so ink and advance come from one face. Chrome for Testing 148 win64 draws
+/// U+25BE from Cambria Math and U+2699 from Segoe UI Symbol. Segoe UI Symbol when nothing maps.
+#[cfg(windows)]
+pub(crate) fn windows_text_fallback_family(ch: char, run_family: &str) -> String {
+    rustkit_text::text_fallback_face(ch, run_family)
+        .map(|(_, name)| name)
+        .unwrap_or_else(|| WINDOWS_TEXT_SYMBOL_FAMILY.to_string())
+}
+
 /// Windows' paint path for `ch`. A recorded fallback face decides (layout's
 /// one decision); without one, an `is_emoji` character keeps the colour path,
 /// as before.
@@ -137,6 +148,16 @@ mod windows_paint_tests {
         let drawn = rasterize_char_for_test(gear, WINDOWS_TEXT_SYMBOL_FAMILY, 14.0, 400).expect("Segoe UI Symbol has U+2699");
         assert!(drawn.0.iter().any(|&a| a > 0), "no ink");
         assert!((drawn.3 - 11.8125).abs() < 0.02, "advance {}", drawn.3);
+    }
+
+    /// A text fallback glyph is drawn from the face layout measured it in: Cambria
+    /// Math for U+25BE (Chrome draws it there), Segoe UI Symbol for U+2699.
+    #[test]
+    fn a_text_fallback_glyph_is_drawn_from_the_face_layout_measured() {
+        assert_eq!(windows_text_fallback_family('\u{25BE}', "Segoe UI"), "Cambria Math");
+        assert_eq!(windows_text_fallback_family('\u{2699}', "Segoe UI"), WINDOWS_TEXT_SYMBOL_FAMILY);
+        let drawn = rasterize_char_for_test('\u{25BE}', "Cambria Math", 12.0, 400).expect("Cambria Math has U+25BE");
+        assert!(drawn.0.iter().any(|&a| a > 0), "no ink");
     }
 
     /// The text fallback's glyph comes from the system face only; any other key may take a

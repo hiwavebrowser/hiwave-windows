@@ -1,0 +1,60 @@
+{
+ "chrome": "148.0.7778.216",
+ "platform": "linux",
+ "method": "element.style.fontFamily = declared; getComputedStyle(element).fontFamily",
+ "measured": "2026-11-21",
+ "cases": [
+  {
+   "declared": "\"Arial\"",
+   "computed": "Arial"
+  },
+  {
+   "declared": "\"monospace\"",
+   "computed": "\"monospace\""
+  },
+  {
+   "declared": "monospace",
+   "computed": "monospace"
+  },
+  {
+   "declared": "\"sans-serif\", serif",
+   "computed": "\"sans-serif\", serif"
+  },
+  {
+   "declared": "Times   New   Roman",
+   "computed": "\"Times New Roman\""
+  },
+  {
+   "declared": "\"Times   New   Roman\"",
+   "computed": "\"Times   New   Roman\""
+  },
+  {
+   "declared": "Noto Sans CJK SC, sans-serif",
+   "computed": "\"Noto Sans CJK SC\", sans-serif"
+  },
+  {
+   "declared": "\"My-Font2\", fantasy",
+   "computed": "My-Font2, fantasy"
+  },
+  {
+   "declared": "\"2fast\"",
+   "computed": "\"2fast\""
+  },
+  {
+   "declared": "system-ui",
+   "computed": "system-ui"
+  },
+  {
+   "declared": "-apple-system, BlinkMacSystemFont",
+   "computed": "-apple-system, BlinkMacSystemFont"
+  },
+  {
+   "declared": "\"Times New Roman\", Arial",
+   "computed": "\"Times New Roman\", Arial"
+  },
+  {
+   "declared": "'Courier New', monospace",
+   "computed": "\"Courier New\", monospace"
+  }
+ ]
+}
