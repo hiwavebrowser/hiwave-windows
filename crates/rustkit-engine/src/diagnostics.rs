@@ -1022,7 +1022,7 @@ fn length(l: &Length, none_for_auto: bool, font_px: f32, viewport: (f32, f32)) -
         Length::Px(p) => css_px(*p),
         Length::Percent(p) => format!("{}%", num(*p)),
         Length::FitContent => "fit-content".into(),
-        other => css_px(other.to_px_with_viewport(font_px, 16.0, 0.0, viewport.0, viewport.1)),
+        other => css_px(other.to_px_with_viewport(font_px, rustkit_css::root_font_px(), 0.0, viewport.0, viewport.1)),
     }
 }
 
@@ -1337,7 +1337,7 @@ fn insets(
                 match specified[i] {
                     None | Some(Length::Auto) => None,
                     Some(Length::Percent(p)) => Some(p / 100.0 * sizes[i]),
-                    Some(l) => Some(l.to_px_with_viewport(font_px, 16.0, sizes[i], vp.0, vp.1)),
+                    Some(l) => Some(l.to_px_with_viewport(font_px, rustkit_css::root_font_px(), sizes[i], vp.0, vp.1)),
                 }
             };
             let mut out: [Option<String>; 4] = Default::default();

@@ -382,6 +382,10 @@ Where: the `Length::Auto` arm of `calculate_block_width`
 `aspect_ratio_content_height` is only used for the height. The flex item
 case is decided in flex.rs.
 
+Fixed for the block (2026-11-21): `aspect_ratio_width_from_height` in
+`calculate_block_width` derives the auto width from a length height
+(`aspect-ratio--block--fixed-height` now matches the matrix's Chromium numbers). The flex and grid cases remain.
+
 ### 14. `grid-auto-rows-skips-first-row` (3 as first cause; all 8 `auto-rows-40` cases fail for it)
 
 **Rule:** `grid-auto-rows` sizes every implicit row; the engine leaves the

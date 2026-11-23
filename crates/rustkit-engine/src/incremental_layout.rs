@@ -70,6 +70,9 @@ pub(crate) struct Key {
     /// of the face set text is measured with: a web font landing after a
     /// layout changes text metrics, not the box tree.
     pub(crate) fonts: u64,
+    /// ROOT-REM: what `rem` was (`rustkit_css::root_font_px`, as bits): a root font-size that
+    /// moves changes every `rem` length, not the box tree's styles.
+    pub(crate) root_font: u32,
 }
 
 /// The root post-passes' inputs (`finish_root`): the root's laid-out size

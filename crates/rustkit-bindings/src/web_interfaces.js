@@ -8,7 +8,8 @@
 // What is deliberately NOT defined here: WebAssembly, Notification,
 // AudioContext, OffscreenCanvas, BroadcastChannel,
 // MessageChannel, Request/Response/Headers, ReadableStream and
-// friends, Image/Option/Audio, CSS, CustomElementRegistry, Intl. Pages decide
+// friends, Image/Option/Audio (made with their elements: web_forms.js and
+// dom.rs's media block), CSS, CustomElementRegistry, Intl. Pages decide
 // what to do by `typeof WebAssembly`; a constructor that exists but does nothing
 // would send them down the wrong path. Those arrive with real behaviour
 // (CanvasRenderingContext2D has: web_canvas.js).

@@ -1,0 +1,65 @@
+# Chrome for Testing 148.0.7778.216, 800x600, root_rem_<case>.html: [case] report() then [case after] report2()
+[pct]
+html font-size: 10px
+p font-size: 14px line-height: 20px width: 200px padding-left: 10px
+p box: 210x20
+calc width: 15px box: 15x10
+media rem: 1px
+pseudo font-size: 20px box: 12.05x24
+nested rem: 10px
+[pct after]
+html font-size: 20px
+p font-size: 28px line-height: 40px width: 400px padding-left: 20px
+p box: 420x40
+calc width: 25px box: 25x20
+media rem: 1px
+pseudo font-size: 40px box: 24.09x46
+nested rem: 20px
+[px]
+html font-size: 10px
+p font-size: 14px line-height: 20px width: 200px padding-left: 10px
+p box: 210x20
+calc width: 15px box: 15x10
+media rem: 1px
+pseudo font-size: 20px box: 12.05x24
+nested rem: 10px
+[px after]
+html font-size: 20px
+p font-size: 28px line-height: 40px width: 400px padding-left: 20px
+p box: 420x40
+calc width: 25px box: 25x20
+media rem: 1px
+pseudo font-size: 40px box: 24.09x46
+nested rem: 20px
+[em]
+html font-size: 32px
+p font-size: 44.8px line-height: 64px width: 640px padding-left: 32px
+p box: 672x64
+calc width: 37px box: 37x32
+media rem: 1px
+pseudo font-size: 64px box: 38.53x74
+nested rem: 32px
+[em after]
+html font-size: 20px
+p font-size: 28px line-height: 40px width: 400px padding-left: 20px
+p box: 420x40
+calc width: 25px box: 25x20
+media rem: 1px
+pseudo font-size: 40px box: 24.09x46
+nested rem: 20px
+[rem]
+html font-size: 32px
+p font-size: 44.8px line-height: 64px width: 640px padding-left: 32px
+p box: 672x64
+calc width: 37px box: 37x32
+media rem: 1px
+pseudo font-size: 64px box: 38.53x74
+nested rem: 32px
+[rem after]
+html font-size: 20px
+p font-size: 28px line-height: 40px width: 400px padding-left: 20px
+p box: 420x40
+calc width: 25px box: 25x20
+media rem: 1px
+pseudo font-size: 40px box: 24.09x46
+nested rem: 20px

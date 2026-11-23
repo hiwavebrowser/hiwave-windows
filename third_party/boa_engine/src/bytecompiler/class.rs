@@ -1,10 +1,10 @@
 use super::{BindingAccessOpcode, ByteCompiler, Literal, Register, ToJsString};
 use crate::{
-    js_string,
+    SpannedSourceText, js_string,
     vm::{CodeBlock, CodeBlockFlags, opcode::BindingOpcode},
 };
 use boa_ast::{
-    Expression,
+    Expression, LinearSpan,
     expression::Identifier,
     function::{
         ClassDeclaration, ClassElement, ClassElementName, ClassExpression, FormalParameterList,
@@ -45,6 +45,8 @@ pub(crate) struct ClassSpec<'a> {
     elements: &'a [ClassElement],
     has_binding_identifier: bool,
     name_scope: Option<&'a Scope>,
+    // HIWAVE PATCH (class-source-text): the class's source text span, for its constructor.
+    linear_span: Option<LinearSpan>,
 }
 
 impl<'a> From<&'a ClassDeclaration> for ClassSpec<'a> {
@@ -56,6 +58,7 @@ impl<'a> From<&'a ClassDeclaration> for ClassSpec<'a> {
             elements: class.elements(),
             has_binding_identifier: true,
             name_scope: Some(class.name_scope()),
+            linear_span: class.linear_span(),
         }
     }
 }
@@ -69,6 +72,7 @@ impl<'a> From<&'a ClassExpression> for ClassSpec<'a> {
             elements: class.elements(),
             has_binding_identifier: class.name().is_some(),
             name_scope: class.name_scope(),
+            linear_span: class.linear_span(),
         }
     }
 }
@@ -93,7 +97,9 @@ impl ByteCompiler<'_> {
         let outer_scope = self.push_declarative_scope(class.name_scope);
 
         // The new span is not the same as the parent `ByteCompiler` have.
-        let spanned_source_text = self.spanned_source_text.clone_only_source();
+        // HIWAVE PATCH (class-source-text): the constructor's [[SourceText]] is the whole class
+        // (ClassDefinitionEvaluation), so `toString()` returns it as V8 does.
+        let spanned_source_text = SpannedSourceText::new(self.source_text(), class.linear_span);
         let mut compiler = ByteCompiler::new(
             class_name.clone(),
             true,

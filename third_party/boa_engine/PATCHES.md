@@ -1384,3 +1384,37 @@ peaks at 587 MB above the context instead of 808 MB. The finished AST is the sam
 expression `E` may cost at most 64 allocations and 10% of peak heap more than `x = E;`. Before the
 patch it cost 123,140 against 97,136 allocations and 13.4 MB against 7.4 MB; after, 97,138 and
 7.36 MB against 7.36 MB. The printed tree of `x = (a + (b * (c, d)));` is checked as well.
+
+## Patch: a class constructor's `toString()` is the class's source text (`class-source-text`)
+
+**Files.** `third_party/boa_ast/src/function/class.rs` (`ClassDeclaration` and `ClassExpression`
+gain a `linear_span`, `with_linear_span` and `linear_span()`; `PartialEq` ignores it, as it does
+for functions), `third_party/boa_parser/src/parser/statement/declaration/hoistable/class_decl/mod.rs`
+(`ClassTail` also returns the linear end of the closing `}`; `ClassDeclaration::parse` records
+`class` to `}`), `third_party/boa_parser/src/parser/expression/primary/class_expression/mod.rs`
+(the same for `ClassExpression`), `third_party/boa_engine/src/bytecompiler/class.rs`
+(`compile_class` gives the constructor's code block that span instead of none). Marked
+`HIWAVE PATCH (class-source-text)`. The vendored crates' licence is unchanged (Unlicense OR MIT).
+
+**Why.** ClassDefinitionEvaluation sets the constructor's [[SourceText]] to the whole
+ClassDeclaration or ClassExpression, so `Function.prototype.toString` returns
+`class A { ... }`. Boa 0.22 (crates.io) compiled class constructors with no span and returned
+`function A() { [native code] }`. Polymer's legacy element support in YouTube's `kevlar_base`
+decides whether classes are native with `/\bclass\b/.test(class{}.toString())`; when that is false
+it initializes behaviors by calling the class constructor as a function (`N.apply(G)`), which
+throws "class constructor cannot be invoked without 'new'" in the DOMContentLoaded handler, and
+`ytd-app` never starts (YT-CLASS-CTOR).
+
+**What.** Only the constructor's source text changes. The text runs from the `class` keyword to the
+closing `}` (heritage, comments and whitespace included), in scripts, functions, modules and
+`eval` code. A class node not built by the parser has an empty span and keeps the old answer.
+Functions made by `new Function(...)` keep no source text in Boa 0.22 at all, classes inside them
+included; that is unchanged here.
+
+**Receipt.** Chrome for Testing 148.0.7778.216 (`tools/parity_oracle/class_source_text_log.mjs`)
+returns each class's exact source text, and `true` for the Polymer test.
+
+**Pin.** `crates/rustkit-js/tests/class_source_text.rs`: a declaration with `extends`, a
+constructor and a `}` inside a comment; a class without a constructor; an anonymous, a named and a
+parenthesized class expression; a class nested in a method; a class from direct `eval`; and the
+Polymer test. All four tests fail without the patch (`function Rect() { [native code] }`).

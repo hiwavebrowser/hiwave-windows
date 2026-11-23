@@ -57,3 +57,16 @@ export function oracleLaunchOptions(width, height, env = process.env) {
   }
   return launch;
 }
+
+// The oracle's user agent. Undefined (Chrome's own) unless the oracle is headless and
+// REALSITE_ORACLE_HEADED_UA=1; then exactly what the same Chrome sends headed: its own
+// navigator.userAgent with "HeadlessChrome/" read as "Chrome/". Nothing else can set it: no
+// arbitrary UA, no webdriver change.
+export function oracleWantsHeadedUa(headless, env = process.env) {
+  return Boolean(headless) && env.REALSITE_ORACLE_HEADED_UA === '1';
+}
+
+export function oracleUserAgent(chromeUa, headless, env = process.env) {
+  if (!oracleWantsHeadedUa(headless, env)) return undefined;
+  return String(chromeUa).replace('HeadlessChrome/', 'Chrome/');
+}

@@ -292,3 +292,41 @@ fn the_svg_transform_and_paint_server_interfaces_exist_as_in_chrome() {
          SVGPatternElement:function:TypeError:SVGElement true,true,true,true,false"
     );
 }
+
+/// AUDIO-CTOR: `new Audio(src)` (HTML §4.8.10.1). youtube.com's kevlar_base makes its voice
+/// search sounds with `new Audio` and stopped with "Audio is not defined".
+///
+/// Chrome for Testing 148.0.7778.216 (tools/parity_oracle/audio_ctor_log.mjs): an
+/// HTMLAudioElement (and HTMLMediaElement), tagName AUDIO, `preload="auto"` set as an attribute,
+/// no `src` attribute without an argument (`new Audio(undefined)` too), `src` set as given and read
+/// back resolved, `null` set as "null", not connected and not in the document, a new element each
+/// call, `Audio.prototype === HTMLAudioElement.prototype`, name "Audio", length 0, a writable,
+/// configurable, non-enumerable global, and a TypeError when called without `new`.
+#[test]
+fn audio_named_constructor_makes_a_detached_audio_element() {
+    let b = bound();
+    b.set_location(&url::Url::parse("http://oracle.test/dir/page.html").unwrap()).unwrap();
+    // `getElementsByTagName('audio')` is 1: PAGE's own <audio id="au">, not the new element.
+    assert_eq!(
+        ev(&b, "var a = new Audio(); String([a instanceof HTMLAudioElement, a instanceof HTMLMediaElement, a.tagName, a.preload, a.getAttribute('preload'), JSON.stringify(a.src), a.hasAttribute('src'), a.isConnected, a.parentNode, document.getElementsByTagName('audio').length, a.outerHTML].join('|'))"),
+        "true|true|AUDIO|auto|auto|\"\"|false|false||1|<audio preload=\"auto\"></audio>"
+    );
+    assert_eq!(
+        ev(&b, "var s = new Audio('sounds/x.mp3'); String([s.src, s.getAttribute('src'), s.outerHTML].join('|'))"),
+        "http://oracle.test/dir/sounds/x.mp3|sounds/x.mp3|<audio preload=\"auto\" src=\"sounds/x.mp3\"></audio>"
+    );
+    assert_eq!(
+        ev(&b, "String([new Audio(undefined).hasAttribute('src'), new Audio(null).getAttribute('src'), new Audio() !== new Audio()].join('|'))"),
+        "false|null|true"
+    );
+    assert_eq!(
+        ev(&b, "var d = Object.getOwnPropertyDescriptor(globalThis, 'Audio'); String([typeof Audio, Audio.name, Audio.length, Audio.prototype === HTMLAudioElement.prototype, Object.getPrototypeOf(a) === HTMLAudioElement.prototype, a.constructor === HTMLAudioElement, d.writable, d.enumerable, d.configurable].join('|'))"),
+        "function|Audio|0|true|true|true|true|false|true"
+    );
+    assert_eq!(
+        ev(&b, "var t; try { Audio(); t = 'no throw'; } catch (e) { t = e.constructor.name + ': ' + e.message; } t"),
+        "TypeError: Failed to construct 'Audio': Please use the 'new' operator, this DOM object constructor cannot be called as a function."
+    );
+    // Nothing plays: the element answers as a fresh media element does.
+    assert_eq!(ev(&b, "String([a.paused, a.readyState, a.networkState].join('|'))"), "true|0|0");
+}

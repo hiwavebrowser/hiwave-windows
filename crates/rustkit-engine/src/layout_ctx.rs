@@ -641,6 +641,9 @@ pub(crate) struct ViewLayout {
     /// viewport then takes html's, and a body with its own is a scroller
     /// that clips what it holds (see `scrollable_bottom`).
     pub(crate) html_clips: Cell<bool>,
+    /// ROOT-REM: `<html>`'s computed font-size (px) at the last build: what `rem` is in this view
+    /// (`rustkit_css::root_font_px`, set from it before each layout of the view).
+    pub(crate) root_font_px: Cell<Option<f32>>,
     /// The computed styles of this view's elements that have no layout
     /// box: `display: contents` (hoisted out of the tree), `display: none`,
     /// an empty block or inline the box tree dropped, and the root, which

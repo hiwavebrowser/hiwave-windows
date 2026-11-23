@@ -525,7 +525,8 @@ fn an_insert_and_a_removal_among_block_siblings_splice() {
 }
 
 /// BOXES-DIFF (board report.html, `#error-container` emptied by `innerHTML = ''`): a written element
-/// whose box a full build drops (an empty block with nothing visible about it) is not spliced in. The
+/// is spliced exactly as a full build has it. Written when a full build dropped an empty block with
+/// nothing visible about it; a full build now keeps every element block, and the splice must too. The
 /// restyle build kept the root's box before its parent's build decides to keep it, so the splice put
 /// a box where a full build has none.
 #[test]
@@ -542,8 +543,8 @@ fn a_written_empty_block_a_full_build_drops_is_not_spliced_in() {
     );
 }
 
-/// The same, from both sides: the written element is emptied and filled in turn, so its box goes
-/// and comes, as a full build drops and keeps it.
+/// The same, from both sides: the written element is emptied and filled in turn, and the splice
+/// matches a full build each time.
 #[test]
 fn a_written_block_emptied_and_filled_matches_a_full_build() {
     assert_same_as_a_full_build(

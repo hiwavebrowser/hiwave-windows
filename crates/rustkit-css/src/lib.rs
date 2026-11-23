@@ -413,6 +413,26 @@ impl CalcSum {
     }
 }
 
+// ROOT-REM: the root element's computed font-size, which `rem` resolves against
+// (css-values-4 §6.1.1). The engine sets it for each view as it styles `<html>` and before it lays
+// a view out; 16px (the initial value) until then. Not for media queries or the root's own
+// font-size: those take the initial value.
+thread_local! {
+    static ROOT_FONT_PX: std::cell::Cell<f32> = const { std::cell::Cell::new(16.0) };
+}
+
+/// The root element's computed font-size in px: what `1rem` is.
+pub fn root_font_px() -> f32 {
+    ROOT_FONT_PX.with(std::cell::Cell::get)
+}
+
+/// Set what `1rem` is on this thread (a finite, non-negative px; anything else is 16px).
+/// Returns the previous value.
+pub fn set_root_font_px(px: f32) -> f32 {
+    let px = if px.is_finite() && px >= 0.0 { px } else { 16.0 };
+    ROOT_FONT_PX.with(|r| r.replace(px))
+}
+
 /// A CSS length value.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum Length {
@@ -2468,16 +2488,16 @@ impl TransformList {
         for op in &self.ops {
             let m = match op {
                 TransformOp::Translate(x, y) => {
-                    let tx = x.to_px(16.0, 16.0, container_width);
-                    let ty = y.to_px(16.0, 16.0, container_height);
+                    let tx = x.to_px(16.0, root_font_px(), container_width);
+                    let ty = y.to_px(16.0, root_font_px(), container_height);
                     [1.0, 0.0, 0.0, 1.0, tx, ty]
                 }
                 TransformOp::TranslateX(x) => {
-                    let tx = x.to_px(16.0, 16.0, container_width);
+                    let tx = x.to_px(16.0, root_font_px(), container_width);
                     [1.0, 0.0, 0.0, 1.0, tx, 0.0]
                 }
                 TransformOp::TranslateY(y) => {
-                    let ty = y.to_px(16.0, 16.0, container_height);
+                    let ty = y.to_px(16.0, root_font_px(), container_height);
                     [1.0, 0.0, 0.0, 1.0, 0.0, ty]
                 }
                 TransformOp::Scale(sx, sy) => [*sx, 0.0, 0.0, *sy, 0.0, 0.0],

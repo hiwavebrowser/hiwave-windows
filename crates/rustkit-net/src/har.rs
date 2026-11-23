@@ -303,6 +303,19 @@ mod tests {
         Request::get(url::Url::parse("http://a.test/i.png").unwrap())
     }
 
+    /// The recording is process-wide, so a loader test fetching on another thread while it runs
+    /// lands in it too (NET-LAZY-TLS R1: the policy test's local-server fetch). The test below
+    /// reads only its own `http://a.test/` entries.
+    fn own_entries(har: &Value) -> Vec<Value> {
+        har["log"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["request"]["url"].as_str().is_some_and(|u| u.starts_with("http://a.test/")))
+            .cloned()
+            .collect()
+    }
+
     /// One test: the recording is process-wide.
     #[test]
     fn a_recording_keeps_bodies_and_redirect_hops_and_no_secrets() {
@@ -335,7 +348,7 @@ mod tests {
         record(&mp4, &Ok(response("http://a.test/v.mp4", 200, "video/mp4", &[1, 2, 3], vec![])), Instant::now());
 
         let har = snapshot().unwrap();
-        let entries = har["log"]["entries"].as_array().unwrap();
+        let entries = own_entries(&har);
         let got: Vec<(String, u64)> = entries
             .iter()
             .map(|e| (e["request"]["url"].as_str().unwrap().to_string(), e["response"]["status"].as_u64().unwrap()))
@@ -365,7 +378,7 @@ mod tests {
         assert!(png.get("text").is_none() && png.get("encoding").is_none());
         assert_eq!(entries[4]["response"]["content"]["text"], "<svg viewBox='0 0 8 8'/>", "SVG is kept");
         assert_eq!(entries[5]["response"]["content"]["_skipped"], "media");
-        let text = har.to_string();
+        let text = Value::Array(entries.clone()).to_string();
         assert!(!text.contains("secret"), "no cookie value is recorded");
         assert!(!text.to_ascii_lowercase().contains("content-encoding"));
         assert!(text.contains("x-kept"));
@@ -380,7 +393,7 @@ mod tests {
         let back: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // Compared through the same text round trip: a parsed f64 `time` can differ by an ulp.
         let expected: Value = serde_json::from_str(&har.to_string()).unwrap();
-        assert_eq!(back, expected);
+        assert_eq!(own_entries(&back), own_entries(&expected));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
 
@@ -388,9 +401,9 @@ mod tests {
         start_recording(true);
         record(&png_req(), &Ok(response("http://a.test/i.png", 200, "image/png", &[0, 159, 146, 150], vec![])), Instant::now());
         record(&mp4, &Ok(response("http://a.test/v.mp4", 200, "video/mp4", &[1, 2, 3], vec![])), Instant::now());
-        let har = snapshot().unwrap();
-        assert_eq!(har["log"]["entries"][0]["response"]["content"]["text"], "AJ+Slg==");
-        assert_eq!(har["log"]["entries"][1]["response"]["content"]["_skipped"], "media");
+        let har = own_entries(&snapshot().unwrap());
+        assert_eq!(har[0]["response"]["content"]["text"], "AJ+Slg==");
+        assert_eq!(har[1]["response"]["content"]["_skipped"], "media");
         *RECORDING.lock().unwrap() = None;
         assert!(!write(&path).unwrap(), "nothing written when no recording runs");
     }

@@ -1433,6 +1433,21 @@ mod data_url_tests {
         assert_eq!(rt.block_on(resp.text()).unwrap(), "body{color:red}");
     }
 
+    /// NET-LAZY-TLS (batch 119 FLK-TLS-ROOTS): the loader answers a `data:` URL without loading
+    /// the platform roots. Building its HTTP client loaded them, and the macOS keychain read
+    /// behind them fails now and then ("no usable platform root certificates (... failed to load
+    /// user trust settings: I/O error)"), so a `data:` load failed with a TLS error.
+    #[test]
+    fn a_data_url_loads_when_the_platform_roots_cannot_be_read() {
+        let probe = rustkit_http::fail_platform_roots_on_this_thread("failed to load user trust settings: I/O error");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let loader = ResourceLoader::new(LoaderConfig::default()).expect("a loader without the roots");
+        let url = Url::parse("data:text/plain,hello").unwrap();
+        let resp = rt.block_on(loader.fetch(Request::get(url))).expect("data: fetch");
+        assert_eq!(rt.block_on(resp.text()).unwrap(), "hello");
+        assert_eq!(probe.loads(), 0, "a data: load never touches the platform roots");
+    }
+
     /// A `data:` URL is not a request: it never reaches the interceptor (the
     /// shield), so a rule cannot block it and the shield has nothing to log.
     #[test]

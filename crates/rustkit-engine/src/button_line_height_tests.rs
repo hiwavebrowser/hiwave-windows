@@ -161,3 +161,75 @@ fn the_form_controls_case_buttons_are_the_height_chrome_measured() {
     }
     assert_eq!(heights.iter().filter(|h| **h == 50.0).count(), 1, "exactly the .test4 button is 50: {text}");
 }
+
+/// A line holding only a button is the button's height when the button hangs further below the
+/// baseline than the strut does: the part below its baseline is its label line's below-baseline
+/// part plus its bottom padding and border (the control's padding and border are inside its
+/// content rect, so the layout box's own padding reads 0). Chrome for Testing 148.0.7778.216
+/// (win64), 16px Arial blocks, docs/diagnostics/2026-11-21/button_line_hang_cft148.json: the
+/// settings page's `.btn` (`padding: .6rem 1rem; font-size: .85rem; border: 1px solid`) makes a
+/// 36.1875 line for its 36.1875 box; `padding: 8px 12px; font-size: 14px` 36 for 36; a bare
+/// button 21 for 21; a bare 16px button 24 for 24. RustKit hung only the label's descent (about
+/// 3.4) below the baseline, the 16px strut's descent hung under the button and every such line
+/// was 0.45 to 0.62 too tall (each settings section with a button row, cascading down the page).
+#[test]
+fn a_line_holding_only_a_button_is_the_buttons_height() {
+    const PAGE: &str = "<html><head><style>*{box-sizing:border-box}body{margin:0}\
+        div{font:16px Arial;width:400px}</style></head><body>\
+        <div id=l1><button id=b1 style='padding:.6rem 1rem;font-size:.85rem;font-weight:500;\
+        border:1px solid transparent'>Clear Data</button></div>\
+        <div id=l2><button id=b2 style='padding:8px 12px;font-size:14px'>Clear Data</button></div>\
+        <div id=l3><button id=b3>Clear Data</button></div>\
+        <div id=l4><button id=b4 style='font-size:16px'>Clear Data</button></div>\
+        <div id=l5><button id=b5 style='min-height:50px'>Clear Data</button></div>\
+        <div id=l6><button id=b6 style='padding:.6rem 1rem;font-size:.85rem;font-weight:500;\
+        border:1px solid transparent;min-height:50px'>Clear Data</button></div>\
+        <div id=l7><input id=b7 type=button value='Clear Data'></div>\
+        <div id=l8><input id=b8 type=submit value='Clear Data'></div>\
+        <div id=l9><input id=b9 type=reset value='Clear Data'></div>\
+        <div id=l10><input id=b10 type=button value='Clear Data' style='padding:.6rem 1rem;\
+        font-size:.85rem;font-weight:500;border:1px solid transparent'></div>\
+\
+        </body></html>";
+    let mut engine = Engine::new(EngineConfig::default()).expect("engine");
+    let view = engine
+        .create_headless_view(Bounds { x: 0, y: 0, width: 800, height: 400 })
+        .expect("view");
+    engine.load_html(view, PAGE).expect("load_html");
+    let ids: Vec<String> = (1..=10).flat_map(|i| [format!("l{i}"), format!("b{i}")]).collect();
+    let expr = ids
+        .iter()
+        .map(|id| format!("document.getElementById('{id}').getBoundingClientRect().height"))
+        .collect::<Vec<_>>()
+        .join(" + ',' + ");
+    let out = engine.execute_script(view, &format!("String({expr})")).unwrap();
+    let text = out.strip_prefix("String(\"").and_then(|v| v.strip_suffix("\")")).unwrap_or(&out).to_string();
+    let h: Vec<f64> = text.split(',').map(|n| n.parse().unwrap_or(f64::NAN)).collect();
+    // Chrome: (line, button) per row. Rows 5-6 (0-based 4-5): a `min-height` above the intrinsic
+    // height (#1414 R1 nit 1); rows 7-10: the `<input>` buttons, bare and with the `.btn` style
+    // (nit 2). A `max-height` below the intrinsic height is not here: RustKit does not clamp a
+    // button's box to it at all (Chrome: a 10px box on a 19px line; RustKit 21 on 21), a
+    // separate row (BUTTON-MAX-HEIGHT).
+    let chrome = [
+        (36.1875, 36.1875),
+        (36.0, 36.0),
+        (21.0, 21.0),
+        (24.0, 24.0),
+        (50.0, 50.0),
+        (50.0, 50.0),
+        (21.0, 21.0),
+        (21.0, 21.0),
+        (21.0, 21.0),
+        (36.1875, 36.1875),
+    ];
+    let mut wrong = Vec::new();
+    for (row, (line, button)) in chrome.iter().enumerate() {
+        let (got_line, got_button) = (h[2 * row], h[2 * row + 1]);
+        if (got_button - button).abs() >= 0.05 || (got_line - line).abs() >= 0.05 {
+            wrong.push(format!("row {}: Chrome line {line} / button {button}, got {got_line} / {got_button}", row + 1));
+        }
+    }
+    assert!(wrong.is_empty(), "lines holding only a button:
+{}", wrong.join("
+"));
+}

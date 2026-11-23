@@ -46,7 +46,7 @@ pub fn column_geometry(style: &ComputedStyle, content_width: f32) -> Option<Colu
     // variant: both of those parse to `Px(0.0)` (CH2.B14).
     let gap = match style.column_gap {
         Length::Zero => font_size,
-        ref g => g.to_px(font_size, 16.0, content_width).max(0.0),
+        ref g => g.to_px(font_size, rustkit_css::root_font_px(), content_width).max(0.0),
     };
     let width = (content_width - (count as f32 - 1.0) * gap) / count as f32;
     if width <= 0.0 {

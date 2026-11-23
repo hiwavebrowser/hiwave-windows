@@ -882,8 +882,10 @@ impl JsRuntime {
             }
             let dropped = slot.take();
             self.diag.drop_realm(realm.0);
-            if let Some(realm) = &dropped {
-                self.rejections.drop_realm(realm);
+            if let Some(gone) = &dropped {
+                self.rejections.drop_realm(gone);
+                // Its document's module map goes with it (FRAME-MODULE-MAP).
+                self.modules.forget_realm(realm.0, gone);
             }
             return dropped.is_some();
         }

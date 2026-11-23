@@ -315,7 +315,7 @@ pub const UA_BUTTON_BORDER_H: f32 = 4.0;
 pub(crate) fn button_box_sides(style: &ComputedStyle, font_size: f32) -> ([f32; 4], [f32; 4]) {
     let px = |l: &Length| match l {
         Length::Percent(_) | Length::Auto => 0.0,
-        other => other.to_px(font_size, 16.0, 0.0),
+        other => other.to_px(font_size, rustkit_css::root_font_px(), 0.0),
     };
     let author_pad = [&style.padding_top, &style.padding_right, &style.padding_bottom, &style.padding_left];
     let author_border =
@@ -453,7 +453,7 @@ pub(crate) fn form_control_intrinsic_size(
     let (author_pad_v, author_border_v) = {
         let px = |l: &Length| match l {
             Length::Percent(_) | Length::Auto => 0.0,
-            other => other.to_px(font_size, 16.0, 0.0),
+            other => other.to_px(font_size, rustkit_css::root_font_px(), 0.0),
         };
         (
             px(&style.padding_top) + px(&style.padding_bottom),
@@ -554,7 +554,7 @@ pub(crate) fn form_control_intrinsic_size(
                 // does not have (a border width cannot be a percentage).
                 let px_h = |l: &Length| match l {
                     Length::Percent(_) | Length::Auto => 0.0,
-                    other => other.to_px(font_size, 16.0, 0.0),
+                    other => other.to_px(font_size, rustkit_css::root_font_px(), 0.0),
                 };
                 // Sides are [top, right, bottom, left]; a side nobody
                 // declared keeps the UA's value, each on its own: with
@@ -652,7 +652,7 @@ pub(crate) fn form_control_intrinsic_size(
                 // `appearance`, and the old +24 assumed the well too.)
                 let px = |l: &Length| match l {
                     Length::Percent(_) | Length::Auto => 0.0,
-                    other => other.to_px(font_size, 16.0, 0.0),
+                    other => other.to_px(font_size, rustkit_css::root_font_px(), 0.0),
                 };
                 let pb_h = px(&style.padding_left)
                     + px(&style.padding_right)
@@ -698,7 +698,7 @@ pub(crate) fn form_control_intrinsic_size(
                     // Testing 148: 23 with `border-top-width: 5px` alone).
                     let px = |l: &Length| match l {
                         Length::Percent(_) | Length::Auto => 0.0,
-                        other => other.to_px(font_size, 16.0, 0.0),
+                        other => other.to_px(font_size, rustkit_css::root_font_px(), 0.0),
                     };
                     let side = |declared: bool, value: f32| if declared || value > 0.0 { value } else { 1.0 };
                     let border_v = side(style.border_declared[0], px(&style.border_top_width))
@@ -3111,33 +3111,33 @@ impl LayoutBox {
         let d = &mut self.dimensions;
         let container_width = containing_block.content.width;
 
-        d.margin.left = self.style.margin_left.to_px(16.0, 16.0, container_width);
-        d.margin.right = self.style.margin_right.to_px(16.0, 16.0, container_width);
+        d.margin.left = self.style.margin_left.to_px(16.0, rustkit_css::root_font_px(), container_width);
+        d.margin.right = self.style.margin_right.to_px(16.0, rustkit_css::root_font_px(), container_width);
         // Vertical margins don't apply to inline elements
         d.margin.top = 0.0;
         d.margin.bottom = 0.0;
 
-        d.padding.left = self.style.padding_left.to_px(16.0, 16.0, container_width);
-        d.padding.right = self.style.padding_right.to_px(16.0, 16.0, container_width);
-        d.padding.top = self.style.padding_top.to_px(16.0, 16.0, container_width);
-        d.padding.bottom = self.style.padding_bottom.to_px(16.0, 16.0, container_width);
+        d.padding.left = self.style.padding_left.to_px(16.0, rustkit_css::root_font_px(), container_width);
+        d.padding.right = self.style.padding_right.to_px(16.0, rustkit_css::root_font_px(), container_width);
+        d.padding.top = self.style.padding_top.to_px(16.0, rustkit_css::root_font_px(), container_width);
+        d.padding.bottom = self.style.padding_bottom.to_px(16.0, rustkit_css::root_font_px(), container_width);
 
         d.border.left = self
             .style
             .border_left_width
-            .to_px(16.0, 16.0, container_width);
+            .to_px(16.0, rustkit_css::root_font_px(), container_width);
         d.border.right = self
             .style
             .border_right_width
-            .to_px(16.0, 16.0, container_width);
+            .to_px(16.0, rustkit_css::root_font_px(), container_width);
         d.border.top = self
             .style
             .border_top_width
-            .to_px(16.0, 16.0, container_width);
+            .to_px(16.0, rustkit_css::root_font_px(), container_width);
         d.border.bottom = self
             .style
             .border_bottom_width
-            .to_px(16.0, 16.0, container_width);
+            .to_px(16.0, rustkit_css::root_font_px(), container_width);
 
         // Position at containing block's content area
         d.content.x = containing_block.content.x + d.margin.left + d.border.left + d.padding.left;
@@ -3256,13 +3256,13 @@ impl LayoutBox {
         let letter_spacing = match self.style.letter_spacing {
             Length::Px(px) => px,
             Length::Em(em) => em * font_size,
-            Length::Rem(rem) => rem * 16.0,
+            Length::Rem(rem) => rem * rustkit_css::root_font_px(),
             _ => 0.0,
         };
         let word_spacing = match self.style.word_spacing {
             Length::Px(px) => px,
             Length::Em(em) => em * font_size,
-            Length::Rem(rem) => rem * 16.0,
+            Length::Rem(rem) => rem * rustkit_css::root_font_px(),
             _ => 0.0,
         };
         measure_text_with_spacing(
@@ -3307,13 +3307,13 @@ impl LayoutBox {
         let letter_spacing = match self.style.letter_spacing {
             Length::Px(px) => px,
             Length::Em(em) => em * font_size,
-            Length::Rem(rem) => rem * 16.0, // Root font size assumed 16px
+            Length::Rem(rem) => rem * rustkit_css::root_font_px(),
             _ => 0.0,
         };
         let word_spacing = match self.style.word_spacing {
             Length::Px(px) => px,
             Length::Em(em) => em * font_size,
-            Length::Rem(rem) => rem * 16.0,
+            Length::Rem(rem) => rem * rustkit_css::root_font_px(),
             _ => 0.0,
         };
 
@@ -4600,7 +4600,7 @@ impl LayoutBox {
         let st = &self.style;
         let px = |l: &Length| match l {
             Length::Percent(_) | Length::Auto => 0.0,
-            other => other.to_px(font_size, 16.0, 0.0),
+            other => other.to_px(font_size, rustkit_css::root_font_px(), 0.0),
         };
         let edge = |pad: &Length, width: &Length, style: BorderStyle, declared: bool| {
             let border = if style == BorderStyle::None {
@@ -4661,6 +4661,30 @@ impl LayoutBox {
                 let baseline = (top + (content - (ascent + descent)) / 2.0 + ascent).floor();
                 return (height - baseline).max(0.0) + self.dimensions.margin.bottom;
             }
+        }
+        // A button with no author height (CONTROL-LINE-HANG): its label line sits on its bottom
+        // padding and border, which are inside this box's content rect (a control's content rect
+        // is its border box), so `dimensions.padding` reads 0 here; read them from the style as
+        // `form_control_intrinsic_size` does. The label line is the one that sized the button
+        // (`normal` unless the button declares a line-height) and Blink seats its baseline with
+        // whole-pixel metrics (`blink_baseline_offset`). Chrome for Testing 148: the settings
+        // page's `.btn` hangs 13.59 of its 36.19 below the baseline and a bare button 6 of 21,
+        // so a 16px block's strut stays inside them and the line is the button's height
+        // (docs/diagnostics/2026-11-21/button_line_hang_cft148.json). Hanging only the label's
+        // descent (about 3.4) put the strut's 4 under the button: 36.75 for 36.19, 21.62 for 21.
+        if matches!(self.box_type, BoxType::FormControl(FormControlType::Button { .. }))
+            && matches!(self.style.height, Length::Auto)
+        {
+            let (pad, border) = button_box_sides(&self.style, font_size);
+            let line = if self.style.line_height_declared {
+                line_height
+            } else {
+                normal_line_height(&self.style, font_size)
+            };
+            return line - blink_baseline_offset(line, ascent, descent)
+                + pad[2]
+                + border[2]
+                + self.dimensions.margin.bottom;
         }
         let half_leading = half_leading(line_height, ascent, descent);
         // A single-line control taller than its text line (author `height`)
@@ -6260,6 +6284,34 @@ impl LayoutBox {
     }
 
     /// Calculate block width.
+    /// The content width an in-flow block's `aspect-ratio` gives its auto
+    /// width from a definite height (css-sizing-4 §5.1), or None to fill.
+    /// Definite here means a plain length: a percentage height (or a
+    /// function that may hold one) is left to fill, since its containing
+    /// block's height may be indefinite. Under
+    /// `border-box` the ratio is the border box's, so this box's horizontal
+    /// padding and border (`padding_border_w`) come off the derived width.
+    fn aspect_ratio_width_from_height(&self, containing_block: &Dimensions, padding_border_w: f32) -> Option<f32> {
+        let ratio = self.style.aspect_ratio?;
+        if !(ratio > 0.0) || !ratio.is_finite() || !matches!(self.box_type, BoxType::Block) {
+            return None;
+        }
+        // Lengths only; min()/max()/clamp()/calc() may hold a percentage.
+        if !matches!(
+            self.style.height,
+            Length::Px(_) | Length::Em(_) | Length::Rem(_) | Length::Vw(_) | Length::Vh(_)
+                | Length::Vmin(_) | Length::Vmax(_) | Length::Zero
+        ) {
+            return None;
+        }
+        let height = self.length_to_px(&self.style.height, containing_block.content.height);
+        Some(if self.style.box_sizing == BoxSizing::BorderBox {
+            (height * ratio - padding_border_w).max(0.0)
+        } else {
+            height * ratio
+        })
+    }
+
     fn calculate_block_width(&mut self, containing_block: &Dimensions) {
         let style = &self.style;
 
@@ -6326,6 +6378,15 @@ impl LayoutBox {
                     // An auto-width table does too (§17.5.2.2: its max-content
                     // width, clamped to the containing block).
                     shrink_to_fit_content_width(self, available)
+                } else if let Some(width) = self.aspect_ratio_width_from_height(
+                    containing_block,
+                    border_left + border_right + padding_left + padding_right,
+                ) {
+                    // css-sizing-4 §5.1: with a definite height, the ratio
+                    // gives the auto width instead of the fill (Chrome 148:
+                    // `height:100px; aspect-ratio:1` is 100 wide, and a ratio
+                    // of 10 is 1000 wide in a 600px parent: not clamped to it).
+                    width
                 } else {
                     // Fill available space (CSS 2.1 §10.3.3)
                     available
@@ -7367,13 +7428,19 @@ impl LayoutBox {
         // Apply text-align to all recorded lines
         let line_ranges: Vec<(usize, usize)> = lines.iter().map(|l| (l.0, l.1)).collect();
         let valign_font = self.style.clone();
-        for (start, end, width, (_, band_width)) in lines {
-            Self::apply_text_align_offset(
-                &mut self.children[start..end],
-                width,
-                band_width,
-                text_align,
-            );
+        // YT-CARD-SUBTITLE: wrapped inlines align line by line over all their
+        // records at once; the records they took are not aligned again.
+        let records: Vec<(usize, usize, f32)> = lines.iter().map(|l| (l.0, l.1, (l.3).1)).collect();
+        let aligned = Self::align_wrapped_inline_records(&mut self.children, &records, text_align);
+        for (r, (start, end, width, (_, band_width))) in lines.into_iter().enumerate() {
+            if !aligned[r] {
+                Self::apply_text_align_offset(
+                    &mut self.children[start..end],
+                    width,
+                    band_width,
+                    text_align,
+                );
+            }
             // Slice C: vertical alignment about the line baseline.
             Self::apply_vertical_align(&mut self.children[start..end], &valign_font);
         }
@@ -7714,6 +7781,136 @@ impl LayoutBox {
                 crate::flex::translate_subtree(child, offset, 0.0);
             }
         }
+    }
+
+    /// YT-CARD-SUBTITLE: the child-index path from the non-atomic inline `b`
+    /// down to the one wrapped text run it holds, through inlines that each
+    /// hold exactly one in-flow box. `None` when `b` is not such an inline,
+    /// when the run fits on one line, or when it is a phase-5 mid-line split
+    /// (aligned by `align_split_close` and the split branch instead).
+    fn wrapped_text_path(b: &LayoutBox) -> Option<Vec<usize>> {
+        if !matches!(b.box_type, BoxType::Inline) || b.style.display.is_atomic_inline() {
+            return None;
+        }
+        let mut path = Vec::new();
+        let mut cur = b;
+        loop {
+            if matches!(cur.box_type, BoxType::Text(_)) {
+                let wrapped = cur.text_flow_first_offset.is_none()
+                    && cur.text_lines.as_ref().is_some_and(|t| t.len() > 1);
+                return wrapped.then_some(path);
+            }
+            if !matches!(cur.box_type, BoxType::Inline) || cur.style.display.is_atomic_inline() {
+                return None;
+            }
+            let mut in_flow = cur.children.iter().enumerate().filter(|(_, c)| {
+                c.float == Float::None && !matches!(c.position, Position::Absolute | Position::Fixed)
+            });
+            let (i, only) = in_flow.next()?;
+            if in_flow.next().is_some() {
+                return None;
+            }
+            path.push(i);
+            cur = only;
+        }
+    }
+
+    /// YT-CARD-SUBTITLE: align, line by line, each non-atomic inline that holds one wrapped text
+    /// run (`wrapped_text_path`: `<span>`, `<b><span>`, a custom element) under Center/Right
+    /// (css-text-3 §7.1). Such an inline is recorded once per visual line, every record starting
+    /// at it. Moving it as one box (the record pass) left every line at its left edge, plus one
+    /// offset per record.
+    ///
+    /// Taken when the inline starts its first record and has no more records than visual lines,
+    /// alone in all but the last. Line 0 counts the inline's left edges (margin, border, padding
+    /// of the inlines on the path) and the middle lines align alone. The last line counts its
+    /// right edges and, when its record also holds what follows the inline (` B`, a link, another
+    /// span: R1 on #1407), aligns with that content as ONE line, which is placed after the
+    /// inline's tail. Following content that wraps itself is not taken. Returns the records it
+    /// aligned; the rest go through `apply_text_align_offset` as before.
+    fn align_wrapped_inline_records(
+        children: &mut [LayoutBox],
+        records: &[(usize, usize, f32)],
+        text_align: TextAlign,
+    ) -> Vec<bool> {
+        let mut aligned = vec![false; records.len()];
+        if !matches!(text_align, TextAlign::Right | TextAlign::Center) {
+            return aligned;
+        }
+        fn in_flow(c: &LayoutBox) -> bool {
+            c.float == Float::None && !matches!(c.position, Position::Absolute | Position::Fixed)
+        }
+        fn wraps(c: &LayoutBox) -> bool {
+            c.text_lines.as_ref().is_some_and(|t| t.len() > 1) || c.children.iter().any(wraps)
+        }
+        let align_in = |avail: f32, w: f32| match text_align {
+            TextAlign::Right => (avail - w).max(0.0),
+            _ => ((avail - w) / 2.0).max(0.0),
+        };
+        let mut r = 0;
+        while r < records.len() {
+            let (start, end, _) = records[r];
+            let i = start;
+            let eligible_start = i < end
+                && in_flow(&children[i])
+                && !records[..r].iter().any(|&(s, e, _)| s <= i && i < e);
+            let path = if eligible_start { Self::wrapped_text_path(&children[i]) } else { None };
+            let Some(path) = path else {
+                r += 1;
+                continue;
+            };
+            let group: Vec<usize> = (r..records.len()).take_while(|&k| records[k].0 == i).collect();
+            let last = *group.last().expect("the group holds record r");
+            let last_end = records[last].1;
+            let text = path.iter().fold(&children[i], |b, &j| &b.children[j]);
+            let n = text.text_lines.as_ref().map_or(0, Vec::len);
+            let alone_before = group[..group.len() - 1]
+                .iter()
+                .all(|&k| (i + 1..records[k].1).all(|j| !in_flow(&children[j])));
+            let followers: Vec<usize> = (i + 1..last_end).filter(|&j| in_flow(&children[j])).collect();
+            if group.len() > n || n < 2 || !alone_before || followers.iter().any(|&j| wraps(&children[j])) {
+                r += 1;
+                continue;
+            }
+            let outer = children[i].dimensions.margin_box();
+            let lines = text.text_lines.as_ref().expect("n > 1 lines");
+            let lead = text.dimensions.content.x - outer.x;
+            let trail = (outer.x + outer.width
+                - (text.dimensions.content.x + text.dimensions.content.width))
+                .max(0.0);
+            let tail = lines[n - 1].width + trail;
+            let follow: f32 = followers.iter().map(|&j| children[j].dimensions.margin_box().width).sum();
+            // A record per visual line at most (a run of lines can share one): later lines take
+            // the last record's band.
+            let avail = |k: usize| records[group[k.min(group.len() - 1)]].2;
+            let o0 = align_in(avail(0), lead + lines[0].width);
+            let o_last = align_in(avail(n - 1), tail + follow);
+            let xs: Vec<f32> = (1..n)
+                .map(|k| {
+                    let at = if k == n - 1 { o_last } else { align_in(avail(k), lines[k].width) };
+                    at - o0 - lead
+                })
+                .collect();
+            crate::flex::translate_subtree(&mut children[i], o0, 0.0);
+            let text = path.iter().fold(&mut children[i], |b, &j| &mut b.children[j]);
+            if let Some(lines) = text.text_lines.as_mut() {
+                for (tl, x) in lines.iter_mut().skip(1).zip(xs) {
+                    tl.x_offset = x;
+                }
+            }
+            // What follows on the last line goes after the inline's tail, in order.
+            let mut x = outer.x + o_last + tail;
+            for &j in &followers {
+                let dx = x - children[j].dimensions.margin_box().x;
+                crate::flex::translate_subtree(&mut children[j], dx, 0.0);
+                x += children[j].dimensions.margin_box().width;
+            }
+            for &k in &group {
+                aligned[k] = true;
+            }
+            r = last + 1;
+        }
+        aligned
     }
 
     /// IFC Slice B2: align the CLOSED visual lines of a phase-5 mid-line
@@ -8504,13 +8701,19 @@ impl LayoutBox {
         // Apply text-align to all recorded lines
         let line_ranges: Vec<(usize, usize)> = lines.iter().map(|l| (l.0, l.1)).collect();
         let valign_font = self.style.clone();
-        for (start, end, width, (_, band_width)) in lines {
-            Self::apply_text_align_offset(
-                &mut self.children[start..end],
-                width,
-                band_width,
-                text_align,
-            );
+        // YT-CARD-SUBTITLE: wrapped inlines align line by line over all their
+        // records at once; the records they took are not aligned again.
+        let records: Vec<(usize, usize, f32)> = lines.iter().map(|l| (l.0, l.1, (l.3).1)).collect();
+        let aligned = Self::align_wrapped_inline_records(&mut self.children, &records, text_align);
+        for (r, (start, end, width, (_, band_width))) in lines.into_iter().enumerate() {
+            if !aligned[r] {
+                Self::apply_text_align_offset(
+                    &mut self.children[start..end],
+                    width,
+                    band_width,
+                    text_align,
+                );
+            }
             // Slice C: vertical alignment about the line baseline.
             Self::apply_vertical_align(&mut self.children[start..end], &valign_font);
         }
@@ -8651,7 +8854,7 @@ impl LayoutBox {
                 };
                 em * font_size
             }
-            Length::Rem(rem) => rem * 16.0,
+            Length::Rem(rem) => rem * rustkit_css::root_font_px(),
             _ => return None,
         };
         let content = if self.style.box_sizing == BoxSizing::BorderBox {
@@ -8779,7 +8982,7 @@ impl LayoutBox {
                 };
             }
             Length::Rem(rem) => {
-                let specified = rem * 16.0; // Root font size
+                let specified = rem * rustkit_css::root_font_px();
                 self.dimensions.content.height = if is_border_box {
                     (specified - padding_border_height).max(0.0)
                 } else {
@@ -8957,7 +9160,7 @@ impl LayoutBox {
         };
         length.to_px_with_viewport(
             font_size,
-            16.0,
+            rustkit_css::root_font_px(),
             container_size,
             self.viewport.0,
             self.viewport.1,
@@ -9431,8 +9634,8 @@ impl LayoutBox {
         let border_box = self.dimensions.border_box();
         let m = transform.to_matrix(border_box.width, border_box.height);
         let origin = &self.style.transform_origin;
-        let ox = border_box.x + origin.x.to_px(16.0, 16.0, border_box.width);
-        let oy = border_box.y + origin.y.to_px(16.0, 16.0, border_box.height);
+        let ox = border_box.x + origin.x.to_px(16.0, rustkit_css::root_font_px(), border_box.width);
+        let oy = border_box.y + origin.y.to_px(16.0, rustkit_css::root_font_px(), border_box.height);
         // T(origin) · m · T(-origin)
         Some([
             m[0],
@@ -11991,13 +12194,9 @@ impl DisplayList {
     }
 
     fn for_root(root: &LayoutBox) -> Self {
-        // Extract root font size from root element
-        let root_font_size = match root.style.font_size {
-            Length::Px(px) => px,
-            Length::Em(em) => em * 16.0, // Relative to browser default
-            Length::Rem(rem) => rem * 16.0, // Relative to browser default
-            _ => 16.0,
-        };
+        // ROOT-REM: `rem` is the root element's computed font-size. The layout root is the
+        // anonymous viewport box, not <html>; the engine publishes <html>'s size.
+        let root_font_size = rustkit_css::root_font_px();
         DisplayList {
             commands: Vec::new(),
             root_font_size,
@@ -12248,13 +12447,13 @@ impl DisplayList {
                     .style
                     .transform_origin
                     .x
-                    .to_px(16.0, 16.0, border_box.width);
+                    .to_px(16.0, rustkit_css::root_font_px(), border_box.width);
             let origin_y = border_box.y
                 + layout_box
                     .style
                     .transform_origin
                     .y
-                    .to_px(16.0, 16.0, border_box.height);
+                    .to_px(16.0, rustkit_css::root_font_px(), border_box.height);
             self.commands.push(DisplayCommand::PushTransform {
                 matrix,
                 origin: (origin_x, origin_y),
@@ -15021,13 +15220,13 @@ fn shape_line(
     let letter_spacing = match style.letter_spacing {
         Length::Px(px) => px,
         Length::Em(em) => em * font_size,
-        Length::Rem(rem) => rem * 16.0,
+        Length::Rem(rem) => rem * rustkit_css::root_font_px(),
         _ => 0.0,
     };
     let word_spacing = match style.word_spacing {
         Length::Px(px) => px,
         Length::Em(em) => em * font_size,
-        Length::Rem(rem) => rem * 16.0,
+        Length::Rem(rem) => rem * rustkit_css::root_font_px(),
         _ => 0.0,
     };
     let shaper = TextShaper::new();
@@ -15648,7 +15847,14 @@ mod tests {
         small.font_size = Length::Px(12.0);
         small.font_weight = rustkit_css::FontWeight::NORMAL;
 
-        assert_eq!(LayoutBox::text_line_box_extents(&big).0, 28.0, "32px bold strut seat");
+        // Windows: the stack is Arial there (Chrome does not know
+        // BlinkMacSystemFont), measured in Chrome for Testing 148 win64 with a
+        // zero-height inline-block on each baseline: the 32px bold seat is 27
+        // (round ascent 29, half-leading floor(-2) = -2), the 12px seat 10, the
+        // 12px span 14 tall at half-leading floor(-1) = -1, its rect 16 below the
+        // line on baseline 27, so its text slot at 117 and its rect at 116.
+        let (seat, content_area, slot) = if cfg!(windows) { (27.0, (14.0, -1.0), 117.0) } else { (28.0, (15.0, -2.0), 118.0) };
+        assert_eq!(LayoutBox::text_line_box_extents(&big).0, seat, "32px bold strut seat");
         assert_eq!(LayoutBox::text_line_box_extents(&small).0, 10.0, "12px seat in a 12px line");
 
         let mut text = LayoutBox::new(BoxType::Text("0".to_string()), big.clone());
@@ -15661,14 +15867,14 @@ mod tests {
         span.dimensions.content.y = 100.0;
         span.children.push(inner);
         let (content, half_leading) = span.inline_content_area();
-        assert_eq!((content, half_leading), (15.0, -2.0), "Chrome 148: 15 tall, floor(-1.5)");
+        assert_eq!((content, half_leading), content_area, "Chrome 148: 15 tall, floor(-1.5) (Windows: 14, floor(-1))");
         span.shift_inline_content_area(half_leading);
 
         let mut line = vec![text, span];
         LayoutBox::apply_vertical_align(&mut line, &big);
 
         assert_eq!(line[0].dimensions.content.y, 100.0, "the strut-font text stays");
-        assert_eq!(line[1].children[0].dimensions.content.y, 118.0, "span text slot: baseline 128 - 10");
+        assert_eq!(line[1].children[0].dimensions.content.y, slot, "span text slot: baseline 128 - 10 (Windows 127 - 10)");
         assert_eq!(line[1].dimensions.content.y, 116.0, "span rect: baseline 128 - 12");
     }
 

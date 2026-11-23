@@ -697,7 +697,7 @@ pub(crate) fn parse_filter_list(text: &str, current: Color) -> Option<Vec<Filter
     let px = |token: &str| -> Option<f32> {
         match crate::parse_length(token)? {
             Length::Percent(_) | Length::Auto | Length::FitContent => None,
-            l => Some(l.to_px(16.0, 16.0, 0.0)),
+            l => Some(l.to_px(16.0, rustkit_css::root_font_px(), 0.0)),
         }
     };
     crate::computed_read::functions(text)?

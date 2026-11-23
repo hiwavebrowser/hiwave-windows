@@ -560,6 +560,55 @@ window.loaded = false; document.getElementById('f').addEventListener('load', fun
     );
 }
 
+/// A module map is a document's (HTML §8.1.5.5, one per environment
+/// settings object), not the runtime's: a second frame that loads the same
+/// module URLs runs them again in its own window, and a frame's module that
+/// imports one the parent page already ran gets its own copy, run in the
+/// frame. Speedometer 3.1 loads each workload in a new iframe per
+/// iteration; from the second iteration on, TodoMVC-WebComponents threw
+/// (no `todo-app` upgrade, so no shadow root) and the Angular workloads
+/// never started (docs/diagnostics/2026-11-21/STRESS-TRUTH-2026-11-21.md).
+/// Chrome 148 on these pages (tools/parity_oracle/frame_module_realm_log.mjs,
+/// docs/diagnostics/2026-11-21/frame_module_realm_cft148.json): both frames
+/// "classic,dep,dep-value,main|upgraded", the page's own `dep` ran once,
+/// and the page's import saw "dep-value". (FRAME-MODULE-MAP)
+#[test]
+fn a_second_frame_runs_the_same_modules_again() {
+    let page = "<!doctype html><body><script type=module src=/top.mjs></script><script>
+window.results = []; window.done = false;
+function frame(then) {
+  var f = document.createElement('iframe');
+  f.src = '/mod.html';
+  f.addEventListener('load', function () {
+    var w = f.contentWindow;
+    results.push(w.order.join() + '|' + w.document.getElementById('x').textContent);
+    f.remove();
+    then();
+  });
+  document.body.appendChild(f);
+}
+window.addEventListener('load', function () { frame(function () { frame(function () { done = true; }); }); });
+</script></body>";
+    let child = "<!doctype html><body><x-hello id=x></x-hello><script type=module src=/main.mjs></script><script>window.order = ['classic'];</script></body>";
+    let server = serve_routes(vec![
+        ("/", "text/html", page.to_string()),
+        ("/mod.html", "text/html", child.to_string()),
+        ("/main.mjs", "text/javascript", "import { dep } from './dep.mjs'; order.push(dep, 'main'); customElements.define('x-hello', class extends HTMLElement { connectedCallback() { this.textContent = 'upgraded'; } });".to_string()),
+        ("/dep.mjs", "text/javascript", "if (window.order) order.push('dep'); else window.topDep = (window.topDep || 0) + 1; export const dep = 'dep-value';".to_string()),
+        ("/top.mjs", "text/javascript", "import { dep } from './dep.mjs'; window.topSaw = dep;".to_string()),
+    ]);
+    let mut engine = Engine::new(config(true)).expect("engine");
+    let view = engine.create_headless_view(Bounds { x: 0, y: 0, width: 800, height: 600 }).expect("view");
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(engine.load_url(view, Url::parse(&format!("http://127.0.0.1:{}/", server.port)).unwrap())).unwrap();
+    let mut page = Page { engine, view, rt, server };
+    page.turns_until("window.done", Duration::from_secs(10));
+    assert_eq!(
+        page.js("JSON.stringify([results, window.topDep, window.topSaw])"),
+        r#"String("[[\"classic,dep,dep-value,main|upgraded\",\"classic,dep,dep-value,main|upgraded\"],1,\"dep-value\"]")"#
+    );
+}
+
 /// `querySelector` inside a shadow tree of a frame's document (Speedometer
 /// 3.1 TodoMVC-WebComponents and Lit: the runner walks `todo-app` ->
 /// shadow root -> `todo-topbar`, and got null inside the frame while the

@@ -12,6 +12,10 @@ use boa_interner::{Interner, Sym, ToIndentedString, ToInternedString};
 use core::{fmt::Write as _, ops::ControlFlow};
 use std::hash::Hash;
 
+// HIWAVE PATCH (class-source-text): "no span recorded".
+const EMPTY_LINEAR_SPAN: LinearSpan =
+    LinearSpan::new(LinearPosition::new(0), LinearPosition::new(0));
+
 /// A class declaration.
 ///
 /// More information:
@@ -28,6 +32,10 @@ pub struct ClassDeclaration {
     pub(crate) super_ref: Option<Expression>,
     pub(crate) constructor: Option<FunctionExpression>,
     pub(crate) elements: Box<[ClassElement]>,
+
+    // HIWAVE PATCH (class-source-text): the class's source text span, `class` to the closing `}`.
+    // Empty when the node was not built by the parser; `PartialEq` ignores it.
+    linear_span: LinearSpanIgnoreEq,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) name_scope: Scope,
@@ -48,8 +56,26 @@ impl ClassDeclaration {
             super_ref,
             constructor,
             elements,
+            linear_span: LinearSpanIgnoreEq(EMPTY_LINEAR_SPAN),
             name_scope: Scope::default(),
         }
+    }
+
+    /// HIWAVE PATCH (class-source-text): sets the span of the class's source text.
+    #[inline]
+    #[must_use]
+    pub fn with_linear_span(mut self, linear_span: LinearSpan) -> Self {
+        self.linear_span = LinearSpanIgnoreEq(linear_span);
+        self
+    }
+
+    /// HIWAVE PATCH (class-source-text): the span of the class's source text, from `class` to the
+    /// closing `}`, when the parser recorded one.
+    #[inline]
+    #[must_use]
+    pub fn linear_span(&self) -> Option<LinearSpan> {
+        let span = self.linear_span.0;
+        (!span.is_empty()).then_some(span)
     }
 
     /// Returns the name of the class declaration.
@@ -177,6 +203,10 @@ pub struct ClassExpression {
 
     span: Span,
 
+    // HIWAVE PATCH (class-source-text): the class's source text span, `class` to the closing `}`.
+    // Empty when the node was not built by the parser; `PartialEq` ignores it.
+    linear_span: LinearSpanIgnoreEq,
+
     #[cfg_attr(feature = "serde", serde(skip))]
     pub(crate) name_scope: Option<Scope>,
 }
@@ -204,8 +234,26 @@ impl ClassExpression {
             constructor,
             elements,
             span,
+            linear_span: LinearSpanIgnoreEq(EMPTY_LINEAR_SPAN),
             name_scope,
         }
+    }
+
+    /// HIWAVE PATCH (class-source-text): sets the span of the class's source text.
+    #[inline]
+    #[must_use]
+    pub fn with_linear_span(mut self, linear_span: LinearSpan) -> Self {
+        self.linear_span = LinearSpanIgnoreEq(linear_span);
+        self
+    }
+
+    /// HIWAVE PATCH (class-source-text): the span of the class's source text, from `class` to the
+    /// closing `}`, when the parser recorded one.
+    #[inline]
+    #[must_use]
+    pub fn linear_span(&self) -> Option<LinearSpan> {
+        let span = self.linear_span.0;
+        (!span.is_empty()).then_some(span)
     }
 
     /// Returns the name of the class expression.

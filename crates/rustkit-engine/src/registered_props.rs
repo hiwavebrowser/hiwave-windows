@@ -173,7 +173,7 @@ pub(crate) fn compute_own(
     };
     let ctx = ComputeContext {
         font_px,
-        root_font_px: 16.0,
+        root_font_px: rustkit_css::root_font_px(),
         viewport: viewport.unwrap_or((0.0, 0.0)),
         independent: false,
     };
@@ -213,7 +213,7 @@ pub(crate) fn font_px(font_size: &rustkit_css::Length, parent_px: f32) -> f32 {
         Length::Px(px) => *px,
         Length::Em(em) => em * parent_px,
         Length::Percent(p) => p / 100.0 * parent_px,
-        Length::Rem(r) => r * 16.0,
+        Length::Rem(r) => r * rustkit_css::root_font_px(),
         Length::Zero => 0.0,
         _ => parent_px,
     }

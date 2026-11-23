@@ -581,3 +581,87 @@ fn cancellation_and_teardown_during_pending_import_cleans_up_safely() {
         drop(rt);
     }
 }
+
+// ── One module map per realm (FRAME-MODULE-MAP) ─────────────────────────────
+//
+// A same-origin frame is a realm of the page's runtime with its own document,
+// and a module map is a document's (HTML §8.1.5.5). Chrome 148: a second frame
+// at the same module URLs runs them again, and a frame's import of a module
+// the page already ran runs it again in the frame
+// (docs/diagnostics/2026-11-21/frame_module_realm_cft148.json).
+
+fn realm_log(rt: &mut JsRuntime, realm: crate::RealmId) -> String {
+    let outer = rt.enter_realm(realm);
+    let out = log(rt);
+    rt.enter_realm(outer);
+    out
+}
+
+#[test]
+fn each_realm_runs_the_same_module_urls_once_of_its_own() {
+    let mut rt = runtime();
+    let mut site = Site::new(&[
+        ("https://site.test/main.js", "import { dep } from './dep.js'; log.push('main:' + dep);"),
+        ("https://site.test/dep.js", "log.push('dep'); export const dep = 'v';"),
+    ]);
+    let (_, state) = run(&mut rt, &mut site, "https://site.test/main.js");
+    assert_eq!(state, ModuleState::Done);
+    let frame = rt.create_realm().unwrap();
+    let outer = rt.enter_realm(frame);
+    rt.evaluate_script("var log = [];").unwrap();
+    let (handle, state) = run(&mut rt, &mut site, "https://site.test/main.js");
+    assert_eq!(state, ModuleState::Done);
+    // Started again in the same realm: the same module, not run twice.
+    let again = rt.begin_module("https://site.test/main.js", site.files["https://site.test/main.js"]).unwrap();
+    assert_eq!(again, handle);
+    assert_eq!(rt.poll_module(&again), ModuleState::Done);
+    rt.enter_realm(outer);
+    assert_eq!(log(&mut rt), "dep,main:v");
+    assert_eq!(realm_log(&mut rt, frame), "dep,main:v");
+    assert_eq!(site.asked, vec!["https://site.test/dep.js", "https://site.test/dep.js"], "fetched once per realm");
+}
+
+/// An import a frame's realm is waiting for is answered in that realm even
+/// when the page's turn takes the request and supplies it (the live loop
+/// drains the runtime's requests from the page's bindings).
+#[test]
+fn a_frame_realms_import_supplied_from_the_page_is_parsed_in_the_frame() {
+    let mut rt = runtime();
+    let mut site = Site::new(&[
+        ("https://site.test/main.js", "import { dep } from './dep.js'; log.push('main:' + dep);"),
+        ("https://site.test/dep.js", "log.push('dep'); export const dep = 'v';"),
+    ]);
+    let frame = rt.create_realm().unwrap();
+    let outer = rt.enter_realm(frame);
+    rt.evaluate_script("var log = [];").unwrap();
+    let handle = rt.begin_module("https://site.test/main.js", site.files["https://site.test/main.js"]).unwrap();
+    rt.enter_realm(outer);
+    site.serve(&mut rt);
+    let outer = rt.enter_realm(frame);
+    assert_eq!(rt.poll_module(&handle), ModuleState::Done);
+    rt.enter_realm(outer);
+    assert_eq!(realm_log(&mut rt, frame), "dep,main:v");
+    assert_eq!(log(&mut rt), "", "nothing ran in the page");
+}
+
+/// A dropped realm's modules go with it; a new realm at the same URLs runs
+/// them again.
+#[test]
+fn a_dropped_realms_modules_go_with_it() {
+    let mut rt = runtime();
+    let mut site = Site::new(&[("https://site.test/a.js", "log.push('a');")]);
+    let first = rt.create_realm().unwrap();
+    let outer = rt.enter_realm(first);
+    rt.evaluate_script("var log = [];").unwrap();
+    assert_eq!(run(&mut rt, &mut site, "https://site.test/a.js").1, ModuleState::Done);
+    rt.enter_realm(outer);
+    assert!(rt.drop_realm(first));
+    assert_eq!(rt.modules.entries.len(), 0, "the dropped realm's root is gone");
+    assert!(rt.modules.loader.modules.borrow().is_empty(), "and its module map");
+    let second = rt.create_realm().unwrap();
+    let outer = rt.enter_realm(second);
+    rt.evaluate_script("var log = [];").unwrap();
+    assert_eq!(run(&mut rt, &mut site, "https://site.test/a.js").1, ModuleState::Done);
+    rt.enter_realm(outer);
+    assert_eq!(realm_log(&mut rt, second), "a");
+}

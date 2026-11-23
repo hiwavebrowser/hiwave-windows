@@ -578,63 +578,64 @@ fn find_text_fallback(ch: char, family: &str) -> Option<(FontFace, String)> {
     map_characters(ch, family, 400, false)
 }
 
+/// Text as DirectWrite's text-analysis source: the UTF-16 text, one locale, LTR.
+#[windows::core::implement(IDWriteTextAnalysisSource)]
+struct Source {
+    text: Vec<u16>,
+    locale: Vec<u16>,
+}
+
+impl IDWriteTextAnalysisSource_Impl for Source_Impl {
+    fn GetTextAtPosition(&self, pos: u32, text: *mut *mut u16, len: *mut u32) -> windows::core::Result<()> {
+        unsafe {
+            if (pos as usize) < self.text.len() {
+                *text = self.text.as_ptr().add(pos as usize) as *mut u16;
+                *len = (self.text.len() - pos as usize) as u32;
+            } else {
+                *text = std::ptr::null_mut();
+                *len = 0;
+            }
+        }
+        Ok(())
+    }
+    fn GetTextBeforePosition(&self, pos: u32, text: *mut *mut u16, len: *mut u32) -> windows::core::Result<()> {
+        unsafe {
+            if pos > 0 && (pos as usize) <= self.text.len() {
+                *text = self.text.as_ptr() as *mut u16;
+                *len = pos;
+            } else {
+                *text = std::ptr::null_mut();
+                *len = 0;
+            }
+        }
+        Ok(())
+    }
+    fn GetParagraphReadingDirection(&self) -> DWRITE_READING_DIRECTION {
+        DWRITE_READING_DIRECTION_LEFT_TO_RIGHT
+    }
+    fn GetLocaleName(&self, _pos: u32, len: *mut u32, locale: *mut *mut u16) -> windows::core::Result<()> {
+        unsafe {
+            *len = self.text.len() as u32;
+            *locale = self.locale.as_ptr() as *mut u16;
+        }
+        Ok(())
+    }
+    fn GetNumberSubstitution(
+        &self,
+        _pos: u32,
+        len: *mut u32,
+        substitution: windows::core::OutRef<'_, IDWriteNumberSubstitution>,
+    ) -> windows::core::Result<()> {
+        unsafe {
+            *len = self.text.len() as u32;
+        }
+        substitution.write(None)
+    }
+}
+
+
 fn map_characters(ch: char, family: &str, weight: u16, italic: bool) -> Option<(FontFace, String)> {
-    use windows::core::{implement, PCWSTR};
-
-    /// One character as DirectWrite's text-analysis source: the text, English locale, LTR.
-    #[implement(IDWriteTextAnalysisSource)]
-    struct Source {
-        text: Vec<u16>,
-        locale: Vec<u16>,
-    }
-
-    impl IDWriteTextAnalysisSource_Impl for Source_Impl {
-        fn GetTextAtPosition(&self, pos: u32, text: *mut *mut u16, len: *mut u32) -> windows::core::Result<()> {
-            unsafe {
-                if (pos as usize) < self.text.len() {
-                    *text = self.text.as_ptr().add(pos as usize) as *mut u16;
-                    *len = (self.text.len() - pos as usize) as u32;
-                } else {
-                    *text = std::ptr::null_mut();
-                    *len = 0;
-                }
-            }
-            Ok(())
-        }
-        fn GetTextBeforePosition(&self, pos: u32, text: *mut *mut u16, len: *mut u32) -> windows::core::Result<()> {
-            unsafe {
-                if pos > 0 && (pos as usize) <= self.text.len() {
-                    *text = self.text.as_ptr() as *mut u16;
-                    *len = pos;
-                } else {
-                    *text = std::ptr::null_mut();
-                    *len = 0;
-                }
-            }
-            Ok(())
-        }
-        fn GetParagraphReadingDirection(&self) -> DWRITE_READING_DIRECTION {
-            DWRITE_READING_DIRECTION_LEFT_TO_RIGHT
-        }
-        fn GetLocaleName(&self, _pos: u32, len: *mut u32, locale: *mut *mut u16) -> windows::core::Result<()> {
-            unsafe {
-                *len = self.text.len() as u32;
-                *locale = self.locale.as_ptr() as *mut u16;
-            }
-            Ok(())
-        }
-        fn GetNumberSubstitution(
-            &self,
-            _pos: u32,
-            len: *mut u32,
-            substitution: windows::core::OutRef<'_, IDWriteNumberSubstitution>,
-        ) -> windows::core::Result<()> {
-            unsafe {
-                *len = self.text.len() as u32;
-            }
-            substitution.write(None)
-        }
-    }
+    use windows::core::PCWSTR;
 
     let mut units = [0u16; 2];
     let text: Vec<u16> = ch.encode_utf16(&mut units).to_vec();
@@ -676,6 +677,149 @@ fn map_characters(ch: char, family: &str, weight: u16, italic: bool) -> Option<(
         }
         let face = font.CreateFontFace().ok()?;
         Some((FontFace::from_raw(face), name))
+    }
+}
+
+/// Collects DirectWrite's script analysis of a text (`AnalyzeScript`).
+#[windows::core::implement(IDWriteTextAnalysisSink)]
+struct ScriptRuns {
+    runs: std::rc::Rc<std::cell::RefCell<Vec<(u32, u32, DWRITE_SCRIPT_ANALYSIS)>>>,
+}
+
+impl IDWriteTextAnalysisSink_Impl for ScriptRuns_Impl {
+    fn SetScriptAnalysis(&self, pos: u32, len: u32, analysis: *const DWRITE_SCRIPT_ANALYSIS) -> windows::core::Result<()> {
+        // SAFETY: DirectWrite passes a valid analysis for the duration of the call.
+        let analysis = unsafe { *analysis };
+        self.runs.borrow_mut().push((pos, len, analysis));
+        Ok(())
+    }
+    fn SetLineBreakpoints(&self, _: u32, _: u32, _: *const DWRITE_LINE_BREAKPOINT) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn SetBidiLevel(&self, _: u32, _: u32, _: u8, _: u8) -> windows::core::Result<()> {
+        Ok(())
+    }
+    fn SetNumberSubstitution(
+        &self,
+        _: u32,
+        _: u32,
+        _: windows::core::Ref<'_, IDWriteNumberSubstitution>,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+impl FontFace {
+    /// Each character's advance in `text` at `size` px, positioned by
+    /// DirectWrite's shaper with pair kerning (the face's GPOS `kern`, as
+    /// HarfBuzz applies it for Chrome) and no ligatures: one entry per `char`.
+    /// `None` when the shaper does not give one glyph per character, so the
+    /// caller keeps the nominal advances.
+    pub fn kerned_advances(&self, text: &str, size: f32) -> Option<Vec<f32>> {
+        use windows::core::PCWSTR;
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let len = utf16.len() as u32;
+        if len == 0 {
+            return Some(Vec::new());
+        }
+        let locale: Vec<u16> = "en-us".encode_utf16().chain(std::iter::once(0)).collect();
+        let source: IDWriteTextAnalysisSource = Source { text: utf16.clone(), locale: locale.clone() }.into();
+        let script_runs = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink: IDWriteTextAnalysisSink = ScriptRuns { runs: script_runs.clone() }.into();
+        let mut features = [
+            DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_KERNING, parameter: 1 },
+            DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES, parameter: 0 },
+            DWRITE_FONT_FEATURE { nameTag: DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_LIGATURES, parameter: 0 },
+        ];
+        let typographic =
+            DWRITE_TYPOGRAPHIC_FEATURES { features: features.as_mut_ptr(), featureCount: features.len() as u32 };
+        let feature_list: [*const DWRITE_TYPOGRAPHIC_FEATURES; 1] = [&typographic];
+        // Each code unit's advance (a surrogate pair's second unit gets 0).
+        let mut unit_advances = vec![0f32; utf16.len()];
+        // SAFETY: COM calls on interfaces owned here; every buffer outlives the call and is sized
+        // as DirectWrite documents (glyph buffers: 3n/2 + 16).
+        unsafe {
+            let analyzer = ctx().ok()?.factory.CreateTextAnalyzer().ok()?;
+            analyzer.AnalyzeScript(&source, 0, len, &sink).ok()?;
+            let runs = script_runs.borrow().clone();
+            for (pos, run_len, script) in runs {
+                let s = &utf16[pos as usize..(pos + run_len) as usize];
+                let max = run_len * 3 / 2 + 16;
+                let mut cluster_map = vec![0u16; s.len()];
+                let mut text_props = vec![DWRITE_SHAPING_TEXT_PROPERTIES::default(); s.len()];
+                let mut glyphs = vec![0u16; max as usize];
+                let mut glyph_props = vec![DWRITE_SHAPING_GLYPH_PROPERTIES::default(); max as usize];
+                let mut count = 0u32;
+                let feature_len = [run_len];
+                analyzer
+                    .GetGlyphs(
+                        PCWSTR(s.as_ptr()),
+                        run_len,
+                        &self.face,
+                        false,
+                        false,
+                        &script,
+                        PCWSTR(locale.as_ptr()),
+                        None,
+                        Some(feature_list.as_ptr()),
+                        Some(feature_len.as_ptr()),
+                        1,
+                        max,
+                        cluster_map.as_mut_ptr(),
+                        text_props.as_mut_ptr(),
+                        glyphs.as_mut_ptr(),
+                        glyph_props.as_mut_ptr(),
+                        &mut count,
+                    )
+                    .ok()?;
+                let mut advances = vec![0f32; count as usize];
+                let mut offsets = vec![DWRITE_GLYPH_OFFSET::default(); count as usize];
+                analyzer
+                    .GetGlyphPlacements(
+                        PCWSTR(s.as_ptr()),
+                        cluster_map.as_ptr(),
+                        text_props.as_mut_ptr(),
+                        run_len,
+                        glyphs.as_ptr(),
+                        glyph_props.as_ptr(),
+                        count,
+                        &self.face,
+                        size,
+                        false,
+                        false,
+                        &script,
+                        PCWSTR(locale.as_ptr()),
+                        Some(feature_list.as_ptr()),
+                        Some(feature_len.as_ptr()),
+                        1,
+                        advances.as_mut_ptr(),
+                        offsets.as_mut_ptr(),
+                    )
+                    .ok()?;
+                // One glyph per character, in order: the n-th character's
+                // first unit maps to glyph n.
+                let mut n = 0usize;
+                let mut u = 0usize;
+                while u < s.len() {
+                    if cluster_map[u] as usize != n {
+                        return None;
+                    }
+                    unit_advances[pos as usize + u] = advances[n];
+                    u += if (0xD800..0xDC00).contains(&s[u]) { 2 } else { 1 };
+                    n += 1;
+                }
+                if n != count as usize {
+                    return None;
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(text.chars().count());
+        let mut u = 0usize;
+        for c in text.chars() {
+            out.push(unit_advances[u]);
+            u += c.len_utf16();
+        }
+        Some(out)
     }
 }
 
