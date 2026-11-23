@@ -18,17 +18,10 @@ missing).
 
 The patches (all cfg(windows), so macOS and Linux behaviour is unchanged):
 
-1. rustkit-layout/src/text.rs: FontFamilyChain.
-   - sans_serif() leads with Arial. Chrome's default sans-serif on Windows is
-     Arial, not Segoe UI (Segoe UI is what system-ui resolves to).
-   - from_css_value() skips -apple-system and BlinkMacSystemFont. Chrome on
-     Windows does not know these macOS-only names, so a stack such as
-     "-apple-system, BlinkMacSystemFont, sans-serif" falls through to
-     sans-serif. A 14px normal line is 16px in Arial and 19px in Segoe UI.
-   - tests for both.
-2. rustkit-layout/src/lib.rs: two strut-descent tests compared a raw fractional
-   descent with a line box that rounds to whole pixels, within 0.5. Both now
-   allow one pixel. Arial's 3.453 descent rounds up to 4.
+1. rustkit-layout/src/text.rs: FontFamilyChain (retired in refresh #24; upstream as
+   hiwave-macos #1351 and #1394).
+2. rustkit-layout/src/lib.rs: two strut-descent test tolerances (retired in
+   refresh #22; upstream).
 (A third patch, removing the ENGINE_INIT test mutex from rustkit-engine, was
 dropped in refresh #10: hiwave-macos #415 fixed the lock inversion upstream.)
 
@@ -77,100 +70,11 @@ def edit(text: str, name: str, marker: str, old: str, new: str, state: list,
 
 
 def patch_text(text: str, state: list) -> str:
-    quote = "'" + BS + "''"  # the three characters  '\''  as written in the Rust source
-    # 1. (retired in refresh #22) sans_serif(): Arial first on Windows is upstream: hiwave-macos
-    #    #1351 gives Windows its own sans_serif() leading with Arial (develop b60da7f5).
-    # 2. from_css_value(): on Windows `BlinkMacSystemFont` is an unknown family too. Upstream skips
-    #    `-apple-system` everywhere (CB7b) and maps `BlinkMacSystemFont` to system-ui, which is what
-    #    Chrome on macOS does; Chrome for Testing 148 on Windows (win64) treats it as unknown:
-    #    "BlinkMacSystemFont" alone is the default serif (67.266 px for "Hello world" at 14px, as
-    #    serif), "BlinkMacSystemFont, sans-serif" is Arial (69.250), system-ui is Segoe UI (70.906).
-    #    docs/diagnostics/2026-11-18/font_alias_win148.json.
-    text = edit(
-        text, "text.rs skips BlinkMacSystemFont on Windows",
-        'cfg!(windows) && f.eq_ignore_ascii_case("BlinkMacSystemFont")',
-        '''            .filter(|f| !f.eq_ignore_ascii_case("-apple-system"))
-''',
-        '''            .filter(|f| !f.eq_ignore_ascii_case("-apple-system"))
-            // Windows: Chrome there does not know `BlinkMacSystemFont` either (macOS's name for the
-            // system font), so it is skipped too (Chrome for Testing 148 win64:
-            // docs/diagnostics/2026-11-18/font_alias_win148.json).
-            .filter(|f| !(cfg!(windows) && f.eq_ignore_ascii_case("BlinkMacSystemFont")))
-''', state)
-    # 3. tests.
-    text = edit(
-        text, "text.rs sans-serif test expectation",
-        '#[cfg(windows)]\n        assert_eq!(sans.primary, "Arial");',
-        '''        #[cfg(target_os = "macos")]
-        assert_eq!(sans.primary, "Helvetica");
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(sans.primary, "Segoe UI");
-''',
-        '''        #[cfg(target_os = "macos")]
-        assert_eq!(sans.primary, "Helvetica");
-        #[cfg(windows)]
-        assert_eq!(sans.primary, "Arial");
-        #[cfg(all(not(target_os = "macos"), not(windows)))]
-        assert_eq!(sans.primary, "Segoe UI");
-''', state)
-    text = edit(
-        text, "text.rs alias tests: BlinkMacSystemFont",
-        "Chrome on Windows does not know `BlinkMacSystemFont`",
-        '''        let blink = FontFamilyChain::from_css_value("BlinkMacSystemFont");
-        assert_eq!(blink.primary, system.primary);
-    }
-''',
-        '''        let blink = FontFamilyChain::from_css_value("BlinkMacSystemFont");
-        #[cfg(not(windows))]
-        assert_eq!(blink.primary, system.primary);
-        // Chrome on Windows does not know `BlinkMacSystemFont`: alone it is the default serif.
-        #[cfg(windows)]
-        assert_eq!(blink.primary, FontFamilyChain::serif().primary);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn macos_only_aliases_fall_through_on_windows() {
-        // Chrome for Testing 148 win64 (docs/diagnostics/2026-11-18/font_alias_win148.json).
-        let c = FontFamilyChain::from_css_value("-apple-system, BlinkMacSystemFont, sans-serif");
-        assert_eq!(c.primary, "Arial");
-        let c = FontFamilyChain::from_css_value("BlinkMacSystemFont, sans-serif");
-        assert_eq!(c.primary, "Arial");
-        // A real family after the aliases still wins.
-        let c = FontFamilyChain::from_css_value("-apple-system, 'Segoe UI', sans-serif");
-        assert_eq!(c.primary, "Segoe UI");
-        // system-ui is not one of them: it stays Segoe UI.
-        let c = FontFamilyChain::from_css_value("system-ui, sans-serif");
-        assert_eq!(c.primary, "Segoe UI");
-    }
-''', state)
-    text = edit(
-        text, "text.rs alias tests: -apple-system, BlinkMacSystemFont",
-        "on Windows both are unknown: the default serif",
-        '''        let then_blink = FontFamilyChain::from_css_value("-apple-system, BlinkMacSystemFont");
-        assert_eq!(then_blink.primary, system.primary, "the next family, the system font");
-''',
-        '''        let then_blink = FontFamilyChain::from_css_value("-apple-system, BlinkMacSystemFont");
-        #[cfg(not(windows))]
-        assert_eq!(then_blink.primary, system.primary, "the next family, the system font");
-        #[cfg(windows)]
-        assert_eq!(then_blink.primary, serif.primary, "on Windows both are unknown: the default serif");
-''', state)
-    # 4. CB7b's stack test: on Windows Segoe UI is both a family the stack names and the system
-    #    font, so `no system font ahead of Helvetica` cannot hold there; Chrome for Testing 148 win64
-    #    resolves `-apple-system, "Segoe UI", Helvetica` to Segoe UI (70.906 px, as system-ui), which
-    #    the test's own later assertion expects. On Windows the walk checks only that -apple-system
-    #    was skipped.
-    text = edit(
-        text, "text.rs CB7b walk: Segoe UI is the system font on Windows",
-        "(f == system.primary && !cfg!(windows))",
-        '''            !walk.any(|f| f == system.primary || f.eq_ignore_ascii_case("-apple-system")),
-''',
-        '''            // Windows: Segoe UI is the system font and a family this stack names (Chrome for
-            // Testing 148 win64 resolves the stack to it), so only -apple-system is checked there.
-            !walk.any(|f| (f == system.primary && !cfg!(windows)) || f.eq_ignore_ascii_case("-apple-system")),
-''', state)
-    del quote
+    # (retired in refresh #24) Every text.rs edit is upstream: hiwave-macos #1394 (batch 120,
+    # develop 2f1140a7) skips `BlinkMacSystemFont` on Windows and carries the Windows test
+    # expectations and the CB7b walk change, and #1351 (refresh #22) gives Windows its own
+    # sans_serif() leading with Arial. At 92d783a6 text.rs is the upstream file unchanged.
+    del state
     return text
 
 
