@@ -142,12 +142,9 @@ fn an_element_the_box_tree_dropped_reads_its_computed_style() {
     );
 }
 
-/// LIMIT: the box tree drops an empty block with nothing visible about it,
-/// so it has no used width; Chrome lays it out and reads the containing
-/// block's. Keeping the box is a layout change (margins, line boxes), not
-/// a publish fix; this row reports `0px`.
+/// An empty block with nothing visible about it keeps its box (it used to be
+/// dropped), so it has a used width: the containing block's, as Chrome reads.
 #[test]
-#[ignore = "an empty block the box tree dropped has no used width (layout follow-up)"]
 fn a_dropped_empty_block_reads_its_used_width() {
     let (mut e, id) = loaded();
     assert_reads(&mut e, id, &[("empty", "width", "1280px")]);

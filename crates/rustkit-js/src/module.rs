@@ -8,20 +8,25 @@
 //! under its own policy, and supplies each source back; Boa then carries on
 //! loading the graph. Nothing here blocks, nothing here opens a connection.
 //!
-//! Identity is the URL. The module map is keyed by the URL a module was
-//! *finally* served from, so two roots (or a redirect) that reach the same
-//! file share one module and it is evaluated once. A specifier is resolved
-//! against the importing module's URL; a bare specifier (`react`) is refused
-//! as in a browser with no import map.
+//! Identity is the URL, within a realm. A module map is a document's (HTML
+//! §8.1.5.5: one per environment settings object), and a same-origin frame is
+//! a realm of this runtime with its own document: each realm has its own map
+//! (FRAME-MODULE-MAP). Within one realm the map is keyed by the URL a module
+//! was *finally* served from, so two roots (or a redirect) that reach the same
+//! file share one module and it is evaluated once; another realm that loads
+//! the same URL parses and runs its own copy, as Chrome does. A specifier is
+//! resolved against the importing module's URL; a bare specifier (`react`) is
+//! refused as in a browser with no import map.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
 use boa_engine::builtins::promise::PromiseState;
 use boa_engine::module::{ModuleLoader, ModuleRequest, Referrer};
 use boa_engine::object::builtins::JsPromise;
+use boa_engine::realm::Realm;
 use boa_engine::{js_string, Context, JsNativeError, JsObject, JsResult, JsValue, Module, Source};
 use url::Url;
 
@@ -32,6 +37,8 @@ struct Waiter {
     specifier: String,
     /// This wait came from a dynamic `import()`, not a static dependency.
     dynamic: bool,
+    /// The realm that asked: the module it gets is that realm's.
+    realm: Realm,
     sender: tokio::sync::oneshot::Sender<JsResult<Module>>,
 }
 
@@ -42,14 +49,19 @@ pub(crate) struct HostModuleLoader {
     /// The document's URL, the base for a root module's own imports when it
     /// has no path of its own.
     base: RefCell<Option<Url>>,
-    /// Every module parsed so far, by the URL it was served from.
-    modules: RefCell<HashMap<String, Module>>,
+    /// Every module parsed so far, by the URL it was served from, one per
+    /// realm (each realm's document has its own module map).
+    pub(crate) modules: RefCell<HashMap<String, Vec<(Realm, Module)>>>,
     /// Imports waiting for their source.
     waiting: RefCell<Vec<Waiter>>,
-    /// URLs the graph asked for that the host has not been told about yet.
+    /// URLs the graph asked for that the host has not been told about yet,
+    /// each once while it waits there. The host fetches a URL once for every
+    /// realm that is waiting for it: [`JsRuntime::supply_module`] gives each
+    /// of them its own module.
     requested: RefCell<Vec<String>>,
-    /// URLs ever handed to the host (a URL is asked for once).
-    asked: RefCell<HashSet<String>>,
+    /// The realms that have handed each URL to the host (a URL is asked for
+    /// once per realm).
+    asked: RefCell<HashMap<String, Vec<Realm>>>,
     /// The page's import maps, merged.
     import_map: RefCell<crate::import_map::ImportMap>,
 }
@@ -68,12 +80,46 @@ impl HostModuleLoader {
         self.import_map.borrow().resolve(specifier, &referrer_url, &referrer_url)
     }
 
-    pub fn register_module(&self, specifier: &str, module: Module) {
-        self.modules.borrow_mut().insert(specifier.to_string(), module);
+    /// `realm`'s module for `url`, if it has parsed one.
+    fn known(&self, realm: &Realm, url: &str) -> Option<Module> {
+        self.modules
+            .borrow()
+            .get(url)
+            .and_then(|list| list.iter().find(|(r, _)| r == realm).map(|(_, m)| m.clone()))
     }
 
-    pub fn get_module(&self, specifier: &str) -> Option<Module> {
-        self.modules.borrow().get(specifier).cloned()
+    /// Record `module` as `realm`'s module for `url`.
+    fn keep(&self, realm: &Realm, url: &str, module: Module) {
+        let mut modules = self.modules.borrow_mut();
+        let list = modules.entry(url.to_string()).or_default();
+        match list.iter_mut().find(|(r, _)| r == realm) {
+            Some(slot) => slot.1 = module,
+            None => list.push((realm.clone(), module)),
+        }
+    }
+
+    /// Forget everything of a realm that was dropped: its modules (they are
+    /// its document's), what it asked for and its waits.
+    fn forget_realm(&self, realm: &Realm) {
+        self.modules.borrow_mut().retain(|_, list| {
+            list.retain(|(r, _)| r != realm);
+            !list.is_empty()
+        });
+        self.asked.borrow_mut().retain(|_, list| {
+            list.retain(|r| r != realm);
+            !list.is_empty()
+        });
+        self.waiting.borrow_mut().retain(|w| &w.realm != realm);
+    }
+}
+
+/// The realm an import is made for: the importing module's or script's, or
+/// the realm itself for a dynamic `import()` with no script.
+fn realm_of(referrer: &Referrer) -> Realm {
+    match referrer {
+        Referrer::Module(module) => module.realm().clone(),
+        Referrer::Realm(realm) => realm.clone(),
+        Referrer::Script(script) => script.realm().clone(),
     }
 }
 
@@ -100,9 +146,9 @@ impl ModuleLoader for HostModuleLoader {
                 return Err(JsNativeError::typ().with_message(message).into());
             }
         };
-        // Already parsed: the same module, every time.
-        let known = self.modules.borrow().get(&url).cloned();
-        if let Some(module) = known {
+        let realm = realm_of(&referrer);
+        // Already parsed in this realm: the same module, every time.
+        if let Some(module) = self.known(&realm, &url) {
             return Ok(module);
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -110,9 +156,19 @@ impl ModuleLoader for HostModuleLoader {
             url: url.clone(),
             specifier: specifier.clone(),
             dynamic,
+            realm: realm.clone(),
             sender: tx,
         });
-        if self.asked.borrow_mut().insert(url.clone()) {
+        let first_for_realm = {
+            let mut asked = self.asked.borrow_mut();
+            let list = asked.entry(url.clone()).or_default();
+            let first = !list.contains(&realm);
+            if first {
+                list.push(realm);
+            }
+            first
+        };
+        if first_for_realm && !self.requested.borrow().contains(&url) {
             self.requested.borrow_mut().push(url.clone());
         }
         match rx.await {
@@ -146,7 +202,7 @@ pub struct DynamicImportFailure {
 
 /// A module the embedder started (`JsRuntime::begin_module`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ModuleHandle(String);
+pub struct ModuleHandle(String, usize);
 
 /// Where a started module is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,12 +243,25 @@ pub(crate) struct ModuleEntry {
 #[derive(Default)]
 pub(crate) struct ModuleHost {
     pub(crate) loader: Rc<HostModuleLoader>,
-    entries: HashMap<String, ModuleEntry>,
+    /// The roots the embedder started, by (realm index, URL).
+    pub(crate) entries: HashMap<(usize, String), ModuleEntry>,
 }
 
 impl ModuleHost {
     pub(crate) fn loader(&self) -> Rc<HostModuleLoader> {
         self.loader.clone()
+    }
+
+    /// A realm was dropped: forget its module map and its roots.
+    pub(crate) fn forget_realm(&mut self, index: usize, realm: &Realm) {
+        self.loader.forget_realm(realm);
+        self.entries.retain(|(r, _), _| *r != index);
+    }
+}
+
+impl ModuleHandle {
+    fn key(&self) -> (usize, String) {
+        (self.1, self.0.clone())
     }
 }
 
@@ -233,13 +302,17 @@ impl JsRuntime {
 
     /// Parse `source` as the module served from `url` and start loading its
     /// graph. A syntax error is returned here, before any import is asked
-    /// for. Starting a URL that is already started returns its handle: the
-    /// module map has one entry per URL, so a module is never evaluated twice.
+    /// for. Starting a URL that is already started in the current realm
+    /// returns its handle: a realm's module map has one entry per URL, so a
+    /// module is never evaluated twice in one realm. Another realm (a frame's
+    /// document) that starts the same URL gets its own module.
     pub fn begin_module(&mut self, url: &str, source: &str) -> Result<ModuleHandle, String> {
-        if self.modules.entries.contains_key(url) {
-            return Ok(ModuleHandle(url.to_string()));
+        let handle = ModuleHandle(url.to_string(), self.current_realm.0);
+        if self.modules.entries.contains_key(&handle.key()) {
+            return Ok(handle);
         }
-        let existing = self.modules.loader.modules.borrow().get(url).cloned();
+        let realm = self.context.realm().clone();
+        let existing = self.modules.loader.known(&realm, url);
         let module = match existing {
             Some(module) => module,
             None => {
@@ -258,11 +331,7 @@ impl JsRuntime {
                 }
             }
         };
-        self.modules
-            .loader
-            .modules
-            .borrow_mut()
-            .insert(url.to_string(), module.clone());
+        self.modules.loader.keep(&realm, url, module.clone());
         let load = module.load(&mut self.context);
         // The engine's promise, not the page's: a failure is the module's
         // error, never an unhandled rejection.
@@ -270,7 +339,7 @@ impl JsRuntime {
         let _ = self.context.run_jobs();
         self.consume_interrupt();
         self.modules.entries.insert(
-            url.to_string(),
+            handle.key(),
             ModuleEntry {
                 module,
                 load,
@@ -280,7 +349,7 @@ impl JsRuntime {
                 settled: false,
             },
         );
-        Ok(ModuleHandle(url.to_string()))
+        Ok(handle)
     }
 
     /// Dynamic `import()` calls that rejected since the last call: the
@@ -306,68 +375,84 @@ impl JsRuntime {
     /// none. Every import waiting for that URL continues (or fails).
     pub fn supply_module(&mut self, requested: &str, outcome: Result<FetchedModule, String>) {
         let loader = self.modules.loader.clone();
-        let module: Result<Module, String> = match outcome {
-            Err(message) => Err(message),
-            Ok(fetched) => {
-                let known = loader.modules.borrow().get(&fetched.final_url).cloned();
-                match known {
-                    Some(module) => Ok(module),
-                    None => {
-                        self.diag.know_path(&fetched.final_url);
-                        self.sources.remember(&fetched.final_url, &fetched.source);
-                        if fetched.final_url != requested {
-                            self.sources.remember(requested, &fetched.source);
-                        }
-                        let path = Path::new(fetched.final_url.as_str());
-                        let _detail = boa_engine::vm::ErrorDetailScope::enter(self.page_detail(&fetched.final_url));
-                        match Module::parse(
-                            Source::from_bytes(fetched.source.as_str()).with_path(path),
-                            None,
-                            &mut self.context,
-                        ) {
-                            Ok(module) => {
-                                loader
-                                    .modules
-                                    .borrow_mut()
-                                    .insert(fetched.final_url.clone(), module.clone());
-                                Ok(module)
-                            }
-                            Err(e) => Err(describe(&e, &mut self.context)),
-                        }
-                    }
-                }
+        let final_url = outcome.as_ref().ok().map(|fetched| fetched.final_url.clone());
+        // What this answer is for: imports of the asked-for URL and, after a
+        // redirect, imports of the URL it was finally served from.
+        let answers = |w: &Waiter| w.url == requested || final_url.as_deref() == Some(w.url.as_str());
+        if let Ok(fetched) = &outcome {
+            self.diag.know_path(&fetched.final_url);
+            self.sources.remember(&fetched.final_url, &fetched.source);
+            if fetched.final_url != requested {
+                self.sources.remember(requested, &fetched.source);
             }
-        };
-        if let Ok(module) = &module {
-            // Both the asked-for URL and (above) the final one name it.
-            loader.modules.borrow_mut().insert(requested.to_string(), module.clone());
         }
-        // Wake everything waiting for it, in the order they asked. A module
-        // reached by a redirect also answers imports of its final URL.
-        let waiters: Vec<Waiter> = {
-            let mut waiting = loader.waiting.borrow_mut();
-            let (ready, rest): (Vec<Waiter>, Vec<Waiter>) = std::mem::take(&mut *waiting)
-                .into_iter()
-                .partition(|w| w.url == requested || module.as_ref().is_ok_and(|m| loader.modules.borrow().get(&w.url).is_some_and(|k| k == m)));
-            *waiting = rest;
-            ready
-        };
-        for waiter in waiters {
-            match &module {
-                Ok(module) => {
-                    let _ = waiter.sender.send(Ok(module.clone()));
-                }
-                Err(message) => {
-                    if waiter.dynamic {
-                        boa_engine::module::record_dynamic_import_failure(&waiter.specifier, &waiter.url, message);
+        // Each realm waiting for it gets its own module (its document's map),
+        // in the order the realms first asked.
+        let mut realms: Vec<Realm> = Vec::new();
+        for waiter in loader.waiting.borrow().iter().filter(|w| answers(w)) {
+            if !realms.contains(&waiter.realm) {
+                realms.push(waiter.realm.clone());
+            }
+        }
+        for realm in realms {
+            let module = match &outcome {
+                Err(message) => Err(message.clone()),
+                Ok(fetched) => self.module_in(&realm, requested, fetched),
+            };
+            // Wake everything of this realm waiting for it, in the order
+            // they asked.
+            let waiters: Vec<Waiter> = {
+                let mut waiting = loader.waiting.borrow_mut();
+                let (ready, rest): (Vec<Waiter>, Vec<Waiter>) =
+                    std::mem::take(&mut *waiting).into_iter().partition(|w| w.realm == realm && answers(w));
+                *waiting = rest;
+                ready
+            };
+            for waiter in waiters {
+                match &module {
+                    Ok(module) => {
+                        let _ = waiter.sender.send(Ok(module.clone()));
                     }
-                    let _ = waiter.sender.send(Err(JsNativeError::typ()
-                        .with_message(format!("Failed to fetch dynamically imported module: {message}"))
-                        .into()));
+                    Err(message) => {
+                        if waiter.dynamic {
+                            boa_engine::module::record_dynamic_import_failure(&waiter.specifier, &waiter.url, message);
+                        }
+                        let _ = waiter.sender.send(Err(JsNativeError::typ()
+                            .with_message(format!("Failed to fetch dynamically imported module: {message}"))
+                            .into()));
+                    }
                 }
             }
         }
         let _ = self.context.run_jobs();
+    }
+
+    /// `realm`'s module for `fetched`: the one it parsed already, or the
+    /// source parsed now in that realm. Both the asked-for URL and the final
+    /// one name it in that realm's map.
+    fn module_in(&mut self, realm: &Realm, requested: &str, fetched: &FetchedModule) -> Result<Module, String> {
+        let loader = self.modules.loader.clone();
+        let module = match loader.known(realm, &fetched.final_url) {
+            Some(module) => module,
+            None => {
+                let Some(index) = self.realms.iter().position(|r| r.as_ref() == Some(realm)) else {
+                    return Err("the realm was dropped".to_string());
+                };
+                let outer = self.enter_realm(crate::RealmId(index));
+                let parsed = {
+                    let path = Path::new(fetched.final_url.as_str());
+                    let _detail = boa_engine::vm::ErrorDetailScope::enter(self.page_detail(&fetched.final_url));
+                    Module::parse(Source::from_bytes(fetched.source.as_str()).with_path(path), None, &mut self.context)
+                        .map_err(|e| describe(&e, &mut self.context))
+                };
+                self.enter_realm(outer);
+                let module = parsed?;
+                loader.keep(realm, &fetched.final_url, module.clone());
+                module
+            }
+        };
+        loader.keep(realm, requested, module.clone());
+        Ok(module)
     }
 
     /// Advance a started module as far as it can go and say where it is:
@@ -375,7 +460,7 @@ impl JsRuntime {
     pub fn poll_module(&mut self, handle: &ModuleHandle) -> ModuleState {
         let _ = self.context.run_jobs();
         self.consume_interrupt();
-        let Some(entry) = self.modules.entries.get_mut(&handle.0) else {
+        let Some(entry) = self.modules.entries.get_mut(&handle.key()) else {
             return ModuleState::Failed("unknown module".into());
         };
         if let Some(message) = &entry.failed {
@@ -388,7 +473,7 @@ impl JsRuntime {
                     let load = entry.load.clone();
                     self.report_rejection(&load, &reason);
                     let message = describe_value(&reason, &mut self.context);
-                    if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
+                    if let Some(entry) = self.modules.entries.get_mut(&handle.key()) {
                         entry.failed = Some(message.clone());
                     }
                     return ModuleState::Failed(message);
@@ -399,7 +484,7 @@ impl JsRuntime {
             if let Err(e) = module.link(&mut self.context) {
                 self.report_error_of(&handle.0, &e);
                 let message = describe(&e, &mut self.context);
-                if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
+                if let Some(entry) = self.modules.entries.get_mut(&handle.key()) {
                     entry.failed = Some(message.clone());
                 }
                 return ModuleState::Failed(message);
@@ -413,7 +498,7 @@ impl JsRuntime {
                 Err(e) => {
                     self.report_error_of(&handle.0, &e);
                     let message = describe(&e, &mut self.context);
-                    if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
+                    if let Some(entry) = self.modules.entries.get_mut(&handle.key()) {
                         entry.failed = Some(message.clone());
                     }
                     return ModuleState::Failed(message);
@@ -421,11 +506,11 @@ impl JsRuntime {
             };
             let _ = self.context.run_jobs();
             self.consume_interrupt();
-            if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
+            if let Some(entry) = self.modules.entries.get_mut(&handle.key()) {
                 entry.evaluation = Some(evaluation);
             }
         }
-        let evaluation = match self.modules.entries.get(&handle.0).and_then(|e| e.evaluation.clone()) {
+        let evaluation = match self.modules.entries.get(&handle.key()).and_then(|e| e.evaluation.clone()) {
             Some(p) => p,
             None => return ModuleState::Loading,
         };
@@ -433,7 +518,7 @@ impl JsRuntime {
         // The outcome is reported once, here or as a late module error.
         let pending = matches!(state, PromiseState::Pending);
         let mut first_outcome = false;
-        if let Some(entry) = self.modules.entries.get_mut(&handle.0) {
+        if let Some(entry) = self.modules.entries.get_mut(&handle.key()) {
             entry.awaiting = pending;
             first_outcome = !pending && !entry.settled;
             entry.settled |= !pending;
@@ -495,7 +580,7 @@ impl JsRuntime {
     /// uncaught error. Modules that finished cleanly stop being watched.
     pub(crate) fn take_late_module_rejections(&mut self) -> Vec<(String, JsValue)> {
         let mut settled = Vec::new();
-        for (url, entry) in self.modules.entries.iter_mut() {
+        for ((_, url), entry) in self.modules.entries.iter_mut() {
             if !entry.awaiting {
                 continue;
             }

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>wrapped inline align</title>
+<!-- YT-CARD-SUBTITLE: an inline element whose text wraps, in a centered or right-aligned block.
+     Each visual line aligns on its own (css-text-3 §7.1), as the lines of bare text do.
+     window.report(): per case, each text node's line rects (Range over the node), x,y,width.
+     The shared-* cases (R1 on #1407): the inline's last line also holds following content. -->
+<style>
+body { margin: 0; font: 16px/20px Menlo, monospace; }
+.c { width: 400px; margin: 0 0 8px 0; }
+.pad { padding: 0 10px; border: 2px solid #888; }
+</style></head><body>
+<div class="c" id="center" style="text-align:center"><span>Start watching videos to help us build a feed of videos you'll love.</span></div>
+<div class="c" id="right" style="text-align:right"><span>Start watching videos to help us build a feed of videos you'll love.</span></div>
+<div class="c" id="nested" style="text-align:center"><b><span>Start watching videos to help us build a feed of videos you'll love.</span></b></div>
+<div class="c" id="custom" style="text-align:center"><x-fs>Start watching videos to help us build a feed of videos you'll love.</x-fs></div>
+<div class="c" id="three" style="text-align:center"><span>one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen</span></div>
+<div class="c" id="edges" style="text-align:center"><span class="pad">Start watching videos to help us build a feed of videos you'll love.</span></div>
+<div class="c" id="flex" style="display:flex;flex-direction:column;align-items:center"><div style="text-align:center"><span>Start watching videos to help us build a feed of videos you'll love.</span></div></div>
+<div class="c" id="bare" style="text-align:center">Start watching videos to help us build a feed of videos you'll love.</div>
+<div class="c" id="bare-right" style="text-align:right">Start watching videos to help us build a feed of videos you'll love.</div>
+<div class="c" id="bare-three" style="text-align:center">one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen</div>
+<div class="c" id="shared-b" style="text-align:center"><span>Start watching videos to help us build a feed of videos you'll love.</span> B</div>
+<div class="c" id="shared-b-right" style="text-align:right"><span>Start watching videos to help us build a feed of videos you'll love.</span> B</div>
+<div class="c" id="shared-link" style="text-align:center"><span>Start watching videos to help us build a feed of videos you'll love.</span> <a href="#x">Learn more</a></div>
+<div class="c" id="shared-span" style="text-align:center"><span>Start watching videos to help us build a feed of videos you'll love.</span><span>!!</span></div>
+<div class="c" id="left" style="text-align:left"><span>Start watching videos to help us build a feed of videos you'll love.</span></div>
+<script>
+window.report = function () {
+  var r2 = function (v) { return Math.round(v * 100) / 100; };
+  return ['center', 'right', 'nested', 'custom', 'three', 'edges', 'flex', 'bare', 'bare-right', 'bare-three', 'shared-b', 'shared-b-right', 'shared-link', 'shared-span', 'left'].map(function (id) {
+    var root = document.getElementById(id);
+    // Every non-blank text node, in order: a case with content after the inline also reports
+    // where that content went (' | ' between nodes).
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    var nodes = [], t;
+    while ((t = walker.nextNode())) if (t.data.trim()) nodes.push(t);
+    return id + ': ' + nodes.map(function (node) {
+      var range = document.createRange();
+      range.selectNodeContents(node);
+      return Array.prototype.map.call(range.getClientRects(), function (r) {
+        return [r2(r.x), r2(r.y), r2(r.width)].join(',');
+      }).join('; ');
+    }).join(' | ');
+  }).join('\n');
+};
+</script></body></html>

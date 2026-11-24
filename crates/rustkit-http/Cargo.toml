@@ -62,6 +62,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [features]
 default = []
+# NET-LAZY-TLS test seam (`fail_platform_roots_on_this_thread`): for other crates' tests
+# (rustkit-net enables it in its dev-dependencies); never in a shipped build.
+test-hooks = []
 # One-release rollback switch (Atlas #535). When enabled, the client
 # handshakes through the platform native-tls stack exactly as before the
 # network-lane change; the rustls browser profile is the default.

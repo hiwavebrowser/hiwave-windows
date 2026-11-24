@@ -4149,7 +4149,7 @@ fn spaced_text_width(text: &str, style: &ComputedStyle) -> f32 {
     let spacing = |length: &Length| match *length {
         Length::Px(px) => px,
         Length::Em(em) => em * font_size,
-        Length::Rem(rem) => rem * 16.0,
+        Length::Rem(rem) => rem * rustkit_css::root_font_px(),
         _ => 0.0,
     };
     crate::measure_text_with_spacing(
@@ -4518,7 +4518,7 @@ pub(crate) fn is_font_or_viewport_relative(l: &Length) -> bool {
 fn intrinsic_len_px(l: &Length, font_size: f32) -> f32 {
     match l {
         Length::Percent(_) => 0.0,
-        other => other.to_px_with_viewport(font_size, 16.0, 0.0, 800.0, 600.0),
+        other => other.to_px_with_viewport(font_size, rustkit_css::root_font_px(), 0.0, 800.0, 600.0),
     }
 }
 
@@ -4526,7 +4526,7 @@ fn intrinsic_len_px(l: &Length, font_size: f32) -> f32 {
 fn style_font_size_px(style: &ComputedStyle) -> f32 {
     match style.font_size {
         Length::Px(px) => px,
-        ref other => other.to_px_with_viewport(16.0, 16.0, 0.0, 800.0, 600.0),
+        ref other => other.to_px_with_viewport(16.0, rustkit_css::root_font_px(), 0.0, 800.0, 600.0),
     }
 }
 

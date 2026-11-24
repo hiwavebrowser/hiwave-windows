@@ -21,7 +21,7 @@ import { chromium } from 'playwright';
 import { writeFileSync, readFileSync } from 'fs';
 import { join as pathJoin } from 'path';
 import { getDeterministicLaunchOptions } from './deterministic.mjs';
-import { oracleLaunchOptions } from './realsite_launch.mjs';
+import { oracleLaunchOptions, oracleUserAgent, oracleWantsHeadedUa } from './realsite_launch.mjs';
 import { comparePixels } from './compare_pixels.mjs';
 
 const NAV_TIMEOUT_MS = 30000;
@@ -62,9 +62,19 @@ async function captureChrome(url, pngPath, textPath, width, height, settleMs, ha
   const result = { url, status: 'ok', error: null, nav_error: null, oracle_headless: launch.headless };
   let harContext = null;
   try {
+    // REALSITE_ORACLE_HEADED_UA=1 on a headless oracle: send what this Chrome sends headed (its own
+    // UA without the Headless marker); see oracleUserAgent in realsite_launch.mjs.
+    let ua;
+    if (oracleWantsHeadedUa(launch.headless)) {
+      const probe = await browser.newPage();
+      ua = oracleUserAgent(await probe.evaluate(() => navigator.userAgent), launch.headless);
+      await probe.close();
+    }
+    if (ua) result.oracle_user_agent = ua;
     // colorScheme is pinned: left unset, headless Chrome followed the seat's
     // OS appearance and served Google's dark theme, which RustKit never gets.
     const context = await browser.newContext({
+      ...(ua ? { userAgent: ua } : {}),
       viewport: { width, height },
       deviceScaleFactor: 1,
       colorScheme: 'light',

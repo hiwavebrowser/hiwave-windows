@@ -55,11 +55,15 @@ DEFAULT_SITES_FILE = REPO / "websuite" / "realsite-top20.json"
 HOLDOUT_SITES_FILE = REPO / "websuite" / "realsite-holdout20.json"
 SITES_FILE = DEFAULT_SITES_FILE
 ORACLE = REPO / "tools" / "parity_oracle" / "realsite.mjs"
-DEFAULT_CHROME = (
-    Path.home()
-    / "Repos/hiwave/hiwave-macos/.browsers/chrome/mac_arm-148.0.7778.216"
-    / "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
-)
+if sys.platform.startswith("linux"):
+    # Linux: the pinned Chrome for Testing unpacked in the checkout (PARITY_CHROME_PATH wins).
+    DEFAULT_CHROME = REPO / ".browsers" / "chrome" / "chrome-linux64" / "chrome"
+else:
+    DEFAULT_CHROME = (
+        Path.home()
+        / "Repos/hiwave/hiwave-macos/.browsers/chrome/mac_arm-148.0.7778.216"
+        / "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    )
 PINNED_CHROME_VERSION = "148.0.7778.216"
 
 LOAD_TIMEOUT_MS = 30000
@@ -125,10 +129,22 @@ def load_ppm(path):
 
 
 def non_background_fraction(ppm_path):
-    """Fraction of pixels that differ (any channel > 8) from the dominant colour."""
-    import numpy as np
+    """Fraction of pixels that differ (any channel > 8) from the dominant colour.
 
+    The dominant colour is the most frequent; on a tie, the smallest packed RGB (numpy's unique
+    + argmax). Without numpy (the Linux gate box has none) the same value is computed in Python."""
     w, h, rgb = load_ppm(ppm_path)
+    try:
+        import numpy as np
+    except ModuleNotFoundError:
+        counts = {}
+        for i in range(0, w * h * 3, 3):
+            key = rgb[i : i + 3]
+            counts[key] = counts.get(key, 0) + 1
+        dom = min(counts, key=lambda k: (-counts[k], k))
+        off = sum(n for k, n in counts.items()
+                  if max(abs(k[0] - dom[0]), abs(k[1] - dom[1]), abs(k[2] - dom[2])) > 8)
+        return off / (w * h)
     px = np.frombuffer(rgb, dtype=np.uint8).reshape(h * w, 3)
     packed = (px[:, 0].astype(np.uint32) << 16) | (px[:, 1].astype(np.uint32) << 8) | px[:, 2]
     vals, counts = np.unique(packed, return_counts=True)
@@ -165,8 +181,12 @@ def rustkit_viewport_text(display_list_path, width, height):
     return " ".join(runs)
 
 
-PRODUCT_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-              "(KHTML, like Gecko) Version/17.4 Safari/605.1.15 HiWave/1.0")
+if sys.platform.startswith("linux"):
+    # The honest Linux HiWave UA: rustkit_http::default_user_agent() on Linux, never Chrome's.
+    PRODUCT_UA = "Mozilla/5.0 (X11; Linux x86_64) HiWave/1.0 RustKit/1.0"
+else:
+    PRODUCT_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+                  "(KHTML, like Gecko) Version/17.4 Safari/605.1.15 HiWave/1.0")
 
 
 def probe_access(url):
@@ -464,6 +484,24 @@ def pixel_diff(a, b, diff_png, env):
     return res
 
 
+def capture_flags(archive):
+    """Every flag score_site passes parity-capture (--dump-har only while archiving)."""
+    flags = ["--url", "--width", "--height", "--timeout-ms", "--dump-frame",
+             "--dump-display-list", "--dump-scripts"]
+    return flags + (["--dump-har"] if archive else [])
+
+
+def capture_flags_missing(capture_bin, flags):
+    """The flags in `flags` that `capture_bin --help` does not list: a binary older than this
+    board rejects them, and every live capture of a run fails. Checked before any site loads."""
+    try:
+        r = subprocess.run([str(capture_bin), "--help"], capture_output=True, text=True, timeout=60, encoding="utf-8")
+    except (OSError, subprocess.SubprocessError) as e:
+        return ["(--help failed: %s)" % e]
+    text = r.stdout + r.stderr
+    return [f for f in flags if not re.search(r"(^|[\s,\[])" + re.escape(f) + r"([\s=,\]]|$)", text, re.M)]
+
+
 def score_site(site, capture_bin, outdir, width, height, env):
     sid, url = site["id"], site["url"]
     d = outdir / sid
@@ -501,6 +539,7 @@ def score_site(site, capture_bin, outdir, width, height, env):
     rk_scripts = d / "rustkit-scripts.json"
     started = time.time()
     rk, rk_err, rk_code = run_json(
+        # Every flag here is in capture_flags(), which the preflight checks against the binary.
         [str(capture_bin), "--url", url, "--width", str(width), "--height", str(height),
          "--timeout-ms", str(LOAD_TIMEOUT_MS), "--dump-frame", str(rk_frame),
          "--dump-display-list", str(rk_dl), "--dump-scripts", str(rk_scripts)]
@@ -702,6 +741,11 @@ def main():
         problems.append("pinned Chrome not found: %s" % chrome_path)
     if not Path(args.capture_bin).exists():
         problems.append("parity-capture not built: %s" % args.capture_bin)
+    else:
+        missing = capture_flags_missing(args.capture_bin, capture_flags(realsite_har.archive_enabled()))
+        if missing:
+            problems.append("parity-capture at %s does not accept %s (older than this board? build it "
+                            "from this tree)" % (args.capture_bin, ", ".join(missing)))
     if not shutil.which("node"):
         problems.append("node not on PATH")
     if problems:

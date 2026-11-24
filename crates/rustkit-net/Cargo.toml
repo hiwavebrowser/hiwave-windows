@@ -41,6 +41,8 @@ http = "1.2"
 base64 = "0.22"
 
 [dev-dependencies]
+# The platform-roots test seam (NET-LAZY-TLS).
+rustkit-http = { path = "../rustkit-http", features = ["test-hooks"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "net"] }
 wiremock = "0.6"

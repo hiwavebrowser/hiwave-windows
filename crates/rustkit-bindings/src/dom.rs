@@ -3528,6 +3528,21 @@ const WRAPPERS_JS: &str = r#"
             v = v.toLowerCase();
             return v === '' ? 'auto' : (v === 'none' || v === 'metadata' || v === 'auto') ? v : 'metadata';
         }, function (v) { this.setAttribute('preload', String(v)); });
+        // AUDIO-CTOR: the `Audio` named constructor (HTML §4.8.10.1): a new <audio> of the
+        // window's document, not inserted, with preload="auto" and, when given, the `src`
+        // attribute. Nothing loads or plays here (the element is an ordinary audio element).
+        function Audio() {
+            if (!new.target) {
+                throw new TypeError("Failed to construct 'Audio': Please use the 'new' operator, " +
+                    "this DOM object constructor cannot be called as a function.");
+            }
+            var el = g.document.createElement('audio');
+            el.setAttribute('preload', 'auto');
+            if (arguments.length > 0 && arguments[0] !== undefined) el.setAttribute('src', String(arguments[0]));
+            return el;
+        }
+        Audio.prototype = made.HTMLAudioElement.prototype;
+        Object.defineProperty(g, 'Audio', { value: Audio, writable: true, configurable: true, enumerable: false });
         getter(media, 'readyState', function () { return mstate(this).rs; });
         getter(media, 'networkState', function () { return mstate(this).ns; });
         getter(media, 'duration', function () { var d = mstate(this).duration; return d === null ? NaN : d; });

@@ -153,9 +153,8 @@ grid-span--flex-row--auto-rows-40     grid-max-content-width-zero-with-column-sp
 grid-span--abspos--auto-rows-40       grid-max-content-width-zero-with-column-span
 grid-span--flex-row--auto-rows-auto   grid-max-content-width-zero-with-column-span
 
-# aspect-ratio-width-not-derived-from-height: 3 (flex-row--fixed-height fixed by C10 e)
+# aspect-ratio-width-not-derived-from-height: 2 (flex-row--fixed-height fixed by C10 e; block--fixed-height by aspect_ratio_width_from_height, 2026-11-21)
 aspect-ratio--flex-row--auto         aspect-ratio-width-not-derived-from-height
-aspect-ratio--block--fixed-height    aspect-ratio-width-not-derived-from-height
 aspect-ratio--grid--fixed-height     aspect-ratio-width-not-derived-from-height
 
 # aspect-ratio-height-of-column-flex-item: 0 (both fixed by C10 e)

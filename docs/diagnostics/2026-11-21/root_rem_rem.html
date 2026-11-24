@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html style="font-size: 2rem"><head><meta charset="utf-8"><title>root rem rem</title>
+<!-- ROOT-REM: `rem` is the root element's computed font-size (css-values-4 §6.1.1); on the root's
+     own font-size, and in media queries, it is the initial value (16px). window.report() lists
+     computed values and boxes; window.report2() the same after script sets the root to 20px. -->
+<style>
+body { margin: 0; font-family: Menlo, monospace; font-size: 16px; }
+#p { margin: 0; font-size: 1.4rem; line-height: 2rem; width: 20rem; padding-left: 1rem; }
+#w { width: calc(1rem + 5px); height: 1rem; background: #888; }
+#m { width: 1px; height: 1px; }
+@media (min-width: 60rem) { #m { width: 2px; } }
+#ps { display: inline-block; }
+#ps::before { content: "x"; font-size: 2rem; }
+#em { font-size: 2em; }
+#em > span { font-size: 1rem; }
+</style></head><body>
+<p id="p">Start</p><div id="w"></div><div id="m"></div><span id="ps"></span><div id="em"><span id="ems">y</span></div>
+<script>
+window.report = function () {
+  var r = function (v) { return Math.round(v * 100) / 100; };
+  var cs = function (id, prop, pseudo) { return getComputedStyle(document.getElementById(id), pseudo || null)[prop]; };
+  var box = function (id) { var b = document.getElementById(id).getBoundingClientRect(); return r(b.width) + 'x' + r(b.height); };
+  return [
+    'html font-size: ' + getComputedStyle(document.documentElement).fontSize,
+    'p font-size: ' + cs('p', 'fontSize') + ' line-height: ' + cs('p', 'lineHeight') + ' width: ' + cs('p', 'width') + ' padding-left: ' + cs('p', 'paddingLeft'),
+    'p box: ' + box('p'),
+    'calc width: ' + cs('w', 'width') + ' box: ' + box('w'),
+    'media rem: ' + cs('m', 'width'),
+    'pseudo font-size: ' + cs('ps', 'fontSize', '::before') + ' box: ' + box('ps'),
+    'nested rem: ' + cs('ems', 'fontSize')
+  ].join('\n');
+};
+window.report2 = function () {
+  document.documentElement.style.fontSize = '20px';
+  document.body.offsetWidth;
+  return window.report();
+};
+</script></body></html>

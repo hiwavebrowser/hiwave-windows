@@ -1090,8 +1090,8 @@ impl LayoutBox {
 /// Resolve a part's `border-radius` against its own box.
 fn part_radius(part: &ScrollbarPart, rect: Rect, font_size: f32) -> BorderRadius {
     let corner = |c: &rustkit_css::CornerRadius| CornerRadius {
-        h: c.horizontal.to_px(font_size, 16.0, rect.width),
-        v: c.vertical.to_px(font_size, 16.0, rect.height),
+        h: c.horizontal.to_px(font_size, rustkit_css::root_font_px(), rect.width),
+        v: c.vertical.to_px(font_size, rustkit_css::root_font_px(), rect.height),
     };
     BorderRadius {
         top_left: corner(&part.radius[0]),
